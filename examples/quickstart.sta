@@ -1,0 +1,52 @@
+// ==============================================================================
+// STRATA ENTERPRISE CORE: quickstart.sta
+// Developer Onboarding & Capabilities Integration Tutorial Blueprint
+// ==============================================================================
+
+import core_sys from hub;
+
+// 1. DATA INFRASTRUCTURE SCHEMA
+// Declaring a rigid compile-time database model inside the language grammar.
+database UserProfile {
+    int    user_id;
+    str    username;
+    float  account_balance;
+    str    security_tier;
+}
+
+// 2. THE MAIN OPERATION ROUTINE
+int main() {
+    print("[Strata Core]: Initializing quick-start training sandbox...");
+
+    // Enforcing strict variable keyword prefixes
+    int system_nodes     = 4;
+    str deployment_zone = "US-EAST-CORE";
+    float latency_target = 1.25;
+
+    // Homogeneous generic lists with compile-time element constraints
+    list[str] active_clusters = ["auth_tier", "ledger_tier", "gateway_tier"];
+    
+    print("Runtime Environment Active. Cluster Count: " + str(system_nodes));
+    
+    // Triggering a background task operation
+    initialize_security_handshake(deployment_zone);
+
+    // Secure database lookup using the native, compile-checked query selector (<-)
+    // If you type "sec_tier" instead of "security_tier", the compiler halts the build instantly.
+    list[UserProfile] compromised_accounts = UserProfile <- [security_tier == "FLAGGED"];
+    
+    return 0; // Clean exit contract matching the function's int prefix
+}
+
+// 3. BACKGROUND SERVICE EXAMPLES
+// Functions that process tasks but yield no data default to the system NoneType.
+def initialize_security_handshake(str region_id) {
+    print("[Security Boundary]: Instantiating network tokens inside " + region_id);
+}
+
+// 4. REAL-TIME EVENT STREAM PROCESSING
+// Abstracts away complex WebSocket or network loop wrappers completely.
+stream ListenToOperationalMetrics(str telemetry_broker_url) {
+    str real_time_payload = current_message();
+    print("[Telemetry Inbound]: " + real_time_payload);
+}
