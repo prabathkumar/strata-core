@@ -1,0 +1,3 @@
+int request_count = 500;
+// CRITICAL FAULT: Trying to bind a string value to an explicitly typed integer
+request_count = "BATCH_QUEUE_COMPROMISED";

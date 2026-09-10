@@ -1,0 +1,11 @@
+// Strata Compliant Enterprise Script
+int active_instances = 15;
+str network_node_id  = "NODE_SECURE_01";
+float runtime_margin = 99.95;
+
+int check_operational_margin(int margin) {
+    if (margin > 90) {
+        return 1;
+    }
+    return 0;
+}

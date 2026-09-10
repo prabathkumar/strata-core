@@ -1,0 +1,9 @@
+database LedgerItem {
+    int   record_id;
+    float balance_amount;
+}
+
+def verify_vault() {
+    // CRITICAL FAULT: Typo in the column query filter ('bal_amount' vs 'balance_amount')
+    list[LedgerItem] data = LedgerItem <- [bal_amount > 1000.00];
+}
