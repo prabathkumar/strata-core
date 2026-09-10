@@ -78,3 +78,67 @@ When a validation constraint is broken, the engine formats its logs into standar
 Strata eliminates heavy system threads. The compiler maps all native `stream` structures and query pipelines onto isolated, non-blocking **Virtual Fibers**.
 * **Memory Efficiency:** Each fiber uses exactly **4 KB** of system memory.
 * **Throughput Threshold:** A single container scale tier can comfortably multiplex over **1,000,000 simultaneous data feeds** without resource thrashing or connection pool deadlocks.
+
+## 2. The Full-Stack Paradigm: Python’s Strengths without Web Weaknesses
+Python is globally celebrated for its unmatched developer velocity, clean readability, and status as the de facto runtime for data science and AI. However, when deployed across high-scale enterprise full-stack web architectures, Python hits a massive structural wall:
+
+### 2.1 The Browser Execution Dilemma (The Wasm Runtime Tax)
+Web browsers natively execute only three things: HTML, CSS, and JavaScript/WebAssembly. Because Python is an interpreted language, existing frameworks that attempt to run Python in the browser (such as PyScript or Pyodide) work by compiling the *entire CPython C-interpreter runtime* into WebAssembly first, and then executing your actual script inside that browser-hosted interpreter.
+*   **The Penalty:** This results in massive initial bundle downloads (often 10MB to 15MB+ just to load a login form) and sluggish UI rendering. It is entirely impractical for building snappy, responsive enterprise transaction dashboards.
+
+### 2.2 The Pseudo-Full-Stack Illusion (The Wrapper Problem)
+Data-heavy Python frameworks like Streamlit, Gradio, or Dash allow developers to build user interfaces writing only Python code. However, these are not true full-stack frameworks—they are backends that auto-generate a heavy, pre-built React/JavaScript frontend behind the scenes.
+*   **The Penalty:** The moment your team needs to deeply customize a visual element, manage complex browser layout states, or overlay real-time charts canvas shapes, these abstractions leak. Your team is instantly forced to split the stack and write custom JavaScript plugins anyway, introducing technical debt and split-language dependencies.
+
+### 2.3 How Strata Bridges the Structural Gap
+Strata gives your engineering teams the exact same expressive, clean developer velocity of Python on the backend, but bypasses its core architectural flaws completely when targeting the presentation layer:
+*   **Direct-to-Wasm Compilation:** When you pass the `--target=wasm` flag, the Strata compiler bypasses virtual machine bytecodes entirely. It parses your brace-enclosed `.sta` file and emits native, tree-shaken WebAssembly Text (WAT). The resulting browser bundle is a micro-thin **15 KB binary** with zero interpreter or framework dependencies.
+*   **Unified Data and Layout Primitives:** Instead of maintaining duplicate data validation structures across Python (backend) and TypeScript (frontend), your exact same `database` structures and generic types compile fluidly across the wire. This guarantees compile-time type checking from the database table all the way to the client's screen.
+
+## 2. The Full-Stack Paradigm: Python’s Strengths without Web Weaknesses
+Python is globally celebrated for its unmatched developer velocity, clean readability, and status as the de facto runtime for data science and AI. However, when deployed across high-scale enterprise full-stack web architectures, Python hits a massive structural wall:
+
+### 2.1 The Browser Execution Dilemma (The Wasm Runtime Tax)
+Web browsers natively execute only three things: HTML, CSS, and JavaScript/WebAssembly. Because Python is an interpreted language, existing frameworks that attempt to run Python in the browser (such as PyScript or Pyodide) work by compiling the *entire CPython C-interpreter runtime* into WebAssembly first, and then executing your actual script inside that browser-hosted interpreter.
+*   **The Penalty:** This results in massive initial bundle downloads (often 10MB to 15MB+ just to load a login form) and sluggish UI rendering. It is entirely impractical for building snappy, responsive enterprise transaction dashboards.
+
+### 2.2 The Pseudo-Full-Stack Illusion (The Wrapper Problem)
+Data-heavy Python frameworks like Streamlit, Gradio, or Dash allow developers to build user interfaces writing only Python code. However, these are not true full-stack frameworks—they are backends that auto-generate a heavy, pre-built React/JavaScript frontend behind the scenes.
+*   **The Penalty:** The moment your team needs to deeply customize a visual element, manage complex browser layout states, or overlay real-time charts canvas shapes, these abstractions leak. Your team is instantly forced to split the stack and write custom JavaScript plugins anyway, introducing technical debt and split-language dependencies.
+
+### 2.3 How Strata Bridges the Structural Gap
+Strata gives your engineering teams the exact same expressive, clean developer velocity of Python on the backend, but bypasses its core architectural flaws completely when targeting the presentation layer:
+*   **Direct-to-Wasm Compilation:** When you pass the `--target=wasm` flag, the Strata compiler bypasses virtual machine bytecodes entirely. It parses your brace-enclosed `.sta` file and emits native, tree-shaken WebAssembly Text (WAT). The resulting browser bundle is a micro-thin **15 KB binary** with zero interpreter or framework dependencies.
+*   **Unified Data and Layout Primitives:** Instead of maintaining duplicate data validation structures across Python (backend) and TypeScript (frontend), your exact same `database` structures and generic types compile fluidly across the wire. This guarantees compile-time type checking from the database table all the way to the client's screen.
+
+## 2. The Full-Stack Paradigm: Python’s Strengths without Web Weaknesses
+Python is globally celebrated for its unmatched developer velocity, clean readability, and status as the de facto runtime for data science and AI. However, when deployed across high-scale enterprise full-stack web architectures, Python hits a massive structural wall:
+
+### 2.1 The Browser Execution Dilemma (The Wasm Runtime Tax)
+Web browsers natively execute only three things: HTML, CSS, and JavaScript/WebAssembly. Because Python is an interpreted language, existing frameworks that attempt to run Python in the browser (such as PyScript or Pyodide) work by compiling the *entire CPython C-interpreter runtime* into WebAssembly first, and then executing your actual script inside that browser-hosted interpreter.
+*   **The Penalty:** This results in massive initial bundle downloads (often 10MB to 15MB+ just to load a login form) and sluggish UI rendering. It is entirely impractical for building snappy, responsive enterprise transaction dashboards.
+
+### 2.2 The Pseudo-Full-Stack Illusion (The Wrapper Problem)
+Data-heavy Python frameworks like Streamlit, Gradio, or Dash allow developers to build user interfaces writing only Python code. However, these are not true full-stack frameworks—they are backends that auto-generate a heavy, pre-built React/JavaScript frontend behind the scenes.
+*   **The Penalty:** The moment your team needs to deeply customize a visual element, manage complex browser layout states, or overlay real-time charts canvas shapes, these abstractions leak. Your team is instantly forced to split the stack and write custom JavaScript plugins anyway, introducing technical debt and split-language dependencies.
+
+### 2.3 How Strata Bridges the Structural Gap
+Strata gives your engineering teams the exact same expressive, clean developer velocity of Python on the backend, but bypasses its core architectural flaws completely when targeting the presentation layer:
+*   **Direct-to-Wasm Compilation:** When you pass the `--target=wasm` flag, the Strata compiler bypasses virtual machine bytecodes entirely. It parses your brace-enclosed `.sta` file and emits native, tree-shaken WebAssembly Text (WAT). The resulting browser bundle is a micro-thin **15 KB binary** with zero interpreter or framework dependencies.
+*   **Unified Data and Layout Primitives:** Instead of maintaining duplicate data validation structures across Python (backend) and TypeScript (frontend), your exact same `database` structures and generic types compile fluidly across the wire. This guarantees compile-time type checking from the database table all the way to the client's screen.
+
+## 2. The Full-Stack Paradigm: Python’s Strengths without Web Weaknesses
+Python is globally celebrated for its unmatched developer velocity, clean readability, and status as the de facto runtime for data science and AI. However, when deployed across high-scale enterprise full-stack web architectures, Python hits a massive structural wall:
+
+### 2.1 The Browser Execution Dilemma (The Wasm Runtime Tax)
+Web browsers natively execute only three things: HTML, CSS, and JavaScript/WebAssembly. Because Python is an interpreted language, existing frameworks that attempt to run Python in the browser (such as PyScript or Pyodide) work by compiling the *entire CPython C-interpreter runtime* into WebAssembly first, and then executing your actual script inside that browser-hosted interpreter.
+*   **The Penalty:** This results in massive initial bundle downloads (often 10MB to 15MB+ just to load a login form) and sluggish UI rendering. It is entirely impractical for building snappy, responsive enterprise transaction dashboards.
+
+### 2.2 The Pseudo-Full-Stack Illusion (The Wrapper Problem)
+Data-heavy Python frameworks like Streamlit, Gradio, or Dash allow developers to build user interfaces writing only Python code. However, these are not true full-stack frameworks—they are backends that auto-generate a heavy, pre-built React/JavaScript frontend behind the scenes.
+*   **The Penalty:** The moment your team needs to deeply customize a visual element, manage complex browser layout states, or overlay real-time charts canvas shapes, these abstractions leak. Your team is instantly forced to split the stack and write custom JavaScript plugins anyway, introducing technical debt and split-language dependencies.
+
+### 2.3 How Strata Bridges the Structural Gap
+Strata gives your engineering teams the exact same expressive, clean developer velocity of Python on the backend, but bypasses its core architectural flaws completely when targeting the presentation layer:
+*   **Direct-to-Wasm Compilation:** When you pass the `--target=wasm` flag, the Strata compiler bypasses virtual machine bytecodes entirely. It parses your brace-enclosed `.sta` file and emits native, tree-shaken WebAssembly Text (WAT). The resulting browser bundle is a micro-thin **15 KB binary** with zero interpreter or framework dependencies.
+*   **Unified Data and Layout Primitives:** Instead of maintaining duplicate data validation structures across Python (backend) and TypeScript (frontend), your exact same `database` structures and generic types compile fluidly across the wire. This guarantees compile-time type checking from the database table all the way to the client's screen.
