@@ -1,0 +1,16 @@
+// Strata Corporate Microservice Template
+import audit_logger from hub;
+import legacy_pricing_model from python_engine;
+
+database CorporateAccount {
+    int    account_id;
+    str    owner_uuid;
+    float  credit_limit;
+}
+
+stream ProcessIncomingTransactions(str message_broker_uri) {
+    str raw_event_payload = current_message();
+    int target_account_id = extract_json_int(raw_event_payload, "account_id");
+    
+    list[CorporateAccount] matching_accounts = CorporateAccount <- [account_id == target_account_id];
+}

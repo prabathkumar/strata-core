@@ -1,0 +1,13 @@
+{
+  "$schema": "https://githubusercontent.com",
+  "name": "Strata",
+  "scopeName": "source.sta",
+  "fileTypes": ["sta"],
+  "patterns": [
+    { "name": "keyword.control.strata", "match": "\\\b(database|stream|verify|layout|import|from|hub|def|if|else|return|assert)\\\b" },
+    { "name": "storage.type.strata", "match": "\\\b(int|str|float|void|tensor|list)\\\b" },
+    { "name": "keyword.operator.database.strata", "match": "<-" },
+    { "name": "comment.line.double-slash.strata", "match": "//.*$" },
+    { "name": "string.quoted.double.strata", "begin": "\"", "end": "\"" }
+  ]
+}
