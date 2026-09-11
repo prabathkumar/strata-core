@@ -1,0 +1,30 @@
+// ==============================================================================
+// STRATA MEMORY CORE: memory_ownership.sta
+// Compile-Time Reference Borrowing & Zero-Allocation Lifetime Contracts
+// ==============================================================================
+
+import core.io from std;
+
+database VaultAsset {
+    int  asset_id;
+    float valuation;
+}
+
+int main() {
+    // 1. Absolute Memory Ownership Allocation
+    VaultAsset primary_vault = VaultAsset <- [asset_id == 101];
+
+    // 2. Safe Reference Borrowing (&)
+    // Passes a read-only pointer to the function. Zero bytes are copied in memory.
+    int check_state = evaluate_vault_risk(&primary_vault);
+
+    return check_state;
+}
+
+// Function requires an explicit immutable borrow contract parameter
+int evaluate_vault_risk(VaultAsset &target_vault) {
+    if (target_vault.valuation > 1000000.00) {
+        return 1; // High risk profile verified
+    }
+    return 0; // Safe
+}
