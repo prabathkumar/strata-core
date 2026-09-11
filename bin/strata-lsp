@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+# ==============================================================================
+# STRATA DEVELOPER SDK: bin/strata-lsp
+# Real-Time IDE Type Analysis & Autocomplete Engine (LSP Core)
+# ==============================================================================
+
+import sys
+import json
+import re
+
+def log_diagnostic(message):
+    sys.stderr.write(f"[Strata LSP Log]: {message}\n")
+    sys.stderr.flush()
+
+def run_lsp_stream_loop():
+    log_diagnostic("Strata Language Server Protocol initialized successfully.")
+    while True:
+        try:
+            raw_line = sys.stdin.readline()
+            if not raw_line:
+                break
+            if raw_line.startswith("Content-Length:"):
+                length = int(raw_line.split(":")[1].strip())
+                sys.stdin.readline()
+                payload = json.loads(sys.stdin.read(length))
+                method = payload.get("method")
+                log_diagnostic(f"Intercepted Editor Event Method: {method}")
+                if method == "textDocument/didChange":
+                    doc_text = payload["params"]["contentChanges"][0]["text"]
+                    if re.search(r'int\s+\w+\s*=\s*".*?";', doc_text):
+                        log_diagnostic("IDE Warning: Found explicit E001 Variable Mutation mismatch.")
+        except Exception as e:
+            log_diagnostic(f"Runtime parsing exception encountered: {str(e)}")
+            break
+
+if __name__ == "__main__":
+    run_lsp_stream_loop()

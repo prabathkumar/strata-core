@@ -1,0 +1,32 @@
+// ==============================================================================
+// STRATA SYSTEM STANDARD LIBRARY: std/core.sta
+// Base System Architecture & Native Namespaces
+// ==============================================================================
+
+#region SYSTEM_IO
+database SystemConsoleContext {
+    int  stdout_descriptor;
+    str  encoding_format;
+}
+
+int print_line(str buffer_message) {
+    return native_sys_write(1, buffer_message);
+}
+#endregion
+
+#region NETWORKING_PRIMITIVES
+protocol NetworkBufferFrame {
+    int   payload_id;
+    int   buffer_size;
+}
+
+stream InitializeNetworkListener(str interface_ip, int target_port) {
+    print_line("[Strata Net]: Spawning non-blocking Virtual Fiber socket hook...");
+    str live_packet = listen_on_hardware_port(interface_ip, target_port);
+}
+#endregion
+
+str convert_int_to_str(int hardware_value) {
+    return native_sys_itoa(hardware_value);
+}
+#endregion
