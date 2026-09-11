@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo -e "{\n  \"type\": \"ProgramUnit\",\n  \"source\": \"$1\",\n  \"body\": [\n    { \"type\": \"DatabaseDeclaration\", \"identifier\": \"CorporateAccount\" }\n  ]\n}"
