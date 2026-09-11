@@ -1,0 +1,15 @@
+{
+  "files.associations": {
+    "*.sta": "strata"
+  },
+  "editor.tabSize": 4,
+  "editor.insertSpaces": true,
+  "editor.formatOnSave": true,
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": false,
+    "strings": false
+  },
+  "strata.lsp.path": "./bin/strata-lsp",
+  "strata.compiler.haltOnError": true
+}
