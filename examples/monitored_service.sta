@@ -1,0 +1,30 @@
+// ==============================================================================
+// STRATA ENTERPRISE PIPELINE: monitored_service.sta
+// High-Scale Monitored Corporate Transaction Ledger Service Component
+// ==============================================================================
+
+import core.io from std;
+import core.telemetry from std;
+
+database CorporateLedger {
+    int   ledger_id;
+    float transfer_value;
+}
+
+stream TrackHighVolumeLedger(str network_data_socket) {
+    // Start high-fidelity performance timer tracking
+    float mark_start_time = get_hardware_timestamp();
+    
+    str inbound_message = current_message();
+    int target_id = extract_json_int(inbound_message, "ledger_id");
+    
+    list[CorporateLedger] matching_ledgers = CorporateLedger <- [ledger_id == target_id];
+    
+    // Calculate final operational resource durations
+    float execution_delta = get_hardware_timestamp() - mark_start_time;
+    float internal_memory  = get_fiber_memory_weight();
+    
+    // Feed telemetry natively directly inside the stream processing thread
+    // This allows automated AI repair agents to watch memory stats in real-time
+    record_telemetry_metric("FIBER_EVENT", execution_delta, internal_memory);
+}
