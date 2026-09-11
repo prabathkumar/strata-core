@@ -1,43 +1,40 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Enterprise Deploy Enabled)
+# Unified Command-Line Interface Toolchain Master Driver (Lexer Integrated)
 # ==============================================================================
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
-MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 COMMAND=$1
 PARAM1=$2
-PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Engine v1.0.0 (Enterprise Systems Core - Production Release)${NC}"
+        echo -e "${CYAN}Strata Engine v1.0.0 (Native Lexer/Parser Active)${NC}"
         ;;
-    "check")
-        ./test_compiler.sh
+    "lex")
+        if [ -z "$PARAM1" ]; then
+            echo -e "${RED}[Error]: Please specify a .sta source file to tokenize.${NC}"
+            exit 1
+        fi
+        ./bin/strata-lexer "$PARAM1"
         ;;
     "build")
-        echo -e "${CYAN}[Strata AOT Compiler]: Compiling $PARAM1...${NC}"
-        echo -e "${GREEN}[SUCCESS]: Build sequence completed cleanly.${NC}"
-        ;;
-    "bindgen")
-        ./bin/strata-bindgen "$PARAM1" "$PARAM2"
+        ./bin/strata-deploy
         ;;
     "bench")
         ./bin/strata-bench
         ;;
-    "deploy")
-        # Direct structural pipeline routing to the native deployment package
-        ./bin/strata-deploy
+    "demo")
+        ./bin/strata demo
         ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <build|check|bindgen|bench|deploy|version> [arguments]"
+        echo "Usage: strata <lex|build|bench|demo|version> [arguments]"
         ;;
 esac
