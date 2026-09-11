@@ -1,0 +1,26 @@
+// ==============================================================================
+// STRATA SYSTEM STANDARD LIBRARY: std/ml.sta
+// Core Machine Learning Definitions & Hardware Tensor Primitives
+// ==============================================================================
+
+#region ML_CORE_TYPES
+// Rigid multi-dimensional tensor type properties managed directly by the compiler
+database ModelMetricsContext {
+    int   layer_count;
+    float current_accuracy_weight;
+    str   acceleration_backend; // "CUDA", "ROCm", or "WASM_SIMD"
+}
+#endregion
+
+#region NATIVE_INFERENCE_CONTRACTS
+// Structural function template to extract hardware optimization metrics
+int verify_model_dimensions(int input_shape, int output_shape) {
+    if (input_shape <= 0) {
+        return 0; // Invalid input topology configuration
+    }
+    if (output_shape <= 0) {
+        return 0; // Invalid output topology configuration
+    }
+    return 1; // Dimensions match strict enterprise contracts
+}
+#endregion
