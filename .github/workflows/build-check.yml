@@ -1,4 +1,4 @@
-name: Strata Continuous Validation & Compilation Gate
+name: Strata Compiler Conformance & CI/CD Gate
 
 on:
   push:
@@ -7,33 +7,39 @@ on:
     branches: [ main ]
 
 jobs:
-  strata-compiler-validation:
+  validate-conformance:
     name: Execute Core Architectural Verification Passes
     runs-on: ubuntu-latest
 
     steps:
-    # Step 1: Checkout the source directory tree into the virtual machine sandbox
+    # Step 1: Securely checkout the complete workspace code tree layout
     - name: Checkout Code Repository
       uses: actions/checkout@v4
 
-    # Step 2: Initialize standard baseline system execution shells
-    - name: Setup System Shell Environment
+    # Step 2: Setup system environment execution permissions
+    - name: Initialize Foundation Environment Shell
       run: |
-        echo "[CI Pipeline]: Verification loops initializing..."
-        chmod +x test_compiler.sh
+        echo "[CI Pipeline]: Initializing secure non-Python validation loop..."
+        chmod +x bin/strata bin/strata-lexer bin/strata-parser bin/strata-checker bin/strata-codegen bin/strata-test bin/strata-errors bin/strata-debug bin/strata-deploy bin/strata-sync
 
-    # Step 3: Launch Strata's custom automated CLI execution test suite
-    - name: Execute Strata Toolchain Safety Validations
+    # Step 3: Trigger the full local automated regression test suite script
+    - name: Run Toolchain Regression Test Matrix
       run: |
-        echo "[CI Pipeline]: Triggering Strata Token Parser & AST Validation Pass..."
-        ./test_compiler.sh
+        echo "[CI Pipeline]: Triggering Lexer -> Parser -> Checker -> Codegen Validation Pass..."
+        ./bin/strata test
 
-    # Step 4: Verify the Multi-Stage Production Container Engine Build
-    - name: Docker Blueprint Validation Check
+    # Step 4: Verify explicit compilation against the formal conformance target
+    - name: Execute Language Conformance Verification
       run: |
-        echo "[CI Pipeline]: Auditing Dockerfile structural build constraints..."
-        if [ ! -f Dockerfile ]; then
-          echo "!!! [CI Error]: Missing primary production containerization blueprints."
+        echo "[CI Pipeline]: Compiling conformance test specifications..."
+        ./bin/strata build test_suite/conformance_tests.sta --target=wasm
+
+    # Step 5: Audit multi-stage production deployment scripts
+    - name: Validate Containerization Infrastructure Blueprints
+      run: |
+        echo "[CI Pipeline]: Auditing production Dockerfile and Kubernetes manifests..."
+        if [ ! -f Dockerfile ] || [ ! -f deploy/production_k8s.yaml ]; then
+          echo "!!! [CI Error]: Core deployment architecture assets missing from project tree."
           exit 1
         fi
-        echo "[SUCCESS]: Docker deployment parameters validated."
+        echo "[SUCCESS]: Automated CI/CD validation sweep settled with 0 anomalies found."
