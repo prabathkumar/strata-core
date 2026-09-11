@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys, json
 from dataclasses import dataclass, field
 from typing import List, Optional, Any
+import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
 
 # ── AST Node Base ─────────────────────────────────────────────────────────────

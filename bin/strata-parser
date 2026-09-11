@@ -1,2 +1,9 @@
 #!/usr/bin/env bash
-echo -e "{\n  \"type\": \"ProgramUnit\",\n  \"source\": \"$1\",\n  \"body\": [\n    { \"type\": \"DatabaseDeclaration\", \"identifier\": \"CorporateAccount\" }\n  ]\n}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+exec python3 -c "
+import sys
+sys.path.insert(0, '$ROOT')
+from compiler.parser import main
+main()
+" "$@"
