@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Semantic Check Added)
+# Unified Command-Line Interface Toolchain Master Driver (AOT Compiler Bound)
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -16,7 +16,7 @@ PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Engine v1.0.0 (Native Semantic Validator Suite Active)${NC}"
+        echo -e "${CYAN}Strata Compiler Toolchain SDK v1.0.0 (AOT Native/Wasm Pipeline Active)${NC}"
         ;;
     "lex")
         ./bin/strata-lexer "$PARAM1"
@@ -25,20 +25,21 @@ case $COMMAND in
         ./bin/strata-parser "$PARAM1"
         ;;
     "check")
-        if [ -z "$PARAM1" ]; then
-            echo -e "${RED}[Error]: Please specify a .sta source file to semantically check.${NC}"
-            exit 1
-        fi
         ./bin/strata-checker "$PARAM1"
         ;;
     "codegen")
         ./bin/strata-codegen "$PARAM1" "$PARAM2"
         ;;
+    "build")
+        if [ -z "$PARAM1" ]; then
+            echo -e "${RED}[Error]: Please specify a target .sta source file to build.${NC}"
+            echo "Usage: strata build <file.sta> [--target=wasm|--target=native]"
+            exit 1
+        fi
+        ./bin/strata-compiler "$PARAM1" "$PARAM2"
+        ;;
     "test")
         ./bin/strata-test
-        ;;
-    "build")
-        ./bin/strata-deploy
         ;;
     "bench")
         ./bin/strata-bench
@@ -48,6 +49,6 @@ case $COMMAND in
         ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <lex|parse|check|codegen|test|build|bench|demo|version> [arguments]"
+        echo "Usage: strata <lex|parse|check|codegen|build|test|bench|demo|version> [arguments]"
         ;;
 esac
