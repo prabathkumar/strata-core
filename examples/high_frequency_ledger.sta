@@ -1,0 +1,72 @@
+// ==============================================================================
+// STRATA PRODUCTION SAMPLE: high_frequency_ledger.sta
+// High-Frequency Transaction & Compliance Ingestion Engine Application
+// Showcasing Zero-Copy Memory Casting, Event Fibers, and Native Secure Queries
+// ==============================================================================
+
+import core.io from std;
+import core.tls from std;
+import core.stdlib from std;
+
+// 1. HARDWARE-ALIGNED WIRE TRANSFER PROTOCOL LAYOUT
+// Maps directly to the incoming raw network binary byte buffer stream
+protocol WireTransactionFrame {
+    int   packet_sequence_id;  // Offset 0:  4 Bytes
+    str   account_routing_tag; // Offset 4:  16 Bytes (Padded)
+    int   payload_length_bytes;// Offset 20: 4 Bytes
+}
+
+// 2. PERSISTENT TRANSACTION STORE SCHEMA
+database CorporateLedger {
+    int   ledger_id;
+    str   client_routing_key;
+    float atomic_capital_delta;
+    str   risk_audit_status;
+}
+
+// 3. ASYNCHRONOUS HIGH-SCALE STREAM INGESTION CHANNEL
+// Runs natively inside an isolated, non-blocking 4 KB Virtual Event Fiber ring
+stream IngestHighFrequencyWireTraffic(str network_nic_socket_uri, int port_descriptor) {
+    print_line("[System Kernel]: Initializing secure transport layer...");
+    
+    // Natively wrapping the channel inside a tight TLS 1.3 cryptographic ring
+    int secure_link = execute_secure_handshake(port_descriptor, "/etc/certs/srv.crt", "/etc/certs/srv.key");
+    if (secure_link == 0) {
+        return; // Terminate connection immediately to protect perimeter bounds
+    }
+
+    // Capture the inbound data payload stream
+    str raw_network_buffer = current_message();
+    
+    // 4. ZERO-COPY POINTER CASTING OPERATOR (::)
+    // Points structural data parameters straight to memory offsets without array duplication
+    WireTransactionFrame frame = current_raw_buffer() :: WireTransactionFrame;
+    
+    // Enforce rigid structural validation constraints at wire speed
+    if (frame.payload_length_bytes > 65536) {
+        print_line("[Security Perimeter Warn]: Dropped anomalous oversized packet frame.");
+        return;
+    }
+
+    int active_id = extract_json_int(raw_network_buffer, "transaction_id");
+    float transfer_value = extract_json_float(raw_network_buffer, "value");
+
+    // 5. TYPE-CHECKED SECURE DATABASE LOOKUP (<-)
+    // Checked at compile-time. Any column typo triggers an immediate Halt on First Error.
+    list[CorporateLedger] duplicate_checks = CorporateLedger <- [ledger_id == active_id];
+    
+    if (len(duplicate_checks) > 0) {
+        print_line("[Transaction Aborted]: Duplicate sequence ID caught in storage matrix.");
+        return;
+    }
+
+    // Inject the validated record directly back into the live ledger persistence tier
+    CorporateLedger <- [
+        ledger_id = active_id,
+        client_routing_key = frame.account_routing_tag,
+        atomic_capital_delta = transfer_value,
+        risk_audit_status = "VERIFIED_COMPLIANT"
+    ];
+    
+    print_line("[SUCCESS]: Ledger Block " + convert_int_to_str(active_id) + " committed safely under secure TLS loop.");
+}
