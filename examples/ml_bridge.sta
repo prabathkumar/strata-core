@@ -1,0 +1,25 @@
+// ==============================================================================
+// STRATA ML KERNEL BRIDGE: ml_bridge.sta
+// Low-Overhead Foreign Function Interface (FFI) to Python Compute Layers
+// ==============================================================================
+
+// Declare the external unmanaged ML library boundary contract rules explicitly
+import PyTorchModelEngine from external_python_runtime;
+
+model FraudClassificationNetwork {
+    input:  tensor[float, 1, 64];   // Locks down model dimension matrices
+    output: tensor[float, 1, 2];    // Expected signature: [Legit, Fraudulent]
+}
+
+int execute_system_audit(tensor[float, 1, 64] enterprise_metrics) {
+    // Open the zero-copy type interface boundary gateway.
+    // Strata forces a strict type assertion pass onto the unmanaged Python array.
+    // If PyTorch returns a corrupt dictionary or layout, Strata shuts down the execution line.
+    tensor[float, 1, 2] prediction = predict FraudClassificationNetwork(enterprise_metrics);
+    float compliance_weight = prediction;
+    
+    if (compliance_weight > 0.90) {
+        return 1; // Operational threat detected
+    }
+    return 0; // Verified safe
+}

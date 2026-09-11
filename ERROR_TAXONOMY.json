@@ -1,0 +1,37 @@
+{
+  "$schema": "https://stratalang.org",
+  "standard_authority": "Strata Core Architecture Board",
+  "version": "1.0.0",
+  "taxonomy": {
+    "E001": {
+      "classification": "Variable Mutation Mismatch",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "Value right of assignment breaks variable prefix type keyword constraints.",
+      "ai_remediation_strategy": "Locate target variable, read leading declaration prefix, change right-side literal value format to match."
+    },
+    "E002": {
+      "classification": "Function Return Contract Breach",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "Internal method exit statement yields data types conflicting with function signature prefix.",
+      "ai_remediation_strategy": "Trace all inner return blocks, match data objects directly to function prefix keyword."
+    },
+    "E003": {
+      "classification": "Generic Collection Pollution",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "Heterogeneous or dynamically typed entries leaked into a homogeneous list array.",
+      "ai_remediation_strategy": "Sanitize list bracket elements, stripping strings or floating values from mismatched type arrays."
+    },
+    "E004": {
+      "classification": "Database Schema Selector Violation",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "Inline table query filter references non-existent columns or invalid query layouts.",
+      "ai_remediation_strategy": "Audit database table block schemas, match column property name spellings inside query bracket filters."
+    },
+    "E005": {
+      "classification": "Boundary Perimeter Contamination",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "Dynamic data types leaked across the FFI bridge threshold without explicit type casing.",
+      "ai_remediation_strategy": "Wrap unmanaged dynamic module operations directly inside rigid Strata type cast constructor blocks."
+    }
+  }
+}
