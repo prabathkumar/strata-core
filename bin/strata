@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Bindgen Integrated)
+# Unified Command-Line Interface Toolchain Master Driver (Enterprise Deploy Enabled)
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -17,7 +17,7 @@ PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Engine v1.0.0 (Enterprise Systems Core - Bindgen Active)${NC}"
+        echo -e "${CYAN}Strata Engine v1.0.0 (Enterprise Systems Core - Production Release)${NC}"
         ;;
     "check")
         ./test_compiler.sh
@@ -27,17 +27,17 @@ case $COMMAND in
         echo -e "${GREEN}[SUCCESS]: Build sequence completed cleanly.${NC}"
         ;;
     "bindgen")
-        # Direct structural pipeline routing to the native FFI code-gen asset
         ./bin/strata-bindgen "$PARAM1" "$PARAM2"
-        ;;
-    "demo")
-        ./bin/strata demo
         ;;
     "bench")
         ./bin/strata-bench
         ;;
+    "deploy")
+        # Direct structural pipeline routing to the native deployment package
+        ./bin/strata-deploy
+        ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <build|check|bindgen|bench|version> [arguments]"
+        echo "Usage: strata <build|check|bindgen|bench|deploy|version> [arguments]"
         ;;
 esac
