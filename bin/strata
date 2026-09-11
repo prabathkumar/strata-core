@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Test Engine Active)
+# Unified Command-Line Interface Toolchain Master Driver (Semantic Check Added)
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -12,10 +12,11 @@ NC='\033[0m'
 
 COMMAND=$1
 PARAM1=$2
+PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Engine v1.0.0 (Native Integration Testing Active)${NC}"
+        echo -e "${CYAN}Strata Engine v1.0.0 (Native Semantic Validator Suite Active)${NC}"
         ;;
     "lex")
         ./bin/strata-lexer "$PARAM1"
@@ -23,11 +24,17 @@ case $COMMAND in
     "parse")
         ./bin/strata-parser "$PARAM1"
         ;;
+    "check")
+        if [ -z "$PARAM1" ]; then
+            echo -e "${RED}[Error]: Please specify a .sta source file to semantically check.${NC}"
+            exit 1
+        fi
+        ./bin/strata-checker "$PARAM1"
+        ;;
     "codegen")
         ./bin/strata-codegen "$PARAM1" "$PARAM2"
         ;;
     "test")
-        # Direct structural pipeline routing to the native regression testing tool
         ./bin/strata-test
         ;;
     "build")
@@ -41,6 +48,6 @@ case $COMMAND in
         ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <lex|parse|codegen|test|build|bench|demo|version> [arguments]"
+        echo "Usage: strata <lex|parse|check|codegen|test|build|bench|demo|version> [arguments]"
         ;;
 esac
