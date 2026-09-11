@@ -3,11 +3,18 @@ name = "strata-enterprise-core"
 version = "1.0.0"
 authors = ["Prabath Kumar"]
 edition = "2026"
+license = "Apache-2.0"
 
 [compiler]
-halt_on_error = true
 target = "wasm"
 opt_level = "aggressive"
+halt_on_error = true
+treat_warnings_as_errors = true
 
 [dependencies]
 core = { version = "1.0.0", source = "std" }
+crypto = { version = "2.4.1", source = "hub", hash = "sha256:8f3c2b..." }
+telemetry = { version = "0.9.5", source = "hub" }
+
+[dev-dependencies]
+benchmarking = { version = "1.1.0", source = "std" }
