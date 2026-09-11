@@ -1,0 +1,38 @@
+// ==============================================================================
+// STRATA ENTERPRISE TESTING BLUEPRINT: pipeline_testing.sta
+// Production Unit and Integration Regression Test Harness Configuration
+// ==============================================================================
+
+import core.io from std;
+import core.testing from std;
+
+// 1. TARGET BUSINESS LAYER APPLICATION LOGIC
+database CustomerAccount {
+    int  account_id;
+    float vault_balance;
+}
+
+int processes_vault_deposit(int target_id, float credit_amount) {
+    list[CustomerAccount] accounts = CustomerAccount <- [account_id == target_id];
+    if (len(accounts) == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+// 2. FIRST-CLASS NATIVE INTEGRATION TESTING GATE
+// The compiler extracts this block ahead-of-time during 'strata test' execution
+verify "Corporate Ingestion Pipeline Integration Test Sweep" {
+    
+    // Setup Phase: Instantiating test data structures mock frames
+    int test_target_id = 9901;
+    float deposit_value = 500.00;
+    
+    // Execution Phase: Triggering target logical loops
+    int operations_clear = processes_vault_deposit(test_target_id, deposit_value);
+    
+    // Assertion Phase: Enforcing system contract rules natively
+    assert "Verify application routing loops clear successfully" {
+        assert_true("Operations Clear Flag Boundary Match", operations_clear == 1);
+    }
+}

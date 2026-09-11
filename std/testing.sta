@@ -1,0 +1,24 @@
+// ==============================================================================
+// STRATA SYSTEM STANDARD LIBRARY: std/testing.sta
+// Native Unit & Integration Testing Primitives Specification
+// ==============================================================================
+
+#region TEST_CONTEXT_SCHEMAS
+database TestSuiteTelemetry {
+    str   test_case_name;
+    int   assertion_count;
+    str   execution_state; // "PASSED" or "FAILED"
+    float duration_ms;
+}
+#endregion
+
+#region NATIVE_ASSERTION_MACROS
+// Core mathematical boolean constraint evaluator managed directly by the compiler
+int assert_true(str criterion_label, int conditional_boolean_flag) {
+    if (conditional_boolean_flag == 0) {
+        print_line(" !!! [VERIFY FAILURE]: Assertion condition failed on rule: " + criterion_label);
+        return 0; // Trigger test frame violation state
+    }
+    return 1; // Assertion passed cleanly
+}
+#endregion
