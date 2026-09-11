@@ -66,3 +66,8 @@ case $COMMAND in
         echo "  repl               Launch interactive Strata developer shell"
         ;;
 esac
+
+    "bench")
+        # Direct internal redirection loop straight to the Python profiler binary
+        ./bin/strata-bench
+        ;;

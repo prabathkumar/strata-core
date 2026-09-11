@@ -1,0 +1,44 @@
+// ==============================================================================
+// STRATA VISUAL LAYOUT: benchmark_dashboard.sta
+// Declarative Enterprise Infrastructure Performance Dashboard Component
+// Compiles directly to a standalone, zero-dependency browser execution bundle
+// ==============================================================================
+
+import core.io from std;
+import core.ui from std;
+
+database ClusterMetric {
+    str runtime_engine;
+    int compile_ms;
+    float footprint_mb;
+    int data_packets_sec;
+}
+
+layout MetricsTelemetryDashboard() {
+    window "Strata Kernel Performance Console" [width = 1440, height = 900] {
+        
+        row [background = "#09090e", padding_y = 16, padding_x = 30] {
+            text "INFRASTRUCTURE CORE MONITOR: RUNNING" [color = "#39ff14", weight = "bold"];
+            spacer;
+            text "SDK Version: 1.0.0" [color = "#707080"];
+        }
+        
+        grid [columns = 3, spacing = 25, padding = 30] {
+            
+            column [background = "#111116", padding = 20, border_radius = 6] {
+                text "Compilation Velocity (Lower is Better)" [color = "#ffffff", size = 14];
+                chart_bar [source = "compile_ms", theme = "cyan"];
+            }
+            
+            column [background = "#111116", padding = 20, border_radius = 6] {
+                text "Concurrency Density (Memory Allocation)" [color = "#ffffff", size = 14];
+                chart_bar [source = "footprint_mb", theme = "green"];
+            }
+            
+            column [background = "#111116", padding = 20, border_radius = 6] {
+                text "Throughput (Zero-Copy Network Packets)" [color = "#ffffff", size = 14];
+                chart_bar [source = "data_packets_sec", theme = "magenta"];
+            }
+        }
+    }
+}
