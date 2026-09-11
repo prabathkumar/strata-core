@@ -1,0 +1,13 @@
+[package]
+name = "strata-enterprise-core"
+version = "1.0.0"
+authors = ["Prabath Kumar"]
+edition = "2026"
+
+[compiler]
+halt_on_error = true
+target = "wasm"
+opt_level = "aggressive"
+
+[dependencies]
+core = { version = "1.0.0", source = "std" }
