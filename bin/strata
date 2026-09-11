@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Full Pipeline Active)
+# Unified Command-Line Interface Toolchain Master Driver (Test Engine Active)
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -12,11 +12,10 @@ NC='\033[0m'
 
 COMMAND=$1
 PARAM1=$2
-PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Engine v1.0.0 (Lexer / Parser / Codegen Fully Operational)${NC}"
+        echo -e "${CYAN}Strata Engine v1.0.0 (Native Integration Testing Active)${NC}"
         ;;
     "lex")
         ./bin/strata-lexer "$PARAM1"
@@ -25,11 +24,11 @@ case $COMMAND in
         ./bin/strata-parser "$PARAM1"
         ;;
     "codegen")
-        if [ -z "$PARAM1" ]; then
-            echo -e "${RED}[Error]: Please specify a .sta source file for code generation.${NC}"
-            exit 1
-        fi
         ./bin/strata-codegen "$PARAM1" "$PARAM2"
+        ;;
+    "test")
+        # Direct structural pipeline routing to the native regression testing tool
+        ./bin/strata-test
         ;;
     "build")
         ./bin/strata-deploy
@@ -42,6 +41,6 @@ case $COMMAND in
         ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <lex|parse|codegen|build|bench|demo|version> [arguments]"
+        echo "Usage: strata <lex|parse|codegen|test|build|bench|demo|version> [arguments]"
         ;;
 esac

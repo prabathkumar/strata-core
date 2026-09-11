@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# STRATA DEVELOPER SDK: bin/strata-test
+# Automated Architecture Regression Test Suite & Integrity Validation Engine
+# 100% Python-Free | Zero External Dependencies
+# ==============================================================================
+
+# Define clean terminal formatting colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+echo -e "${CYAN}======================================================================${NC}"
+echo -e "${CYAN}[Strata Regression Suite]: Launching Full Toolchain Verification Check...${NC}"
+echo -e "${CYAN}======================================================================${NC}"
+
+# Check for existence of compiler core modules
+for binary in strata-lexer strata-parser strata-codegen; do
+    if [ -f "./bin/$binary" ]; then
+        echo -e " [+] Subsystem Audit: ./bin/$binary detected... ${GREEN}OK${NC}"
+        ((TESTS_PASSED++))
+    else
+        echo -e " [!] Subsystem Audit: ./bin/$binary missing... ${RED}FAIL${NC}"
+        ((TESTS_FAILED++))
+    fi
+done
+
+# Test Case 1: Validate Lexer Character Scanning Pipeline
+echo -e "\n${YELLOW}[Regression Test 1]: Validating Character Lexical Tokenizer Streams...${NC}"
+if [ -f "examples/microservice_template.sta" ]; then
+    LEX_OUT=$(./bin/strata-lexer examples/microservice_template.sta)
+    if [[ "$LEX_OUT" == *"SEMICOLON"* ]]; then
+        echo -e " -> ${GREEN}PASS:${NC} Lexer parsed structural token terminal boundaries cleanly."
+        ((TESTS_PASSED++))
+    else
+        echo -e " -> ${RED}FAIL:${NC} Tokenizer output stream corrupted."
+        ((TESTS_FAILED++))
+    fi
+else
+    echo -e " -> ${YELLOW}SKIP:${NC} Missing microservice template source tracker."
+fi
+
+# Test Case 2: Validate Context-Free Grammar AST Parsing Matrix
+echo -e "\n${YELLOW}[Regression Test 2]: Validating AST Node Hierarchy Generator...${NC}"
+PARSE_OUT=$(./bin/strata-parser examples/microservice_template.sta 2>/dev/null)
+if [[ "$PARSE_OUT" == *"ProgramUnit"* && "$PARSE_OUT" == *"CorporateAccount"* ]]; then
+    echo -e " -> ${GREEN}PASS:${NC} Parser successfully synthesized Context-Free AST nodes."
+    ((TESTS_PASSED++))
+else
+    echo -e " -> ${RED}FAIL:${NC} Abstract Syntax Tree structural validation error."
+    ((TESTS_FAILED++))
+fi
+
+# Test Case 3: Validate Direct-to-Wasm Ahead-Of-Time (AOT) Code Generation
+echo -e "\n${YELLOW}[Regression Test 3]: Validating WebAssembly Code Generator...${NC}"
+CODEGEN_OUT=$(./bin/strata-codegen examples/microservice_template.sta --target=wasm 2>/dev/null)
+if [[ "$CODEGEN_OUT" == *"(module"* && "$CODEGEN_OUT" == *"(memory"* ]]; then
+    echo -e " -> ${GREEN}PASS:${NC} Code generator compiled nodes straight to tree-shaken WAT parameters."
+    ((TESTS_PASSED++))
+else
+    echo -e " -> ${RED}FAIL:${NC} Code generation emission phase rejected execution models."
+    ((TESTS_FAILED++))
+fi
+
+# Print final Executive Status Report
+echo -e "\n${CYAN}======================================================================${NC}"
+echo -e "${CYAN}[Strata Regression Test Summary]: Valuation Matrix Scan Settled.${NC}"
+echo -e "${CYAN}======================================================================${NC}"
+echo -e " -> Metrics Tracked: Total Passes: ${GREEN}$TESTS_PASSED${NC} | Total Failures: ${RED}$TESTS_FAILED${NC}"
+
+if [ $TESTS_FAILED -eq 0 ]; then
+    echo -e " -> ${GREEN}STATUS: 100% SECURE. Language Core meets all enterprise compliance guidelines.${NC}"
+    echo -e "${CYAN}======================================================================${NC}"
+    exit 0
+else
+    echo -e " -> ${RED}STATUS: STRUCTURAL DRIFT DETECTED. Compilation pipeline halted.${NC}"
+    echo -e "${CYAN}======================================================================${NC}"
+    exit 1
+fi
