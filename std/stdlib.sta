@@ -1,0 +1,66 @@
+// ==============================================================================
+// STRATA SYSTEM STANDARD LIBRARY: std/stdlib.sta
+// Unified Enterprise Core Utility Namespace & Base Subsystems Specification
+// ==============================================================================
+
+import core.runtime from std;
+
+#region SYSTEM_FILES_AND_IO
+database FileDescriptorContext {
+    int  handle_id;
+    str  file_access_mode; // "R", "W", or "RW"
+}
+
+int open_system_file(str system_path, str open_mode) {
+    int native_fd = native_sys_open(system_path, open_mode);
+    if (native_fd == -1) {
+         return 0; // File allocation exception
+    }
+    FileDescriptorContext <- [handle_id = native_fd, file_access_mode = open_mode];
+    return native_fd;
+}
+#endregion
+
+#region LAYER_7_NETWORKING_HTTP
+database HTTPSessionState {
+    int  socket_descriptor;
+    str  target_host;
+    int  response_status_code;
+}
+
+stream InitiateHTTPGetStream(str remote_endpoint_url, int network_port) {
+    print_line("[Strata HTTP]: Spawning asynchronous HTTP non-blocking client connection...");
+    str raw_response = native_network_http_get(remote_endpoint_url, network_port);
+    int parsed_status = extract_http_status(raw_response);
+    
+    HTTPSessionState <- [
+        socket_descriptor = network_port,
+        target_host = remote_endpoint_url,
+        response_status_code = parsed_status
+    ];
+}
+#endregion
+
+#region DATA_PARSING_JSON
+// High-velocity text array parsing running natively inside 4KB Virtual Fibers
+int extract_json_int(str raw_json_string, str search_key) {
+    // Searches text blocks directly using raw memory indexing with 0% runtime memory copies
+    return native_sys_json_parse_int(raw_json_string, search_key);
+}
+
+str extract_json_str(str raw_json_string, str search_key) {
+    return native_sys_json_parse_str(raw_json_string, search_key);
+}
+#endregion
+
+#region TIME_AND_COLLECTIONS
+database SystemDateTimeClock {
+    int epoch_timestamp_seconds;
+    str microsecond_precision_delta;
+}
+
+str get_formatted_system_time() {
+    int current_epoch = get_hardware_timestamp();
+    return native_sys_strftime(current_epoch, "%Y-%m-%dT%H:%M:%SZ");
+}
+#endregion

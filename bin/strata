@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (AOT Compiler Bound)
+# Unified Command-Line Interface Toolchain Master Driver (Registry Active)
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -16,39 +16,22 @@ PARAM2=$3
 
 case $COMMAND in
     "version")
-        echo -e "${CYAN}Strata Compiler Toolchain SDK v1.0.0 (AOT Native/Wasm Pipeline Active)${NC}"
+        echo -e "${CYAN}Strata Toolchain SDK v1.0.0 (Standard Library & Package Registry Active)${NC}"
         ;;
-    "lex")
-        ./bin/strata-lexer "$PARAM1"
-        ;;
-    "parse")
-        ./bin/strata-parser "$PARAM1"
-        ;;
-    "check")
-        ./bin/strata-checker "$PARAM1"
-        ;;
-    "codegen")
-        ./bin/strata-codegen "$PARAM1" "$PARAM2"
-        ;;
-    "build")
-        if [ -z "$PARAM1" ]; then
-            echo -e "${RED}[Error]: Please specify a target .sta source file to build.${NC}"
-            echo "Usage: strata build <file.sta> [--target=wasm|--target=native]"
-            exit 1
-        fi
-        ./bin/strata-compiler "$PARAM1" "$PARAM2"
-        ;;
-    "test")
-        ./bin/strata-test
-        ;;
-    "bench")
-        ./bin/strata-bench
-        ;;
-    "demo")
-        ./bin/strata demo
+    "lex") ./bin/strata-lexer "$PARAM1" ;;
+    "parse") ./bin/strata-parser "$PARAM1" ;;
+    "check") ./bin/strata-checker "$PARAM1" ;;
+    "codegen") ./bin/strata-codegen "$PARAM1" "$PARAM2" ;;
+    "build") ./bin/strata-compiler "$PARAM1" "$PARAM2" ;;
+    "test") ./bin/strata-test ;;
+    "bench") ./bin/strata-bench ;;
+    "deploy") ./bin/strata-deploy ;;
+    "publish")
+        # Direct structural pipeline routing to the native package sync utility
+        ./bin/strata-sync
         ;;
     *)
         echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <lex|parse|check|codegen|build|test|bench|demo|version> [arguments]"
+        echo "Usage: strata <lex|parse|check|codegen|build|test|bench|deploy|publish|version> [arguments]"
         ;;
 esac
