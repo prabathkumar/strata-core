@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# STRATA COMPILER — COMPONENT 1: LEXER v1.0.0
 from __future__ import annotations
 import sys, json
 from dataclasses import dataclass
@@ -41,7 +42,8 @@ KEYWORDS = {
 @dataclass
 class Token:
     type: TT; value: str; line: int; col: int
-    def to_dict(self): return {"type":self.type.name,"value":self.value,"line":self.line,"col":self.col}
+    def to_dict(self):
+        return {"type":self.type.name,"value":self.value,"line":self.line,"col":self.col}
 
 class LexError(Exception):
     def __init__(self,msg,line,col):
@@ -54,90 +56,129 @@ class Lexer:
         self.pos=0; self.line=1; self.col=1; self.tokens=[]
 
     def tokenise(self):
-        while not self._at_end(): self._scan_token()
+        while not self._at_end():
+            self._scan_token()
         self.tokens.append(Token(TT.EOF,"",self.line,self.col))
         return self.tokens
 
     def _scan_token(self):
-        sl,sc=self.line,self.col; ch=self._advance()
-        if ch in(" ","	",""): return
-        if ch=="\n": self.line+=1; self.col=1; return
-        if ch=="/" and self._peek()=="/": self._line_comment(); return
-        if ch=="/" and self._peek()=="*": self._block_comment(sl,sc); return
-        if ch=='"': self._string_literal(sl,sc); return
-        if ch.isdigit(): self._number_literal(ch,sl,sc); return
-        if ch.isalpha() or ch=="_": self._identifier(ch,sl,sc); return
-        if ch=="<" and self._peek()=="-": self._advance(); self._add(TT.ARROW_L,"<-",sl,sc); return
-        if ch==":" and self._peek()==":": self._advance(); self._add(TT.CAST_OP,"::",sl,sc); return
-        if ch=="=" and self._peek()=="=": self._advance(); self._add(TT.EQ,"==",sl,sc); return
-        if ch=="!" and self._peek()=="=": self._advance(); self._add(TT.NEQ,"!=",sl,sc); return
-        if ch=="<" and self._peek()=="=": self._advance(); self._add(TT.LTE,"<=",sl,sc); return
-        if ch==">" and self._peek()=="=": self._advance(); self._add(TT.GTE,">=",sl,sc); return
-        if ch=="&" and self._peek()=="&": self._advance(); self._add(TT.AND,"&&",sl,sc); return
-        if ch=="|" and self._peek()=="|": self._advance(); self._add(TT.OR,"||",sl,sc); return
-        SINGLE={"{":TT.L_BRACE,"}":TT.R_BRACE,"(":TT.L_PAREN,")":TT.R_PAREN,
-                "[":TT.L_BRACKET,"]":TT.R_BRACKET,";":TT.SEMICOLON,":":TT.COLON,
-                ",":TT.COMMA,".":TT.DOT,"=":TT.ASSIGN,"&":TT.BORROW,"+":TT.PLUS,
-                "-":TT.MINUS,"*":TT.STAR,"/":TT.SLASH,"%":TT.PERCENT,
-                "<":TT.LT,">":TT.GT,"!":TT.NOT}
-        if ch in SINGLE: self._add(SINGLE[ch],ch,sl,sc); return
+        sl,sc=self.line,self.col
+        ch=self._advance()
+        if ch in (' ','\t','\r'):
+            return
+        if ch == '\n':
+            self.line += 1; self.col = 1; return
+        if ch=='/' and self._peek()=='/':
+            self._line_comment(); return
+        if ch=='/' and self._peek()=='*':
+            self._block_comment(sl,sc); return
+        if ch=='"':
+            self._string_literal(sl,sc); return
+        if ch.isdigit():
+            self._number_literal(ch,sl,sc); return
+        if ch.isalpha() or ch=='_':
+            self._identifier(ch,sl,sc); return
+        if ch=='<' and self._peek()=='-':
+            self._advance(); self._add(TT.ARROW_L,'<-',sl,sc); return
+        if ch==':' and self._peek()==':':
+            self._advance(); self._add(TT.CAST_OP,'::',sl,sc); return
+        if ch=='=' and self._peek()=='=':
+            self._advance(); self._add(TT.EQ,'==',sl,sc); return
+        if ch=='!' and self._peek()=='=':
+            self._advance(); self._add(TT.NEQ,'!=',sl,sc); return
+        if ch=='<' and self._peek()=='=':
+            self._advance(); self._add(TT.LTE,'<=',sl,sc); return
+        if ch=='>' and self._peek()=='=':
+            self._advance(); self._add(TT.GTE,'>=',sl,sc); return
+        if ch=='&' and self._peek()=='&':
+            self._advance(); self._add(TT.AND,'&&',sl,sc); return
+        if ch=='|' and self._peek()=='|':
+            self._advance(); self._add(TT.OR,'||',sl,sc); return
+        SINGLE={
+            '{':TT.L_BRACE,'}':TT.R_BRACE,'(':TT.L_PAREN,')':TT.R_PAREN,
+            '[':TT.L_BRACKET,']':TT.R_BRACKET,';':TT.SEMICOLON,':':TT.COLON,
+            ',':TT.COMMA,'.':TT.DOT,'=':TT.ASSIGN,'&':TT.BORROW,'+':TT.PLUS,
+            '-':TT.MINUS,'*':TT.STAR,'/':TT.SLASH,'%':TT.PERCENT,
+            '<':TT.LT,'>':TT.GT,'!':TT.NOT
+        }
+        if ch in SINGLE:
+            self._add(SINGLE[ch],ch,sl,sc); return
         raise LexError(f"Unexpected character '{ch}'",sl,sc)
 
     def _line_comment(self):
-        while not self._at_end() and self._peek()!="\n": self._advance()
+        while not self._at_end() and self._peek()!='\n':
+            self._advance()
 
     def _block_comment(self,sl,sc):
         self._advance()
         while not self._at_end():
             ch=self._advance()
-            if ch=="\n": self.line+=1; self.col=1
-            elif ch=="*" and self._peek()=="/": self._advance(); return
+            if ch=='\n': self.line+=1; self.col=1
+            elif ch=='*' and self._peek()=='/':
+                self._advance(); return
         raise LexError("Unterminated block comment",sl,sc)
 
     def _string_literal(self,sl,sc):
         buf=[]
+        ESC={'n':'\n','t':'\t','r':'\r','"':'"','\\':'\\'}
         while not self._at_end():
             ch=self._advance()
-            if ch=="\\": esc=self._advance(); buf.append({"n":"\n","t":"\t","r":"\r",'"':'"',"\\":"\\"}.get(esc,esc))
-            elif ch=='"': self._add(TT.STR_LIT,"".join(buf),sl,sc); return
-            elif ch=="\n": raise LexError("Unterminated string",sl,sc)
-            else: buf.append(ch)
+            if ch=='\\':
+                esc=self._advance()
+                buf.append(ESC.get(esc,esc))
+            elif ch=='"':
+                self._add(TT.STR_LIT,''.join(buf),sl,sc); return
+            elif ch=='\n':
+                raise LexError("Unterminated string",sl,sc)
+            else:
+                buf.append(ch)
         raise LexError("Unterminated string",sl,sc)
 
     def _number_literal(self,first,sl,sc):
         buf=[first]; is_float=False
-        while not self._at_end() and (self._peek().isdigit() or self._peek()=="."):
+        while not self._at_end() and (self._peek().isdigit() or self._peek()=='.'):
             ch=self._advance()
-            if ch==".":
+            if ch=='.':
                 if is_float: raise LexError("Malformed float",sl,sc)
                 is_float=True
             buf.append(ch)
-        self._add(TT.FLOAT_LIT if is_float else TT.INT_LIT,"".join(buf),sl,sc)
+        self._add(TT.FLOAT_LIT if is_float else TT.INT_LIT,''.join(buf),sl,sc)
 
     def _identifier(self,first,sl,sc):
         buf=[first]
-        while not self._at_end() and (self._peek().isalnum() or self._peek()=="_"): buf.append(self._advance())
-        word="".join(buf); self._add(KEYWORDS.get(word,TT.IDENT),word,sl,sc)
+        while not self._at_end() and (self._peek().isalnum() or self._peek()=='_'):
+            buf.append(self._advance())
+        word=''.join(buf)
+        self._add(KEYWORDS.get(word,TT.IDENT),word,sl,sc)
 
-    def _add(self,tt,value,line,col): self.tokens.append(Token(tt,value,line,col))
+    def _add(self,tt,value,line,col):
+        self.tokens.append(Token(tt,value,line,col))
+
     def _advance(self):
         ch=self.source[self.pos]; self.pos+=1; self.col+=1; return ch
+
     def _peek(self,offset=0):
-        idx=self.pos+offset; return "\0" if idx>=len(self.source) else self.source[idx]
-    def _at_end(self): return self.pos>=len(self.source)
+        idx=self.pos+offset
+        return '\0' if idx>=len(self.source) else self.source[idx]
+
+    def _at_end(self):
+        return self.pos>=len(self.source)
 
 def tokenise_file(path):
-    with open(path,"r",encoding="utf-8") as f: source=f.read()
+    with open(path,'r',encoding='utf-8') as f:
+        source=f.read()
     return Lexer(source,filename=path).tokenise()
 
-def tokens_to_json(tokens): return json.dumps([t.to_dict() for t in tokens],indent=2)
+def tokens_to_json(tokens):
+    return json.dumps([t.to_dict() for t in tokens],indent=2)
 
 def print_token_table(tokens):
     print(f"{'TYPE':<22} {'VALUE':<30} {'LINE':>5} {'COL':>5}")
-    print("-"*66)
+    print('-'*66)
     for t in tokens:
         if t.type==TT.EOF: break
-        print(f"{t.type.name:<22} {t.value:<30} {t.line:>5} {t.col:>5}")
+        v=t.value if len(t.value)<=30 else t.value[:27]+'...'
+        print(f"{t.type.name:<22} {v:<30} {t.line:>5} {t.col:>5}")
 
 def main():
     import argparse
@@ -146,18 +187,24 @@ def main():
     ap.add_argument("--json",action="store_true")
     ap.add_argument("--count",action="store_true")
     args=ap.parse_args()
-    try: tokens=tokenise_file(args.file)
-    except LexError as e: print(str(e),file=sys.stderr); sys.exit(1)
-    except FileNotFoundError: print(f"File not found: {args.file}",file=sys.stderr); sys.exit(1)
-    if args.json: print(tokens_to_json(tokens))
+    try:
+        tokens=tokenise_file(args.file)
+    except LexError as e:
+        print(str(e),file=sys.stderr); sys.exit(1)
+    except FileNotFoundError:
+        print(f"File not found: {args.file}",file=sys.stderr); sys.exit(1)
+    if args.json:
+        print(tokens_to_json(tokens))
     elif args.count:
         from collections import Counter
         c=Counter(t.type.name for t in tokens if t.type!=TT.EOF)
         print(f"\n[Strata Lexer] {args.file}: {sum(c.values())} tokens, {len(c)} types")
-        for n,v in sorted(c.items(),key=lambda x:-x[1]): print(f"  {n:<22} {v}")
+        for n,v in sorted(c.items(),key=lambda x:-x[1]):
+            print(f"  {n:<22} {v}")
     else:
         print(f"\n[Strata Lexer] Tokenising '{args.file}'...\n")
         print_token_table(tokens)
         print(f"\n  {len([t for t in tokens if t.type!=TT.EOF])} tokens. OK")
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    main()
