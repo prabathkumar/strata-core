@@ -426,6 +426,10 @@ class Parser:
         self._consume(TT.L_PAREN)
         params = self._parse_params()
         self._consume(TT.R_PAREN)
+        # Forward declaration: fn(params); — no body
+        if self._check(TT.SEMICOLON):
+            self._advance()
+            return FunctionDecl(t.line, t.col, return_type, name, params, [], kind)
         self._consume(TT.L_BRACE)
         body = self._parse_body()
         self._consume(TT.R_BRACE)
