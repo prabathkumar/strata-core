@@ -17,7 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
-    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -259,6 +259,10 @@ class TypeChecker:
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
         elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
+        elif isinstance(stmt,TableIOStmt):
+            if stmt.table not in self.schemas:
+                self._error("E004",f"Database '{stmt.table}' not declared",
+                    stmt.line,stmt.col,f"Declare 'database {stmt.table}' first")
         elif isinstance(stmt,Element): self._check_element(stmt,scope)
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)

@@ -188,6 +188,7 @@ str node_name(int k) {
     if (k == 72) { return "Prop"; }
     if (k == 73) { return "ForInStmt"; }
     if (k == 74) { return "ForeignDecl"; }
+    if (k == 75) { return "TableIOStmt"; }
     return "Unknown";
 }
 
@@ -296,6 +297,11 @@ str node_json(Node n) {
         jfield(&sb, "children", jlist(n.v2));
     }
     if (k == 72) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "value", jchild(n.c1)); }
+    if (k == 75) {
+        jfield(&sb, "op", jstr(n.s1));
+        jfield(&sb, "table", jstr(n.s2));
+        jfield(&sb, "path", jstr(n.s3));
+    }
     if (k == 74) {
         jfield(&sb, "header", jstr(n.s1));
         jfield(&sb, "link", jstr(n.s2));
@@ -868,6 +874,26 @@ Node parse_statement(P &p) {
         n.c1 = node_ptr(cond);
         n_pos(n, t);
         return n;
+    }
+
+    // `save T to "p";` / `load T from "p";` — contextual words.
+    if (k == 4) {
+        int is_save = p_at_word(&p, "save");
+        int is_load = p_at_word(&p, "load");
+        if (is_save + is_load > 0) {
+            if (p_kind(&p, 1) == 4) {
+                Token op = p_advance(&p);
+                Token table = p_expect(&p, 4);
+                if (is_save == 1) { p_expect_word(&p, "to"); }
+                if (is_save == 0) { p_expect_word(&p, "from"); }
+                Token path = p_advance(&p);
+                p_expect(&p, 56);
+                Node n = node_new(75);
+                n.s1 = op.value; n.s2 = table.value; n.s3 = path.value;
+                n_pos(n, op);
+                return n;
+            }
+        }
     }
 
     if (k == 30) {                             // render X to "path";

@@ -625,6 +625,16 @@ def gen_stmt(Gen &g, Node st) {
         return;
     }
 
+    if (k == 75) {                                    // save / load
+        StringBuilder sb = sb_new();
+        sb_append(&sb, st.s2);
+        if (str_eq(st.s1, "save") == 1) { sb_append(&sb, "__save(\""); }
+        if (str_eq(st.s1, "save") == 0) { sb_append(&sb, "__load(\""); }
+        sb_append(&sb, st.s3); sb_append(&sb, "\");");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
     if (k == 26) {                                    // assert group
         StringBuilder note = sb_new();
         sb_append(&note, "/* assert group: "); sb_append(&note, st.s1); sb_append(&note, " */");
@@ -835,6 +845,90 @@ def fwd_struct(Gen &g, str name) {
     emit_raw(&g, sb_to_str(&sb));
 }
 
+// Serialisers generated from the schema. Field order is the declaration
+// order, which is also the contract: a file written by one schema is not
+// readable by another.
+def gen_table_io(Gen &g, str name, int fields_vec) {
+    NodeVec fs = nv_at(fields_vec);
+    int n = fs.len;
+
+    StringBuilder a = sb_new();
+    sb_append(&a, "static strata_int "); sb_append(&a, name);
+    sb_append(&a, "__save(strata_str path) {");
+    emit_raw(&g, sb_to_str(&a));
+    emit_raw(&g, "    FILE* f = fopen(path, \"w\"); if (!f) return 0;");
+    StringBuilder lp = sb_new();
+    sb_append(&lp, "    for (strata_int i = 0; i < "); sb_append(&lp, name);
+    sb_append(&lp, "__count; i++) {");
+    emit_raw(&g, sb_to_str(&lp));
+    StringBuilder rr = sb_new();
+    sb_append(&rr, "        "); sb_append(&rr, name); sb_append(&rr, "* r = ");
+    sb_append(&rr, name); sb_append(&rr, "__rows[i];");
+    emit_raw(&g, sb_to_str(&rr));
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (i > 0) { emit_raw(&g, "        fputc(0x09, f);"); }
+        str ct = c_type(&g, fd.c1);
+        StringBuilder w = sb_new();
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&w, "        strata_write_escaped(f, r->"); sb_append(&w, fd.s1);
+            sb_append(&w, ");");
+        }
+        if (str_eq(ct, "strata_float") == 1) {
+            sb_append(&w, "        fprintf(f, \"%.17g\", r->"); sb_append(&w, fd.s1);
+            sb_append(&w, ");");
+        }
+        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
+            sb_append(&w, "        fprintf(f, \"%lld\", (long long)r->"); sb_append(&w, fd.s1);
+            sb_append(&w, ");");
+        } }
+        emit_raw(&g, sb_to_str(&w));
+    }
+    emit_raw(&g, "        fputc(0x0a, f);");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    fclose(f); return 1;");
+    emit_raw(&g, "}");
+
+    StringBuilder b = sb_new();
+    sb_append(&b, "static strata_int "); sb_append(&b, name);
+    sb_append(&b, "__load(strata_str path) {");
+    emit_raw(&g, sb_to_str(&b));
+    emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
+    emit_raw(&g, "    char buf[4096]; int more;");
+    StringBuilder z = sb_new();
+    sb_append(&z, "    "); sb_append(&z, name); sb_append(&z, "__count = 0;");
+    emit_raw(&g, sb_to_str(&z));
+    emit_raw(&g, "    while (1) {");
+    StringBuilder al = sb_new();
+    sb_append(&al, "        "); sb_append(&al, name); sb_append(&al, "* r = (");
+    sb_append(&al, name); sb_append(&al, "*)calloc(1, sizeof("); sb_append(&al, name);
+    sb_append(&al, "));");
+    emit_raw(&g, sb_to_str(&al));
+    emit_raw(&g, "        more = strata_read_field(f, buf, 4096);");
+    emit_raw(&g, "        if (more < 0) { free(r); break; }");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (i > 0) { emit_raw(&g, "        strata_read_field(f, buf, 4096);"); }
+        str ct = c_type(&g, fd.c1);
+        StringBuilder rd = sb_new();
+        sb_append(&rd, "        r->"); sb_append(&rd, fd.s1); sb_append(&rd, " = ");
+        if (str_eq(ct, "strata_str") == 1) { sb_append(&rd, "strata_dup(buf);"); }
+        if (str_eq(ct, "strata_float") == 1) { sb_append(&rd, "strtod(buf, NULL);"); }
+        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
+            sb_append(&rd, "(strata_int)atoll(buf);");
+        } }
+        emit_raw(&g, sb_to_str(&rd));
+    }
+    StringBuilder ps = sb_new();
+    sb_append(&ps, "        if ("); sb_append(&ps, name);
+    sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
+    sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
+    emit_raw(&g, sb_to_str(&ps));
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    fclose(f); return 1;");
+    emit_raw(&g, "}");
+}
+
 def gen_table_storage(Gen &g, str name) {
     // Backing store for a database block, emitted after the struct so the row
     // type is complete.
@@ -864,7 +958,8 @@ def gen_struct(Gen &g, str name, int fields_vec) {
 }
 
 def gen_decl(Gen &g, Node d) {
-    if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1); return; }
+    if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
+                       gen_table_io(&g, d.s1, d.v1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }

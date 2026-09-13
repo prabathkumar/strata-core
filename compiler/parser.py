@@ -286,6 +286,15 @@ class ReportDecl(Node):
                                "metrics":[m.to_dict() for m in self.metrics]}
 
 @dataclass
+class TableIOStmt(Node):
+    """`save T to "path";` / `load T from "path";`"""
+    op: str          # "save" | "load"
+    table: str
+    path: str
+    def to_dict(self): return {"node":"TableIOStmt","op":self.op,
+                               "table":self.table,"path":self.path}
+
+@dataclass
 class ForeignDecl(Node):
     """`foreign "header.h" link "name" { signatures }` — external C functions.
 
@@ -785,6 +794,17 @@ class Parser:
 
         if self._check(TT.KW_RENDER):
             return self._parse_render()
+
+        # `save T to "p";` / `load T from "p";` — contextual, so neither word
+        # is taken from user code.
+        if (self._at_word("save") or self._at_word("load")) \
+           and self._peek_at(1).type == TT.IDENT:
+            op = self._advance().value
+            table = self._consume(TT.IDENT).value
+            self._consume_word("to" if op == "save" else "from")
+            path = self._consume(TT.STR_LIT).value
+            self._consume(TT.SEMICOLON)
+            return TableIOStmt(t.line, t.col, op, table, path)
 
         if self._check(TT.KW_VERIFY):
             return self._parse_verify()

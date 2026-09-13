@@ -234,6 +234,19 @@ test("assert_group_sees_outer_scope",
 test("field_access_on_list_is_e003",
     'database M { int id; str name; }\nint main() { list[M] rows = M <- [id == 1]; str n = rows.name; return 0; }', "E003")
 
+print("\n── Table persistence ─────────────────────────────────────────────")
+PERSIST = ('import io from std;\ndatabase A { int id; str holder; float balance; }\n'
+           'int main() { load A from "/tmp/_p.tsv";\n'
+           '  list[A] have = A <- [id > 0]; print(str(len(have)));\n'
+           '  A <- [id = 1, holder = "a\\tb", balance = 1250.75];\n'
+           '  save A to "/tmp/_p.tsv"; return 0; }')
+import os
+if os.path.exists("/tmp/_p.tsv"): os.unlink("/tmp/_p.tsv")
+compile_run("persist_first_run_empty", PERSIST, "0")
+compile_run("persist_second_run_loads", PERSIST, "1")
+test("persist_unknown_table_is_e004",
+     'int main() { save Ghost to "/tmp/x"; return 0; }', "E004")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

@@ -11,7 +11,7 @@ from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
-    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
@@ -215,6 +215,7 @@ int main(int argc, char** argv) {
             self._gen_struct(decl.name, decl.fields)
             self.schemas[decl.name] = [f.name for f in decl.fields]
             self._gen_table_storage(decl.name)
+            self._gen_table_io(decl.name, decl.fields)
         elif isinstance(decl, ProtocolDecl):
             self._gen_struct(decl.name, decl.fields)
         elif isinstance(decl, ModelDecl):
@@ -233,6 +234,56 @@ int main(int argc, char** argv) {
         Emitted after the struct so the row type is complete."""
         self.emit_raw(f"static {name}* {name}__rows[STRATA_TABLE_CAP];")
         self.emit_raw(f"static strata_int {name}__count = 0;")
+
+    def _gen_table_io(self, name, fields):
+        """Serialisers generated from the schema.
+
+        Field order is the declaration order, which is also the contract: a
+        file written by one schema is not readable by another.
+        """
+        self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
+        self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
+        self.emit_raw(f"    for (strata_int i = 0; i < {name}__count; i++) {{")
+        self.emit_raw(f"        {name}* r = {name}__rows[i];")
+        for i, fd in enumerate(fields):
+            sep = "" if i == 0 else '        fputc(0x09, f);\n'
+            ct = self._c_type(fd.field_type)
+            if i:
+                self.emit_raw("        fputc(0x09, f);")
+            if ct == "strata_str":
+                self.emit_raw(f"        strata_write_escaped(f, r->{fd.name});")
+            elif ct == "strata_float":
+                self.emit_raw(f'        fprintf(f, "%.17g", r->{fd.name});')
+            else:
+                self.emit_raw(f'        fprintf(f, "%lld", (long long)r->{fd.name});')
+        self.emit_raw('        fputc(0x0a, f);')
+        self.emit_raw("    }")
+        self.emit_raw("    fclose(f); return 1;")
+        self.emit_raw("}")
+
+        self.emit_raw(f"static strata_int {name}__load(strata_str path) {{")
+        self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
+        self.emit_raw("    char buf[4096]; int more;")
+        self.emit_raw(f"    {name}__count = 0;")
+        self.emit_raw("    while (1) {")
+        self.emit_raw(f"        {name}* r = ({name}*)calloc(1, sizeof({name}));")
+        self.emit_raw("        more = strata_read_field(f, buf, 4096);")
+        self.emit_raw("        if (more < 0) { free(r); break; }")
+        for i, fd in enumerate(fields):
+            if i:
+                self.emit_raw("        strata_read_field(f, buf, 4096);")
+            ct = self._c_type(fd.field_type)
+            if ct == "strata_str":
+                self.emit_raw(f"        r->{fd.name} = strata_dup(buf);")
+            elif ct == "strata_float":
+                self.emit_raw(f"        r->{fd.name} = strtod(buf, NULL);")
+            else:
+                self.emit_raw(f"        r->{fd.name} = (strata_int)atoll(buf);")
+        self.emit_raw(f"        if ({name}__count < STRATA_TABLE_CAP) "
+                      f"{name}__rows[{name}__count++] = r;")
+        self.emit_raw("    }")
+        self.emit_raw("    fclose(f); return 1;")
+        self.emit_raw("}")
 
     def _gen_struct(self, name, fields):
         self.emit_raw(f"\nstruct {name} {{")
@@ -450,6 +501,9 @@ int main(int argc, char** argv) {
         elif isinstance(stmt, PrintStmt):
             val = self._gen_expr(stmt.value, param_names)
             self.emit(f'printf("%s\\n",(strata_str)({val}));')
+        elif isinstance(stmt, TableIOStmt):
+            fn = "__save" if stmt.op == "save" else "__load"
+            self.emit(f'{stmt.table}{fn}("{stmt.path}");')
         elif isinstance(stmt, RenderStmt):
             self.emit(f'{{ FILE* _f=fopen("{stmt.path}","w"); if(_f){{ '
                       f'{stmt.report}_render(_f); fclose(_f); }} }}')

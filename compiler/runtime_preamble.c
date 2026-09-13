@@ -177,3 +177,44 @@ static double* strata_tensor_add(double* a, double* b, strata_int n) {
     for (strata_int i = 0; i < n; i++) r[i] = a[i] + b[i];
     return r;
 }
+
+/* ── Table persistence ────────────────────────────────────────────────────
+   Rows are written as tab-separated text, one per line, with tabs, newlines
+   and backslashes escaped in string fields. Text rather than a binary format
+   so a table is inspectable with the tools everyone already has, and readable
+   by something that is not this compiler.
+
+   There is no schema version, no migration and no locking. A file written by
+   one schema and read by another will mis-parse; two writers will corrupt it.
+   Suitable for a single process keeping state across restarts. */
+static void strata_write_escaped(FILE* f, strata_str s) {
+    if (!s) return;
+    for (const char* p = s; *p; p++) {
+        if (*p == '\\') fputs("\\\\", f);
+        else if (*p == '\t') fputs("\\t", f);
+        else if (*p == '\n') fputs("\\n", f);
+        else fputc(*p, f);
+    }
+}
+
+/* Reads one escaped field up to a tab or newline. Returns 0 at end of line. */
+static int strata_read_field(FILE* f, char* buf, int cap) {
+    int n = 0, c;
+    while ((c = fgetc(f)) != EOF && c != '\t' && c != '\n') {
+        if (c == '\\') {
+            int e = fgetc(f);
+            if (e == 't') c = '\t';
+            else if (e == 'n') c = '\n';
+            else if (e == '\\') c = '\\';
+            else c = e;
+        }
+        if (n < cap - 1) buf[n++] = (char)c;
+    }
+    buf[n] = '\0';
+    if (c == EOF && n == 0) return -1;
+    return c == '\n' ? 0 : 1;
+}
+static strata_str strata_dup(const char* s) {
+    size_t n = strlen(s); char* r = (char*)malloc(n + 1);
+    memcpy(r, s, n + 1); return r;
+}

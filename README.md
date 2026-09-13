@@ -202,6 +202,35 @@ untrained model predicts zeros rather than garbage. This is enough for a linear
 model to run and for the shape contract to mean something; it is not a machine
 learning framework and is not meant to be read as one.
 
+### Persistence
+
+Tables are written as tab-separated text, with serialisers generated from the
+schema:
+
+```text
+import io from std;
+database Account { int id; str holder; float balance; }
+
+int main() {
+    load Account from "accounts.tsv";
+    list[Account] existing = Account <- [id > 0];
+    print(str(len(existing)));
+
+    Account <- [id = 1, holder = "alpha", balance = 1250.75];
+    save Account to "accounts.tsv";
+    return 0;
+}
+```
+
+Text rather than a binary format, so a table is inspectable with the tools
+everyone already has. Tabs, newlines and backslashes in string fields are
+escaped.
+
+What this is not: there is no schema versioning, no migration, no locking, no
+index and no transaction. A file written under one schema will mis-parse under
+another, and two writers will corrupt it. It is enough for one process to keep
+state across restarts.
+
 ### Calling existing C libraries
 
 A `foreign` block declares what a library provides. The signatures are
@@ -436,7 +465,7 @@ what runs and what is planned is unambiguous.
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
 | `verify` blocks | **Parsed, checked and emitted** as a function a test driver can call, including nested `assert "label" { ... }` groups. No driver runs them automatically yet. |
-| Database persistence | In-memory tables only. `database` blocks get fixed-capacity storage, inserts append and queries filter — enough for the contract to be observable end to end. No disk, no index, no transactions, no SQL backend. |
+| Database persistence | **`save` / `load` to tab-separated text.** Serialisers are generated from the schema, so a table survives a restart and the file is readable by anything. No schema versioning, no migrations, no locking, no index, no transactions, no SQL backend. A file written by one schema will mis-parse under another, and two writers will corrupt it. |
 | `model` / `predict` execution | **One dense layer.** `predict` computes output = input x W + b with weights loaded from a text file. No hidden layers, no activations, no training, no accelerator, and no framework interop. Enough for a linear model and for the E006 contract to hold end to end. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
 | Virtual Event Fibers | Design only. No scheduler exists. |

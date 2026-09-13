@@ -1,46 +1,31 @@
-feat(lang): every example compiles — 19 of 19
+feat(runtime): table persistence — save and load
 
-The examples went from 11 of 19 to all of them. Four were blocked by
-missing language features, three contained genuine errors the compiler
-was right to reject, and one had been corrupted in the repository.
+Tables survived only as long as the process. `save T to "p";` and
+`load T from "p";` write and read rows as tab-separated text, with
+serialisers generated per table from its schema. Verified across two
+runs of the same binary: the first finds nothing and writes two rows, the
+second reads them back.
 
-Language features added, each in both implementations:
+Text rather than a binary format, so a table is inspectable with the
+tools everyone already has and readable by something that is not this
+compiler. Tabs, newlines and backslashes inside string fields are
+escaped, and a literal tab inside a value round-trips.
 
-  - Declaration without an initialiser. `int n;` zeroes rather than
-    leaving whatever was on the stack; a pointer becomes NULL, which the
-    runtime already treats as empty.
-  - Top-level `verify` blocks and nested `assert "label" { ... }` groups.
-    A verify body is ordinary statements, not only assertions — a test
-    sets up data and calls something before asserting anything. They emit
-    as a function a test driver can call, after the functions they call,
-    since emitting them with the declarations turned those calls into
-    implicit declarations that conflicted with the real definitions.
-  - Querying into a record rather than a list yields the first matching
-    row, or none.
-  - current_message() for stream handlers. There is no transport — no
-    broker, no socket, no scheduler — so a host sets the message and it
-    is empty otherwise. Empty is the honest default; invented traffic
-    would make a handler look like it worked when nothing was connected.
-  - strata_tensor_add for element-wise addition, as plain scalar loops.
-    The C backend may vectorise them; Strata emits no SIMD intrinsics and
-    the example no longer says it does.
+Stated in the README rather than left to be discovered: no schema
+versioning, no migration, no locking, no index, no transactions. Field
+order is the declaration order and that is the contract — a file written
+under one schema will mis-parse under another, and two writers will
+corrupt it. This is enough for one process to keep state across
+restarts, and is not a database.
 
-Field access on a list is now E003 naming the row, instead of reaching
-the C compiler as a pointer error in generated code.
+`save` and `load` are contextual, so neither word is taken from user
+code. A save or load naming a table that was never declared is E004.
 
-Three examples were wrong in the way README section 4.1 was wrong —
-assigning a tensor to a float and passing a list where a row was
-expected. They now use the tensor API. examples/simd_matrix_multiply.sta
-had 45 lines of shell script written into it by an earlier session; the
-heredoc is removed.
+Noted while testing: a query is only parsed in declaration position, so
+`len(A <- [id > 0])` does not parse and needs a binding first. Worth
+fixing, but it is a parser limitation rather than a runtime one.
 
-A scoping bug in the port: a nested assert group parented its scope to
-the globals rather than the enclosing block, so a variable declared in
-the verify body read as undefined inside the group. The type checker
-differential caught it — the oracle reported nothing and the Strata
-implementation reported E001.
-
-Conformance 94; all ten suites green; fixpoint holds.
+Conformance 97; all ten suites green; fixpoint holds.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C
