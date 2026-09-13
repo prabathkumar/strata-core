@@ -23,7 +23,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-STRATA_LEXER_SRC = os.path.join(ROOT, "compiler", "lexer.sta")
+STRATA_LEXER_SRC = os.path.join(ROOT, "compiler", "lexer_cli.sta")
 STRATA_LEXER_BIN = os.path.join(ROOT, "build", "strata-lexer-sta")
 
 

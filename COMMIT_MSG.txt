@@ -1,34 +1,21 @@
-feat(phase3): lexer.sta — the Strata lexer, written in Strata
+fix(ci): stdlib parse check was broken by YAML indentation; untrack build output
 
-Stage 1 of self-hosting. compiler/lexer.sta is written entirely within the
-frozen seed subset and produces token streams byte-identical to
-compiler/lexer.py across the corpus: 32 files covering std/, examples/
-and test_suite/, plus its own 3,617-token source.
+CI has been failing since b97a418. The "Verify Standard Library Parses"
+step embedded a Python one-liner inside a YAML block scalar, so every line
+of that program carried the block's indentation and Python raised
+IndentationError before reading a single module. The step reported that
+the standard library did not parse; the standard library was fine.
 
-The method is differential testing, not inspection. test_suite/lexer_diff.py
-treats the Python lexer as the oracle and compares canonical dumps
-(KIND<TAB>value<TAB>line<TAB>col, with escapes so a token never spans
-lines), reporting the first divergent token rather than a wall of diff.
-Nothing here was accepted because it looked right; every file is compared
-byte for byte, and CI now runs it on every push.
+The check now lives in test_suite/stdlib_parses.py and the workflow calls
+it. That is the actual fix: a CI step that cannot be run locally, exactly
+as CI runs it, is a step that fails for reasons unrelated to what it
+claims to test. Every step in the workflow is now a script or a short
+guard that can be executed by hand.
 
-The previous compiler/lexer.sta was 92 lines of token-kind constants and
-two functions — a lexer that could not be written, because the language
-had no loops, no mutation and no indexing. Phase 1 supplied those and
-Phase 2 confirmed the rest: records constructed through native
-constructors, a growable token array as a record holding ptr/len/cap, and
-StringBuilder for assembling output.
-
-27 of 419 lines (6%) are native blocks, all of them allocation
-primitives: malloc/realloc for the token vector, the Lex state record,
-Token construction and single-character strings. Scanning, keyword
-lookup, the operator table, comment handling, string-escape decoding and
-number/identifier accumulation are ordinary Strata. This matters because
-a self-hosted compiler that turned out to be C wearing a Strata coat
-would not be self-hosted in any sense worth announcing.
-
-Remaining for self-hosting: parser.sta, typechecker.sta, codegen.sta,
-then the stage1/stage2 fixpoint.
+Also untracks build/strata-lexer-sta and adds build/ and *.o to
+.gitignore. A compiled binary had started accumulating in version
+control, which is how bin/strata-stage1 — a committed macOS Mach-O that
+could not run in CI — came to exist in the first place.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

@@ -1,0 +1,28 @@
+// STRATA COMPILER — compiler/lexer_cli.sta
+// Command-line driver for the Strata-written lexer. Kept separate so that
+// compiler/lexer.sta stays a library other compiler stages can import.
+
+import io  from std;
+import str from std;
+import lexer from compiler;
+
+int main() {
+    str path = arg_at(1);
+    str source = file_read(path);
+    TokVec toks = tokenise(source);
+
+    int n = toks.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Token t = vec_get(&toks, i);
+        StringBuilder line = sb_new();
+        sb_append(&line, kind_name(t.kind));
+        sb_append(&line, char_str(9));
+        sb_append(&line, escape_value(t.value));
+        sb_append(&line, char_str(9));
+        sb_append(&line, str(t.line));
+        sb_append(&line, char_str(9));
+        sb_append(&line, str(t.col));
+        print(sb_to_str(&line));
+    }
+    return 0;
+}

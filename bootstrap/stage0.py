@@ -510,17 +510,20 @@ int main(int argc, char** argv) {
         star = "*" if (p.borrow and not ct.endswith("*")) else ""
         return f"{ct}{star} {p.name}"
 
-STDLIB_SOURCES = ("std",)
+# Import sources backed by a directory in the project tree. `std` is the
+# bundled standard library; `compiler` lets the self-hosting sources import one
+# another. Anything else (hub, python_engine, ...) is an external registry with
+# no local checkout.
+LOCAL_SOURCES = ("std", "compiler")
 
 def _resolve_module(imp, search_root):
     """Map an ImportDecl onto a .sta file path, or None if not locally resolvable.
 
-    `import core.io from std;` -> <root>/std/io.sta
-    `import io from std;`      -> <root>/std/io.sta
-    Sources other than the bundled stdlib (hub, python_engine, ...) are external
-    registries with no local checkout, so they resolve to None.
+    `import core.io from std;`   -> <root>/std/io.sta
+    `import io from std;`        -> <root>/std/io.sta
+    `import lexer from compiler;`-> <root>/compiler/lexer.sta
     """
-    if imp.source not in STDLIB_SOURCES:
+    if imp.source not in LOCAL_SOURCES:
         return None
     leaf = imp.name.split(".")[-1]
     nested = os.path.join(search_root, imp.source, *imp.name.split("."))
