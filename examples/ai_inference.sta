@@ -4,6 +4,7 @@
 // ==============================================================================
 
 import security_audit from hub;
+import core.io from std;
 
 // 1. NATIVE AI MODEL TOPOLOGY DECLARATION
 // Declares model input/output dimension contracts directly in the language grammar.

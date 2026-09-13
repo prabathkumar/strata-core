@@ -111,6 +111,15 @@ class QueryExpr(Node):
                                "condition":self.condition.to_dict()}
 
 @dataclass
+class InsertStmt(Node):
+    """`Table <- [col = expr, ...];` — the write form of the <- operator."""
+    target: str
+    assignments: List[Any]   # list of (column_name, expr)
+    def to_dict(self): return {"node":"InsertStmt","target":self.target,
+                               "assignments":[{"column":c,"value":v.to_dict()}
+                                              for c,v in self.assignments]}
+
+@dataclass
 class ListLiteral(Node):
     elements: List[Any]
     def to_dict(self): return {"node":"ListLiteral","elements":[e.to_dict() for e in self.elements]}
@@ -322,6 +331,23 @@ class Parser:
             parts.append(self._consume_name().value)
         return ".".join(parts)
 
+    def _parse_insert(self) -> InsertStmt:
+        t = self._consume(TT.IDENT)
+        self._consume(TT.ARROW_L)
+        self._consume(TT.L_BRACKET)
+        assignments = []
+        while not self._check(TT.R_BRACKET):
+            col = self._consume_name().value
+            self._consume(TT.ASSIGN)
+            assignments.append((col, self._parse_expr()))
+            if self._check(TT.COMMA):
+                self._advance()
+            else:
+                break
+        self._consume(TT.R_BRACKET)
+        self._consume(TT.SEMICOLON)
+        return InsertStmt(t.line, t.col, t.value, assignments)
+
     # ── Database ──────────────────────────────────────────────────────────────
 
     def _parse_database(self) -> DatabaseDecl:
@@ -474,6 +500,11 @@ class Parser:
             if self._check(TT.SEMICOLON): self._advance()
             return ExprStmt(t2.line,t2.col,CallExpr(t2.line,t2.col,'native',[StrLiteral(val.line,val.col,val.value)]))
 
+        # `Table <- [...]` in statement position is an insert, distinct from
+        # the query expression form `list[T] x = Table <- [col == v];`
+        if self._check(TT.IDENT) and self._peek_at(1).type == TT.ARROW_L:
+            return self._parse_insert()
+
         if self._check(TT.KW_RETURN):
             return self._parse_return()
 
@@ -485,14 +516,6 @@ class Parser:
             cond = self._parse_expr()
             self._consume(TT.SEMICOLON)
             return AssertStmt(t.line, t.col, cond)
-
-        if self._check(TT.KW_PRINT):
-            self._advance()
-            self._consume(TT.L_PAREN)
-            val = self._parse_expr()
-            self._consume(TT.R_PAREN)
-            self._consume(TT.SEMICOLON)
-            return PrintStmt(t.line, t.col, val)
 
         if self._check(TT.KW_RENDER):
             return self._parse_render()

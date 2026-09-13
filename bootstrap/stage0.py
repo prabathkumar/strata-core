@@ -10,7 +10,7 @@ from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
 from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
-    FunctionDecl, ImportDecl, FieldDecl, Param,
+    FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
@@ -233,6 +233,9 @@ int main(int argc, char** argv) {
         if param_names is None: param_names = []
 
         # Handle native blocks — CallExpr with callee="native"
+        if isinstance(stmt, InsertStmt):
+            self._gen_insert(stmt, param_names); return
+
         if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, CallExpr):
             if stmt.expr.callee == "native":
                 if stmt.expr.args and isinstance(stmt.expr.args[0], StrLiteral):
@@ -291,6 +294,21 @@ int main(int argc, char** argv) {
             val = self._gen_expr(stmt.value, param_names)
             self.emit(f"{ctype} {name} = {val};")
         self.var_types[name] = ctype
+
+    def _gen_insert(self, stmt, param_names):
+        cols = self.schemas.get(stmt.target)
+        if cols is None:
+            print(f"[E004] Unknown database '{stmt.target}' (line {stmt.line})",
+                  file=sys.stderr)
+            sys.exit(1)
+        for col, _ in stmt.assignments:
+            if col not in cols:
+                print(f"[E004] Column '{col}' does not exist in '{stmt.target}' "
+                      f"(line {stmt.line})\nHint: Valid columns: {cols}", file=sys.stderr)
+                sys.exit(1)
+        vals = ", ".join(f"{c}={self._gen_expr(v, param_names)}"
+                         for c, v in stmt.assignments)
+        self.emit(f"/* insert into {stmt.target}: {vals} */")
 
     def _validate_query_columns(self, cond, schema, line):
         cols = self.schemas.get(schema, [])
@@ -433,9 +451,18 @@ def resolve_imports(ast, source_path, verbose=False):
     Returns (modules, unresolved) with modules in dependency order (deepest
     first) so a module's own dependencies are emitted before it.
     """
-    search_root = os.path.dirname(os.path.dirname(os.path.abspath(source_path)))
-    if not os.path.isdir(os.path.join(search_root, "std")):
-        search_root = os.path.dirname(os.path.abspath(source_path))
+    # The stdlib ships with the compiler, so its location must not depend on
+    # where the file being compiled happens to sit. Prefer the install root,
+    # then fall back to the source tree for an in-project override.
+    src_dir = os.path.dirname(os.path.abspath(source_path))
+    candidates = [
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # install root
+        os.path.dirname(src_dir),
+        src_dir,
+        os.getcwd(),
+    ]
+    search_root = next((c for c in candidates
+                        if os.path.isdir(os.path.join(c, "std"))), src_dir)
     modules, unresolved, seen = [], [], set()
 
     def walk(node_ast):
@@ -483,16 +510,23 @@ def compile_sta(source_path, output_path, target="native", verbose=False):
     cc = next((c for c in ("clang","gcc","cc")
                if subprocess.run(["which",c],capture_output=True).returncode==0), None)
     if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
+    # A unit with no main() is a library, not a program: link it as an object
+    # file rather than asking the linker for an entry point it cannot have.
+    is_library = not any(fn.name == "main" for fn in ast.functions)
     if target == "wasm":
         flags = [cc,"-O2","--target=wasm32","--no-standard-libraries",
                  "-Wl,--export-all","-Wl,--no-entry","-o",output_path,c_path]
+    elif is_library:
+        if not output_path.endswith(".o"):
+            output_path += ".o"
+        flags = [cc,"-O2","-c","-o",output_path,c_path]
     else:
         flags = [cc,"-O2","-o",output_path,c_path,"-lm"]
     if verbose: print(f"  CC: {' '.join(flags)}")
     r = subprocess.run(flags, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"[STRATA C ERROR]\n{r.stderr}", file=sys.stderr); sys.exit(1)
-    print(f"  Binary: {output_path}")
+    print(f"  {'Object' if is_library and target != 'wasm' else 'Binary'}: {output_path}")
     print(f"[Strata Stage 0] Done. OK")
 
 def parse_file(path):

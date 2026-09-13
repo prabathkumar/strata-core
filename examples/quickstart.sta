@@ -4,6 +4,7 @@
 // ==============================================================================
 
 import core_sys from hub;
+import core.io from std;
 
 // 1. DATA INFRASTRUCTURE SCHEMA
 // Declaring a rigid compile-time database model inside the language grammar.

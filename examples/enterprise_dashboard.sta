@@ -6,6 +6,7 @@
 
 import core_ui from hub;
 import telemetry_analytics from hub;
+import core.io from std;
 
 // 1. TYPED CORE FRONT-END STATE MODEL
 // Explicitly binds real-time data shapes straight from the system state layer

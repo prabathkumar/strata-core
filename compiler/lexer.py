@@ -36,7 +36,7 @@ KEYWORDS = {
     "render":TT.KW_RENDER,"layout":TT.KW_LAYOUT,"verify":TT.KW_VERIFY,
     "input":TT.KW_INPUT,"output":TT.KW_OUTPUT,"metrics":TT.KW_METRICS,
     "title":TT.KW_TITLE,"datasource":TT.KW_DATASRC,"to":TT.KW_TO,
-    "print":TT.KW_PRINT,"true":TT.KW_TRUE,"false":TT.KW_FALSE,
+    "true":TT.KW_TRUE,"false":TT.KW_FALSE,
 }
 
 @dataclass
@@ -103,6 +103,10 @@ class Lexer:
         }
         if ch in SINGLE:
             self._add(SINGLE[ch],ch,sl,sc); return
+        # Source-organisation directives (#region / #endregion) carry no
+        # semantics; they are skipped like a line comment.
+        if ch=='#':
+            self._line_comment(); return
         raise LexError(f"Unexpected character '{ch}'",sl,sc)
 
     def _line_comment(self):
