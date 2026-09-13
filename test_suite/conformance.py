@@ -135,6 +135,22 @@ compile_run("seed_growable_vector",
     'import io from std;\ndatabase IntVec { int ptr; int len; int cap; }\nIntVec vec_new() { native "IntVec* v=(IntVec*)malloc(sizeof(IntVec)); v->cap=2; v->len=0; v->ptr=(int64_t)(uintptr_t)malloc(2*sizeof(int64_t)); return v;"; }\ndef vec_push(IntVec &v, int x) { native "if($v->len>=$v->cap){ $v->cap*=2; $v->ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$v->ptr,$v->cap*sizeof(int64_t)); } ((int64_t*)(uintptr_t)$v->ptr)[$v->len]=$x; $v->len+=1;"; }\nint vec_get(IntVec &v, int i) { native "return ((int64_t*)(uintptr_t)$v->ptr)[$i];"; }\nint main() { IntVec v = vec_new(); for (int i = 0; i < 50; i = i + 1) { vec_push(&v, i * 2); } print(str(vec_get(&v, 49))); return 0; }',
     "98")
 
+print("\n── Cross-tier contract (layout) ──────────────────────────────────")
+LAYOUT_OK = ('database M { int id; str service_name; }\n'
+             'layout C() { window "x" { list[M] rows = M <- [id == 1];\n'
+             '  for R in rows { row { text R.service_name; } } } }')
+test("layout_valid", LAYOUT_OK)
+test("layout_renamed_column_breaks_ui",
+     LAYOUT_OK.replace("str service_name;", "str svc_name;"), "E004")
+test("layout_bad_query_column",
+     'database M { int id; str name; }\nlayout C() { window "x" { list[M] r = M <- [nope == 1]; } }', "E004")
+test("layout_for_in_non_list",
+     'layout C() { window "x" { int n = 5; for R in n { text "x"; } } }', "E003")
+test("layout_element_id_not_undefined",
+     'layout C() { window "x" { canvas topology_view [width = 500]; } }')
+test("layout_handler_reference",
+     'int on_click() { return 0; }\nlayout C() { window "x" { button "Go" [action = on_click]; } }')
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

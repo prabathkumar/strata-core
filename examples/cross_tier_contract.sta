@@ -1,0 +1,47 @@
+// STRATA — Cross-Tier Contract
+//
+// The argument for Strata existing as a language rather than a library.
+//
+// A column is declared once, queried in the middle tier, and rendered on
+// screen. Rename `service_name` in the database block below and the build
+// fails — pointing at the line of UI that used it, not at a runtime error in
+// front of a user.
+//
+// No shared-language stack does this. Blazor shares C# across tiers but the
+// schema contract still breaks at runtime. sqlx checks SQL at compile time but
+// nothing reaches the screen.
+
+database ServiceMetric {
+    int   id;
+    str   service_name;
+    float resource_utilization;
+    str   operational_status;
+}
+
+layout OperationsConsole() {
+
+    window "Service Health" [width = 1200, height = 800] {
+
+        row [padding = 16, background = "#0c0c12"] {
+            text "OPERATIONS" [color = "#39ff14", weight = "bold", size = 16];
+        }
+
+        // The query is checked against the schema: a typo here is E004.
+        list[ServiceMetric] degraded = ServiceMetric <- [operational_status == "DEGRADED"];
+
+        column [padding = 20] {
+
+            // And so is every field rendered from the result. The loop
+            // variable carries the row type all the way to the screen.
+            for Row in degraded {
+                row [padding = 10, background = "#1c1c24"] {
+                    text Row.service_name [color = "#ffffff"];
+                    spacer;
+                    text str(Row.resource_utilization) [color = "#ff4a4a"];
+                }
+            }
+        }
+    }
+}
+
+int main() { return 0; }

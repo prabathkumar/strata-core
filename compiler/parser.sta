@@ -183,6 +183,10 @@ str node_name(int k) {
     if (k == 52) { return "StrLiteral"; }
     if (k == 53) { return "BoolLiteral"; }
     if (k == 54) { return "Identifier"; }
+    if (k == 70) { return "LayoutDecl"; }
+    if (k == 71) { return "Element"; }
+    if (k == 72) { return "Prop"; }
+    if (k == 73) { return "ForInStmt"; }
     return "Unknown";
 }
 
@@ -283,6 +287,19 @@ str node_json(Node n) {
         if (n.i1 == 0) { jfield(&sb, "value", "false"); }
     }
     if (k == 54) { jfield(&sb, "name", jstr(n.s1)); }
+    if (k == 70) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "body", jlist(n.v1)); }
+    if (k == 71) {
+        jfield(&sb, "tag", jstr(n.s1));
+        jfield(&sb, "label", jchild(n.c1));
+        jfield(&sb, "props", jlist(n.v1));
+        jfield(&sb, "children", jlist(n.v2));
+    }
+    if (k == 72) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "value", jchild(n.c1)); }
+    if (k == 73) {
+        jfield(&sb, "var", jstr(n.s1));
+        jfield(&sb, "collection", jchild(n.c1));
+        jfield(&sb, "body", jlist(n.v1));
+    }
 
     sb_append(&sb, "}");
     return sb_to_str(&sb);
@@ -310,10 +327,10 @@ str jassigns(int p) {
 
 // ── Parser state ─────────────────────────────────────────────────────────────
 
-database P { TokVec toks; int pos; }
+database P { TokVec toks; int pos; int no_index; }
 
 P p_new(TokVec t) {
-    native "P* _p=(P*)malloc(sizeof(P)); _p->toks=$t; _p->pos=0; return _p;";
+    native "P* _p=(P*)calloc(1,sizeof(P)); _p->toks=$t; _p->pos=0; return _p;";
 }
 
 Token p_peek(P &p, int off) { return vec_get(&p.toks, p.pos + off); }
@@ -1048,6 +1065,9 @@ Node parse_primary(P &p) {
     }
 
     while (p_check(&p, 59) + p_check(&p, 54) > 0) {
+        // Inside a layout element's label a '[' opens a property list, not an
+        // index, so the postfix chain must stop there.
+        if (p_check(&p, 54) == 1) { if (p.no_index == 1) { return expr; } }
         if (p_check(&p, 59) == 1) {
             p_advance(&p);
             Token member = p_expect(&p, 4);
@@ -1058,6 +1078,10 @@ Node parse_primary(P &p) {
             expr = m;
         }
         if (p_check(&p, 54) == 1) {
+            // Re-checked here, not only at the top of the loop: a member
+            // access consumed earlier in this same iteration would otherwise
+            // fall straight through into the index branch.
+            if (p.no_index == 1) { return expr; }
             p_advance(&p);
             Node idx = parse_expr(&p);
             p_expect(&p, 55);
@@ -1085,15 +1109,16 @@ Node parse_unit(P &p) {
         if (k == 26) { nv_push(&decls, parse_record(&p, 26, 4)); }
         if (k == 27) { nv_push(&decls, parse_model(&p)); }
         if (k == 29) { nv_push(&decls, parse_report(&p)); }
+        if (k == 31) { nv_push(&decls, parse_layout(&p)); }
         if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
         if (k == 25) { nv_push(&funcs, parse_function(&p, 2)); }
         if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
         if (is_type_kind(k) == 0) {
             if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
-                if (k != 23) { if (k != 25) {
+                if (k != 31) { if (k != 23) { if (k != 25) {
                     eprint("[STRATA PARSE ERROR] unexpected top-level token");
                     p_advance(&p);
-                } }
+                } } }
             } } } } }
         }
     }
@@ -1109,4 +1134,146 @@ Node parse_source(str source) {
     TokVec toks = tokenise(source);
     P p = p_new(toks);
     return parse_unit(&p);
+}
+
+// ── Layout blocks ────────────────────────────────────────────────────────────
+//
+// A layout body is a declarative element tree. Element tags are contextual
+// rather than reserved: an identifier in statement position is an element
+// unless it is being assigned, accessed, called or queried.
+
+int not_an_element(int k) {
+    if (k == 60) { return 1; }   // =
+    if (k == 59) { return 1; }   // .
+    if (k == 52) { return 1; }   // (
+    if (k == 76) { return 1; }   // <-
+    return 0;
+}
+
+Node parse_layout(P &p) {
+    Token t = p_expect(&p, 31);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 52); p_expect(&p, 53);
+    p_expect(&p, 50);
+    NodeVec body = parse_layout_body(&p);
+    p_expect(&p, 51);
+    Node n = node_new(70);
+    n.s1 = name.value;
+    n.v1 = nv_ptr(body);
+    n_pos(n, t);
+    return n;
+}
+
+NodeVec parse_layout_body(P &p) {
+    NodeVec out = nv_new();
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        nv_push(&out, parse_layout_stmt(&p));
+    }
+    return out;
+}
+
+Node parse_layout_stmt(P &p) {
+    Token t = p_peek(&p, 0);
+    if (t.kind == 4) {
+        if (not_an_element(p_kind(&p, 1)) == 0) { return parse_element(&p); }
+    }
+    if (p_check(&p, 42) == 1) { return parse_for_in(&p); }
+    if (p_check(&p, 17) == 1) { return parse_layout_if(&p); }
+    if (is_type_kind(t.kind) == 1) { return parse_var_decl(&p, 1); }
+    Node e = parse_expr(&p);
+    p_expect(&p, 56);
+    Node n = node_new(23);
+    n.c1 = node_ptr(e);
+    n_pos(n, t);
+    return n;
+}
+
+Node parse_element(P &p) {
+    Token t = p_advance(&p);
+    Node n = node_new(71);
+    n.s1 = t.value;
+    n_pos(n, t);
+    if (p_check(&p, 54) + p_check(&p, 50) + p_check(&p, 56) == 0) {
+        // `[` after a label opens properties, not an index.
+        p.no_index = 1;
+        Node label = parse_expr(&p);
+        p.no_index = 0;
+        n.c1 = node_ptr(label);
+    }
+    NodeVec props = nv_new();
+    if (p_check(&p, 54) == 1) { props = parse_props(&p); }
+    n.v1 = nv_ptr(props);
+    NodeVec children = nv_new();
+    if (p_check(&p, 50) == 1) {
+        p_advance(&p);
+        children = parse_layout_body(&p);
+        p_expect(&p, 51);
+    }
+    if (p_check(&p, 56) == 1) { p_advance(&p); }
+    n.v2 = nv_ptr(children);
+    return n;
+}
+
+NodeVec parse_props(P &p) {
+    p_expect(&p, 54);
+    NodeVec props = nv_new();
+    int more = 1;
+    while (more == 1) {
+        if (p_at_end(&p) == 1) { more = 0; }
+        if (p_check(&p, 55) == 1) { more = 0; }
+        if (more == 1) {
+            Token pt = p_advance(&p);
+            p_expect(&p, 60);
+            Node v = parse_expr(&p);
+            Node prop = node_new(72);
+            prop.s1 = pt.value;
+            prop.c1 = node_ptr(v);
+            n_pos(prop, pt);
+            nv_push(&props, prop);
+            int had_comma = p_check(&p, 58);
+            if (had_comma == 1) { p_advance(&p); }
+            if (had_comma == 0) { more = 0; }
+        }
+    }
+    p_expect(&p, 55);
+    return props;
+}
+
+Node parse_for_in(P &p) {
+    Token t = p_expect(&p, 42);
+    Token v = p_expect(&p, 4);
+    Token kw = p_advance(&p);                  // contextual `in`
+    Node coll = parse_expr(&p);
+    p_expect(&p, 50);
+    NodeVec body = parse_layout_body(&p);
+    p_expect(&p, 51);
+    Node n = node_new(73);
+    n.s1 = v.value;
+    n.c1 = node_ptr(coll);
+    n.v1 = nv_ptr(body);
+    n_pos(n, t);
+    return n;
+}
+
+Node parse_layout_if(P &p) {
+    Token t = p_expect(&p, 17);
+    p_expect(&p, 52);
+    Node cond = parse_expr(&p);
+    p_expect(&p, 53);
+    p_expect(&p, 50);
+    NodeVec then_block = parse_layout_body(&p);
+    p_expect(&p, 51);
+    Node n = node_new(22);
+    n.c1 = node_ptr(cond);
+    n.v1 = nv_ptr(then_block);
+    n_pos(n, t);
+    if (p_check(&p, 18) == 1) {
+        p_advance(&p);
+        p_expect(&p, 50);
+        NodeVec else_block = parse_layout_body(&p);
+        p_expect(&p, 51);
+        n.v2 = nv_ptr(else_block);
+    }
+    return n;
 }

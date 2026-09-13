@@ -234,6 +234,39 @@ possible, and it is also just a better developer experience.
 
 ---
 
+### The cross-tier contract
+
+A column is declared once, queried in the middle tier, and rendered on screen.
+Rename it in the `database` block and the build fails at the line of UI that
+used it.
+
+```text
+database ServiceMetric { int id; str service_name; str operational_status; }
+
+layout OperationsConsole() {
+    window "Service Health" [width = 1200] {
+        list[ServiceMetric] degraded = ServiceMetric <- [operational_status == "DEGRADED"];
+        for Row in degraded {
+            row [padding = 10] { text Row.service_name [color = "#ffffff"]; }
+        }
+    }
+}
+```
+
+Rename `service_name` to `svc_name` and:
+
+```
+[E004] Field 'service_name' not in 'ServiceMetric' (line 6, col 30)
+Hint: Valid fields: ['id', 'svc_name', 'operational_status']
+```
+
+Not a runtime 500 in front of a user — a build error, before anything ships.
+The loop variable carries the row type from the query to the screen, which is
+what a library cannot do and a compiler can. Layouts are checked today; they do
+not render yet (see [Roadmap](#roadmap)).
+
+---
+
 ## 5. Where this is going
 
 **Everything in this section is direction, not shipped behaviour.** It is here so
@@ -302,7 +335,7 @@ what runs and what is planned is unambiguous.
 |------|--------|
 | Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
 | Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
-| `layout` blocks and the UI tier | Specified in the grammar, not implemented. |
+| `layout` blocks and the UI tier | **Contract checking done.** A field rendered in a `layout` resolves against the database schema at build time, so renaming a column fails the build at the UI line. Rendering is not implemented — layouts type-check but emit no output yet. |
 | WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |

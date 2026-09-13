@@ -284,6 +284,42 @@ class ReportDecl(Node):
                                "metrics":[m.to_dict() for m in self.metrics]}
 
 @dataclass
+class LayoutDecl(Node):
+    name: str
+    body: List[Any]
+    def to_dict(self): return {"node":"LayoutDecl","name":self.name,
+                               "body":[b.to_dict() for b in self.body]}
+
+@dataclass
+class Element(Node):
+    """A layout element: `tag "label" [props] { children }`."""
+    tag: str
+    label: Any               # expression, or None
+    props: List[Any]
+    children: List[Any]
+    def to_dict(self): return {"node":"Element","tag":self.tag,
+                               "label":self.label.to_dict() if self.label else None,
+                               "props":[p.to_dict() for p in self.props],
+                               "children":[c.to_dict() for c in self.children]}
+
+@dataclass
+class Prop(Node):
+    name: str
+    value: Any
+    def to_dict(self): return {"node":"Prop","name":self.name,
+                               "value":self.value.to_dict()}
+
+@dataclass
+class ForInStmt(Node):
+    """`for item in collection { ... }` — iteration over query results."""
+    var: str
+    collection: Any
+    body: List[Any]
+    def to_dict(self): return {"node":"ForInStmt","var":self.var,
+                               "collection":self.collection.to_dict(),
+                               "body":[s.to_dict() for s in self.body]}
+
+@dataclass
 class Param(Node):
     param_type: Any
     name: str
@@ -324,6 +360,11 @@ class ParseError(Exception):
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 class Parser:
+    # Inside a layout element's label, `[` opens a property list, not an
+    # index. `canvas view [width = 500]` would otherwise parse the props as a
+    # subscript and fail at the '='.
+    _no_index = False
+
     def __init__(self, tokens: List[Token]):
         self.tokens = [t for t in tokens if t.type != TT.EOF]
         self.tokens.append(Token(TT.EOF, "", 0, 0))
@@ -346,6 +387,8 @@ class Parser:
                 declarations.append(self._parse_model())
             elif self._check(TT.KW_REPORT):
                 declarations.append(self._parse_report())
+            elif self._check(TT.KW_LAYOUT):
+                declarations.append(self._parse_layout())
             elif self._check(TT.KW_DEF):
                 functions.append(self._parse_function(kind="def"))
             elif self._check(TT.KW_STREAM):
@@ -449,6 +492,104 @@ class Parser:
         return TensorType(t.line, t.col, dtype, rows, cols)
 
     # ── Report ────────────────────────────────────────────────────────────────
+
+    # Element tags are contextual, not reserved: a variable may still be called
+    # `row` or `text` outside a layout block. Rather than fixing a tag list —
+    # which would make every new widget a compiler change — an identifier in
+    # statement position is an element unless it is being assigned, accessed,
+    # called or queried.
+    NOT_AN_ELEMENT = (TT.ASSIGN, TT.DOT, TT.L_PAREN, TT.ARROW_L)
+
+    def _parse_layout(self) -> LayoutDecl:
+        t = self._consume(TT.KW_LAYOUT)
+        name = self._consume(TT.IDENT).value
+        self._consume(TT.L_PAREN); self._consume(TT.R_PAREN)
+        self._consume(TT.L_BRACE)
+        body = self._parse_layout_body()
+        self._consume(TT.R_BRACE)
+        return LayoutDecl(t.line, t.col, name, body)
+
+    def _parse_layout_body(self) -> List[Any]:
+        out = []
+        while not self._check(TT.R_BRACE) and not self._at_end():
+            out.append(self._parse_layout_stmt())
+        return out
+
+    def _parse_layout_stmt(self) -> Any:
+        t = self._peek()
+        if t.type == TT.IDENT and self._peek_at(1).type not in self.NOT_AN_ELEMENT:
+            return self._parse_element()
+        if self._check(TT.KW_FOR):
+            return self._parse_for_in()
+        if self._check(TT.KW_IF):
+            return self._parse_layout_if()
+        if self._is_type_token():
+            return self._parse_var_decl()
+        expr = self._parse_expr(); self._consume(TT.SEMICOLON)
+        return ExprStmt(t.line, t.col, expr)
+
+    def _parse_element(self) -> Element:
+        t = self._advance()
+        tag = t.value
+        label = None
+        if not self._check(TT.L_BRACKET) and not self._check(TT.L_BRACE) \
+           and not self._check(TT.SEMICOLON):
+            self._no_index = True
+            try:
+                label = self._parse_expr()
+            finally:
+                self._no_index = False
+        props = self._parse_props() if self._check(TT.L_BRACKET) else []
+        children = []
+        if self._check(TT.L_BRACE):
+            self._advance()
+            children = self._parse_layout_body()
+            self._consume(TT.R_BRACE)
+        elif self._check(TT.SEMICOLON):
+            self._advance()
+        return Element(t.line, t.col, tag, label, props, children)
+
+    def _parse_props(self) -> List[Prop]:
+        self._consume(TT.L_BRACKET)
+        props = []
+        while not self._check(TT.R_BRACKET) and not self._at_end():
+            pt = self._peek()
+            name = self._advance().value
+            self._consume(TT.ASSIGN)
+            props.append(Prop(pt.line, pt.col, name, self._parse_expr()))
+            if self._check(TT.COMMA):
+                self._advance()
+            else:
+                break
+        self._consume(TT.R_BRACKET)
+        return props
+
+    def _parse_for_in(self) -> ForInStmt:
+        t = self._consume(TT.KW_FOR)
+        var = self._consume(TT.IDENT).value
+        kw = self._advance()            # contextual `in`
+        if kw.value != "in":
+            raise ParseError(f"Expected 'in' in for-loop, got '{kw.value}'", kw.line, kw.col)
+        collection = self._parse_expr()
+        self._consume(TT.L_BRACE)
+        body = self._parse_layout_body()
+        self._consume(TT.R_BRACE)
+        return ForInStmt(t.line, t.col, var, collection, body)
+
+    def _parse_layout_if(self) -> IfStmt:
+        t = self._consume(TT.KW_IF)
+        self._consume(TT.L_PAREN)
+        cond = self._parse_expr()
+        self._consume(TT.R_PAREN)
+        self._consume(TT.L_BRACE)
+        then_block = self._parse_layout_body()
+        self._consume(TT.R_BRACE)
+        else_block = None
+        if self._check(TT.KW_ELSE):
+            self._advance(); self._consume(TT.L_BRACE)
+            else_block = self._parse_layout_body()
+            self._consume(TT.R_BRACE)
+        return IfStmt(t.line, t.col, cond, then_block, else_block)
 
     def _parse_report(self) -> ReportDecl:
         t = self._consume(TT.KW_REPORT)
@@ -840,6 +981,8 @@ class Parser:
                     member = self._consume(TT.IDENT).value
                     expr = MemberAccess(t.line, t.col, expr, member)
                 else:
+                    if self._no_index:
+                        break
                     self._advance()
                     idx = self._parse_expr()
                     self._consume(TT.R_BRACKET)

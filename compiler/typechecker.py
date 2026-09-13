@@ -17,6 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
+    LayoutDecl, Element, Prop, ForInStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -83,6 +84,14 @@ class TypeChecker:
     def check(self):
         self._register_declarations()
         self._register_functions()
+        # Reports and layouts are checked after functions are registered:
+        # either may be declared before the database it draws from, and a
+        # layout may reference a handler defined further down the file.
+        for d in self.ast.declarations:
+            if isinstance(d, ReportDecl):
+                self._check_report(d)
+            elif isinstance(d, LayoutDecl):
+                self._check_layout(d)
         self._check_functions()
         return self.errors
 
@@ -99,11 +108,7 @@ class TypeChecker:
                 self.global_scope.define(d.name, SType(d.name))
             elif isinstance(d, ReportDecl):
                 self.global_scope.define(d.name, SType(d.name))
-        # Reports are validated in a second pass: a report may be declared
-        # before the database it draws from.
-        for d in self.ast.declarations:
-            if isinstance(d, ReportDecl):
-                self._check_report(d)
+
 
     def _register_functions(self):
         for fn in self.ast.functions:
@@ -124,6 +129,36 @@ class TypeChecker:
 
     def _check_body(self,stmts,scope):
         for s in stmts: self._check_stmt(s,scope)
+
+    def _check_element(self,stmt,scope):
+        # A bare identifier after a tag — `canvas topology_view [...]` — names
+        # the element rather than referring to a value. It is only treated as
+        # an expression when it actually resolves, so that `text username` is
+        # still checked while an element id is not reported as undefined.
+        label = stmt.label
+        if label is not None:
+            bare_name = isinstance(label, Identifier) and not scope.lookup(label.name)
+            if not bare_name:
+                self._infer_type(label,scope)
+        for p in stmt.props: self._infer_type(p.value,scope)
+        inner=Scope(scope)
+        for c in stmt.children: self._check_stmt(c,inner)
+
+    def _check_for_in(self,stmt,scope):
+        """Bind the loop variable to the collection's element type.
+
+        Without this the loop body cannot resolve `item.column`, and the
+        cross-tier guarantee would stop at the query.
+        """
+        ct=self._infer_type(stmt.collection,scope)
+        inner=Scope(scope)
+        if ct is not None and ct.is_list and ct.element_type is not None:
+            inner.define(stmt.var, ct.element_type)
+        else:
+            if ct is not None:
+                self._error("E003",f"'{stmt.var}' iterates '{ct}', which is not a list",
+                    stmt.line,stmt.col,"Iterate a list[T], such as a query result")
+        for st in stmt.body: self._check_stmt(st,inner)
 
     def _check_insert(self,stmt,scope):
         """`Table <- [col = expr, ...]` — validate target and every column."""
@@ -155,6 +190,17 @@ class TypeChecker:
                 f"Type mismatch: '{name}' is '{target}' but assigned '{value}'",
                 stmt.line,stmt.col,
                 f"Assign a value of type '{target}'")
+
+    def _check_layout(self,decl):
+        """A layout is checked like any other body.
+
+        This is the point of the language: a field rendered on screen is
+        resolved against the database schema at build time, so renaming a
+        column fails the build at the line of UI that used it rather than at
+        runtime in front of a user.
+        """
+        scope=Scope(self.global_scope)
+        for st in decl.body: self._check_stmt(st,scope)
 
     def _check_report(self,decl):
         """A report's datasource is a query and gets the same E004 treatment.
@@ -190,6 +236,8 @@ class TypeChecker:
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
         elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
+        elif isinstance(stmt,Element): self._check_element(stmt,scope)
+        elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)
         elif isinstance(stmt,VerifyBlock):
             for a in stmt.assertions: self._infer_type(a.condition,scope)
@@ -243,6 +291,11 @@ class TypeChecker:
         if isinstance(expr,BoolLiteral): return T_BOOL
         if isinstance(expr,Identifier):
             t=scope.lookup(expr.name)
+            if t is None and expr.name in self.functions:
+                # A bare function name is a reference, not a call — an event
+                # handler passed to a layout element, for instance. Its type is
+                # not yet expressible, but it is certainly not undefined.
+                return None
             if t is None:
                 self._error("E001",f"Undefined identifier '{expr.name}'",
                     expr.line,expr.col,f"Declare '{expr.name}' before use")
