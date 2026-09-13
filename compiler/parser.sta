@@ -1,0 +1,629 @@
+// STRATA COMPILER — compiler/parser.sta
+// Full Strata Parser written IN Strata
+// Compiled by Stage 0 → produces strata-parser binary
+
+import io  from std;
+import mem from std;
+import str from std;
+
+// AST Node Type IDs
+int AST_INT_LIT=1; int AST_FLOAT_LIT=2; int AST_STR_LIT=3; int AST_BOOL_LIT=4;
+int AST_IDENT=5; int AST_BINARY=6; int AST_UNARY=7; int AST_CALL=8;
+int AST_BORROW=9; int AST_CAST=10; int AST_PREDICT=11; int AST_QUERY=12;
+int AST_LIST_LIT=13; int AST_MEMBER=14; int AST_VAR_DECL=15; int AST_RETURN=16;
+int AST_IF=17; int AST_PRINT=18; int AST_ASSERT=19; int AST_EXPR_STMT=20;
+int AST_VERIFY=21; int AST_RENDER=22; int AST_IMPORT=30; int AST_FIELD=31;
+int AST_DATABASE=32; int AST_PROTOCOL=33; int AST_MODEL=34; int AST_REPORT=35;
+int AST_FUNCTION=36; int AST_PARAM=37; int AST_COMPILE_UNIT=38;
+int AST_TYPE_PRIM=50; int AST_TYPE_LIST=51; int AST_TYPE_TENSOR=52;
+
+// Token IDs
+int TK_INT_LIT=1; int TK_FLOAT_LIT=2; int TK_STR_LIT=3; int TK_IDENT=4;
+int TK_KW_INT=10; int TK_KW_FLOAT=11; int TK_KW_STR=12; int TK_KW_VOID=13;
+int TK_KW_LIST=14; int TK_KW_TENSOR=15; int TK_KW_BOOL=16;
+int TK_KW_IF=20; int TK_KW_ELSE=21; int TK_KW_RETURN=22; int TK_KW_ASSERT=23;
+int TK_KW_IMPORT=24; int TK_KW_FROM=25; int TK_KW_DEF=26;
+int TK_KW_DATABASE=30; int TK_KW_STREAM=31; int TK_KW_PROTO=32;
+int TK_KW_MODEL=33; int TK_KW_PREDICT=34; int TK_KW_REPORT=35;
+int TK_KW_RENDER=36; int TK_KW_LAYOUT=37; int TK_KW_VERIFY=38;
+int TK_KW_INPUT=40; int TK_KW_OUTPUT=41; int TK_KW_METRICS=42;
+int TK_KW_TITLE=43; int TK_KW_DATASRC=44; int TK_KW_TO=45;
+int TK_KW_PRINT=46; int TK_KW_TRUE=47; int TK_KW_FALSE=48;
+int TK_L_BRACE=50; int TK_R_BRACE=51; int TK_L_PAREN=52; int TK_R_PAREN=53;
+int TK_L_BRACKET=54; int TK_R_BRACKET=55; int TK_SEMICOLON=56;
+int TK_COLON=57; int TK_COMMA=58; int TK_DOT=59; int TK_ASSIGN=60;
+int TK_ARROW_L=61; int TK_CAST_OP=62; int TK_BORROW_OP=63;
+int TK_PLUS=64; int TK_MINUS=65; int TK_STAR=66; int TK_SLASH=67;
+int TK_EQ=69; int TK_NEQ=70; int TK_LT=71; int TK_GT=72;
+int TK_LTE=73; int TK_GTE=74; int TK_AND=75; int TK_OR=76;
+int TK_NOT=77; int TK_EOF=99;
+int NULL_NODE=0;
+
+database Token { int kind; str value; int line; int col; }
+database TokenArray { int buf_ptr; int count; int capacity; }
+database ASTNode {
+    int kind; int ival; float fval;
+    str sval; str sval2;
+    int line; int col;
+    int left; int right; int cond; int body; int next; int alt;
+}
+database NodePool { int buf_ptr; int count; int capacity; }
+database ParserState { int ta_ptr; int pos; str filename; }
+
+NodePool pool_new() {
+    native "
+    static NodePool _p;
+    _p.capacity=131072; _p.count=1;
+    _p.buf_ptr=(int64_t)(uintptr_t)calloc(131072,sizeof(ASTNode));
+    return _p;
+    ";
+}
+
+int node_new(NodePool &pool, int kind, int line, int col) {
+    native "
+    int64_t _idx=$pool.count++;
+    if(_idx>=$pool.capacity){fprintf(stderr,\"[STRATA] AST pool overflow\n\");exit(1);}
+    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+    memset(_n,0,sizeof(ASTNode));
+    _n->kind=$kind;_n->line=$line;_n->col=$col;
+    return _idx;
+    ";
+}
+
+ASTNode pool_get_node(NodePool &pool, int idx) {
+    native "return ((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];";
+}
+
+def pool_set_field_i(NodePool &pool, int idx, str field, int val) {
+    native "
+    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
+    if(strcmp($field,\"left\")==0)  _n->left=$val;
+    else if(strcmp($field,\"right\")==0) _n->right=$val;
+    else if(strcmp($field,\"cond\")==0)  _n->cond=$val;
+    else if(strcmp($field,\"body\")==0)  _n->body=$val;
+    else if(strcmp($field,\"next\")==0)  _n->next=$val;
+    else if(strcmp($field,\"alt\")==0)   _n->alt=$val;
+    else if(strcmp($field,\"ival\")==0)  _n->ival=$val;
+    ";
+}
+
+def pool_set_field_s(NodePool &pool, int idx, str field, str val) {
+    native "
+    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
+    if(strcmp($field,\"sval\")==0)  _n->sval=$val;
+    else if(strcmp($field,\"sval2\")==0) _n->sval2=$val;
+    ";
+}
+
+def pool_set_field_f(NodePool &pool, int idx, str field, float val) {
+    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].fval=$val;";
+}
+
+Token ta_get_tok(TokenArray &ta, int idx) {
+    native "return ((Token*)(uintptr_t)$ta.buf_ptr)[$idx];";
+}
+
+ParserState ps_new(TokenArray &ta, str filename) {
+    native "
+    static ParserState _ps;
+    _ps.ta_ptr=(int64_t)(uintptr_t)&$ta;
+    _ps.pos=0; _ps.filename=$filename;
+    return _ps;
+    ";
+}
+
+int ps_kind(ParserState &ps) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos].kind;
+    ";
+}
+
+int ps_kind_at(ParserState &ps, int offset) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    int64_t _i=$ps.pos+$offset;
+    if(_i>=_ta->count)_i=_ta->count-1;
+    return ((Token*)(uintptr_t)_ta->buf_ptr)[_i].kind;
+    ";
+}
+
+Token ps_peek(ParserState &ps) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
+    ";
+}
+
+Token ps_advance(ParserState &ps) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    Token _t=((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
+    if($ps.pos<_ta->count-1)$ps.pos++;
+    return _t;
+    ";
+}
+
+Token ps_consume(ParserState &ps, int kind) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    Token _t=((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
+    if(_t.kind!=$kind){
+        fprintf(stderr,\"[STRATA PARSE ERROR] Expected %lld got '%s'(%lld) at %s:%lld:%lld\n\",
+            (long long)$kind,_t.value,(long long)_t.kind,
+            $ps.filename,(long long)_t.line,(long long)_t.col);
+        exit(1);
+    }
+    if($ps.pos<_ta->count-1)$ps.pos++;
+    return _t;
+    ";
+}
+
+int ps_at_end(ParserState &ps) {
+    native "
+    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
+    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos].kind==99?1:0;
+    ";
+}
+
+int ps_is_prim_type(ParserState &ps) {
+    native "
+    int64_t _k=ps_kind(&$ps);
+    return(_k==10||_k==11||_k==12||_k==13||_k==16)?1:0;
+    ";
+}
+
+int ps_is_type_tok(ParserState &ps) {
+    native "
+    int64_t _k0=ps_kind(&$ps);
+    int64_t _k1=ps_kind_at(&$ps,1);
+    if(_k0==10||_k0==11||_k0==12||_k0==13||_k0==14||_k0==15||_k0==16)return 1;
+    if(_k0==4&&(_k1==4||_k1==63))return 1;
+    return 0;
+    ";
+}
+
+int parse_tensor_type(ParserState &ps, NodePool &pool) {
+    Token t=ps_consume(&ps,15);
+    int idx=node_new(&pool,AST_TYPE_TENSOR,t.line,t.col);
+    ps_consume(&ps,54);
+    Token dt=ps_advance(&ps);
+    ps_consume(&ps,58);
+    Token rows=ps_consume(&ps,1);
+    ps_consume(&ps,58);
+    Token cols=ps_consume(&ps,1);
+    ps_consume(&ps,55);
+    native "
+    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
+    _n->sval=$dt.value;
+    _n->ival=(int64_t)atoll($rows.value);
+    _n->right=(int64_t)atoll($cols.value);
+    ";
+    return idx;
+}
+
+int parse_type(ParserState &ps, NodePool &pool) {
+    if(ps_kind(&ps)==15){return parse_tensor_type(&ps,&pool);}
+    if(ps_kind(&ps)==14){
+        Token t=ps_advance(&ps);
+        int idx=node_new(&pool,AST_TYPE_LIST,t.line,t.col);
+        ps_consume(&ps,54);
+        int elem=parse_type(&ps,&pool);
+        ps_consume(&ps,55);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$elem;";
+        return idx;
+    }
+    Token t=ps_advance(&ps);
+    int idx=node_new(&pool,AST_TYPE_PRIM,t.line,t.col);
+    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$t.value;";
+    return idx;
+}
+
+int parse_expr(ParserState &ps, NodePool &pool);
+
+int parse_primary(ParserState &ps, NodePool &pool) {
+    Token t=ps_peek(&ps);
+    if(ps_kind(&ps)==1){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_INT_LIT,t.line,t.col);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=(int64_t)atoll($t.value);";
+        return idx;
+    }
+    if(ps_kind(&ps)==2){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_FLOAT_LIT,t.line,t.col);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].fval=atof($t.value);";
+        return idx;
+    }
+    if(ps_kind(&ps)==3){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_STR_LIT,t.line,t.col);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$t.value;";
+        return idx;
+    }
+    if(ps_kind(&ps)==47){ps_advance(&ps);int idx=node_new(&pool,AST_BOOL_LIT,t.line,t.col);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=1;";return idx;}
+    if(ps_kind(&ps)==48){ps_advance(&ps);int idx=node_new(&pool,AST_BOOL_LIT,t.line,t.col);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=0;";return idx;}
+    if(ps_kind(&ps)==54){
+        Token tb=ps_consume(&ps,54);
+        int idx=node_new(&pool,AST_LIST_LIT,tb.line,tb.col);
+        int head=0;int tail=0;
+        native "
+        while(ps_kind(&$ps)!=55){
+            int64_t _e=parse_expr(&$ps,&$pool);
+            if($head==0){$head=_e;$tail=_e;}
+            else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_e;$tail=_e;}
+            if(ps_kind(&$ps)==58)ps_advance(&$ps);
+        }
+        ";
+        ps_consume(&ps,55);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].body=$head;";
+        return idx;
+    }
+    if(ps_kind(&ps)==34){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_PREDICT,t.line,t.col);
+        Token mt=ps_consume(&ps,4);
+        ps_consume(&ps,52);
+        int arg=parse_expr(&ps,&pool);
+        ps_consume(&ps,53);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$mt.value;_n->left=$arg;";
+        return idx;
+    }
+    if(ps_is_prim_type(&ps)==1){
+        Token tn=ps_advance(&ps);
+        ps_consume(&ps,52);
+        int arg=parse_expr(&ps,&pool);
+        ps_consume(&ps,53);
+        int idx=node_new(&pool,AST_CALL,t.line,t.col);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$tn.value;_n->body=$arg;";
+        return idx;
+    }
+    if(ps_kind(&ps)==4){
+        Token nt=ps_advance(&ps);
+        if(ps_kind(&ps)==52){
+            ps_consume(&ps,52);
+            int head=0;int tail=0;
+            native "
+            while(ps_kind(&$ps)!=53){
+                int64_t _a=parse_expr(&$ps,&$pool);
+                if($head==0){$head=_a;$tail=_a;}
+                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_a;$tail=_a;}
+                if(ps_kind(&$ps)==58)ps_advance(&$ps);
+            }
+            ";
+            ps_consume(&ps,53);
+            int idx=node_new(&pool,AST_CALL,t.line,t.col);
+            native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nt.value;_n->body=$head;";
+            native "
+            while(ps_kind(&$ps)==59){
+                ps_advance(&$ps);
+                Token _mt=ps_consume(&$ps,4);
+                int64_t _mi=node_new(&$pool,14,_mt.line,_mt.col);
+                ASTNode* _mn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_mi];
+                _mn->left=$idx;_mn->sval=_mt.value;$idx=_mi;
+            }
+            ";
+            return idx;
+        }
+        int idx=node_new(&pool,AST_IDENT,t.line,t.col);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$nt.value;";
+        native "
+        while(ps_kind(&$ps)==59){
+            ps_advance(&$ps);
+            Token _mt=ps_consume(&$ps,4);
+            int64_t _mi=node_new(&$pool,14,_mt.line,_mt.col);
+            ASTNode* _mn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_mi];
+            _mn->left=$idx;_mn->sval=_mt.value;$idx=_mi;
+        }
+        ";
+        return idx;
+    }
+    if(ps_kind(&ps)==52){
+        ps_advance(&ps);
+        int inner=parse_expr(&ps,&pool);
+        ps_consume(&ps,53);
+        return inner;
+    }
+    native "
+    Token _et=ps_peek(&$ps);
+    fprintf(stderr,\"[STRATA PARSE ERROR] Unexpected '%s' at %s:%lld:%lld\n\",
+        _et.value,$ps.filename,(long long)_et.line,(long long)_et.col);
+    exit(1);
+    ";
+    return 0;
+}
+
+int parse_unary(ParserState &ps, NodePool &pool) {
+    Token t=ps_peek(&ps);
+    if(ps_kind(&ps)==77){ps_advance(&ps);int idx=node_new(&pool,AST_UNARY,t.line,t.col);int o=parse_unary(&ps,&pool);native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=\"!\";_n->left=$o;";return idx;}
+    if(ps_kind(&ps)==65){ps_advance(&ps);int idx=node_new(&pool,AST_UNARY,t.line,t.col);int o=parse_unary(&ps,&pool);native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=\"-\";_n->left=$o;";return idx;}
+    if(ps_kind(&ps)==63){ps_advance(&ps);int idx=node_new(&pool,AST_BORROW,t.line,t.col);int tgt=parse_primary(&ps,&pool);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$tgt;";return idx;}
+    int base=parse_primary(&ps,&pool);
+    if(ps_kind(&ps)==62){
+        Token ct=ps_advance(&ps);
+        Token tt=ps_consume(&ps,4);
+        int idx=node_new(&pool,AST_CAST,ct.line,ct.col);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->left=$base;_n->sval=$tt.value;";
+        return idx;
+    }
+    return base;
+}
+
+int parse_addition(ParserState &ps, NodePool &pool) {
+    int left=parse_unary(&ps,&pool);
+    native "
+    while(1){
+        int64_t _k=ps_kind(&$ps);
+        if(_k!=64&&_k!=65)break;
+        Token _t=ps_advance(&$ps);
+        int64_t _r=parse_unary(&$ps,&$pool);
+        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
+        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
+    }
+    ";
+    return left;
+}
+
+int parse_comparison(ParserState &ps, NodePool &pool) {
+    int left=parse_addition(&ps,&pool);
+    native "
+    while(1){
+        int64_t _k=ps_kind(&$ps);
+        if(_k!=71&&_k!=72&&_k!=73&&_k!=74)break;
+        Token _t=ps_advance(&$ps);
+        int64_t _r=parse_addition(&$ps,&$pool);
+        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
+        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
+    }
+    ";
+    return left;
+}
+
+int parse_equality(ParserState &ps, NodePool &pool) {
+    int left=parse_comparison(&ps,&pool);
+    native "
+    while(1){
+        int64_t _k=ps_kind(&$ps);
+        if(_k!=69&&_k!=70)break;
+        Token _t=ps_advance(&$ps);
+        int64_t _r=parse_comparison(&$ps,&$pool);
+        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
+        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
+    }
+    ";
+    return left;
+}
+
+int parse_and(ParserState &ps, NodePool &pool) {
+    int left=parse_equality(&ps,&pool);
+    native "
+    while(ps_kind(&$ps)==75){
+        Token _t=ps_advance(&$ps);
+        int64_t _r=parse_equality(&$ps,&$pool);
+        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
+        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
+    }
+    ";
+    return left;
+}
+
+int parse_expr(ParserState &ps, NodePool &pool) {
+    int left=parse_and(&ps,&pool);
+    native "
+    while(ps_kind(&$ps)==76){
+        Token _t=ps_advance(&$ps);
+        int64_t _r=parse_and(&$ps,&$pool);
+        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
+        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
+        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
+    }
+    ";
+    return left;
+}
+
+int parse_stmt(ParserState &ps, NodePool &pool);
+
+int parse_body(ParserState &ps, NodePool &pool) {
+    int head=0;int tail=0;
+    native "
+    while(ps_kind(&$ps)!=51&&ps_kind(&$ps)!=99){
+        int64_t _s=parse_stmt(&$ps,&$pool);
+        if($head==0){$head=_s;$tail=_s;}
+        else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_s;$tail=_s;}
+    }
+    ";
+    return head;
+}
+
+int parse_stmt(ParserState &ps, NodePool &pool) {
+    Token t=ps_peek(&ps);
+    if(ps_kind(&ps)==22){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_RETURN,t.line,t.col);
+        if(ps_kind(&ps)!=56){int v=parse_expr(&ps,&pool);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$v;";}
+        ps_consume(&ps,56);
+        return idx;
+    }
+    if(ps_kind(&ps)==20){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_IF,t.line,t.col);
+        ps_consume(&ps,52);int cond=parse_expr(&ps,&pool);ps_consume(&ps,53);
+        ps_consume(&ps,50);int then=parse_body(&ps,&pool);ps_consume(&ps,51);
+        int els=0;
+        if(ps_kind(&ps)==21){ps_advance(&ps);ps_consume(&ps,50);els=parse_body(&ps,&pool);ps_consume(&ps,51);}
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->cond=$cond;_n->body=$then;_n->alt=$els;";
+        return idx;
+    }
+    if(ps_kind(&ps)==23){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_ASSERT,t.line,t.col);
+        int c=parse_expr(&ps,&pool);ps_consume(&ps,56);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].cond=$c;";
+        return idx;
+    }
+    if(ps_kind(&ps)==46){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_PRINT,t.line,t.col);
+        ps_consume(&ps,52);int v=parse_expr(&ps,&pool);ps_consume(&ps,53);ps_consume(&ps,56);
+        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$v;";
+        return idx;
+    }
+    if(ps_kind(&ps)==36){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_RENDER,t.line,t.col);
+        Token rt=ps_consume(&ps,4);ps_consume(&ps,45);Token pt=ps_consume(&ps,3);ps_consume(&ps,56);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$rt.value;_n->sval2=$pt.value;";
+        return idx;
+    }
+    if(ps_kind(&ps)==38){
+        ps_advance(&ps);
+        int idx=node_new(&pool,AST_VERIFY,t.line,t.col);
+        Token lb=ps_consume(&ps,3);ps_consume(&ps,50);
+        int head=0;int tail=0;
+        native "
+        while(ps_kind(&$ps)!=51){
+            ps_consume(&$ps,23);
+            int64_t _c=parse_expr(&$ps,&$pool);ps_consume(&$ps,56);
+            int64_t _a=node_new(&$pool,19,$t.line,$t.col);
+            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_a].cond=_c;
+            if($head==0){$head=_a;$tail=_a;}
+            else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_a;$tail=_a;}
+        }
+        ";
+        ps_consume(&ps,51);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$lb.value;_n->body=$head;";
+        return idx;
+    }
+    if(ps_is_type_tok(&ps)==1){
+        int tn=parse_type(&ps,&pool);
+        Token nm=ps_consume(&ps,4);ps_consume(&ps,60);
+        int idx=node_new(&pool,AST_VAR_DECL,t.line,t.col);
+        if(ps_kind(&ps)==4&&ps_kind_at(&ps,1)==61){
+            Token src=ps_advance(&ps);ps_consume(&ps,61);
+            ps_consume(&ps,54);int cond=parse_expr(&ps,&pool);ps_consume(&ps,55);ps_consume(&ps,56);
+            int qi=node_new(&pool,AST_QUERY,t.line,t.col);
+            native "ASTNode* _qn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$qi];_qn->sval=$src.value;_qn->cond=$cond;ASTNode* _vn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_vn->sval=$nm.value;_vn->left=$tn;_vn->right=$qi;";
+            return idx;
+        }
+        int v=parse_expr(&ps,&pool);ps_consume(&ps,56);
+        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nm.value;_n->left=$tn;_n->right=$v;";
+        return idx;
+    }
+    int ex=parse_expr(&ps,&pool);ps_consume(&ps,56);
+    int idx=node_new(&pool,AST_EXPR_STMT,t.line,t.col);
+    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$ex;";
+    return idx;
+}
+
+int parse_params(ParserState &ps, NodePool &pool) {
+    int head=0;int tail=0;
+    native "
+    while(ps_kind(&$ps)!=53){
+        Token _t=ps_peek(&$ps);
+        int64_t _pt=parse_type(&$ps,&$pool);
+        int64_t _borrow=0;
+        if(ps_kind(&$ps)==63){ps_advance(&$ps);_borrow=1;}
+        Token _nt=ps_consume(&$ps,4);
+        int64_t _pi=node_new(&$pool,37,_nt.line,_nt.col);
+        ASTNode* _pn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_pi];
+        _pn->left=_pt;_pn->sval=_nt.value;_pn->ival=_borrow;
+        if($head==0){$head=_pi;$tail=_pi;}
+        else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_pi;$tail=_pi;}
+        if(ps_kind(&$ps)==58)ps_advance(&$ps);
+    }
+    ";
+    return head;
+}
+
+int parse_function(ParserState &ps, NodePool &pool, int kind_val) {
+    Token t=ps_peek(&ps);
+    int rt=0;
+    if(kind_val==0){rt=parse_type(&ps,&pool);}else{ps_advance(&ps);}
+    Token nm=ps_consume(&ps,4);
+    ps_consume(&ps,52);int params=parse_params(&ps,&pool);ps_consume(&ps,53);
+    ps_consume(&ps,50);int body=parse_body(&ps,&pool);ps_consume(&ps,51);
+    int idx=node_new(&pool,AST_FUNCTION,t.line,t.col);
+    native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nm.value;_n->ival=$kind_val;_n->left=$rt;_n->cond=$params;_n->body=$body;";
+    return idx;
+}
+
+int parse(ParserState &ps, NodePool &pool) {
+    int ih=0;int it=0;int dh=0;int dt=0;int fh=0;int ft=0;
+    native "
+    while(!ps_at_end(&$ps)){
+        int64_t _k=ps_kind(&$ps);
+        int64_t _node=0;int64_t _dest=0;
+        if(_k==24){
+            Token _t=ps_advance(&$ps);
+            Token _nm=ps_consume(&$ps,4);
+            ps_consume(&$ps,25);Token _src=ps_consume(&$ps,4);ps_consume(&$ps,56);
+            _node=node_new(&$pool,30,_t.line,_t.col);
+            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
+            _n->sval=_nm.value;_n->sval2=_src.value;_dest=1;
+        } else if(_k==30){
+            Token _t=ps_advance(&$ps);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
+            int64_t _fh=0,_ft=0;
+            while(ps_kind(&$ps)!=51){
+                int64_t _ft2=parse_type(&$ps,&$pool);Token _fn=ps_consume(&$ps,4);ps_consume(&$ps,56);
+                int64_t _fi=node_new(&$pool,31,_fn.line,_fn.col);
+                ASTNode* _f=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi];
+                _f->left=_ft2;_f->sval=_fn.value;
+                if(_fh==0){_fh=_fi;_ft=_fi;}
+                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[_ft].next=_fi;_ft=_fi;}
+            }
+            ps_consume(&$ps,51);
+            _node=node_new(&$pool,32,_t.line,_t.col);
+            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
+            _n->sval=_nm.value;_n->body=_fh;_dest=2;
+        } else if(_k==32){
+            Token _t=ps_advance(&$ps);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
+            int64_t _fh=0,_ft=0;
+            while(ps_kind(&$ps)!=51){
+                int64_t _ft2=parse_type(&$ps,&$pool);Token _fn=ps_consume(&$ps,4);ps_consume(&$ps,56);
+                int64_t _fi=node_new(&$pool,31,_fn.line,_fn.col);
+                ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi].left=_ft2;
+                ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi].sval=_fn.value;
+                if(_fh==0){_fh=_fi;_ft=_fi;}
+                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[_ft].next=_fi;_ft=_fi;}
+            }
+            ps_consume(&$ps,51);
+            _node=node_new(&$pool,33,_t.line,_t.col);
+            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node].sval=_nm.value;
+            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node].body=_fh;_dest=2;
+        } else if(_k==33){
+            Token _t=ps_consume(&$ps,33);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
+            ps_consume(&$ps,40);ps_consume(&$ps,57);
+            int64_t _it=parse_tensor_type(&$ps,&$pool);ps_consume(&$ps,56);
+            ps_consume(&$ps,41);ps_consume(&$ps,57);
+            int64_t _ot=parse_tensor_type(&$ps,&$pool);ps_consume(&$ps,56);
+            ps_consume(&$ps,51);
+            _node=node_new(&$pool,34,_t.line,_t.col);
+            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
+            _n->sval=_nm.value;_n->left=_it;_n->right=_ot;_dest=2;
+        } else if(_k==26){_node=parse_function(&$ps,&$pool,1);_dest=3;
+        } else if(_k==31){_node=parse_function(&$ps,&$pool,2);_dest=3;
+        } else if(ps_is_type_tok(&$ps)){_node=parse_function(&$ps,&$pool,0);_dest=3;
+        } else {
+            Token _et=ps_peek(&$ps);
+            fprintf(stderr,\"[STRATA PARSE ERROR] Unexpected '%s' at %s:%lld:%lld\n\",
+                _et.value,$ps.filename,(long long)_et.line,(long long)_et.col);
+            exit(1);
+        }
+        if(_dest==1){if($ih==0){$ih=_node;$it=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$it].next=_node;$it=_node;}}
+        else if(_dest==2){if($dh==0){$dh=_node;$dt=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$dt].next=_node;$dt=_node;}}
+        else{if($fh==0){$fh=_node;$ft=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$ft].next=_node;$ft=_node;}}
+    }
+    ";
+    int root=node_new(&pool,AST_COMPILE_UNIT,0,0);
+    native "ASTNode* _r=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$root];_r->left=$ih;_r->cond=$dh;_r->body=$fh;";
+    return root;
+}
+
+int main() {
+    print("[Strata Parser] Stage 1 — written in Strata.");
+    return 0;
+}
