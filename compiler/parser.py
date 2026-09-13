@@ -459,6 +459,13 @@ class Parser:
     def _parse_statement(self) -> Any:
         t = self._peek()
 
+        # native "..." block — raw C injection
+        if self._peek().value == 'native':
+            t2=self._advance()
+            val=self._consume(TT.STR_LIT)
+            if self._check(TT.SEMICOLON): self._advance()
+            return ExprStmt(t2.line,t2.col,CallExpr(t2.line,t2.col,'native',[StrLiteral(val.line,val.col,val.value)]))
+
         if self._check(TT.KW_RETURN):
             return self._parse_return()
 
