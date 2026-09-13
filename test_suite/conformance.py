@@ -114,6 +114,31 @@ compile_run("e2e_database_schema",
 compile_run("e2e_function_call",
     'import io from std;\ndef greet(str name) { print(name); }\nint main() { greet("Strata"); return 0; }',
     "Strata")
+compile_run("e2e_chained_int_arith",
+    'import io from std;\nint main() { int a = 10; int b = 20; int c = 12; print(str(a + b + c)); return 0; }',
+    "42")
+compile_run("e2e_chained_str_concat",
+    'import io from std;\nint main() { str a = "A"; str b = "B"; str c = "C"; print(a + b + c); return 0; }',
+    "ABC")
+compile_run("e2e_str_param_concat",
+    'import io from std;\ndef greet(str n) { print("Hi, " + n); }\nint main() { greet("Prabath"); return 0; }',
+    "Hi, Prabath")
+compile_run("e2e_int_param_arith",
+    'import io from std;\nint add(int a, int b) { return a + b; }\nint main() { print(str(add(40, 2))); return 0; }',
+    "42")
+compile_run("e2e_str_plus_cast_int",
+    'import io from std;\nint main() { int n = 7; print("n=" + str(n)); return 0; }',
+    "n=7")
+compile_run("e2e_mul_precedence",
+    'import io from std;\nint main() { int x = 2; int y = 3; print(str(x + y * 4)); return 0; }',
+    "14")
+compile_run("e2e_paren_precedence",
+    'import io from std;\nint main() { int x = 2; int y = 3; print(str((x + y) * 4)); return 0; }',
+    "20")
+compile_run("e2e_div_mod",
+    'import io from std;\nint main() { print(str(100 / 7)); print(str(7 % 5)); return 0; }',
+    "14\n2")
+
 compile_run("e2e_string_concat",
     'import io from std;\nint main() { str a = "Hello, "; str b = "World!"; print(a + b); return 0; }',
     "Hello, World!")

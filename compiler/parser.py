@@ -604,8 +604,16 @@ class Parser:
         return left
 
     def _parse_addition(self) -> Any:
-        left = self._parse_unary()
+        left = self._parse_multiplication()
         while self._check(TT.PLUS) or self._check(TT.MINUS):
+            op = self._advance().value
+            right = self._parse_multiplication()
+            left = BinaryExpr(left.line, left.col, op, left, right)
+        return left
+
+    def _parse_multiplication(self) -> Any:
+        left = self._parse_unary()
+        while self._check(TT.STAR) or self._check(TT.SLASH) or self._check(TT.PERCENT):
             op = self._advance().value
             right = self._parse_unary()
             left = BinaryExpr(left.line, left.col, op, left, right)

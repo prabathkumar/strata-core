@@ -199,6 +199,8 @@ int main(int argc, char** argv) {
         params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
         self.func_returns[fn.name] = rt
         self.var_types = {}
+        for p in fn.params:
+            self.var_types[p.name] = self._c_type(p.param_type)
         # Collect param names for native substitution
         param_names = [p.name for p in fn.params]
         self.emit_raw(f"\n{rt} {fn.name}({params}) {{")
@@ -293,6 +295,34 @@ int main(int argc, char** argv) {
             self.indent -= 1
         self.emit("}")
 
+    def _expr_ctype(self, expr, param_names=None):
+        """Best-effort static type of an expression, as a C type name."""
+        if isinstance(expr, IntLiteral):   return "strata_int"
+        if isinstance(expr, FloatLiteral): return "strata_float"
+        if isinstance(expr, StrLiteral):   return "strata_str"
+        if isinstance(expr, BoolLiteral):  return "strata_int"
+        if isinstance(expr, Identifier):
+            return self.var_types.get(expr.name)
+        if isinstance(expr, UnaryExpr):
+            return self._expr_ctype(expr.operand, param_names)
+        if isinstance(expr, BinaryExpr):
+            if expr.op in ("==","!=","<",">","<=",">=","&&","||"):
+                return "strata_int"
+            lt = self._expr_ctype(expr.left, param_names)
+            rt = self._expr_ctype(expr.right, param_names)
+            if "strata_str" in (lt, rt):   return "strata_str"
+            if "strata_float" in (lt, rt): return "strata_float"
+            if lt == rt:                   return lt
+            return None
+        if isinstance(expr, CastExpr):
+            return getattr(expr, "target_type", None)
+        if isinstance(expr, CallExpr):
+            if expr.callee == "str":   return "strata_str"
+            if expr.callee == "int":   return "strata_int"
+            if expr.callee == "float": return "strata_float"
+            return self.func_returns.get(expr.callee)
+        return None
+
     def _gen_expr(self, expr, param_names=None):
         if param_names is None: param_names = []
         if isinstance(expr, IntLiteral): return str(expr.value)
@@ -305,7 +335,12 @@ int main(int argc, char** argv) {
         if isinstance(expr, BinaryExpr):
             l = self._gen_expr(expr.left, param_names)
             r = self._gen_expr(expr.right, param_names)
-            if expr.op == "+": return f"strata_concat({l},{r})"
+            if expr.op == "+":
+                lt = self._expr_ctype(expr.left, param_names)
+                rt = self._expr_ctype(expr.right, param_names)
+                if lt == "strata_str" or rt == "strata_str":
+                    return f"strata_concat({l},{r})"
+                return f"({l} + {r})"
             return f"({l} {expr.op} {r})"
         if isinstance(expr, UnaryExpr):
             return f"({expr.op}{self._gen_expr(expr.operand, param_names)})"
