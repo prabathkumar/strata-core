@@ -442,3 +442,668 @@ Node parse_record(P &p, int kw, int node_kind) {
     n_pos(n, t);
     return n;
 }
+
+Node parse_tensor_type(P &p) {
+    Token t = p_expect(&p, 15);                // tensor
+    p_expect(&p, 54);
+    Token dt = p_advance(&p);
+    p_expect(&p, 58);
+    Token rows = p_expect(&p, 1);
+    p_expect(&p, 58);
+    Token cols = p_expect(&p, 1);
+    p_expect(&p, 55);
+    Node n = node_new(13);
+    n.s1 = dt.value;
+    n.i1 = str_to_int(rows.value);
+    n.i2 = str_to_int(cols.value);
+    n_pos(n, t);
+    return n;
+}
+
+Node parse_model(P &p) {
+    Token t = p_expect(&p, 27);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 50);
+    p_expect(&p, 33);                          // input
+    p_expect(&p, 57);                          // :
+    Node in_t = parse_tensor_type(&p);
+    p_expect(&p, 56);
+    p_expect(&p, 34);                          // output
+    p_expect(&p, 57);
+    Node out_t = parse_tensor_type(&p);
+    p_expect(&p, 56);
+    p_expect(&p, 51);
+    Node n = node_new(5);
+    n.s1 = name.value;
+    n.c1 = node_ptr(in_t);
+    n.c2 = node_ptr(out_t);
+    n_pos(n, t);
+    return n;
+}
+
+Node parse_report(P &p) {
+    Token t = p_expect(&p, 29);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 50);
+    Node n = node_new(6);
+    n.s1 = name.value;
+    n.s2 = "";
+    NodeVec mets = nv_new();
+    n_pos(n, t);
+
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        if (p_check(&p, 36) == 1) {            // title:
+            p_advance(&p); p_expect(&p, 57);
+            Token title_tok = p_advance(&p);
+            n.s2 = title_tok.value;
+            p_expect(&p, 58);
+        }
+        if (p_check(&p, 37) == 1) {            // datasource:
+            p_advance(&p); p_expect(&p, 57);
+            Token src = p_expect(&p, 4);
+            p_expect(&p, 76);
+            p_expect(&p, 54);
+            Node cond = parse_expr(&p);
+            p_expect(&p, 55);
+            p_expect(&p, 58);
+            Node q = node_new(46);
+            q.s1 = src.value;
+            q.c1 = node_ptr(cond);
+            n_pos(q, t);
+            n.c1 = node_ptr(q);
+        }
+        if (p_check(&p, 35) == 1) {            // metrics:
+            p_advance(&p); p_expect(&p, 57);
+            p_expect(&p, 50);
+            while (p_check(&p, 51) == 0) {
+                if (p_at_end(&p) == 1) { break; }
+                Node mt = parse_type(&p);
+                Token mname = p_expect(&p, 4);
+                p_expect(&p, 60);
+                Node mexpr = parse_expr(&p);
+                p_expect(&p, 56);
+                Node m = node_new(7);
+                m.c1 = node_ptr(mt);
+                m.s1 = mname.value;
+                m.c2 = node_ptr(mexpr);
+                n_pos(m, mname);
+                nv_push(&mets, m);
+            }
+            p_expect(&p, 51);
+        }
+    }
+    p_expect(&p, 51);
+    n.v1 = nv_ptr(mets);
+    return n;
+}
+
+// ── Functions ────────────────────────────────────────────────────────────────
+
+NodeVec parse_params(P &p) {
+    NodeVec params = nv_new();
+    while (p_check(&p, 53) == 0) {            // until ')'
+        if (p_at_end(&p) == 1) { break; }
+        Node ptype = parse_type(&p);
+        int borrow = 0;
+        if (p_check(&p, 61) == 1) { p_advance(&p); borrow = 1; }
+        Token pname = p_expect(&p, 4);
+        Node prm = node_new(10);
+        prm.c1 = node_ptr(ptype);
+        prm.s1 = pname.value;
+        prm.i1 = borrow;
+        n_pos(prm, pname);
+        nv_push(&params, prm);
+        if (p_check(&p, 58) == 1) { p_advance(&p); }
+    }
+    return params;
+}
+
+NodeVec parse_body(P &p) {
+    NodeVec body = nv_new();
+    while (p_check(&p, 51) == 0) {            // until '}'
+        if (p_at_end(&p) == 1) { break; }
+        nv_push(&body, parse_statement(&p));
+    }
+    return body;
+}
+
+// kindsel: 0 = typed function, 1 = def, 2 = stream
+Node parse_function(P &p, int kindsel) {
+    Token t = p_peek(&p, 0);
+    int rt = 0;
+    if (kindsel == 0) {
+        Node r = parse_type(&p);
+        rt = node_ptr(r);
+    }
+    if (kindsel != 0) { p_advance(&p); }      // consume def / stream
+
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 52);                          // (
+    NodeVec params = parse_params(&p);
+    p_expect(&p, 53);                          // )
+
+    Node n = node_new(9);
+    n.s1 = "function";
+    if (kindsel == 1) { n.s1 = "def"; }
+    if (kindsel == 2) { n.s1 = "stream"; }
+    n.c1 = rt;
+    n.s2 = name.value;
+    n.v1 = nv_ptr(params);
+    n_pos(n, t);
+
+    // Forward declaration: no body.
+    if (p_check(&p, 56) == 1) {
+        p_advance(&p);
+        n.v2 = nv_ptr(nv_new());
+        return n;
+    }
+
+    p_expect(&p, 50);                          // {
+    NodeVec body = parse_body(&p);
+    p_expect(&p, 51);                          // }
+    n.v2 = nv_ptr(body);
+    return n;
+}
+
+// ── Statements ───────────────────────────────────────────────────────────────
+
+Node parse_var_decl(P &p, int want_semicolon) {
+    Node vtype = parse_type(&p);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 60);                          // =
+
+    Node n = node_new(20);
+    n.c1 = node_ptr(vtype);
+    n.s1 = name.value;
+    n_pos(n, name);
+
+    // Query form: list[T] name = Source <- [cond];
+    if (p_kind(&p, 0) == 4) {
+        if (p_kind(&p, 1) == 76) {
+            Token src = p_advance(&p);
+            p_advance(&p);                     // <-
+            p_expect(&p, 54);                  // [
+            Node cond = parse_expr(&p);
+            p_expect(&p, 55);                  // ]
+            if (want_semicolon == 1) { p_expect(&p, 56); }
+            Node q = node_new(46);
+            q.s1 = src.value;
+            q.c1 = node_ptr(cond);
+            n_pos(q, src);
+            n.c2 = node_ptr(q);
+            return n;
+        }
+    }
+
+    Node val = parse_expr(&p);
+    if (want_semicolon == 1) { p_expect(&p, 56); }
+    n.c2 = node_ptr(val);
+    return n;
+}
+
+Node parse_assignment(P &p, int want_semicolon) {
+    Token t = p_peek(&p, 0);
+    Node target = parse_unary(&p);
+    p_expect(&p, 60);                          // =
+    Node value = parse_expr(&p);
+    if (want_semicolon == 1) { p_expect(&p, 56); }
+    Node n = node_new(28);
+    n.c1 = node_ptr(target);
+    n.c2 = node_ptr(value);
+    n_pos(n, t);
+    return n;
+}
+
+// Is the statement beginning here an assignment? Scans past member and index
+// access to find a '=' that is not part of '=='.
+int looks_like_assignment(P &p) {
+    if (p_kind(&p, 0) != 4) { return 0; }
+    int j = 1;
+    int depth = 0;
+    while (j < 64) {
+        int k = p_kind(&p, j);
+        if (k == 54) { depth = depth + 1; }
+        if (k == 55) { depth = depth - 1; }
+        if (depth == 0) {
+            if (k == 60) { return 1; }
+            if (k != 59) { if (k != 4) { if (k != 55) { return 0; } } }
+        }
+        if (k == 56) { return 0; }
+        if (k == 5)  { return 0; }
+        j = j + 1;
+    }
+    return 0;
+}
+
+NodeVec parse_block(P &p) {
+    p_expect(&p, 50);
+    NodeVec body = parse_body(&p);
+    p_expect(&p, 51);
+    return body;
+}
+
+Node parse_statement(P &p) {
+    Token t = p_peek(&p, 0);
+    int k = t.kind;
+
+    // native "..." — raw C, modelled as ExprStmt(CallExpr("native", [str]))
+    if (k == 4) {
+        if (str_eq(t.value, "native")) {
+            p_advance(&p);
+            Token lit = p_advance(&p);
+            if (p_check(&p, 56) == 1) { p_advance(&p); }
+            Node arg = node_new(52);
+            arg.s1 = lit.value;
+            n_pos(arg, lit);
+            Node call = node_new(42);
+            call.s1 = "native";
+            NodeVec args = nv_new();
+            nv_push(&args, arg);
+            call.v1 = nv_ptr(args);
+            n_pos(call, t);
+            Node st = node_new(23);
+            st.c1 = node_ptr(call);
+            n_pos(st, t);
+            return st;
+        }
+    }
+
+    if (k == 19) {                             // return
+        p_advance(&p);
+        Node n = node_new(21);
+        n_pos(n, t);
+        if (p_check(&p, 56) == 1) { p_advance(&p); return n; }
+        Node v = parse_expr(&p);
+        p_expect(&p, 56);
+        n.c1 = node_ptr(v);
+        return n;
+    }
+
+    if (k == 17) {                             // if
+        p_advance(&p);
+        p_expect(&p, 52);
+        Node cond = parse_expr(&p);
+        p_expect(&p, 53);
+        NodeVec then_block = parse_block(&p);
+        Node n = node_new(22);
+        n.c1 = node_ptr(cond);
+        n.v1 = nv_ptr(then_block);
+        n_pos(n, t);
+        if (p_check(&p, 18) == 1) {            // else
+            p_advance(&p);
+            NodeVec else_block = parse_block(&p);
+            n.v2 = nv_ptr(else_block);
+        }
+        return n;
+    }
+
+    if (k == 41) {                             // while
+        p_advance(&p);
+        p_expect(&p, 52);
+        Node cond = parse_expr(&p);
+        p_expect(&p, 53);
+        NodeVec body = parse_block(&p);
+        Node n = node_new(29);
+        n.c1 = node_ptr(cond);
+        n.v1 = nv_ptr(body);
+        n_pos(n, t);
+        return n;
+    }
+
+    if (k == 42) {                             // for
+        p_advance(&p);
+        p_expect(&p, 52);
+        Node n = node_new(30);
+        n_pos(n, t);
+        if (p_check(&p, 56) == 0) {
+            if (is_type_kind(p_kind(&p, 0)) == 1) {
+                if (p_kind(&p, 1) == 4) {
+                    Node init = parse_var_decl(&p, 0);
+                    n.c1 = node_ptr(init);
+                }
+            }
+            if (n.c1 == 0) {
+                Node init = parse_assignment(&p, 0);
+                n.c1 = node_ptr(init);
+            }
+        }
+        p_expect(&p, 56);
+        Node cond = parse_expr(&p);
+        n.c2 = node_ptr(cond);
+        p_expect(&p, 56);
+        if (p_check(&p, 53) == 0) {
+            Node step = parse_assignment(&p, 0);
+            n.c3 = node_ptr(step);
+        }
+        p_expect(&p, 53);
+        NodeVec body = parse_block(&p);
+        n.v1 = nv_ptr(body);
+        return n;
+    }
+
+    if (k == 43) { p_advance(&p); p_expect(&p, 56);
+        Node n = node_new(31); n_pos(n, t); return n; }
+    if (k == 44) { p_advance(&p); p_expect(&p, 56);
+        Node n = node_new(32); n_pos(n, t); return n; }
+
+    if (k == 20) {                             // assert
+        p_advance(&p);
+        Node cond = parse_expr(&p);
+        p_expect(&p, 56);
+        Node n = node_new(24);
+        n.c1 = node_ptr(cond);
+        n_pos(n, t);
+        return n;
+    }
+
+    if (k == 30) {                             // render X to "path";
+        p_advance(&p);
+        Token rep = p_expect(&p, 4);
+        p_expect(&p, 38);
+        Token path = p_advance(&p);
+        p_expect(&p, 56);
+        Node n = node_new(25);
+        n.s1 = rep.value;
+        n.s2 = path.value;
+        n_pos(n, t);
+        return n;
+    }
+
+    // Table <- [col = value, ...];
+    if (k == 4) {
+        if (p_kind(&p, 1) == 76) {
+            Token tgt = p_advance(&p);
+            p_advance(&p);
+            p_expect(&p, 54);
+            NodeVec pairs = nv_new();
+            int more = 1;
+            while (more == 1) {
+                if (p_at_end(&p) == 1) { more = 0; }
+                if (p_check(&p, 55) == 1) { more = 0; }
+                if (more == 1) {
+                    Token col = p_advance(&p);
+                    p_expect(&p, 60);
+                    Node v = parse_expr(&p);
+                    Node pair = node_new(0);
+                    pair.s1 = col.value;
+                    pair.c1 = node_ptr(v);
+                    nv_push(&pairs, pair);
+                    // Whether a comma followed must be read before consuming it.
+                    int had_comma = p_check(&p, 58);
+                    if (had_comma == 1) { p_advance(&p); }
+                    if (had_comma == 0) { more = 0; }
+                }
+            }
+            p_expect(&p, 55);
+            p_expect(&p, 56);
+            Node n = node_new(27);
+            n.s1 = tgt.value;
+            n.v1 = nv_ptr(pairs);
+            n_pos(n, tgt);
+            return n;
+        }
+    }
+
+    if (is_type_kind(k) == 1) {
+        if (p_kind(&p, 1) == 4) {              // type name = ...
+            return parse_var_decl(&p, 1);
+        }
+        if (k == 14) { return parse_var_decl(&p, 1); }
+        if (k == 15) { return parse_var_decl(&p, 1); }
+    }
+
+    if (looks_like_assignment(&p) == 1) { return parse_assignment(&p, 1); }
+
+    Node e = parse_expr(&p);
+    p_expect(&p, 56);
+    Node n = node_new(23);
+    n.c1 = node_ptr(e);
+    n_pos(n, t);
+    return n;
+}
+
+// ── Expressions (matching the oracle's precedence chain) ─────────────────────
+
+Node mk_binary(str op, Node l, Node r) {
+    Node n = node_new(40);
+    n.s1 = op;
+    n.c1 = node_ptr(l);
+    n.c2 = node_ptr(r);
+    n.line = l.line; n.col = l.col;
+    return n;
+}
+
+Node parse_expr(P &p) { return parse_or(&p); }
+
+Node parse_or(P &p) {
+    Node left = parse_and(&p);
+    while (p_check(&p, 75) == 1) {
+        Token op = p_advance(&p);
+        Node right = parse_and(&p);
+        left = mk_binary(op.value, left, right);
+    }
+    return left;
+}
+
+Node parse_and(P &p) {
+    Node left = parse_equality(&p);
+    while (p_check(&p, 74) == 1) {
+        Token op = p_advance(&p);
+        Node right = parse_equality(&p);
+        left = mk_binary(op.value, left, right);
+    }
+    return left;
+}
+
+int is_comparison(int k) {
+    if (k == 70) { return 1; }   // ==
+    if (k == 71) { return 1; }   // !=
+    if (k == 67) { return 1; }   // <
+    if (k == 68) { return 1; }   // >
+    if (k == 72) { return 1; }   // <=
+    if (k == 73) { return 1; }   // >=
+    return 0;
+}
+
+Node parse_equality(P &p) {
+    Node left = parse_addition(&p);
+    while (is_comparison(p_kind(&p, 0)) == 1) {
+        Token op = p_advance(&p);
+        Node right = parse_addition(&p);
+        left = mk_binary(op.value, left, right);
+    }
+    return left;
+}
+
+Node parse_addition(P &p) {
+    Node left = parse_multiplication(&p);
+    while (p_check(&p, 62) + p_check(&p, 63) > 0) {
+        Token op = p_advance(&p);
+        Node right = parse_multiplication(&p);
+        left = mk_binary(op.value, left, right);
+    }
+    return left;
+}
+
+Node parse_multiplication(P &p) {
+    Node left = parse_unary(&p);
+    while (p_check(&p, 64) + p_check(&p, 65) + p_check(&p, 66) > 0) {
+        Token op = p_advance(&p);
+        Node right = parse_unary(&p);
+        left = mk_binary(op.value, left, right);
+    }
+    return left;
+}
+
+Node parse_unary(P &p) {
+    if (p_check(&p, 69) == 1) {                // !
+        Token t = p_advance(&p);
+        Node operand = parse_unary(&p);
+        Node n = node_new(41);
+        n.s1 = "!"; n.c1 = node_ptr(operand); n_pos(n, t);
+        return n;
+    }
+    if (p_check(&p, 63) == 1) {                // -
+        Token t = p_advance(&p);
+        Node operand = parse_unary(&p);
+        Node n = node_new(41);
+        n.s1 = "-"; n.c1 = node_ptr(operand); n_pos(n, t);
+        return n;
+    }
+    if (p_check(&p, 61) == 1) {                // &
+        Token t = p_advance(&p);
+        Node target = parse_primary(&p);
+        Node n = node_new(43);
+        n.c1 = node_ptr(target); n_pos(n, t);
+        return n;
+    }
+    return parse_cast(&p);
+}
+
+Node parse_cast(P &p) {
+    Node e = parse_primary(&p);
+    if (p_check(&p, 77) == 1) {                // ::
+        p_advance(&p);
+        Token target = p_advance(&p);
+        Node n = node_new(44);
+        n.c1 = node_ptr(e);
+        n.s1 = target.value;
+        n.line = e.line; n.col = e.col;
+        return n;
+    }
+    return e;
+}
+
+Node parse_primary(P &p) {
+    Token t = p_peek(&p, 0);
+    int k = t.kind;
+
+    if (k == 1) { p_advance(&p); Node n = node_new(50);
+        n.i1 = str_to_int(t.value); n_pos(n, t); return n; }
+    if (k == 2) { p_advance(&p); Node n = node_new(51);
+        n.s1 = t.value; n_pos(n, t); return n; }
+    if (k == 3) { p_advance(&p); Node n = node_new(52);
+        n.s1 = t.value; n_pos(n, t); return n; }
+    if (k == 39) { p_advance(&p); Node n = node_new(53);
+        n.i1 = 1; n_pos(n, t); return n; }
+    if (k == 40) { p_advance(&p); Node n = node_new(53);
+        n.i1 = 0; n_pos(n, t); return n; }
+
+    if (k == 28) {                             // predict Model(arg)
+        p_advance(&p);
+        Token model_name = p_expect(&p, 4);
+        p_expect(&p, 52);
+        Node arg = parse_expr(&p);
+        p_expect(&p, 53);
+        Node n = node_new(45);
+        n.s1 = model_name.value; n.c1 = node_ptr(arg); n_pos(n, t);
+        return n;
+    }
+
+    if (k == 54) {                             // [a, b, c]
+        p_advance(&p);
+        NodeVec elems = nv_new();
+        while (p_check(&p, 55) == 0) {
+            if (p_at_end(&p) == 1) { break; }
+            nv_push(&elems, parse_expr(&p));
+            if (p_check(&p, 58) == 1) { p_advance(&p); }
+        }
+        p_expect(&p, 55);
+        Node n = node_new(47);
+        n.v1 = nv_ptr(elems); n_pos(n, t);
+        return n;
+    }
+
+    if (k == 52) {                             // ( expr )
+        p_advance(&p);
+        Node e = parse_expr(&p);
+        p_expect(&p, 53);
+        return e;
+    }
+
+    // Identifier, call, then a postfix chain of member access and indexing.
+    Token name = p_advance(&p);
+    Node expr = node_new(54);
+    expr.s1 = name.value;
+    n_pos(expr, name);
+
+    if (p_check(&p, 52) == 1) {                // call
+        p_advance(&p);
+        NodeVec args = nv_new();
+        while (p_check(&p, 53) == 0) {
+            if (p_at_end(&p) == 1) { break; }
+            nv_push(&args, parse_expr(&p));
+            if (p_check(&p, 58) == 1) { p_advance(&p); }
+        }
+        p_expect(&p, 53);
+        Node call = node_new(42);
+        call.s1 = name.value;
+        call.v1 = nv_ptr(args);
+        n_pos(call, name);
+        expr = call;
+    }
+
+    while (p_check(&p, 59) + p_check(&p, 54) > 0) {
+        if (p_check(&p, 59) == 1) {
+            p_advance(&p);
+            Token member = p_expect(&p, 4);
+            Node m = node_new(48);
+            m.c1 = node_ptr(expr);
+            m.s1 = member.value;
+            n_pos(m, name);
+            expr = m;
+        }
+        if (p_check(&p, 54) == 1) {
+            p_advance(&p);
+            Node idx = parse_expr(&p);
+            p_expect(&p, 55);
+            Node ix = node_new(49);
+            ix.c1 = node_ptr(expr);
+            ix.c2 = node_ptr(idx);
+            n_pos(ix, name);
+            expr = ix;
+        }
+    }
+    return expr;
+}
+
+// ── Compilation unit ─────────────────────────────────────────────────────────
+
+Node parse_unit(P &p) {
+    NodeVec imports = nv_new();
+    NodeVec decls = nv_new();
+    NodeVec funcs = nv_new();
+
+    while (p_at_end(&p) == 0) {
+        int k = p_kind(&p, 0);
+        if (k == 21) { nv_push(&imports, parse_import(&p)); }
+        if (k == 24) { nv_push(&decls, parse_record(&p, 24, 3)); }
+        if (k == 26) { nv_push(&decls, parse_record(&p, 26, 4)); }
+        if (k == 27) { nv_push(&decls, parse_model(&p)); }
+        if (k == 29) { nv_push(&decls, parse_report(&p)); }
+        if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
+        if (k == 25) { nv_push(&funcs, parse_function(&p, 2)); }
+        if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
+        if (is_type_kind(k) == 0) {
+            if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
+                if (k != 23) { if (k != 25) {
+                    eprint("[STRATA PARSE ERROR] unexpected top-level token");
+                    p_advance(&p);
+                } }
+            } } } } }
+        }
+    }
+
+    Node unit = node_new(1);
+    unit.v1 = nv_ptr(imports);
+    unit.v2 = nv_ptr(decls);
+    unit.v3 = nv_ptr(funcs);
+    return unit;
+}
+
+Node parse_source(str source) {
+    TokVec toks = tokenise(source);
+    P p = p_new(toks);
+    return parse_unit(&p);
+}

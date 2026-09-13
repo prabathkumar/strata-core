@@ -567,8 +567,15 @@ def resolve_imports(ast, source_path, verbose=False):
             try:
                 mod_ast = parse_file(path)
             except (Exception, SystemExit) as e:
-                # A broken stdlib module must degrade to a link-time undefined
-                # symbol, never harden into a failure of the importing file.
+                # A broken stdlib module degrades to a link-time undefined
+                # symbol rather than failing the importing file. A broken
+                # compiler/ module is different: skipping it silently produces
+                # a baffling C error about a missing type instead of naming the
+                # real syntax error, so that case is fatal.
+                if imp.source == "compiler":
+                    print(f"[STRATA IMPORT ERROR] '{path}' failed to parse:\n  {e}",
+                          file=sys.stderr)
+                    sys.exit(1)
                 print(f"[STRATA IMPORT WARNING] skipping '{path}': {e}", file=sys.stderr)
                 continue
             walk(mod_ast)

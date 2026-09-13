@@ -44,6 +44,11 @@ jobs:
     # disagree: clang 16+ rejects implicit function declarations that gcc only
     # warns about. Running the suites under both is what catches that, and it
     # is why this job previously passed locally and failed here.
+    # Stage 2 of self-hosting: the Strata-written parser must produce an
+    # identical syntax tree to the Python parser.
+    - name: Parser Differential (Strata vs Python oracle)
+      run: python3 test_suite/parser_diff.py
+
     - name: Conformance Under clang
       run: STRATA_CC=clang python3 test_suite/conformance.py
 

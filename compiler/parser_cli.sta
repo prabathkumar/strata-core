@@ -1,0 +1,16 @@
+// STRATA COMPILER — compiler/parser_cli.sta
+// Command-line driver for the Strata-written parser: reads a .sta file and
+// prints its syntax tree as JSON, for comparison against the Python oracle.
+
+import io     from std;
+import str    from std;
+import lexer  from compiler;
+import parser from compiler;
+
+int main() {
+    str path = arg_at(1);
+    str source = file_read(path);
+    Node unit = parse_source(source);
+    print(node_json(unit));
+    return 0;
+}
