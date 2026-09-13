@@ -55,6 +55,15 @@ jobs:
     - name: Type Checker Differential (Strata vs Python oracle)
       run: python3 test_suite/typecheck_diff.py
 
+    # Stage 4: emitted C compared byte for byte.
+    - name: Code Generator Differential (Strata vs Python oracle)
+      run: python3 test_suite/codegen_diff.py
+
+    # The proof that the bootstrap can be retired: the Strata front end,
+    # rebuilt from C it generated itself, reproduces that C exactly.
+    - name: Self-Hosting Fixpoint
+      run: python3 test_suite/fixpoint.py
+
     - name: Conformance Under clang
       run: STRATA_CC=clang python3 test_suite/conformance.py
 

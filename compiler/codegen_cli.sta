@@ -1,0 +1,16 @@
+// STRATA COMPILER — compiler/codegen_cli.sta
+// Emits the C translation of a .sta file on stdout, for byte-comparison
+// against the code generator in bootstrap/stage0.py.
+
+import io      from std;
+import str     from std;
+import lexer   from compiler;
+import parser  from compiler;
+import codegen from compiler;
+
+int main() {
+    str path = arg_at(1);
+    str root = ".";
+    print_raw(generate(root, path));
+    return 0;
+}

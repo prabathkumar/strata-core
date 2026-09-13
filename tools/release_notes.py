@@ -128,6 +128,19 @@ def measure():
                                   f"{m.group(2)} marked roadmap") if m and ok else "FAILING"
         ok_all = ok_all and bool(ok)
 
+    ok, text = run_suite("codegen_diff.py")
+    if ok is not None:
+        m = re.search(r"(\d+) identical, (\d+) divergent, (\d+) skipped", text)
+        facts["Code generator"] = (f"{m.group(1)} files byte-identical" if m and ok
+                                   else "FAILING")
+        ok_all = ok_all and bool(ok)
+
+    ok, text = run_suite("fixpoint.py")
+    if ok is not None:
+        facts["Self-hosting fixpoint"] = ("reached — bootstrap can be retired"
+                                          if ok else "FAILING")
+        ok_all = ok_all and bool(ok)
+
     ok, text = run_suite("stdlib_parses.py")
     if ok is not None:
         m = re.search(r"(\d+) parse, (\d+) fail", text)

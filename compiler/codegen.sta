@@ -1,0 +1,937 @@
+// STRATA COMPILER — compiler/codegen.sta
+// The Strata code generator, written in Strata.
+//
+// Stage 4 of the self-hosting pipeline. Must emit C byte-identical to the
+// generator in bootstrap/stage0.py; test_suite/codegen_diff.py enforces that.
+// This is the strictest of the four comparisons — a token stream or a syntax
+// tree has some freedom of representation, emitted code has none.
+//
+// Uses only the frozen seed subset (see SEED_SUBSET.md).
+
+import io          from std;
+import str         from std;
+import lexer       from compiler;
+import parser      from compiler;
+
+// ── Generator state ──────────────────────────────────────────────────────────
+
+database Bind { str name; str value; int next; }
+
+int bind_cons(str name, str value, int next) {
+    native "
+    Bind* _b=(Bind*)malloc(sizeof(Bind));
+    _b->name=$name; _b->value=$value; _b->next=$next;
+    return (int64_t)(uintptr_t)_b;
+    ";
+}
+Bind bind_at(int p) { native "return (Bind*)(uintptr_t)$p;"; }
+
+str bind_get(int head, str name) {
+    int cur = head;
+    while (cur != 0) {
+        Bind b = bind_at(cur);
+        if (str_eq(b.name, name) == 1) { return b.value; }
+        cur = b.next;
+    }
+    return "";
+}
+
+int bind_has(int head, str name) {
+    int cur = head;
+    while (cur != 0) {
+        Bind b = bind_at(cur);
+        if (str_eq(b.name, name) == 1) { return 1; }
+        cur = b.next;
+    }
+    return 0;
+}
+
+database Gen {
+    int out;          // StringBuilder*
+    int indent;
+    int borrowed;     // Bind list: borrowed scalar params needing deref
+    int var_types;    // Bind list: variable -> C type
+    int func_returns; // Bind list: function -> C return type
+    int records;      // Bind list: record type name -> "1"
+    int schemas;      // Bind list: schema name -> comma-joined columns
+}
+
+Gen gen_new() {
+    native "Gen* _g=(Gen*)calloc(1,sizeof(Gen)); return _g;";
+}
+
+def emit_raw(Gen &g, str line) {
+    StringBuilder sb = sb_at(g.out);
+    sb_append_line(&sb, line);
+}
+
+StringBuilder sb_at(int p) { native "return (StringBuilder*)(uintptr_t)$p;"; }
+int sb_ptr(StringBuilder s) { native "return (int64_t)(uintptr_t)$s;"; }
+
+str indent_str(int n) {
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < n; i = i + 1) { sb_append(&sb, "    "); }
+    return sb_to_str(&sb);
+}
+
+def cg_emit(Gen &g, str line) {
+    StringBuilder sb = sb_at(g.out);
+    StringBuilder l = sb_new();
+    sb_append(&l, indent_str(g.indent));
+    sb_append(&l, line);
+    sb_append_line(&sb, sb_to_str(&l));
+}
+
+// ── C types ──────────────────────────────────────────────────────────────────
+
+str c_type(Gen &g, int tnode) {
+    if (tnode == 0) { return "void"; }
+    Node t = node_at(tnode);
+    if (t.kind == 11) {
+        if (str_eq(t.s1, "int"))   { return "strata_int"; }
+        if (str_eq(t.s1, "float")) { return "strata_float"; }
+        if (str_eq(t.s1, "str"))   { return "strata_str"; }
+        if (str_eq(t.s1, "void"))  { return "void"; }
+        if (str_eq(t.s1, "bool"))  { return "strata_bool"; }
+        if (bind_has(g.records, t.s1) == 1) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, t.s1);
+            sb_append(&sb, "*");
+            return sb_to_str(&sb);
+        }
+        return t.s1;
+    }
+    if (t.kind == 12) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, c_type(&g, t.c1));
+        sb_append(&sb, "*");
+        return sb_to_str(&sb);
+    }
+    if (t.kind == 13) { return "double*"; }
+    return "void*";
+}
+
+int ends_with_star(str s) {
+    int n = str_len(s);
+    if (n == 0) { return 0; }
+    if (s[n - 1] == 42) { return 1; }
+    return 0;
+}
+
+str c_param(Gen &g, Node p) {
+    str ct = c_type(&g, p.c1);
+    StringBuilder sb = sb_new();
+    sb_append(&sb, ct);
+    if (p.i1 == 1) { if (ends_with_star(ct) == 0) { sb_append(&sb, "*"); } }
+    sb_append(&sb, " ");
+    sb_append(&sb, cname(p.s1));
+    return sb_to_str(&sb);
+}
+
+// Identifiers legal in Strata but reserved in C are mangled on the way out.
+int is_c_reserved(str w) {
+    if (str_eq(w, "auto")) { return 1; }      if (str_eq(w, "break")) { return 1; }
+    if (str_eq(w, "case")) { return 1; }      if (str_eq(w, "char")) { return 1; }
+    if (str_eq(w, "const")) { return 1; }     if (str_eq(w, "continue")) { return 1; }
+    if (str_eq(w, "default")) { return 1; }   if (str_eq(w, "do")) { return 1; }
+    if (str_eq(w, "double")) { return 1; }    if (str_eq(w, "else")) { return 1; }
+    if (str_eq(w, "enum")) { return 1; }      if (str_eq(w, "extern")) { return 1; }
+    if (str_eq(w, "float")) { return 1; }     if (str_eq(w, "for")) { return 1; }
+    if (str_eq(w, "goto")) { return 1; }      if (str_eq(w, "if")) { return 1; }
+    if (str_eq(w, "inline")) { return 1; }    if (str_eq(w, "int")) { return 1; }
+    if (str_eq(w, "long")) { return 1; }      if (str_eq(w, "register")) { return 1; }
+    if (str_eq(w, "restrict")) { return 1; }  if (str_eq(w, "return")) { return 1; }
+    if (str_eq(w, "short")) { return 1; }     if (str_eq(w, "signed")) { return 1; }
+    if (str_eq(w, "sizeof")) { return 1; }    if (str_eq(w, "static")) { return 1; }
+    if (str_eq(w, "struct")) { return 1; }    if (str_eq(w, "switch")) { return 1; }
+    if (str_eq(w, "typedef")) { return 1; }   if (str_eq(w, "union")) { return 1; }
+    if (str_eq(w, "unsigned")) { return 1; }  if (str_eq(w, "void")) { return 1; }
+    if (str_eq(w, "volatile")) { return 1; }  if (str_eq(w, "while")) { return 1; }
+    if (str_eq(w, "bool")) { return 1; }      if (str_eq(w, "complex")) { return 1; }
+    if (str_eq(w, "imaginary")) { return 1; }
+    return 0;
+}
+
+str cname(str w) {
+    if (is_c_reserved(w) == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, w);
+        sb_append(&sb, "_");
+        return sb_to_str(&sb);
+    }
+    return w;
+}
+
+// ── Static type of an expression, as a C type name ───────────────────────────
+
+str expr_ctype(Gen &g, int p) {
+    if (p == 0) { return ""; }
+    Node e = node_at(p);
+    int k = e.kind;
+    if (k == 50) { return "strata_int"; }
+    if (k == 51) { return "strata_float"; }
+    if (k == 52) { return "strata_str"; }
+    if (k == 53) { return "strata_int"; }
+    if (k == 54) { return bind_get(g.var_types, e.s1); }
+    if (k == 41) { return expr_ctype(&g, e.c1); }
+    if (k == 43) { return expr_ctype(&g, e.c1); }
+    if (k == 40) {
+        if (is_cmp_op(e.s1) == 1) { return "strata_int"; }
+        str lt = expr_ctype(&g, e.c1);
+        str rt = expr_ctype(&g, e.c2);
+        if (str_eq(lt, "strata_str")) { return "strata_str"; }
+        if (str_eq(rt, "strata_str")) { return "strata_str"; }
+        if (str_eq(lt, "strata_float")) { return "strata_float"; }
+        if (str_eq(rt, "strata_float")) { return "strata_float"; }
+        if (str_eq(lt, rt)) { return lt; }
+        return "";
+    }
+    if (k == 44) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, e.s1);
+        sb_append(&sb, "*");
+        return sb_to_str(&sb);
+    }
+    if (k == 48) { return ""; }
+    if (k == 49) {
+        str base = expr_ctype(&g, e.c1);
+        if (str_eq(base, "strata_str")) { return "strata_int"; }
+        if (ends_with_star(base) == 1) { return str_slice(base, 0, str_len(base) - 1); }
+        return "";
+    }
+    if (k == 46) {
+        if (bind_has(g.records, e.s1) == 1) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, e.s1);
+            sb_append(&sb, "*");
+            return sb_to_str(&sb);
+        }
+        return "";
+    }
+    if (k == 42) {
+        if (str_eq(e.s1, "str"))   { return "strata_str"; }
+        if (str_eq(e.s1, "int"))   { return "strata_int"; }
+        if (str_eq(e.s1, "float")) { return "strata_float"; }
+        return bind_get(g.func_returns, e.s1);
+    }
+    return "";
+}
+
+int is_cmp_op(str op) {
+    if (str_eq(op, "==")) { return 1; }   if (str_eq(op, "!=")) { return 1; }
+    if (str_eq(op, "<"))  { return 1; }   if (str_eq(op, ">"))  { return 1; }
+    if (str_eq(op, "<=")) { return 1; }   if (str_eq(op, ">=")) { return 1; }
+    if (str_eq(op, "&&")) { return 1; }   if (str_eq(op, "||")) { return 1; }
+    return 0;
+}
+
+// ── Expressions ──────────────────────────────────────────────────────────────
+
+str c_escape(str v) {
+    StringBuilder sb = sb_new();
+    int n = str_len(v);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = v[i];
+        if (c == 92) { sb_append(&sb, "\\\\"); }
+        if (c == 34) { sb_append(&sb, "\\\""); }
+        if (c == 10) { sb_append(&sb, "\\n"); }
+        if (c != 92) { if (c != 34) { if (c != 10) { sb_append(&sb, char_str(c)); } } }
+    }
+    return sb_to_str(&sb);
+}
+
+// The oracle stores a float literal as a double and prints it, so trailing
+// zeros disappear: 1000000.00 becomes 1000000.0 and 0.90 becomes 0.9. The
+// literal's source text has to be normalised the same way or the generated C
+// differs by characters that mean nothing.
+str norm_float(str t) {
+    int n = str_len(t);
+    if (str_index_of(t, "e") >= 0) { return t; }
+    if (str_index_of(t, "E") >= 0) { return t; }
+    if (str_index_of(t, ".") < 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, t);
+        sb_append(&sb, ".0");
+        return sb_to_str(&sb);
+    }
+    int last = n - 1;
+    while (last > 0) {
+        if (t[last] != 48) { break; }            // '0'
+        if (t[last - 1] == 46) { break; }        // keep one digit after '.'
+        last = last - 1;
+    }
+    return str_slice(t, 0, last + 1);
+}
+
+str gen_expr(Gen &g, int p) {
+    if (p == 0) { return "0"; }
+    Node e = node_at(p);
+    int k = e.kind;
+
+    if (k == 50) { return str(e.i1); }
+    if (k == 51) { return norm_float(e.s1); }
+    if (k == 52) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "\"");
+        sb_append(&sb, c_escape(e.s1));
+        sb_append(&sb, "\"");
+        return sb_to_str(&sb);
+    }
+    if (k == 53) { if (e.i1 == 1) { return "1"; } return "0"; }
+    if (k == 54) {
+        // A `T &x` parameter arrives as T* and must be dereferenced at use.
+        if (bind_has(g.borrowed, e.s1) == 1) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "(*"); sb_append(&sb, cname(e.s1)); sb_append(&sb, ")");
+            return sb_to_str(&sb);
+        }
+        return cname(e.s1);
+    }
+
+    if (k == 40) {
+        str l = gen_expr(&g, e.c1);
+        str r = gen_expr(&g, e.c2);
+        StringBuilder sb = sb_new();
+        if (str_eq(e.s1, "+") == 1) {
+            str lt = expr_ctype(&g, e.c1);
+            str rt = expr_ctype(&g, e.c2);
+            if (str_eq(lt, "strata_str") + str_eq(rt, "strata_str") > 0) {
+                sb_append(&sb, "strata_concat(");
+                sb_append(&sb, l); sb_append(&sb, ","); sb_append(&sb, r);
+                sb_append(&sb, ")");
+                return sb_to_str(&sb);
+            }
+            sb_append(&sb, "("); sb_append(&sb, l);
+            sb_append(&sb, " + "); sb_append(&sb, r); sb_append(&sb, ")");
+            return sb_to_str(&sb);
+        }
+        sb_append(&sb, "("); sb_append(&sb, l); sb_append(&sb, " ");
+        sb_append(&sb, e.s1); sb_append(&sb, " "); sb_append(&sb, r);
+        sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 41) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "("); sb_append(&sb, e.s1);
+        sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 42) { return gen_call(&g, e); }
+
+    if (k == 43) {
+        str inner = gen_expr(&g, e.c1);
+        str ct = expr_ctype(&g, e.c1);
+        if (ends_with_star(ct) == 1) { return inner; }
+        if (str_index_of(inner, ".") >= 0) { return inner; }
+        if (str_index_of(inner, "->") >= 0) { return inner; }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "(&"); sb_append(&sb, inner); sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 44) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "(("); sb_append(&sb, e.s1); sb_append(&sb, "*)(");
+        sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "))");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 45) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "strata_predict(&"); sb_append(&sb, e.s1);
+        sb_append(&sb, "_instance,"); sb_append(&sb, gen_expr(&g, e.c1));
+        sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 47) {
+        NodeVec els = nv_at(e.v1);
+        if (els.len == 0) { return "NULL"; }
+        StringBuilder sb = sb_new();
+        str et = expr_ctype(&g, node_ptr(nv_get(&els, 0)));
+        if (str_len(et) == 0) { et = "strata_int"; }
+        sb_append(&sb, "("); sb_append(&sb, et); sb_append(&sb, "[]){");
+        int n = els.len;
+        for (int i = 0; i < n; i = i + 1) {
+            if (i > 0) { sb_append(&sb, ", "); }
+            sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&els, i))));
+        }
+        sb_append(&sb, "}");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 49) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "[");
+        sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "]");
+        return sb_to_str(&sb);
+    }
+
+    if (k == 48) {
+        str obj = gen_expr(&g, e.c1);
+        str ct = expr_ctype(&g, e.c1);
+        StringBuilder sb = sb_new();
+        sb_append(&sb, obj);
+        if (ends_with_star(ct) == 1) { sb_append(&sb, "->"); }
+        if (ends_with_star(ct) == 0) { sb_append(&sb, "."); }
+        sb_append(&sb, e.s1);
+        return sb_to_str(&sb);
+    }
+
+    if (k == 46) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "NULL/*query "); sb_append(&sb, e.s1); sb_append(&sb, "*/");
+        return sb_to_str(&sb);
+    }
+
+    return "0";
+}
+
+str gen_call(Gen &g, Node e) {
+    NodeVec args = nv_at(e.v1);
+    int n = args.len;
+
+    if (str_eq(e.s1, "str") == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "strata_int_to_str(");
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
+        sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+    if (str_eq(e.s1, "int") == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "((strata_int)(");
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
+        sb_append(&sb, "))");
+        return sb_to_str(&sb);
+    }
+    if (str_eq(e.s1, "float") == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "((strata_float)(");
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
+        sb_append(&sb, "))");
+        return sb_to_str(&sb);
+    }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, cname(e.s1));
+    sb_append(&sb, "(");
+    for (int i = 0; i < n; i = i + 1) {
+        if (i > 0) { sb_append(&sb, ", "); }
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, i))));
+    }
+    sb_append(&sb, ")");
+    return sb_to_str(&sb);
+}
+
+// ── Native block substitution ────────────────────────────────────────────────
+// `$name` in a native block refers to a Strata binding; the sigil is dropped.
+
+str subst_native(str code) {
+    StringBuilder sb = sb_new();
+    int n = str_len(code);
+    for (int i = 0; i < n; i = i + 1) {
+        if (code[i] != 36) { sb_append(&sb, char_str(code[i])); }
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Statements ───────────────────────────────────────────────────────────────
+
+def gen_block(Gen &g, int vec_p) {
+    NodeVec body = nv_at(vec_p);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
+}
+
+def gen_stmt(Gen &g, Node st) {
+    int k = st.kind;
+
+    if (k == 23) {                                    // ExprStmt
+        Node e = node_at(st.c1);
+        if (e.kind == 42) {
+            if (str_eq(e.s1, "native") == 1) {
+                NodeVec args = nv_at(e.v1);
+                Node lit = nv_get(&args, 0);
+                // Emitted verbatim, newlines and all — the oracle does not
+                // wrap a statement-position native block in braces.
+                emit_raw(&g, subst_native(lit.s1));
+                return;
+            }
+        }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, ";");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
+    if (k == 20) { gen_var_decl(&g, st); return; }
+
+    if (k == 21) {                                    // return
+        if (st.c1 == 0) { cg_emit(&g, "return;"); return; }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "return ");
+        sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, ";");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
+    if (k == 22) {                                    // if / else
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "if ("); sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, ") {");
+        cg_emit(&g, sb_to_str(&sb));
+        g.indent = g.indent + 1;
+        gen_block(&g, st.v1);
+        g.indent = g.indent - 1;
+        if (st.v2 != 0) {
+            cg_emit(&g, "} else {");
+            g.indent = g.indent + 1;
+            gen_block(&g, st.v2);
+            g.indent = g.indent - 1;
+        }
+        cg_emit(&g, "}");
+        return;
+    }
+
+    if (k == 29) {                                    // while
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "while ("); sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, ") {");
+        cg_emit(&g, sb_to_str(&sb));
+        g.indent = g.indent + 1;
+        gen_block(&g, st.v1);
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
+        return;
+    }
+
+    if (k == 30) { gen_for(&g, st); return; }
+
+    if (k == 28) {                                    // assignment
+        StringBuilder sb = sb_new();
+        sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, " = ");
+        sb_append(&sb, gen_expr(&g, st.c2));
+        sb_append(&sb, ";");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
+    if (k == 31) { cg_emit(&g, "break;"); return; }
+    if (k == 32) { cg_emit(&g, "continue;"); return; }
+
+    if (k == 24) {                                    // assert
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "if(!(");
+        sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, ")){fprintf(stderr,\"[STRATA ASSERT FAILED] line ");
+        sb_append(&sb, str(st.line));
+        sb_append(&sb, "\\n\");exit(1);}");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
+    if (k == 27) {                                    // insert
+        NodeVec pairs = nv_at(st.v1);
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "/* insert into ");
+        sb_append(&sb, st.s1);
+        sb_append(&sb, ": ");
+        int n = pairs.len;
+        for (int i = 0; i < n; i = i + 1) {
+            if (i > 0) { sb_append(&sb, ", "); }
+            Node pair = nv_get(&pairs, i);
+            sb_append(&sb, pair.s1);
+            sb_append(&sb, "=");
+            sb_append(&sb, gen_expr(&g, pair.c1));
+        }
+        sb_append(&sb, " */");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+}
+
+def gen_for(Gen &g, Node st) {
+    str init = "";
+    if (st.c1 != 0) {
+        Node i = node_at(st.c1);
+        if (i.kind == 20) {
+            str ct = c_type(&g, i.c1);
+            StringBuilder sb = sb_new();
+            sb_append(&sb, ct); sb_append(&sb, " "); sb_append(&sb, cname(i.s1));
+            sb_append(&sb, " = "); sb_append(&sb, gen_expr(&g, i.c2));
+            init = sb_to_str(&sb);
+            g.var_types = bind_cons(i.s1, ct, g.var_types);
+        }
+        if (i.kind == 28) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, gen_expr(&g, i.c1)); sb_append(&sb, " = ");
+            sb_append(&sb, gen_expr(&g, i.c2));
+            init = sb_to_str(&sb);
+        }
+    }
+    str step = "";
+    if (st.c3 != 0) {
+        Node s = node_at(st.c3);
+        if (s.kind == 28) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, gen_expr(&g, s.c1)); sb_append(&sb, " = ");
+            sb_append(&sb, gen_expr(&g, s.c2));
+            step = sb_to_str(&sb);
+        }
+    }
+    StringBuilder head = sb_new();
+    sb_append(&head, "for ("); sb_append(&head, init); sb_append(&head, "; ");
+    sb_append(&head, gen_expr(&g, st.c2)); sb_append(&head, "; ");
+    sb_append(&head, step); sb_append(&head, ") {");
+    cg_emit(&g, sb_to_str(&head));
+    g.indent = g.indent + 1;
+    gen_block(&g, st.v1);
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+}
+
+def gen_var_decl(Gen &g, Node st) {
+    str ctype = c_type(&g, st.c1);
+    Node val = node_at(st.c2);
+
+    if (val.kind == 42) {
+        if (str_eq(val.s1, "native") == 1) {
+            NodeVec args = nv_at(val.v1);
+            Node lit = nv_get(&args, 0);
+            StringBuilder d = sb_new();
+            sb_append(&d, ctype); sb_append(&d, " "); sb_append(&d, cname(st.s1));
+            sb_append(&d, ";");
+            cg_emit(&g, sb_to_str(&d));
+            emit_raw(&g, "{");
+            emit_raw(&g, subst_native(lit.s1));
+            emit_raw(&g, "}");
+            g.var_types = bind_cons(st.s1, ctype, g.var_types);
+            return;
+        }
+    }
+
+    if (val.kind == 46) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, ctype); sb_append(&sb, " "); sb_append(&sb, cname(st.s1));
+        sb_append(&sb, " = NULL; /* query:"); sb_append(&sb, val.s1);
+        sb_append(&sb, " */");
+        cg_emit(&g, sb_to_str(&sb));
+        g.var_types = bind_cons(st.s1, ctype, g.var_types);
+        return;
+    }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, ctype); sb_append(&sb, " "); sb_append(&sb, cname(st.s1));
+    sb_append(&sb, " = "); sb_append(&sb, gen_expr(&g, st.c2)); sb_append(&sb, ";");
+    cg_emit(&g, sb_to_str(&sb));
+    g.var_types = bind_cons(st.s1, ctype, g.var_types);
+}
+
+// ── Declarations and functions ───────────────────────────────────────────────
+
+def forward_declare(Gen &g, Node d) {
+    if (d.kind == 3) { fwd_struct(&g, d.s1); }
+    if (d.kind == 4) { fwd_struct(&g, d.s1); }
+}
+
+def fwd_struct(Gen &g, str name) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "typedef struct "); sb_append(&sb, name);
+    sb_append(&sb, " "); sb_append(&sb, name); sb_append(&sb, ";");
+    emit_raw(&g, sb_to_str(&sb));
+}
+
+def gen_struct(Gen &g, str name, int fields_vec) {
+    StringBuilder open = sb_new();
+    sb_append(&open, "\nstruct "); sb_append(&open, name); sb_append(&open, " {");
+    emit_raw(&g, sb_to_str(&open));
+    NodeVec fs = nv_at(fields_vec);
+    int n = fs.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fs, i);
+        StringBuilder line = sb_new();
+        sb_append(&line, "    "); sb_append(&line, c_type(&g, f.c1));
+        sb_append(&line, " "); sb_append(&line, f.s1); sb_append(&line, ";");
+        emit_raw(&g, sb_to_str(&line));
+    }
+    emit_raw(&g, "};");
+}
+
+def gen_decl(Gen &g, Node d) {
+    if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); return; }
+    if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
+    if (d.kind == 5) { gen_model(&g, d); return; }
+    if (d.kind == 6) { gen_report(&g, d); return; }
+}
+
+def gen_model(Gen &g, Node d) {
+    StringBuilder a = sb_new();
+    sb_append(&a, "\ntypedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } ");
+    sb_append(&a, d.s1); sb_append(&a, ";");
+    emit_raw(&g, sb_to_str(&a));
+    Node in_t = node_at(d.c1);
+    Node out_t = node_at(d.c2);
+    StringBuilder b = sb_new();
+    sb_append(&b, "static "); sb_append(&b, d.s1); sb_append(&b, " ");
+    sb_append(&b, d.s1); sb_append(&b, "_instance = {");
+    sb_append(&b, str(in_t.i1)); sb_append(&b, ",");
+    sb_append(&b, str(in_t.i2)); sb_append(&b, ",");
+    sb_append(&b, str(out_t.i1)); sb_append(&b, ",");
+    sb_append(&b, str(out_t.i2)); sb_append(&b, ",NULL};");
+    emit_raw(&g, sb_to_str(&b));
+}
+
+def gen_report(Gen &g, Node d) {
+    StringBuilder a = sb_new();
+    sb_append(&a, "\nvoid "); sb_append(&a, d.s1); sb_append(&a, "_generate(FILE* _out) {");
+    emit_raw(&g, sb_to_str(&a));
+    StringBuilder b = sb_new();
+    sb_append(&b, "    fprintf(_out,\"# "); sb_append(&b, d.s2); sb_append(&b, "\\n\");");
+    emit_raw(&g, sb_to_str(&b));
+    emit_raw(&g, "}");
+}
+
+str fn_signature(Gen &g, Node fn) {
+    str rt = "void";
+    if (fn.c1 != 0) { rt = c_type(&g, fn.c1); }
+    if (str_eq(fn.s1, "def") == 1) { rt = "void"; }
+    NodeVec ps = nv_at(fn.v1);
+    int n = ps.len;
+    StringBuilder params = sb_new();
+    if (n == 0) { sb_append(&params, "void"); }
+    for (int i = 0; i < n; i = i + 1) {
+        if (i > 0) { sb_append(&params, ", "); }
+        sb_append(&params, c_param(&g, nv_get(&ps, i)));
+    }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, rt); sb_append(&sb, " "); sb_append(&sb, cname(fn.s2));
+    sb_append(&sb, "("); sb_append(&sb, sb_to_str(&params)); sb_append(&sb, ")");
+    return sb_to_str(&sb);
+}
+
+def forward_fn(Gen &g, Node fn) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, fn_signature(&g, fn)); sb_append(&sb, ";");
+    emit_raw(&g, sb_to_str(&sb));
+}
+
+def gen_function(Gen &g, Node fn) {
+    str rt = "void";
+    if (fn.c1 != 0) { rt = c_type(&g, fn.c1); }
+    if (str_eq(fn.s1, "def") == 1) { rt = "void"; }
+    g.func_returns = bind_cons(fn.s2, rt, g.func_returns);
+    g.var_types = 0;
+    g.borrowed = 0;
+
+    NodeVec ps = nv_at(fn.v1);
+    int np = ps.len;
+    for (int i = 0; i < np; i = i + 1) {
+        Node prm = nv_get(&ps, i);
+        str ct = c_type(&g, prm.c1);
+        if (prm.i1 == 1) {
+            if (ends_with_star(ct) == 0) { g.borrowed = bind_cons(prm.s1, "1", g.borrowed); }
+        }
+        g.var_types = bind_cons(prm.s1, ct, g.var_types);
+    }
+
+    StringBuilder head = sb_new();
+    sb_append(&head, "\n"); sb_append(&head, fn_signature(&g, fn)); sb_append(&head, " {");
+    emit_raw(&g, sb_to_str(&head));
+    g.indent = 1;
+    gen_block(&g, fn.v2);
+    g.indent = 0;
+    emit_raw(&g, "}");
+}
+
+// ── Import resolution ────────────────────────────────────────────────────────
+// Mirrors the resolver in stage0: `from std` and `from compiler` map to a
+// directory in the project tree, anything else is an external registry.
+
+str module_path(str root, str source, str name) {
+    // The leaf of a dotted path names the file: core.io -> std/io.sta
+    int last_dot = -1;
+    int n = str_len(name);
+    for (int i = 0; i < n; i = i + 1) { if (name[i] == 46) { last_dot = i; } }
+    str leaf = name;
+    if (last_dot >= 0) { leaf = str_slice(name, last_dot + 1, n); }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, root); sb_append(&sb, "/"); sb_append(&sb, source);
+    sb_append(&sb, "/"); sb_append(&sb, leaf); sb_append(&sb, ".sta");
+    return sb_to_str(&sb);
+}
+
+def collect_modules(str root, Node unit, NodeVec &out, int &seen_head) {
+    NodeVec imps = nv_at(unit.v1);
+    int n = imps.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node imp = nv_get(&imps, i);
+        int local = 0;
+        if (str_eq(imp.s2, "std") == 1) { local = 1; }
+        if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
+        if (local == 1) {
+            str path = module_path(root, imp.s2, imp.s1);
+            if (file_exists(path) == 1) {
+                if (bind_has(seen_head, path) == 0) {
+                    seen_head = bind_cons(path, "1", seen_head);
+                    Node mod = parse_source(file_read(path));
+                    // The unit carries the import name so the emitted module
+                    // separator matches the oracle's.
+                    mod.s1 = imp.s1;
+                    collect_modules(root, mod, &out, &seen_head);
+                    nv_push(&out, mod);
+                }
+            }
+        }
+    }
+}
+
+// Strata has no string-replace builtin; the driver needs one for the final
+// rename pass, so it is written here in terms of index-of and slice.
+str replace_all(str hay, str needle, str rep) {
+    int nlen = str_len(needle);
+    if (nlen == 0) { return hay; }
+    StringBuilder sb = sb_new();
+    int i = 0;
+    int hlen = str_len(hay);
+    while (i < hlen) {
+        int rest_start = i;
+        str rest = str_slice(hay, rest_start, hlen);
+        int at = str_index_of(rest, needle);
+        if (at < 0) {
+            sb_append(&sb, rest);
+            i = hlen;
+        }
+        if (at >= 0) {
+            sb_append(&sb, str_slice(rest, 0, at));
+            sb_append(&sb, rep);
+            i = rest_start + at + nlen;
+        }
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Driver ───────────────────────────────────────────────────────────────────
+
+str generate(str root, str source_path) {
+    Gen g = gen_new();
+    StringBuilder out = sb_new();
+    g.out = sb_ptr(out);
+
+    Node unit = parse_source(file_read(source_path));
+
+    NodeVec mods = nv_new();
+    int seen = 0;
+    collect_modules(root, unit, &mods, &seen);
+
+    StringBuilder preamble_path = sb_new();
+    sb_append(&preamble_path, root);
+    sb_append(&preamble_path, "/compiler/runtime_preamble.c");
+    emit_raw(&g, file_read(sb_to_str(&preamble_path)));
+
+    // Record type names are needed before any type is rendered.
+    int nm = mods.len;
+    for (int i = 0; i < nm; i = i + 1) { note_records(&g, nv_get(&mods, i)); }
+    note_records(&g, unit);
+
+    int emitted_decls = 0;
+    int emitted_fns = preamble_builtins();
+
+    for (int i = 0; i < nm; i = i + 1) {
+        Node m = nv_get(&mods, i);
+        emit_unit(&g, m, 0, &emitted_decls, &emitted_fns, m.s1);
+    }
+    emit_unit(&g, unit, 1, &emitted_decls, &emitted_fns, "");
+
+    if (has_main(unit) == 1) {
+        emit_raw(&g, "\nint main(int argc, char** argv) {\n    __strata_argc = argc;\n    __strata_argv = argv;\n    return (int)strata_main();\n}\n");
+    }
+
+    // The Strata entry point is renamed so the C entry point can wrap it.
+    str result = sb_to_str(&out);
+    result = replace_all(result, "\nstrata_int main(void);", "\nstrata_int strata_main(void);");
+    result = replace_all(result, "\nstrata_int main(void) {", "\nstrata_int strata_main(void) {");
+    result = replace_all(result, "\nvoid main(void);", "\nvoid strata_main(void);");
+    return result;
+}
+
+def note_records(Gen &g, Node unit) {
+    NodeVec decls = nv_at(unit.v2);
+    int n = decls.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind == 3) { g.records = bind_cons(d.s1, "1", g.records); }
+        if (d.kind == 4) { g.records = bind_cons(d.s1, "1", g.records); }
+    }
+}
+
+int has_main(Node unit) {
+    NodeVec fns = nv_at(unit.v3);
+    int n = fns.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fns, i);
+        if (str_eq(f.s2, "main") == 1) { return 1; }
+    }
+    return 0;
+}
+
+def emit_unit(Gen &g, Node unit, int is_root, int &emitted_decls, int &emitted_fns, str label) {
+    NodeVec decls = nv_at(unit.v2);
+    NodeVec fns = nv_at(unit.v3);
+
+    NodeVec pending_d = nv_new();
+    int nd = decls.len;
+    for (int i = 0; i < nd; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (bind_has(emitted_decls, d.s1) == 0) {
+            emitted_decls = bind_cons(d.s1, "1", emitted_decls);
+            nv_push(&pending_d, d);
+        }
+    }
+    NodeVec pending_f = nv_new();
+    int nf = fns.len;
+    for (int j = 0; j < nf; j = j + 1) {
+        Node f = nv_get(&fns, j);
+        if (bind_has(emitted_fns, f.s2) == 0) {
+            emitted_fns = bind_cons(f.s2, "1", emitted_fns);
+            nv_push(&pending_f, f);
+        }
+    }
+
+    int dn = pending_d.len;
+    int fnc = pending_f.len;
+    if (is_root == 0) {
+        if (dn + fnc > 0) {
+            StringBuilder sep = sb_new();
+            sb_append(&sep, "\n/* ── module ");
+            sb_append(&sep, label);
+            sb_append(&sep, " ── */");
+            emit_raw(&g, sb_to_str(&sep));
+        }
+    }
+    for (int a = 0; a < dn; a = a + 1) { forward_declare(&g, nv_get(&pending_d, a)); }
+    for (int b = 0; b < dn; b = b + 1) { gen_decl(&g, nv_get(&pending_d, b)); }
+    int fn2 = pending_f.len;
+    for (int c = 0; c < fn2; c = c + 1) { forward_fn(&g, nv_get(&pending_f, c)); }
+    for (int d2 = 0; d2 < fn2; d2 = d2 + 1) { gen_function(&g, nv_get(&pending_f, d2)); }
+}
+
+int preamble_builtins() {
+    int h = 0;
+    h = bind_cons("file_exists", "1", h);      h = bind_cons("file_read", "1", h);
+    h = bind_cons("file_write", "1", h);       h = bind_cons("float_to_str", "1", h);
+    h = bind_cons("int_to_str", "1", h);       h = bind_cons("sb_append_f", "1", h);
+    h = bind_cons("sb_append_line_f", "1", h); h = bind_cons("sb_new_f", "1", h);
+    h = bind_cons("str_concat", "1", h);       h = bind_cons("str_eq", "1", h);
+    h = bind_cons("str_index_of", "1", h);     h = bind_cons("str_len", "1", h);
+    h = bind_cons("str_slice", "1", h);        h = bind_cons("str_starts_with", "1", h);
+    h = bind_cons("str_to_int", "1", h);       h = bind_cons("strata_concat", "1", h);
+    h = bind_cons("strata_float_to_str", "1", h);
+    h = bind_cons("strata_int_to_str", "1", h);
+    return h;
+}

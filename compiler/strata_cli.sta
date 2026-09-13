@@ -1,0 +1,23 @@
+// STRATA COMPILER — compiler/strata_cli.sta
+// The whole self-hosted front end in one binary: lex, parse, type check, and
+// emit C. This is the unit the fixpoint is proven over, so that the proof
+// covers every stage rather than code generation alone.
+
+import io          from std;
+import str         from std;
+import lexer       from compiler;
+import parser      from compiler;
+import typechecker from compiler;
+import codegen     from compiler;
+
+int main() {
+    str path = arg_at(1);
+    str source = file_read(path);
+    Node unit = parse_source(source);
+
+    int errors = check_unit(unit);
+    if (errors > 0) { return 1; }
+
+    print_raw(generate(".", path));
+    return 0;
+}

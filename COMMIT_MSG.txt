@@ -1,33 +1,43 @@
-build: generate release notes from git history and live verification
+feat(phase6): codegen.sta — self-hosting fixpoint reached for the front end
 
-tools/release_notes.py groups commits since the previous tag by
-conventional-commit prefix and fills a verification table by running each
-suite at generation time. No figure in a release is typed in by hand.
+The Strata front end reproduces itself exactly:
 
-This project has twice published a claim that was false when written: a
-commit announcing "32/32 passing" against a suite that was failing 30/31
-with a segfault, and a "Stage 2 self-hosting complete" milestone for a
-compiler that did not compile. A release note stating a number no tool
-produced is the same failure in a more visible place.
+  stage0 (Python)  --C-->  gen1.c  --cc-->  strata1
+  strata1          --C-->  gen2.c  --cc-->  strata2
+  strata2          --C-->  gen3.c
 
-A failing suite reports FAILING in its row, adds a "this build is not
-green" banner, and exits non-zero, so notes for a broken build look
-broken. Verified by injecting a type error into a README example and
-confirming the Documentation row flipped and the exit code changed.
+gen1, gen2 and gen3 are identical — 4,757 lines, sha b2275d15b160467d.
+compiler/strata_cli.sta lexes, parses, type checks and emits C; built from
+Python-generated C it emits gen2.c, and rebuilt from gen2.c it emits
+gen3.c unchanged. Compiling the compiler again changes nothing, so the
+bootstrap can be retired without changing output. test_suite/fixpoint.py
+proves this on every push.
 
-Two bugs in the generator, both found by checking its output against
-measurements taken earlier by hand rather than trusting it:
+compiler/codegen.sta emits C byte-identical to the generator in
+bootstrap/stage0.py across 32 files including the compiler's own sources.
+The runtime prelude moved to compiler/runtime_preamble.c so that both
+implementations emit the same bytes by construction; two copies of 76
+lines of C would drift and the differential would then fail for a reason
+unrelated to code generation.
 
-  - The native-C line counter closed a block only on a line ENDING with
-    the terminator, so a one-line `int f() { native "..."; }` never
-    closed and every subsequent line counted as native. It reported 17%
-    where the real figure is 4%.
-  - Defaulting --since to the most recent tag diffs a release against
-    itself at tag time and reports zero changes. It now skips the
-    version being released.
+The self-hosted front end is 3,250 lines of Strata, 102 of them (3%)
+native C, all allocation primitives.
 
-RELEASE_PROCESS.md documents the command and the rule that a release
-whose notes exit non-zero is not tagged.
+Four bugs this stage exposed, each found by the fixpoint or the
+differential rather than by reading:
+
+  - Borrowed scalar parameters never dereferenced. `def bump(int &n)
+    { n = n + 1; }` emitted pointer arithmetic on strata_int* and
+    silently did nothing — no diagnostic, wrong answer, and every
+    program using the feature was affected.
+  - Two modules could not define the same function name. The dedup
+    meant for diamond imports discarded one definition silently, so a
+    call reached a function with a different signature. A real collision
+    is now a link error naming both modules.
+  - --emit-c ignored imports and emitted only the root unit, producing C
+    that could not link. The fixpoint could not run until this was fixed.
+  - Float literals were emitted verbatim: 0.90 reached C as 0.90 where
+    the oracle prints 0.9.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

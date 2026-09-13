@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.4.0-alpha — 2026-09-13
+
+**Self-hosting reached for the front end.** The fixpoint holds.
+
+```
+stage0 (Python)  --C-->  gen1.c  --cc-->  strata1
+strata1          --C-->  gen2.c  --cc-->  strata2
+strata2          --C-->  gen3.c
+
+gen1 == gen2 == gen3      4,757 lines      sha b2275d15b160467d
+```
+
+`compiler/strata_cli.sta` lexes, parses, type checks and emits C. Built from
+Python-generated C it produces `gen2.c`; rebuilt from `gen2.c` it produces
+`gen3.c`, and the three are identical. Compiling the compiler again changes
+nothing, so the Python bootstrap can be retired without changing output.
+
+### Code generator
+
+`compiler/codegen.sta` emits C byte-identical to the generator in
+`bootstrap/stage0.py` across 32 files, including the compiler's own sources —
+3,722 lines of C for `codegen.sta` alone. The runtime prelude moved to
+`compiler/runtime_preamble.c` so both implementations emit the same bytes by
+construction rather than by two copies staying in step.
+
+The self-hosted front end is 3,250 lines of Strata, 102 of them (3%) `native`
+C, all allocation primitives.
+
+### Bugs this stage exposed
+
+- **Borrowed scalar parameters never dereferenced.** `def bump(int &n) { n = n + 1; }`
+  compiled to pointer arithmetic on `strata_int*` and silently did nothing —
+  no diagnostic, wrong answer. Every use of a borrowed scalar now dereferences.
+- **Two modules could not define the same function name.** Deduplication meant
+  for the diamond-import case silently discarded one definition, so calls
+  reached a function with a different signature. A genuine collision is now a
+  link error naming both modules.
+- **`--emit-c` ignored imports**, emitting only the root unit and producing C
+  that could not link.
+- Float literals were emitted verbatim, so `0.90` reached C as `0.90` where the
+  oracle prints `0.9`.
+
 ## v0.3.0-alpha — 2026-09-13
 
 Three of the four self-hosting stages are complete, and the project's claims

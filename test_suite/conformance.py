@@ -200,6 +200,10 @@ compile_run("e2e_c_reserved_words_as_names",
     'import io from std;\nint register(int switch_in) { int const_ = switch_in * 2; return const_; }\nint main() { int auto_ = 5; print(str(register(auto_))); return 0; }',
     "10")
 
+compile_run("e2e_borrowed_scalar_write",
+    'import io from std;\ndef bump(int &n) { n = n + 1; }\nint main() { int v = 5; bump(&v); bump(&v); print(str(v)); return 0; }',
+    "7")
+
 compile_run("e2e_bubble_sort",
     'import io from std;\nint main() { list[int] d = [3,1,2]; int n = 3; for (int i = 0; i < n-1; i = i+1) { for (int j = 0; j < n-i-1; j = j+1) { if (d[j] > d[j+1]) { int t = d[j]; d[j] = d[j+1]; d[j+1] = t; } } } for (int k = 0; k < n; k = k+1) { print(str(d[k])); } return 0; }',
     "1\n2\n3")
