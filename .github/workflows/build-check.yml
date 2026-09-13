@@ -12,34 +12,48 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # Step 1: Securely checkout the complete workspace code tree layout
     - name: Checkout Code Repository
       uses: actions/checkout@v4
 
-    # Step 2: Setup system environment execution permissions
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
     - name: Initialize Foundation Environment Shell
-      run: |
-        echo "[CI Pipeline]: Initializing secure non-Python validation loop..."
-        chmod +x bin/strata bin/strata-lexer bin/strata-parser bin/strata-checker bin/strata-codegen bin/strata-test bin/strata-errors bin/strata-debug bin/strata-deploy bin/strata-sync
+      run: chmod +x bin/strata
 
-    # Step 3: Trigger the full local automated regression test suite script
-    - name: Run Toolchain Regression Test Matrix
-      run: |
-        echo "[CI Pipeline]: Triggering Lexer -> Parser -> Checker -> Codegen Validation Pass..."
-        ./bin/strata test
+    # The conformance suite is the compiler's own regression gate: E001-E006
+    # plus end-to-end compile-and-run. It exits non-zero on any failure.
+    - name: Run Conformance Suite
+      run: python3 test_suite/conformance.py
 
-    # Step 4: Verify explicit compilation against the formal conformance target
-    - name: Execute Language Conformance Verification
-      run: |
-        echo "[CI Pipeline]: Compiling conformance test specifications..."
-        ./bin/strata build test_suite/conformance_tests.sta --target=wasm
+    # Compiles every fenced code block in README.md and
+    # LANGUAGE_SPECIFICATION.md. Fails when documentation drifts away from
+    # what the compiler actually accepts.
+    - name: Verify Documentation Examples
+      run: python3 test_suite/doc_examples.py
 
-    # Step 5: Audit multi-stage production deployment scripts
+    # The stdlib must parse with the compiler that ships alongside it.
+    - name: Verify Standard Library Parses
+      run: |
+        fail=0
+        for f in std/*.sta; do
+          if ! python3 -c "
+        import sys; sys.path.insert(0, '.')
+        from bootstrap.stage0 import parse_file
+        parse_file('$f')
+        " 2>/dev/null; then
+            echo "::error file=$f::std module does not parse"
+            fail=1
+          fi
+        done
+        exit $fail
+
     - name: Validate Containerization Infrastructure Blueprints
       run: |
-        echo "[CI Pipeline]: Auditing production Dockerfile and Kubernetes manifests..."
         if [ ! -f Dockerfile ] || [ ! -f deploy/production_k8s.yaml ]; then
-          echo "!!! [CI Error]: Core deployment architecture assets missing from project tree."
+          echo "::error::Core deployment architecture assets missing from project tree."
           exit 1
         fi
         echo "[SUCCESS]: Automated CI/CD validation sweep settled with 0 anomalies found."

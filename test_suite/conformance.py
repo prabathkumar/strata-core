@@ -98,6 +98,14 @@ test("e006_undeclared_model", 'int main() { int x = predict GhostModel(x); retur
 test("e006_valid_model_decl",
      'model FraudNet { input: tensor[float, 1, 64]; output: tensor[float, 1, 2]; }\nint main() { return 0; }')
 
+print("\n── Insert statement (write form of <-) ──────────────────────────")
+test("insert_bad_column",
+     'database Audit { int id; str actor; }\nint main() { Audit <- [wrong_col = "x"]; return 0; }', "E004")
+test("insert_valid",
+     'database Audit { int id; str actor; }\nint main() { Audit <- [actor = "prabath"]; return 0; }')
+test("insert_multi_column",
+     'database Audit { int id; str actor; }\nint main() { Audit <- [id = 1, actor = "p"]; return 0; }')
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',
@@ -142,6 +150,10 @@ compile_run("e2e_div_mod",
 compile_run("e2e_string_concat",
     'import io from std;\nint main() { str a = "Hello, "; str b = "World!"; print(a + b); return 0; }',
     "Hello, World!")
+
+compile_run("e2e_stdlib_print_is_library",
+    'import io from std;\nint main() { print("via stdlib"); return 0; }',
+    "via stdlib")
 
 total = PASS + FAIL
 print(f"\n{'='*60}")

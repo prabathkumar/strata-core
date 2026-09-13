@@ -32,6 +32,12 @@
       "severity": "CRITICAL_HALT",
       "diagnostic": "Dynamic data types leaked across the FFI bridge threshold without explicit type casing.",
       "ai_remediation_strategy": "Wrap unmanaged dynamic module operations directly inside rigid Strata type cast constructor blocks."
+    },
+    "E006": {
+      "classification": "Tensor Dimension Drift",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "A predict operator received a tensor whose shape does not match the model's declared input contract, or a tensor value was assigned to a scalar.",
+      "ai_remediation_strategy": "Read the model block's input/output tensor dimensions, then reshape the offending tensor or correct the receiving declaration to the declared shape."
     }
   }
 }

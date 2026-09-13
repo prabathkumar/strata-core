@@ -3,7 +3,7 @@
 # Compiles .sta source files to C via Python bootstrap
 # Once compiler/compiler.sta compiles itself, this file is retired.
 from __future__ import annotations
-import sys, os, re, subprocess
+import sys, os, re, json, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
@@ -119,6 +119,9 @@ class CodeGen:
         self.func_returns = {}
         self.var_types = {}
         self.native_blocks = []  # collect native blocks
+        # database/protocol/model names. Records are always handled by
+        # reference in C, so these map to 'T*' rather than 'T'.
+        self.record_types = set()
 
     def emit(self, line=""):
         self.out.append("    " * self.indent + line)
@@ -134,6 +137,11 @@ class CodeGen:
         # imported down two paths is emitted exactly once.
         emitted_decls, emitted_fns = set(), set(PREAMBLE_BUILTINS)
         units = [(name, m) for name, m in self.modules] + [(None, self.ast)]
+
+        for _, unit in units:
+            for d in unit.declarations:
+                if isinstance(d, (DatabaseDecl, ProtocolDecl)):
+                    self.record_types.add(d.name)
 
         for mod_name, unit in units:
             is_root = unit is self.ast
@@ -352,7 +360,14 @@ int main(int argc, char** argv) {
             if lt == rt:                   return lt
             return None
         if isinstance(expr, CastExpr):
-            return getattr(expr, "target_type", None)
+            t = getattr(expr, "target_type", None)
+            return f"{t}*" if t else None
+        if isinstance(expr, MemberAccess):
+            return None
+        if isinstance(expr, QueryExpr):
+            return f"{expr.source}*" if expr.source in self.record_types else None
+        if isinstance(expr, BorrowExpr):
+            return self._expr_ctype(expr.target, param_names)
         if isinstance(expr, CallExpr):
             if expr.callee == "str":   return "strata_str"
             if expr.callee == "int":   return "strata_int"
@@ -393,17 +408,27 @@ int main(int argc, char** argv) {
             return self._gen_call(expr, param_names)
         if isinstance(expr, BorrowExpr):
             inner = self._gen_expr(expr.target, param_names)
-            # If borrowing a member access, just pass value directly
-            if "." in inner:
+            ct = self._expr_ctype(expr.target, param_names) or ""
+            # Records are already references; borrowing one passes it through.
+            if ct.endswith("*") or "." in inner or "->" in inner:
                 return inner
             return f"(&{inner})"
         if isinstance(expr, CastExpr):
+            if expr.target_type not in self.record_types:
+                known = sorted(self.record_types)
+                print(f"[E004] Unknown type '{expr.target_type}' in '::' cast "
+                      f"(line {getattr(expr, 'line', '?')})\n"
+                      f"Hint: Declared record types: {known}", file=sys.stderr)
+                sys.exit(1)
             return f"(({expr.target_type}*)({self._gen_expr(expr.source, param_names)}))"
         if isinstance(expr, PredictExpr):
             return f"strata_predict(&{expr.model}_instance,{self._gen_expr(expr.arg, param_names)})"
         if isinstance(expr, ListLiteral): return "NULL"
         if isinstance(expr, MemberAccess):
-            return f"{self._gen_expr(expr.obj, param_names)}.{expr.member}"
+            obj = self._gen_expr(expr.obj, param_names)
+            ct = self._expr_ctype(expr.obj, param_names) or ""
+            arrow = "->" if ct.endswith("*") else "."
+            return f"{obj}{arrow}{expr.member}"
         if isinstance(expr, QueryExpr): return f"NULL/*query {expr.source}*/"
         return "0"
 
@@ -417,14 +442,20 @@ int main(int argc, char** argv) {
     def _c_type(self, t):
         if t is None: return "void"
         if isinstance(t, PrimitiveType):
-            return {"int":"strata_int","float":"strata_float","str":"strata_str",
-                    "void":"void","bool":"strata_bool"}.get(t.name, t.name)
+            mapped = {"int":"strata_int","float":"strata_float","str":"strata_str",
+                      "void":"void","bool":"strata_bool"}.get(t.name)
+            if mapped: return mapped
+            return f"{t.name}*" if t.name in self.record_types else t.name
         if isinstance(t, ListType): return f"{self._c_type(t.element_type)}*"
         if isinstance(t, TensorType): return "double*"
         return "void*"
 
     def _c_param(self, p):
-        return f"{self._c_type(p.param_type)}{'*' if p.borrow else ''} {p.name}"
+        ct = self._c_type(p.param_type)
+        # A record is already a pointer; '&' on it is a no-op, not a double
+        # indirection.
+        star = "*" if (p.borrow and not ct.endswith("*")) else ""
+        return f"{ct}{star} {p.name}"
 
 STDLIB_SOURCES = ("std",)
 
@@ -491,12 +522,94 @@ def resolve_imports(ast, source_path, verbose=False):
     walk(ast)
     return modules, unresolved
 
-def compile_sta(source_path, output_path, target="native", verbose=False):
-    print(f"[Strata Stage 0] Compiling '{source_path}'...")
-    try: ast = parse_file(source_path)
-    except (LexError, ParseError) as e: print(str(e), file=sys.stderr); sys.exit(1)
+_TAXONOMY_CACHE = None
+
+
+def load_taxonomy():
+    """ERROR_TAXONOMY.json, keyed by error code. Empty dict if unavailable."""
+    global _TAXONOMY_CACHE
+    if _TAXONOMY_CACHE is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "ERROR_TAXONOMY.json")
+        try:
+            with open(path) as f:
+                _TAXONOMY_CACHE = json.load(f).get("taxonomy", {})
+        except Exception:
+            _TAXONOMY_CACHE = {}
+    return _TAXONOMY_CACHE
+
+
+def diagnostics_payload(source_path, errors, stage):
+    """Structured diagnostics for machine consumption.
+
+    This is what makes the error matrix actionable by a repair agent: each
+    diagnostic carries its taxonomy classification and remediation strategy
+    alongside the location, so a caller never has to scrape human-readable
+    compiler text.
+    """
+    tax = load_taxonomy()
+    out = []
+    for e in errors:
+        meta = tax.get(e.code, {})
+        out.append({
+            "code": e.code,
+            "classification": meta.get("classification", ""),
+            "severity": meta.get("severity", "CRITICAL_HALT"),
+            "message": e.message,
+            "line": e.line,
+            "column": e.col,
+            "hint": e.hint,
+            "remediation_strategy": meta.get("ai_remediation_strategy", ""),
+        })
+    return {"file": source_path, "stage": stage,
+            "ok": not out, "error_count": len(out), "diagnostics": out}
+
+
+def compile_sta(source_path, output_path, target="native", verbose=False,
+                json_diagnostics=False):
+    if not json_diagnostics:
+        print(f"[Strata Stage 0] Compiling '{source_path}'...")
+    try:
+        ast = parse_file(source_path)
+    except (LexError, ParseError) as e:
+        if json_diagnostics:
+            code = "E000"
+            print(json.dumps({"file": source_path, "stage": "parse", "ok": False,
+                              "error_count": 1,
+                              "diagnostics": [{
+                                  "code": code,
+                                  "classification": "Syntax Violation",
+                                  "severity": "CRITICAL_HALT",
+                                  "message": str(e),
+                                  "line": getattr(e, "line", 0),
+                                  "column": getattr(e, "col", 0),
+                                  "hint": "",
+                                  "remediation_strategy":
+                                      "Correct the token sequence so it matches the "
+                                      "grammar in LANGUAGE_SPECIFICATION.md.",
+                              }]}, indent=2))
+            sys.exit(1)
+        print(str(e), file=sys.stderr); sys.exit(1)
     if verbose:
         print(f"  AST: {len(ast.imports)} imports, {len(ast.declarations)} decls, {len(ast.functions)} functions")
+    # Type-check before generating code. Without this the E001-E006 taxonomy
+    # only ever runs under `strata check`, and a type error reaches the user as
+    # a C compiler diagnostic instead of a Strata one.
+    try:
+        from compiler.typechecker import TypeChecker
+        errors = TypeChecker(ast, filename=source_path).check()
+    except ImportError:
+        errors = []
+    if json_diagnostics:
+        payload = diagnostics_payload(source_path, errors, "typecheck")
+        print(json.dumps(payload, indent=2))
+        sys.exit(1 if errors else 0)
+    if errors:
+        print(f"[Strata Check] {len(errors)} error(s) found:", file=sys.stderr)
+        for e in errors:
+            print(f"  {e}", file=sys.stderr)
+        sys.exit(1)
+
     modules, unresolved = resolve_imports(ast, source_path, verbose)
     for u in unresolved:
         print(f"[STRATA IMPORT] '{u}' is an external module with no local "
@@ -506,7 +619,8 @@ def compile_sta(source_path, output_path, target="native", verbose=False):
     base = os.path.splitext(source_path)[0]
     c_path = base + ".c"
     with open(c_path, "w") as f: f.write(c_source)
-    print(f"  C source: {c_path}")
+    if not json_diagnostics:
+        print(f"  C source: {c_path}")
     cc = next((c for c in ("clang","gcc","cc")
                if subprocess.run(["which",c],capture_output=True).returncode==0), None)
     if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
@@ -527,7 +641,8 @@ def compile_sta(source_path, output_path, target="native", verbose=False):
     if r.returncode != 0:
         print(f"[STRATA C ERROR]\n{r.stderr}", file=sys.stderr); sys.exit(1)
     print(f"  {'Object' if is_library and target != 'wasm' else 'Binary'}: {output_path}")
-    print(f"[Strata Stage 0] Done. OK")
+    if not json_diagnostics:
+        print(f"[Strata Stage 0] Done. OK")
 
 def parse_file(path):
     toks = tokenise_file(path)
@@ -542,6 +657,8 @@ def main():
     ap.add_argument("--ast",action="store_true")
     ap.add_argument("--emit-c",action="store_true")
     ap.add_argument("-v","--verbose",action="store_true")
+    ap.add_argument("--json",action="store_true",
+                    help="emit machine-readable diagnostics for repair agents")
     args = ap.parse_args()
     if args.ast:
         import json; ast=parse_file(args.file); print(json.dumps(ast.to_dict(),indent=2)); return
@@ -551,6 +668,7 @@ def main():
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
         print(CodeGen(ast,args.file).generate()); return
-    compile_sta(args.file, out, target=args.target, verbose=args.verbose)
+    compile_sta(args.file, out, target=args.target, verbose=args.verbose,
+                json_diagnostics=args.json)
 
 if __name__=="__main__": main()

@@ -15,7 +15,7 @@ from compiler.parser import (
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
-    AssertStmt, RenderStmt, VerifyBlock,
+    AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -98,6 +98,11 @@ class TypeChecker:
                 self.global_scope.define(d.name, SType(d.name))
             elif isinstance(d, ReportDecl):
                 self.global_scope.define(d.name, SType(d.name))
+        # Reports are validated in a second pass: a report may be declared
+        # before the database it draws from.
+        for d in self.ast.declarations:
+            if isinstance(d, ReportDecl):
+                self._check_report(d)
 
     def _register_functions(self):
         for fn in self.ast.functions:
@@ -119,12 +124,43 @@ class TypeChecker:
     def _check_body(self,stmts,scope):
         for s in stmts: self._check_stmt(s,scope)
 
+    def _check_insert(self,stmt,scope):
+        """`Table <- [col = expr, ...]` — validate target and every column."""
+        if stmt.target not in self.schemas:
+            self._error("E004",f"Database '{stmt.target}' not declared",
+                stmt.line,stmt.col,f"Declare 'database {stmt.target}' first")
+            return
+        fields=self.schemas[stmt.target]
+        for col,value in stmt.assignments:
+            if col not in fields:
+                self._error("E004",
+                    f"Column '{col}' does not exist in '{stmt.target}'",
+                    stmt.line,stmt.col,
+                    f"Valid columns: {sorted(fields)}")
+            self._infer_type(value,scope)
+
+    def _check_report(self,decl):
+        """A report's datasource is a query and gets the same E004 treatment.
+
+        Without this a typo'd column in `datasource:` compiles silently, which
+        is the exact failure `database` blocks exist to prevent.
+        """
+        q=getattr(decl,"datasource",None)
+        if q is None or not isinstance(q,QueryExpr): return
+        if q.source not in self.schemas:
+            self._error("E004",f"Database '{q.source}' not declared",
+                decl.line,decl.col,
+                f"Declare 'database {q.source}' before reporting on it")
+            return
+        self._validate_query_cond(q.condition,q.source,decl.line,decl.col)
+
     def _check_stmt(self,stmt,scope):
         if isinstance(stmt,VarDecl): self._check_var_decl(stmt,scope)
         elif isinstance(stmt,ReturnStmt): self._check_return(stmt,scope)
         elif isinstance(stmt,IfStmt): self._check_if(stmt,scope)
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
+        elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)
         elif isinstance(stmt,VerifyBlock):
             for a in stmt.assertions: self._infer_type(a.condition,scope)

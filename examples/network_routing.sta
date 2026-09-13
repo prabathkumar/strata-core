@@ -25,7 +25,7 @@ stream HandleCoreIngestionBus(str native_nic_socket) {
     
     // Zero-Copy Casting: Map incoming raw network bytes straight to our layout definition.
     // The '::' operator translates directly to a zero-copy pointer cast in machine code.
-    NetworkPacketHeader header = current_raw_buffer() :: NetworkPacketHeader;
+    IPV6PacketHeader header = current_raw_buffer() :: IPV6PacketHeader;
     
     // Strict compile-time guard validation boundary check
     if (header.data_payload_bytes > 32768) {
