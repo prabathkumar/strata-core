@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # STRATA — STAGE 0 BOOTSTRAP COMPILER
-# Compiles .sta source files to C, then invokes clang/gcc
-# This is the ONLY Python in the Strata toolchain.
+# Compiles .sta source files to C via Python bootstrap
+# Once compiler/compiler.sta compiles itself, this file is retired.
 from __future__ import annotations
-import sys, os, subprocess
+import sys, os, re, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
 from compiler.parser import (
-    Parser, CompilationUnit, ParseError, parse_file,
+    Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
@@ -27,12 +27,18 @@ C_PREAMBLE = r"""
 #include <stdint.h>
 #include <math.h>
 #include <ctype.h>
+
 typedef int64_t   strata_int;
 typedef double    strata_float;
 typedef char*     strata_str;
 typedef int64_t   strata_bool;
+
 #define STRATA_TRUE  1
 #define STRATA_FALSE 0
+
+int __strata_argc = 0;
+char** __strata_argv = NULL;
+
 static strata_str strata_concat(strata_str a, strata_str b) {
     size_t la=strlen(a),lb=strlen(b);
     strata_str r=(strata_str)malloc(la+lb+1);
@@ -46,196 +52,354 @@ static strata_str strata_float_to_str(strata_float v) {
     strata_str b=(strata_str)malloc(64);
     snprintf(b,64,"%.6f",v); return b;
 }
+static strata_int str_len(strata_str s) { return (strata_int)strlen(s); }
+static strata_str str_concat(strata_str a, strata_str b) { return strata_concat(a,b); }
+static strata_str int_to_str(strata_int v) { return strata_int_to_str(v); }
+static strata_str float_to_str(strata_float v) { return strata_float_to_str(v); }
+static strata_int str_eq(strata_str a, strata_str b) { return strcmp(a,b)==0?1:0; }
+static strata_int str_to_int(strata_str s) { return (strata_int)atoll(s); }
+static strata_str str_slice(strata_str s, strata_int start, strata_int end) {
+    strata_int len=(strata_int)strlen(s);
+    if(start<0)start=0; if(end>len)end=len;
+    strata_int sz=end-start; if(sz<=0)return "";
+    strata_str r=(strata_str)malloc(sz+1);
+    memcpy(r,s+start,sz); r[sz]='\0'; return r;
+}
+static strata_int str_index_of(strata_str h, strata_str n) {
+    char* p=strstr(h,n); return p?(strata_int)(p-h):-1;
+}
+static strata_int str_starts_with(strata_str s, strata_str p) {
+    return strncmp(s,p,strlen(p))==0?1:0;
+}
+static strata_str file_read(strata_str path) {
+    FILE* f=fopen(path,"r"); if(!f)return "";
+    fseek(f,0,SEEK_END); long sz=ftell(f); rewind(f);
+    char* b=(char*)malloc(sz+1); fread(b,1,sz,f); b[sz]='\0'; fclose(f); return b;
+}
+static strata_int file_write(strata_str path, strata_str content) {
+    FILE* f=fopen(path,"w"); if(!f)return 0;
+    fputs(content,f); fclose(f); return 1;
+}
+static strata_int file_exists(strata_str path) {
+    FILE* f=fopen(path,"r"); if(f){fclose(f);return 1;} return 0;
+}
+
+/* StringBuilder */
+typedef struct { char* buf; int64_t len; int64_t cap; } SB;
+static SB sb_new_f(void) { SB s; s.cap=4096;s.len=0;s.buf=(char*)malloc(4096);s.buf[0]='\0';return s; }
+static void sb_append_f(SB* s, const char* t) {
+    size_t tl=strlen(t);
+    while(s->len+(int64_t)tl+1>s->cap){s->cap*=2;s->buf=(char*)realloc(s->buf,s->cap);}
+    memcpy(s->buf+s->len,t,tl+1); s->len+=(int64_t)tl;
+}
+static void sb_append_line_f(SB* s, const char* t) {
+    sb_append_f(s,t); sb_append_f(s,"\n");
+}
 """
 
-class CodeGen:
-    def __init__(self,ast,source_path):
-        self.ast=ast; self.source_path=source_path
-        self.out=[]; self.indent=0
-        self.schemas={}; self.func_returns={}; self.var_types={}
+# Native block variable substitution
+def subst_native(code: str, param_names: list) -> str:
+    """Replace $varname with the C variable name in native blocks."""
+    def replacer(m):
+        name = m.group(1)
+        return name  # In Stage 0 params map directly
+    return re.sub(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', lambda m: m.group(1), code)
 
-    def emit(self,line=""): self.out.append("    "*self.indent+line)
-    def emit_raw(self,line): self.out.append(line)
+class CodeGen:
+    def __init__(self, ast, source_path):
+        self.ast = ast
+        self.source_path = source_path
+        self.out = []
+        self.indent = 0
+        self.schemas = {}
+        self.func_returns = {}
+        self.var_types = {}
+        self.native_blocks = []  # collect native blocks
+
+    def emit(self, line=""):
+        self.out.append("    " * self.indent + line)
+
+    def emit_raw(self, line):
+        self.out.append(line)
 
     def generate(self):
         self.emit_raw(C_PREAMBLE)
-        for d in self.ast.declarations: self._forward_declare(d)
-        for d in self.ast.declarations: self._gen_decl(d)
-        for f in self.ast.functions: self._forward_fn(f)
-        for f in self.ast.functions: self._gen_function(f)
-        return "\n".join(self.out)
+        for d in self.ast.declarations:
+            self._forward_declare(d)
+        for d in self.ast.declarations:
+            self._gen_decl(d)
+        for fn in self.ast.functions:
+            self._forward_fn(fn)
+        for fn in self.ast.functions:
+            self._gen_function(fn)
+        # Add main wrapper if strata_main exists
+        fn_names = [fn.name for fn in self.ast.functions]
+        if 'main' in fn_names:
+            # rename strata main and wrap
+            pass
+        self.emit_raw("""
+int main(int argc, char** argv) {
+    __strata_argc = argc;
+    __strata_argv = argv;
+    return (int)strata_main();
+}
+""")
+        # Replace strata main declaration
+        result = "\n".join(self.out)
+        result = result.replace(
+            "\nstrata_int main(void);",
+            "\nstrata_int strata_main(void);"
+        ).replace(
+            "\nstrata_int main(void) {",
+            "\nstrata_int strata_main(void) {"
+        ).replace(
+            "\nvoid main(void);",
+            "\nvoid strata_main(void);"
+        )
+        return result
 
-    def _forward_declare(self,d):
-        if isinstance(d,(DatabaseDecl,ProtocolDecl)):
-            self.emit_raw(f"typedef struct {d.name} {d.name};")
+    def _forward_declare(self, decl):
+        if isinstance(decl, (DatabaseDecl, ProtocolDecl)):
+            self.emit_raw(f"typedef struct {decl.name} {decl.name};")
 
-    def _forward_fn(self,fn):
-        rt=self._c_type(fn.return_type) if fn.return_type else "void"
-        if fn.kind=="def": rt="void"
-        params=", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
+    def _forward_fn(self, fn):
+        rt = self._c_type(fn.return_type) if fn.return_type else "void"
+        if fn.kind == "def": rt = "void"
+        params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
         self.emit_raw(f"{rt} {fn.name}({params});")
 
-    def _gen_decl(self,d):
-        if isinstance(d,DatabaseDecl):
-            self._gen_struct(d.name,d.fields)
-            self.schemas[d.name]=[f.name for f in d.fields]
-        elif isinstance(d,ProtocolDecl): self._gen_struct(d.name,d.fields)
-        elif isinstance(d,ModelDecl): self._gen_model(d)
-        elif isinstance(d,ReportDecl): self._gen_report(d)
+    def _gen_decl(self, decl):
+        if isinstance(decl, DatabaseDecl):
+            self._gen_struct(decl.name, decl.fields)
+            self.schemas[decl.name] = [f.name for f in decl.fields]
+        elif isinstance(decl, ProtocolDecl):
+            self._gen_struct(decl.name, decl.fields)
+        elif isinstance(decl, ModelDecl):
+            self._gen_model(decl)
+        elif isinstance(decl, ReportDecl):
+            self._gen_report(decl)
 
-    def _gen_struct(self,name,fields):
+    def _gen_struct(self, name, fields):
         self.emit_raw(f"\nstruct {name} {{")
-        for f in fields: self.emit_raw(f"    {self._c_type(f.field_type)} {f.name};")
+        for f in fields:
+            self.emit_raw(f"    {self._c_type(f.field_type)} {f.name};")
         self.emit_raw(f"}};")
 
-    def _gen_model(self,d):
-        self.emit_raw(f"\ntypedef struct {{ int rows_in,cols_in,rows_out,cols_out; double* weights; }} {d.name};")
-        self.emit_raw(f"static {d.name} {d.name}_instance = {{{d.input_type.rows},{d.input_type.cols},{d.output_type.rows},{d.output_type.cols},NULL}};")
+    def _gen_model(self, decl):
+        self.emit_raw(f"\ntypedef struct {{ int rows_in,cols_in,rows_out,cols_out; double* weights; }} {decl.name};")
+        self.emit_raw(f"static {decl.name} {decl.name}_instance = {{{decl.input_type.rows},{decl.input_type.cols},{decl.output_type.rows},{decl.output_type.cols},NULL}};")
 
-    def _gen_report(self,d):
-        self.emit_raw(f"\nvoid {d.name}_generate(FILE* _out) {{")
-        self.emit_raw(f'    fprintf(_out,"# {d.title}\\n");')
+    def _gen_report(self, decl):
+        self.emit_raw(f"\nvoid {decl.name}_generate(FILE* _out) {{")
+        self.emit_raw(f'    fprintf(_out,"# {decl.title}\\n");')
         self.emit_raw(f"}}")
 
-    def _gen_function(self,fn):
-        rt=self._c_type(fn.return_type) if fn.return_type else "void"
-        if fn.kind=="def": rt="void"
-        params=", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
-        self.func_returns[fn.name]=rt; self.var_types={}
+    def _gen_function(self, fn):
+        rt = self._c_type(fn.return_type) if fn.return_type else "void"
+        if fn.kind == "def": rt = "void"
+        params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
+        self.func_returns[fn.name] = rt
+        self.var_types = {}
+        # Collect param names for native substitution
+        param_names = [p.name for p in fn.params]
         self.emit_raw(f"\n{rt} {fn.name}({params}) {{")
-        self.indent=1
-        for s in fn.body: self._gen_stmt(s)
-        self.indent=0; self.emit_raw("}")
+        self.indent = 1
+        for stmt in fn.body:
+            self._gen_stmt(stmt, param_names)
+        self.indent = 0
+        self.emit_raw("}")
 
-    def _gen_stmt(self,s):
-        if isinstance(s,VarDecl): self._gen_var_decl(s)
-        elif isinstance(s,ReturnStmt):
-            self.emit(f"return {self._gen_expr(s.value)};") if s.value else self.emit("return;")
-        elif isinstance(s,IfStmt): self._gen_if(s)
-        elif isinstance(s,PrintStmt):
-            self.emit(f'printf("%s\\n",(strata_str)({self._gen_expr(s.value)}));')
-        elif isinstance(s,AssertStmt):
-            self.emit(f'if(!({self._gen_expr(s.condition)})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {s.line}\\n");exit(1);}}')
-        elif isinstance(s,RenderStmt):
-            self.emit(f'{{FILE* _rf=fopen("{s.path}","w");{s.report}_generate(_rf);fclose(_rf);}}')
-        elif isinstance(s,VerifyBlock):
-            self.emit(f'/* verify: {s.label} */')
-            for a in s.assertions: self._gen_stmt(a)
-        elif isinstance(s,ExprStmt): self.emit(f"{self._gen_expr(s.expr)};")
+    def _gen_stmt(self, stmt, param_names=None):
+        if param_names is None: param_names = []
 
-    def _gen_var_decl(self,s):
-        ct=self._c_type(s.var_type); name=s.name
-        if isinstance(s.value,QueryExpr):
-            src=s.value.source
-            if src in self.schemas: self._validate_query_cols(s.value.condition,src,s.line)
-            self.emit(f"{ct} {name}=NULL;/* query:{src} */")
+        # Handle native blocks — CallExpr with callee="native"
+        if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, CallExpr):
+            if stmt.expr.callee == "native":
+                if stmt.expr.args and isinstance(stmt.expr.args[0], StrLiteral):
+                    raw_c = stmt.expr.args[0].value
+                    raw_c = subst_native(raw_c, param_names)
+                    for line in raw_c.strip().split('\n'):
+                        self.emit(line)
+                return
+
+        if isinstance(stmt, VarDecl):
+            self._gen_var_decl(stmt, param_names)
+        elif isinstance(stmt, ReturnStmt):
+            if stmt.value:
+                self.emit(f"return {self._gen_expr(stmt.value, param_names)};")
+            else:
+                self.emit("return;")
+        elif isinstance(stmt, IfStmt):
+            self._gen_if(stmt, param_names)
+        elif isinstance(stmt, PrintStmt):
+            val = self._gen_expr(stmt.value, param_names)
+            self.emit(f'printf("%s\\n",(strata_str)({val}));')
+        elif isinstance(stmt, AssertStmt):
+            cond = self._gen_expr(stmt.condition, param_names)
+            self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')
+        elif isinstance(stmt, RenderStmt):
+            self.emit(f'{{FILE* _rf=fopen("{stmt.path}","w");{stmt.report}_generate(_rf);fclose(_rf);}}')
+        elif isinstance(stmt, VerifyBlock):
+            self.emit(f'/* verify: {stmt.label} */')
+            for a in stmt.assertions:
+                self._gen_stmt(a, param_names)
+        elif isinstance(stmt, ExprStmt):
+            self.emit(f"{self._gen_expr(stmt.expr, param_names)};")
+
+    def _gen_var_decl(self, stmt, param_names):
+        ctype = self._c_type(stmt.var_type)
+        name = stmt.name
+
+        # Check for native block assignment
+        if isinstance(stmt.value, CallExpr) and stmt.value.callee == "native":
+            if stmt.value.args and isinstance(stmt.value.args[0], StrLiteral):
+                raw_c = stmt.value.args[0].value
+                raw_c = subst_native(raw_c, param_names)
+                self.emit(f"{ctype} {name};")
+                self.emit("{")
+                for line in raw_c.strip().split('\n'):
+                    self.emit("    " + line)
+                self.emit("}")
+                self.var_types[name] = ctype
+                return
+
+        if isinstance(stmt.value, QueryExpr):
+            src = stmt.value.source
+            if src in self.schemas:
+                self._validate_query_columns(stmt.value.condition, src, stmt.line)
+            self.emit(f"{ctype} {name} = NULL; /* query:{src} */")
         else:
-            self.emit(f"{ct} {name}={self._gen_expr(s.value)};")
-        self.var_types[name]=ct
+            val = self._gen_expr(stmt.value, param_names)
+            self.emit(f"{ctype} {name} = {val};")
+        self.var_types[name] = ctype
 
-    def _validate_query_cols(self,cond,schema,line):
-        cols=self.schemas.get(schema,[])
-        if isinstance(cond,BinaryExpr):
-            if isinstance(cond.left,Identifier) and cond.left.name not in cols:
-                print(f"[E004] Schema Violation line {line}: '{cond.left.name}' not in '{schema}'. Valid: {cols}",file=sys.stderr)
+    def _validate_query_columns(self, cond, schema, line):
+        cols = self.schemas.get(schema, [])
+        if isinstance(cond, BinaryExpr):
+            if isinstance(cond.left, Identifier) and cond.left.name not in cols:
+                print(f"[E004] Column '{cond.left.name}' not in '{schema}'. Valid: {cols}", file=sys.stderr)
                 sys.exit(1)
-            self._validate_query_cols(cond.left,schema,line)
-            self._validate_query_cols(cond.right,schema,line)
+            self._validate_query_columns(cond.left, schema, line)
+            self._validate_query_columns(cond.right, schema, line)
 
-    def _gen_if(self,s):
-        self.emit(f"if ({self._gen_expr(s.condition)}) {{")
-        self.indent+=1
-        for st in s.then_block: self._gen_stmt(st)
-        self.indent-=1
-        if s.else_block:
-            self.emit("} else {"); self.indent+=1
-            for st in s.else_block: self._gen_stmt(st)
-            self.indent-=1
+    def _gen_if(self, stmt, param_names):
+        cond = self._gen_expr(stmt.condition, param_names)
+        self.emit(f"if ({cond}) {{")
+        self.indent += 1
+        for s in stmt.then_block: self._gen_stmt(s, param_names)
+        self.indent -= 1
+        if stmt.else_block:
+            self.emit("} else {")
+            self.indent += 1
+            for s in stmt.else_block: self._gen_stmt(s, param_names)
+            self.indent -= 1
         self.emit("}")
 
-    def _gen_expr(self,e):
-        if isinstance(e,IntLiteral): return str(e.value)
-        if isinstance(e,FloatLiteral): return str(e.value)
-        if isinstance(e,StrLiteral):
-            esc=e.value.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n')
+    def _gen_expr(self, expr, param_names=None):
+        if param_names is None: param_names = []
+        if isinstance(expr, IntLiteral): return str(expr.value)
+        if isinstance(expr, FloatLiteral): return str(expr.value)
+        if isinstance(expr, StrLiteral):
+            esc = expr.value.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n')
             return f'"{esc}"'
-        if isinstance(e,BoolLiteral): return "1" if e.value else "0"
-        if isinstance(e,Identifier): return e.name
-        if isinstance(e,BinaryExpr):
-            l=self._gen_expr(e.left); r=self._gen_expr(e.right)
-            if e.op=="+": return f"strata_concat({l},{r})"
-            return f"({l} {e.op} {r})"
-        if isinstance(e,UnaryExpr): return f"({e.op}{self._gen_expr(e.operand)})"
-        if isinstance(e,CallExpr): return self._gen_call(e)
-        if isinstance(e,BorrowExpr): return f"(&{self._gen_expr(e.target)})"
-        if isinstance(e,CastExpr): return f"(({e.target_type}*)({self._gen_expr(e.source)}))"
-        if isinstance(e,PredictExpr): return f"strata_predict(&{e.model}_instance,{self._gen_expr(e.arg)})"
-        if isinstance(e,ListLiteral): return "NULL"
-        if isinstance(e,MemberAccess): return f"{self._gen_expr(e.obj)}.{e.member}"
-        if isinstance(e,QueryExpr): return f"NULL/*query {e.source}*/"
+        if isinstance(expr, BoolLiteral): return "1" if expr.value else "0"
+        if isinstance(expr, Identifier): return expr.name
+        if isinstance(expr, BinaryExpr):
+            l = self._gen_expr(expr.left, param_names)
+            r = self._gen_expr(expr.right, param_names)
+            if expr.op == "+": return f"strata_concat({l},{r})"
+            return f"({l} {expr.op} {r})"
+        if isinstance(expr, UnaryExpr):
+            return f"({expr.op}{self._gen_expr(expr.operand, param_names)})"
+        if isinstance(expr, CallExpr):
+            # native block as expression
+            if expr.callee == "native":
+                if expr.args and isinstance(expr.args[0], StrLiteral):
+                    raw_c = expr.args[0].value
+                    raw_c = subst_native(raw_c, param_names)
+                    return f"({raw_c.strip()})"
+                return "/* native */"
+            return self._gen_call(expr, param_names)
+        if isinstance(expr, BorrowExpr):
+            return f"(&{self._gen_expr(expr.target, param_names)})"
+        if isinstance(expr, CastExpr):
+            return f"(({expr.target_type}*)({self._gen_expr(expr.source, param_names)}))"
+        if isinstance(expr, PredictExpr):
+            return f"strata_predict(&{expr.model}_instance,{self._gen_expr(expr.arg, param_names)})"
+        if isinstance(expr, ListLiteral): return "NULL"
+        if isinstance(expr, MemberAccess):
+            return f"{self._gen_expr(expr.obj, param_names)}.{expr.member}"
+        if isinstance(expr, QueryExpr): return f"NULL/*query {expr.source}*/"
         return "0"
 
-    def _gen_call(self,e):
-        if e.callee=="str": return f"strata_int_to_str({self._gen_expr(e.args[0])})"
-        if e.callee=="int": return f"((strata_int)({self._gen_expr(e.args[0])}))"
-        if e.callee=="float": return f"((strata_float)({self._gen_expr(e.args[0])}))"
-        args=", ".join(self._gen_expr(a) for a in e.args)
-        return f"{e.callee}({args})"
+    def _gen_call(self, expr, param_names):
+        if expr.callee == "str":   return f"strata_int_to_str({self._gen_expr(expr.args[0], param_names)})"
+        if expr.callee == "int":   return f"((strata_int)({self._gen_expr(expr.args[0], param_names)}))"
+        if expr.callee == "float": return f"((strata_float)({self._gen_expr(expr.args[0], param_names)}))"
+        args = ", ".join(self._gen_expr(a, param_names) for a in expr.args)
+        return f"{expr.callee}({args})"
 
-    def _c_type(self,t):
+    def _c_type(self, t):
         if t is None: return "void"
-        if isinstance(t,PrimitiveType):
-            return {"int":"strata_int","float":"strata_float","str":"strata_str","void":"void","bool":"strata_bool"}.get(t.name,t.name)
-        if isinstance(t,ListType): return f"{self._c_type(t.element_type)}*"
-        if isinstance(t,TensorType): return "double*"
+        if isinstance(t, PrimitiveType):
+            return {"int":"strata_int","float":"strata_float","str":"strata_str",
+                    "void":"void","bool":"strata_bool"}.get(t.name, t.name)
+        if isinstance(t, ListType): return f"{self._c_type(t.element_type)}*"
+        if isinstance(t, TensorType): return "double*"
         return "void*"
 
-    def _c_param(self,p):
+    def _c_param(self, p):
         return f"{self._c_type(p.param_type)}{'*' if p.borrow else ''} {p.name}"
 
-def compile_sta(source_path,output_path,target="native",verbose=False):
+def compile_sta(source_path, output_path, target="native", verbose=False):
     print(f"[Strata Stage 0] Compiling '{source_path}'...")
-    try: ast=parse_file(source_path)
-    except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
+    try: ast = parse_file(source_path)
+    except (LexError, ParseError) as e: print(str(e), file=sys.stderr); sys.exit(1)
     if verbose:
         print(f"  AST: {len(ast.imports)} imports, {len(ast.declarations)} decls, {len(ast.functions)} functions")
-    gen=CodeGen(ast,source_path); c_source=gen.generate()
-    base=os.path.splitext(source_path)[0]; c_path=base+".c"
-    with open(c_path,"w") as f: f.write(c_source)
+    gen = CodeGen(ast, source_path)
+    c_source = gen.generate()
+    base = os.path.splitext(source_path)[0]
+    c_path = base + ".c"
+    with open(c_path, "w") as f: f.write(c_source)
     print(f"  C source: {c_path}")
-    cc=next((c for c in ("clang","gcc","cc") if subprocess.run(["which",c],capture_output=True).returncode==0),None)
-    if not cc: print("[STRATA ERROR] No C compiler found.",file=sys.stderr); sys.exit(1)
-    if target=="wasm":
-        flags=[cc,"-O2","--target=wasm32","--no-standard-libraries","-Wl,--export-all","-Wl,--no-entry","-o",output_path,c_path]
+    cc = next((c for c in ("clang","gcc","cc")
+               if subprocess.run(["which",c],capture_output=True).returncode==0), None)
+    if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
+    if target == "wasm":
+        flags = [cc,"-O2","--target=wasm32","--no-standard-libraries",
+                 "-Wl,--export-all","-Wl,--no-entry","-o",output_path,c_path]
     else:
-        flags=[cc,"-O2","-o",output_path,c_path,"-lm"]
-    if verbose: print(f"  Invoking: {' '.join(flags)}")
-    r=subprocess.run(flags,capture_output=True,text=True)
-    if r.returncode!=0: print(f"[STRATA C ERROR]\n{r.stderr}",file=sys.stderr); sys.exit(1)
+        flags = [cc,"-O2","-o",output_path,c_path,"-lm"]
+    if verbose: print(f"  CC: {' '.join(flags)}")
+    r = subprocess.run(flags, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[STRATA C ERROR]\n{r.stderr}", file=sys.stderr); sys.exit(1)
     print(f"  Binary: {output_path}")
-    print(f"[Strata Stage 0] Done. ✓")
+    print(f"[Strata Stage 0] Done. OK")
 
-def _find_cc():
-    for c in ("clang","gcc","cc"):
-        if subprocess.run(["which",c],capture_output=True).returncode==0: return c
-    print("[STRATA ERROR] No C compiler.",file=sys.stderr); sys.exit(1)
+def parse_file(path):
+    toks = tokenise_file(path)
+    return Parser(toks).parse()
 
 def main():
     import argparse
-    ap=argparse.ArgumentParser(description="Strata Stage 0 Bootstrap Compiler")
-    ap.add_argument("file"); ap.add_argument("-o","--output",default=None)
+    ap = argparse.ArgumentParser(description="Strata Stage 0 Bootstrap Compiler")
+    ap.add_argument("file")
+    ap.add_argument("-o","--output",default=None)
     ap.add_argument("--target",choices=["native","wasm","c"],default="native")
     ap.add_argument("--ast",action="store_true")
     ap.add_argument("--emit-c",action="store_true")
     ap.add_argument("-v","--verbose",action="store_true")
-    args=ap.parse_args()
+    args = ap.parse_args()
     if args.ast:
         import json; ast=parse_file(args.file); print(json.dumps(ast.to_dict(),indent=2)); return
-    base=os.path.splitext(args.file)[0]; out=args.output or base
+    base = os.path.splitext(args.file)[0]
+    out = args.output or base
     if args.emit_c:
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
         print(CodeGen(ast,args.file).generate()); return
-    compile_sta(args.file,out,target=args.target,verbose=args.verbose)
+    compile_sta(args.file, out, target=args.target, verbose=args.verbose)
 
 if __name__=="__main__": main()
