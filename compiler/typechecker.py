@@ -93,6 +93,11 @@ class TypeChecker:
                 self._check_report(d)
             elif isinstance(d, LayoutDecl):
                 self._check_layout(d)
+            elif isinstance(d, VerifyBlock):
+                # A verify block is a body like any other.
+                vscope = Scope(self.global_scope)
+                for st in d.assertions:
+                    self._check_stmt(st, vscope)
         self._check_functions()
         return self.errors
 
@@ -258,7 +263,8 @@ class TypeChecker:
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)
         elif isinstance(stmt,VerifyBlock):
-            for a in stmt.assertions: self._infer_type(a.condition,scope)
+            inner=Scope(scope)
+            for a in stmt.assertions: self._check_stmt(a,inner)
         elif isinstance(stmt,RenderStmt):
             if stmt.report not in self.global_scope.symbols:
                 self._error("E004",f"Report '{stmt.report}' not declared",stmt.line,stmt.col,
@@ -266,7 +272,12 @@ class TypeChecker:
 
     def _check_var_decl(self,stmt,scope):
         declared=self._resolve_type(stmt.var_type)
+        if stmt.value is None:
+            scope.define(stmt.name, declared)
+            return
         if isinstance(stmt.value,QueryExpr):
+            # A query into a record type yields the first match rather than a
+            # list, so the element type is what must be compatible.
             src=stmt.value.source
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",stmt.line,stmt.col,
@@ -334,6 +345,15 @@ class TypeChecker:
             return SType("list",is_list=True,element_type=et)
         if isinstance(expr,MemberAccess):
             ot=self._infer_type(expr.obj,scope)
+            if ot is not None and ot.is_list:
+                # A collection has no fields of its own. Without this the
+                # mistake reaches the C compiler as a pointer error naming
+                # generated code.
+                self._error("E003",
+                    f"'{expr.member}' is a field of the row, not of '{ot}'",
+                    expr.line,expr.col,
+                    "Index the list or iterate it with 'for x in ...' first")
+                return None
             if ot and ot.name in self.schemas:
                 fields=self.schemas[ot.name]
                 if expr.member not in fields:

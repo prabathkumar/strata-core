@@ -38,6 +38,6 @@ stream HandleCoreIngestionBus(str native_nic_socket) {
     
     if (len(active_routes) > 0) {
         // Forward raw byte chunks instantly without unpacking, allocating memory, or copying arrays
-        forward_raw_payload(active_routes.cluster_gateway_id, current_raw_buffer());
+        forward_raw_payload(active_routes[0].cluster_gateway_id, current_raw_buffer());
     }
 }

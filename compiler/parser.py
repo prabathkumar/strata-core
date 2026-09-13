@@ -138,7 +138,8 @@ class VarDecl(Node):
     name: str
     value: Any
     def to_dict(self): return {"node":"VarDecl","type":self.var_type.to_dict(),
-                               "name":self.name,"value":self.value.to_dict()}
+                               "name":self.name,
+                               "value":self.value.to_dict() if self.value else None}
 
 @dataclass
 class AssignStmt(Node):
@@ -221,6 +222,7 @@ class VerifyBlock(Node):
     assertions: List[AssertStmt]
     def to_dict(self): return {"node":"VerifyBlock","label":self.label,
                                "assertions":[a.to_dict() for a in self.assertions]}
+
 
 @dataclass
 class RenderStmt(Node):
@@ -406,6 +408,8 @@ class Parser:
                 declarations.append(self._parse_layout())
             elif self._at_word("foreign"):
                 declarations.append(self._parse_foreign())
+            elif self._check(TT.KW_VERIFY):
+                declarations.append(self._parse_verify())
             elif self._check(TT.KW_DEF):
                 functions.append(self._parse_function(kind="def"))
             elif self._check(TT.KW_STREAM):
@@ -765,6 +769,16 @@ class Parser:
 
         if self._check(TT.KW_ASSERT):
             self._advance()
+            # `assert "label" { ... }` groups assertions under a description.
+            # Reported as a VerifyBlock so a test driver sees one named unit.
+            if self._check(TT.STR_LIT) and self._peek_at(1).type == TT.L_BRACE:
+                label = self._advance().value
+                self._consume(TT.L_BRACE)
+                body = []
+                while not self._check(TT.R_BRACE) and not self._at_end():
+                    body.append(self._parse_statement())
+                self._consume(TT.R_BRACE)
+                return VerifyBlock(t.line, t.col, label, body)
             cond = self._parse_expr()
             self._consume(TT.SEMICOLON)
             return AssertStmt(t.line, t.col, cond)
@@ -874,6 +888,12 @@ class Parser:
     def _parse_var_decl(self, consume_semicolon=True) -> VarDecl:
         vtype = self._parse_type()
         name = self._consume(TT.IDENT).value
+        # `T name;` declares without initialising. The value is the type's
+        # zero — 0, 0.0, "" or NULL — so a declaration never leaves a variable
+        # holding whatever was on the stack.
+        if consume_semicolon and self._check(TT.SEMICOLON):
+            self._advance()
+            return VarDecl(vtype.line, vtype.col, vtype, name, None)
         self._consume(TT.ASSIGN)
         # Query expression: list[T] name = Source <- [cond];
         if self._check(TT.IDENT) and self._peek_at(1).type == TT.ARROW_L:
@@ -899,17 +919,19 @@ class Parser:
         return RenderStmt(t.line, t.col, report, path)
 
     def _parse_verify(self) -> VerifyBlock:
+        """`verify "label" { ... }` — a test body.
+
+        The body is ordinary statements, not only assertions: a test sets up
+        data and calls the thing under test before asserting anything.
+        """
         t = self._consume(TT.KW_VERIFY)
         label = self._consume(TT.STR_LIT).value
         self._consume(TT.L_BRACE)
-        assertions = []
-        while not self._check(TT.R_BRACE):
-            self._consume(TT.KW_ASSERT)
-            cond = self._parse_expr()
-            self._consume(TT.SEMICOLON)
-            assertions.append(AssertStmt(t.line, t.col, cond))
+        body = []
+        while not self._check(TT.R_BRACE) and not self._at_end():
+            body.append(self._parse_statement())
         self._consume(TT.R_BRACE)
-        return VerifyBlock(t.line, t.col, label, assertions)
+        return VerifyBlock(t.line, t.col, label, body)
 
     # ── Expressions (Pratt precedence) ────────────────────────────────────────
 

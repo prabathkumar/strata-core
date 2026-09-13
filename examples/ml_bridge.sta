@@ -16,7 +16,7 @@ int execute_system_audit(tensor[float, 1, 64] enterprise_metrics) {
     // Strata forces a strict type assertion pass onto the unmanaged Python array.
     // If PyTorch returns a corrupt dictionary or layout, Strata shuts down the execution line.
     tensor[float, 1, 2] prediction = predict FraudClassificationNetwork(enterprise_metrics);
-    float compliance_weight = prediction;
+    float compliance_weight = strata_tensor_get(prediction, 0);
     
     if (compliance_weight > 0.90) {
         return 1; // Operational threat detected

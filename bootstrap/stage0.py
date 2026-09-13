@@ -12,7 +12,7 @@ from compiler.parser import (
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl,
-    VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt,
+    VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
@@ -71,7 +71,9 @@ BUILTIN_RETURNS = {
     "str_index_of": "strata_int", "str_starts_with": "strata_int",
     "file_write": "strata_int", "file_exists": "strata_int",
     "strata_len": "strata_int", "strata_model_load": "strata_int",
+    "current_message": "strata_str",
     "strata_tensor": "double*", "strata_predict": "double*",
+    "strata_tensor_add": "double*",
     "strata_tensor_get": "strata_float", "strata_tensor_set": "void",
 }
 
@@ -166,6 +168,14 @@ class CodeGen:
             for fn in fns:
                 self._gen_function(fn)
 
+        # Verify blocks come last: they call functions, and emitting them with
+        # the declarations would make those calls implicit declarations that
+        # conflict with the real definitions.
+        for _, unit in units:
+            for d in unit.declarations:
+                if isinstance(d, VerifyBlock):
+                    self._gen_verify(d)
+
         # A module with no main() is a library unit: emitting the C entry point
         # would force an undefined reference to strata_main.
         if self.target != "wasm" and any(fn.name == "main" for fn in self.ast.functions):
@@ -215,6 +225,7 @@ int main(int argc, char** argv) {
             self._gen_layout(decl)
         elif isinstance(decl, ForeignDecl):
             self._gen_foreign(decl)
+
 
     def _gen_table_storage(self, name):
         """Backing store for a database block.
@@ -271,6 +282,18 @@ int main(int argc, char** argv) {
                 continue
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
         return ";".join(parts)
+
+    def _gen_verify(self, decl):
+        """A verify block becomes a function a test driver can call."""
+        safe = "".join(c if c.isalnum() else "_" for c in decl.label)[:48]
+        self.emit_raw(f"\n/* verify: {decl.label} */")
+        self.emit_raw(f"void __strata_verify_{safe}(void) {{")
+        self.indent = 1
+        self.var_types = {}
+        for st in decl.assertions:
+            self._gen_stmt(st, [])
+        self.indent = 0
+        self.emit_raw("}")
 
     def _gen_foreign(self, decl):
         """Include the header and record the library to link.
@@ -430,6 +453,10 @@ int main(int argc, char** argv) {
         elif isinstance(stmt, RenderStmt):
             self.emit(f'{{ FILE* _f=fopen("{stmt.path}","w"); if(_f){{ '
                       f'{stmt.report}_render(_f); fclose(_f); }} }}')
+        elif isinstance(stmt, VerifyBlock):
+            self.emit(f"/* assert group: {stmt.label} */")
+            for st in stmt.assertions:
+                self._gen_stmt(st, param_names)
         elif isinstance(stmt, AssertStmt):
             cond = self._gen_expr(stmt.condition, param_names)
             self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')
@@ -445,6 +472,16 @@ int main(int argc, char** argv) {
     def _gen_var_decl(self, stmt, param_names):
         ctype = self._c_type(stmt.var_type)
         name = stmt.name
+
+        if stmt.value is None:
+            # Zero rather than whatever the stack held. A pointer type zeroes
+            # to NULL, which the rest of the runtime already treats as empty.
+            zero = "NULL" if ctype.endswith("*") else "0"
+            if ctype == "strata_str":
+                zero = '""'
+            self.emit(f"{ctype} {cname(name)} = {zero};")
+            self.var_types[name] = ctype
+            return
 
         # Check for native block assignment
         if isinstance(stmt.value, CallExpr) and stmt.value.callee == "native":
@@ -469,6 +506,24 @@ int main(int argc, char** argv) {
                 self.query_row_type = src
                 cond = self._gen_expr(stmt.value.condition, param_names)
                 self.query_row_type = None
+
+                # Querying into a record rather than a list means "the first
+                # row that matches, or none".
+                if not isinstance(stmt.var_type, ListType):
+                    self.emit(f"{ctype} {cname(name)} = NULL;")
+                    self.emit("{")
+                    self.indent += 1
+                    self.emit(f"for (strata_int _i = 0; _i < {src}__count; _i++) {{")
+                    self.indent += 1
+                    self.emit(f"{src}* _row = {src}__rows[_i];")
+                    self.emit(f"if ({cond}) {{ {cname(name)} = _row; break; }}")
+                    self.indent -= 1
+                    self.emit("}")
+                    self.indent -= 1
+                    self.emit("}")
+                    self.var_types[name] = ctype
+                    return
+
                 self.emit(f"{ctype} {cname(name)} = ({ctype})malloc("
                           f"sizeof(void*) * ({src}__count + 1));")
                 self.emit("{")

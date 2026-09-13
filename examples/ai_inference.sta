@@ -33,14 +33,14 @@ stream ProcessTransactionRisk(str event_broker_url) {
 
     // 3. COMPILE-TIME ENFORCED TENSOR ALLOCATION
     // Pre-allocates hardware-aligned tensor structures matching the model's exact shape blueprint.
-    tensor[float, 1, 64] metric_features = extract_transaction_features(tx_data);
+    tensor[float, 1, 64] metric_features = extract_transaction_features(tx_data[0]);
 
     // 4. ZERO-COPY NATIVE INFERENCE OPERATOR ('predict')
-    // Bypasses slower runtime wrappers to run neural network weights directly on the GPU/NPU hardware matrix.
+    // Runs the model's weights over the feature tensor. One dense layer; see the roadmap.
     tensor[float, 1, 2] prediction_vector = predict FraudDetectionNetwork(metric_features);
 
     // Extract the raw fraud probability weight directly from the matrix memory buffer
-    float fraud_probability = prediction_vector;
+    float fraud_probability = strata_tensor_get(prediction_vector, 0);
 
     if (fraud_probability > 0.85) {
         print("[CRITICAL FRAUD ALERT]: Security gate closing connection.");
@@ -48,7 +48,7 @@ stream ProcessTransactionRisk(str event_broker_url) {
 }
 
 tensor[float, 1, 64] extract_transaction_features(CustomerTransaction tx) {
-    tensor[float, 1, 64] features;
-    features = tx.transfer_amount;
+    tensor[float, 1, 64] features = strata_tensor(64);
+    strata_tensor_set(features, 0, tx.transfer_amount);
     return features;
 }

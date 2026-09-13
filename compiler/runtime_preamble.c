@@ -159,3 +159,21 @@ static strata_int strata_model_load(void* model, strata_str path) {
     m->weights = w;
     return 1;
 }
+
+/* ── Stream context ───────────────────────────────────────────────────────
+   The message a `stream` handler is currently processing. There is no
+   transport: no broker client, no socket, no scheduler. A host sets this
+   before invoking a handler, and it is empty otherwise. Empty is the honest
+   default — returning invented traffic would make a handler look like it
+   worked when nothing was connected. */
+static strata_str __strata_current_message = "";
+static strata_str current_message(void) { return __strata_current_message; }
+static void strata_set_message(strata_str m) { __strata_current_message = m; }
+
+/* Element-wise tensor addition. Plain scalar loops — the C compiler may
+   vectorise them, but Strata emits no SIMD intrinsics of its own. */
+static double* strata_tensor_add(double* a, double* b, strata_int n) {
+    double* r = (double*)calloc((size_t)n, sizeof(double));
+    for (strata_int i = 0; i < n; i++) r[i] = a[i] + b[i];
+    return r;
+}

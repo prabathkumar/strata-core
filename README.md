@@ -431,10 +431,11 @@ what runs and what is planned is unambiguous.
 
 | Area | Status |
 |------|--------|
-| Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
+| Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. Declaration without an initialiser (`int n;`) zeroes rather than leaving the stack's contents. |
 | Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
+| `verify` blocks | **Parsed, checked and emitted** as a function a test driver can call, including nested `assert "label" { ... }` groups. No driver runs them automatically yet. |
 | Database persistence | In-memory tables only. `database` blocks get fixed-capacity storage, inserts append and queries filter — enough for the contract to be observable end to end. No disk, no index, no transactions, no SQL backend. |
 | `model` / `predict` execution | **One dense layer.** `predict` computes output = input x W + b with weights loaded from a text file. No hidden layers, no activations, no training, no accelerator, and no framework interop. Enough for a linear model and for the E006 contract to hold end to end. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |

@@ -218,6 +218,22 @@ test("ml_undeclared_model_is_e006",
 test("utf8_columns_count_characters",
      'int main() { str s = "em—dash"; int n = str_len(s); return 0; }')
 
+print("\n── Declarations, verify blocks, single-record queries ───────────")
+compile_run("uninit_decl_zeroes",
+    'import io from std;\nint main() { int n; float f; n = 7; print(str(n)); print(str(f)); return 0; }',
+    "7\n0.0")
+compile_run("single_record_query",
+    'import io from std;\ndatabase M { int id; str name; }\n'
+    'int main() { M <- [id = 1, name = "a"]; M <- [id = 2, name = "b"];\n'
+    '  M hit = M <- [id == 2]; print(hit.name); return 0; }',
+    "b")
+test("verify_block_typechecks",
+    'int twice(int x) { return x * 2; }\nverify "doubling" { int a = 21; int b = twice(a); assert b == 42; }', None)
+test("assert_group_sees_outer_scope",
+    'int f() { return 1; }\nverify "v" { int r = f(); assert "group" { assert r == 1; } }', None)
+test("field_access_on_list_is_e003",
+    'database M { int id; str name; }\nint main() { list[M] rows = M <- [id == 1]; str n = rows.name; return 0; }', "E003")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

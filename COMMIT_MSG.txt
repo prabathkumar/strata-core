@@ -1,43 +1,46 @@
-feat(ml): inference runtime for model/predict; fix UTF-8 column counting
+feat(lang): every example compiles — 19 of 19
 
-`predict` was emitting a call to strata_predict, which was defined
-nowhere — any program that used the feature failed to link. It now runs:
+The examples went from 11 of 19 to all of them. Four were blocked by
+missing language features, three contained genuine errors the compiler
+was right to reject, and one had been corrupted in the repository.
 
-  model RiskScorer { input: tensor[float,1,3]; output: tensor[float,1,2]; }
-  tensor[float,1,2] scores = predict RiskScorer(features);   -> 6.5, 7.25
+Language features added, each in both implementations:
 
-One dense layer, output = input x W + b, with weights read from a
-whitespace-separated text file. No hidden layers, no activations beyond
-the identity, no training, no accelerator, no framework interop. An
-untrained model predicts zeros rather than garbage. The README says all
-of that rather than letting "native ML" stand.
+  - Declaration without an initialiser. `int n;` zeroes rather than
+    leaving whatever was on the stack; a pointer becomes NULL, which the
+    runtime already treats as empty.
+  - Top-level `verify` blocks and nested `assert "label" { ... }` groups.
+    A verify body is ordinary statements, not only assertions — a test
+    sets up data and calls something before asserting anything. They emit
+    as a function a test driver can call, after the functions they call,
+    since emitting them with the declarations turned those calls into
+    implicit declarations that conflicted with the real definitions.
+  - Querying into a record rather than a list yields the first matching
+    row, or none.
+  - current_message() for stream handlers. There is no transport — no
+    broker, no socket, no scheduler — so a host sets the message and it
+    is empty otherwise. Empty is the honest default; invented traffic
+    would make a handler look like it worked when nothing was connected.
+  - strata_tensor_add for element-wise addition, as plain scalar loops.
+    The C backend may vectorise them; Strata emits no SIMD intrinsics and
+    the example no longer says it does.
 
-That is enough for the E006 contract to mean something end to end: a
-tensor of the wrong shape stops the build naming both shapes, and the
-value that would have been silently wrong is never computed.
+Field access on a list is now E003 naming the row, instead of reaching
+the C compiler as a pointer error in generated code.
 
-A bare model name is now the model itself, so Strata code never has to
-name the generated C global — `strata_model_load(RiskScorer, path)`
-rather than `&RiskScorer_instance`. The model struct aliases the runtime
-type so strata_predict reads it without depending on field order.
+Three examples were wrong in the way README section 4.1 was wrong —
+assigning a tensor to a float and passing a list where a row was
+expected. They now use the tensor API. examples/simd_matrix_multiply.sta
+had 45 lines of shell script written into it by an earlier session; the
+heredoc is removed.
 
-Prelude return types are registered for code generation. Without them
-str(strata_tensor_get(t, 0)) could not tell a float from an int and
-truncated 6.5 to 6 — the same class of bug as the foreign return types
-last change, now fixed at the source with a table rather than one call
-site at a time.
+A scoping bug in the port: a nested assert group parented its scope to
+the globals rather than the enclosing block, so a variable declared in
+the verify body read as undefined inside the group. The type checker
+differential caught it — the oracle reported nothing and the Strata
+implementation reported E001.
 
-The wasm prelude gets the same dense layer. Weight loading is absent
-there: a freestanding module has no file system, so a host must write
-weights into memory.
-
-Separately, the lexer differential caught a real defect the moment a
-source file contained an em-dash: the Strata lexer counted columns in
-bytes while the oracle counts characters, so one multi-byte character in
-a comment shifted every diagnostic column on that line. UTF-8
-continuation bytes no longer advance the column.
-
-Conformance 89; all ten suites green; fixpoint holds.
+Conformance 94; all ten suites green; fixpoint holds.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

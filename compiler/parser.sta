@@ -651,6 +651,18 @@ Node parse_function(P &p, int kindsel) {
 Node parse_var_decl(P &p, int want_semicolon) {
     Node vtype = parse_type(&p);
     Token name = p_expect(&p, 4);
+
+    // `T name;` declares without initialising; the value is the type's zero.
+    if (want_semicolon == 1) {
+        if (p_check(&p, 56) == 1) {
+            p_advance(&p);
+            Node u = node_new(20);
+            u.c1 = node_ptr(vtype);
+            u.s1 = name.value;
+            u.line = vtype.line; u.col = vtype.col;
+            return u;
+        }
+    }
     p_expect(&p, 60);                          // =
 
     Node n = node_new(20);
@@ -832,6 +844,24 @@ Node parse_statement(P &p) {
 
     if (k == 20) {                             // assert
         p_advance(&p);
+        // `assert "label" { ... }` groups assertions under a description.
+        if (p_kind(&p, 0) == 3) {
+            if (p_kind(&p, 1) == 50) {
+                Token lab = p_advance(&p);
+                p_expect(&p, 50);
+                NodeVec vbody = nv_new();
+                while (p_check(&p, 51) == 0) {
+                    if (p_at_end(&p) == 1) { break; }
+                    nv_push(&vbody, parse_statement(&p));
+                }
+                p_expect(&p, 51);
+                Node vb = node_new(26);
+                vb.s1 = lab.value;
+                vb.v1 = nv_ptr(vbody);
+                n_pos(vb, t);
+                return vb;
+            }
+        }
         Node cond = parse_expr(&p);
         p_expect(&p, 56);
         Node n = node_new(24);
@@ -1133,6 +1163,7 @@ Node parse_unit(P &p) {
         if (k == 27) { nv_push(&decls, parse_model(&p)); }
         if (k == 29) { nv_push(&decls, parse_report(&p)); }
         if (k == 31) { nv_push(&decls, parse_layout(&p)); }
+        if (k == 32) { nv_push(&decls, parse_verify_block(&p)); }
         int is_foreign = p_at_word(&p, "foreign");
         if (is_foreign == 1) { nv_push(&decls, parse_foreign(&p)); }
         if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
@@ -1142,10 +1173,10 @@ Node parse_unit(P &p) {
         }
         if (is_foreign == 0) { if (is_type_kind(k) == 0) {
             if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
-                if (k != 31) { if (k != 23) { if (k != 25) {
+                if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
                     eprint("[STRATA PARSE ERROR] unexpected top-level token");
                     p_advance(&p);
-                } } }
+                } } } }
             } } } } }
         } }
     }
@@ -1210,6 +1241,23 @@ Node parse_foreign(P &p) {
     }
     p_expect(&p, 51);
     n.v1 = nv_ptr(fns);
+    return n;
+}
+
+Node parse_verify_block(P &p) {
+    Token t = p_expect(&p, 32);
+    Token label = p_advance(&p);
+    p_expect(&p, 50);
+    NodeVec body = nv_new();
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        nv_push(&body, parse_statement(&p));
+    }
+    p_expect(&p, 51);
+    Node n = node_new(26);
+    n.s1 = label.value;
+    n.v1 = nv_ptr(body);
+    n_pos(n, t);
     return n;
 }
 

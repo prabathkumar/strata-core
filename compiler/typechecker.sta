@@ -388,6 +388,16 @@ int infer(TC &tc, int node_p, int scope_p) {
         int ot = infer(&tc, e.c1, scope_p);
         if (ot == 0) { return 0; }
         Ty o = ty_at(ot);
+        if (o.is_list == 1) {
+            // A collection has no fields of its own; without this the mistake
+            // reaches the C compiler as a pointer error in generated code.
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "'"); sb_append(&sb, e.s1);
+            sb_append(&sb, "' is a field of the row, not of '");
+            sb_append(&sb, ty_str(ot)); sb_append(&sb, "'");
+            emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+            return 0;
+        }
         int sch = schema_find(tc.schemas, o.name);
         if (sch == 0) { return 0; }
         Schema s = schema_at(sch);
@@ -598,6 +608,11 @@ def tensor_drift(TC &tc, Node e, Ty want, Ty got) {
 
 def check_var_decl(TC &tc, Node st, int scope_p) {
     int declared = resolve_type(st.c1);
+    if (st.c2 == 0) {
+        Scp s0 = scp_at(scope_p);
+        scp_define(&s0, st.s1, declared);
+        return;
+    }
     int actual = infer(&tc, st.c2, scope_p);
 
     Node val = node_at(st.c2);
@@ -794,8 +809,21 @@ def check_stmt(TC &tc, Node st, int scope_p) {
 
     if (k == 71) { check_element(&tc, st, scope_p); return; }
     if (k == 73) { check_for_in(&tc, st, scope_p); return; }
+    if (k == 26) { check_verify_in(&tc, st, scope_p); return; }
     if (k == 23) { infer(&tc, st.c1, scope_p); return; }
     if (k == 24) { infer(&tc, st.c1, scope_p); return; }
+}
+
+def check_verify(TC &tc, Node decl) { check_verify_in(&tc, decl, tc.globals); }
+
+// A nested `assert "label" { ... }` sees the bindings of the block it sits in,
+// so the enclosing scope is the parent rather than the global one.
+def check_verify_in(TC &tc, Node decl, int parent) {
+    Scp s = scp_new(parent);
+    int sp = scp_ptr(s);
+    NodeVec body = nv_at(decl.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { check_stmt(&tc, nv_get(&body, i), sp); }
 }
 
 def check_layout(TC &tc, Node decl) {
@@ -877,6 +905,7 @@ int check_unit(Node unit) {
     for (int d = 0; d < ndecl; d = d + 1) {
         Node dec = nv_get(&all_decls, d);
         if (dec.kind == 70) { check_layout(&tc, dec); }
+        if (dec.kind == 26) { check_verify(&tc, dec); }
     }
 
     NodeVec fns = nv_at(unit.v3);

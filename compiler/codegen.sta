@@ -251,8 +251,10 @@ str builtin_return(str name) {
     if (str_eq(name, "file_exists")) { return "strata_int"; }
     if (str_eq(name, "strata_len")) { return "strata_int"; }
     if (str_eq(name, "strata_model_load")) { return "strata_int"; }
+    if (str_eq(name, "current_message")) { return "strata_str"; }
     if (str_eq(name, "strata_tensor")) { return "double*"; }
     if (str_eq(name, "strata_predict")) { return "double*"; }
+    if (str_eq(name, "strata_tensor_add")) { return "double*"; }
     if (str_eq(name, "strata_tensor_get")) { return "strata_float"; }
     if (str_eq(name, "strata_tensor_set")) { return "void"; }
     return "";
@@ -623,6 +625,16 @@ def gen_stmt(Gen &g, Node st) {
         return;
     }
 
+    if (k == 26) {                                    // assert group
+        StringBuilder note = sb_new();
+        sb_append(&note, "/* assert group: "); sb_append(&note, st.s1); sb_append(&note, " */");
+        cg_emit(&g, sb_to_str(&note));
+        NodeVec vb = nv_at(st.v1);
+        int nvb = vb.len;
+        for (int i = 0; i < nvb; i = i + 1) { gen_stmt(&g, nv_get(&vb, i)); }
+        return;
+    }
+
     if (k == 27) {                                    // insert
         NodeVec pairs = nv_at(st.v1);
         cg_emit(&g, "{");
@@ -694,6 +706,21 @@ def gen_for(Gen &g, Node st) {
 
 def gen_var_decl(Gen &g, Node st) {
     str ctype = c_type(&g, st.c1);
+
+    if (st.c2 == 0) {
+        // Zero rather than whatever the stack held. A pointer zeroes to NULL,
+        // which the rest of the runtime already treats as empty.
+        str zero = "0";
+        if (ends_with_star(ctype) == 1) { zero = "NULL"; }
+        if (str_eq(ctype, "strata_str") == 1) { zero = "\"\""; }
+        StringBuilder z = sb_new();
+        sb_append(&z, ctype); sb_append(&z, " "); sb_append(&z, cname(st.s1));
+        sb_append(&z, " = "); sb_append(&z, zero); sb_append(&z, ";");
+        cg_emit(&g, sb_to_str(&z));
+        g.var_types = bind_cons(st.s1, ctype, g.var_types);
+        return;
+    }
+
     Node val = node_at(st.c2);
 
     if (val.kind == 42) {
@@ -725,6 +752,36 @@ def gen_var_decl(Gen &g, Node st) {
         g.query_row = val.s1;
         str cond = gen_expr(&g, val.c1);
         g.query_row = "";
+
+        // Querying into a record rather than a list means "the first row that
+        // matches, or none".
+        Node vt = node_at(st.c1);
+        if (vt.kind != 12) {
+            StringBuilder d0 = sb_new();
+            sb_append(&d0, ctype); sb_append(&d0, " "); sb_append(&d0, cname(st.s1));
+            sb_append(&d0, " = NULL;");
+            cg_emit(&g, sb_to_str(&d0));
+            cg_emit(&g, "{");
+            g.indent = g.indent + 1;
+            StringBuilder l0 = sb_new();
+            sb_append(&l0, "for (strata_int _i = 0; _i < "); sb_append(&l0, val.s1);
+            sb_append(&l0, "__count; _i++) {");
+            cg_emit(&g, sb_to_str(&l0));
+            g.indent = g.indent + 1;
+            StringBuilder r0 = sb_new();
+            sb_append(&r0, val.s1); sb_append(&r0, "* _row = "); sb_append(&r0, val.s1);
+            sb_append(&r0, "__rows[_i];");
+            cg_emit(&g, sb_to_str(&r0));
+            StringBuilder t0 = sb_new();
+            sb_append(&t0, "if ("); sb_append(&t0, cond); sb_append(&t0, ") { ");
+            sb_append(&t0, cname(st.s1)); sb_append(&t0, " = _row; break; }");
+            cg_emit(&g, sb_to_str(&t0));
+            g.indent = g.indent - 1;
+            cg_emit(&g, "}");
+            g.indent = g.indent - 1;
+            cg_emit(&g, "}");
+            return;
+        }
 
         StringBuilder d = sb_new();
         sb_append(&d, ctype); sb_append(&d, " "); sb_append(&d, cname(st.s1));
@@ -812,6 +869,7 @@ def gen_decl(Gen &g, Node d) {
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
     if (d.kind == 70) { gen_layout(&g, d); return; }
+    if (d.kind == 26) { return; }                 // verify: emitted after functions
     if (d.kind == 74) {
         // The header declares the functions; re-declaring them risks
         // conflicting with the real signature.
@@ -1028,6 +1086,11 @@ str generate_for(str root, str source_path, str target) {
     }
     emit_unit(&g, unit, 1, &emitted_decls, &emitted_fns, "");
 
+    // Verify blocks come last: they call functions, and emitting them with the
+    // declarations would make those calls implicit declarations.
+    for (int v = 0; v < nm; v = v + 1) { gen_verifies(&g, nv_get(&mods, v)); }
+    gen_verifies(&g, unit);
+
     int emit_entry = has_main(unit);
     if (str_eq(g.target, "wasm") == 1) { emit_entry = 0; }
     if (emit_entry == 1) {
@@ -1040,6 +1103,46 @@ str generate_for(str root, str source_path, str target) {
     result = replace_all(result, "\nstrata_int main(void) {", "\nstrata_int strata_main(void) {");
     result = replace_all(result, "\nvoid main(void);", "\nvoid strata_main(void);");
     return result;
+}
+
+def gen_verifies(Gen &g, Node unit) {
+    NodeVec decls = nv_at(unit.v2);
+    int n = decls.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind == 26) { gen_verify(&g, d); }
+    }
+}
+
+def gen_verify(Gen &g, Node decl) {
+    // A verify block becomes a function a test driver can call.
+    StringBuilder safe = sb_new();
+    int n = str_len(decl.s1);
+    int cap = n;
+    if (cap > 48) { cap = 48; }
+    for (int i = 0; i < cap; i = i + 1) {
+        int c = decl.s1[i];
+        int alnum = 0;
+        if (c >= 48) { if (c <= 57) { alnum = 1; } }
+        if (c >= 65) { if (c <= 90) { alnum = 1; } }
+        if (c >= 97) { if (c <= 122) { alnum = 1; } }
+        if (alnum == 1) { sb_append(&safe, char_str(c)); }
+        if (alnum == 0) { sb_append(&safe, "_"); }
+    }
+    StringBuilder head = sb_new();
+    sb_append(&head, "\n/* verify: "); sb_append(&head, decl.s1); sb_append(&head, " */");
+    emit_raw(&g, sb_to_str(&head));
+    StringBuilder sig = sb_new();
+    sb_append(&sig, "void __strata_verify_"); sb_append(&sig, sb_to_str(&safe));
+    sb_append(&sig, "(void) {");
+    emit_raw(&g, sb_to_str(&sig));
+    g.indent = 1;
+    g.var_types = 0;
+    NodeVec body = nv_at(decl.v1);
+    int nb = body.len;
+    for (int i = 0; i < nb; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
+    g.indent = 0;
+    emit_raw(&g, "}");
 }
 
 def note_records(Gen &g, Node unit) {

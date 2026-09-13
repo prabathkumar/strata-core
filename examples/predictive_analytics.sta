@@ -34,12 +34,12 @@ stream IngestTransactionForInference(str input_channel_socket) {
     // Pre-allocates hardware blocks matching the model's exact shape blueprint.
     // If a developer accidentally passes a 1x64 shape tensor into this 1x128 model,
     // the Strata compiler aborts the build process instantly (Error E006).
-    tensor[float, 1, 128] input_features = synthesize_feature_matrix(transaction_records);
+    tensor[float, 1, 128] input_features = synthesize_feature_matrix(transaction_records[0]);
 
     // 4. ZERO-COPY NATIVE INFERENCE OPERATOR ('predict')
     // Bypasses heavy interpreter loops to execute network weights at raw hardware speed
     tensor[float, 1, 1] output_vector = predict CorporateRiskEvaluator(input_features);
-    float anomaly_probability = output_vector;
+    float anomaly_probability = strata_tensor_get(output_vector, 0);
 
     if (anomaly_probability > 0.92) {
         print_line("[CRITICAL DEFENSIVE HALT]: Anomaly probability breached safety boundaries.");
@@ -47,7 +47,7 @@ stream IngestTransactionForInference(str input_channel_socket) {
 }
 
 tensor[float, 1, 128] synthesize_feature_matrix(LedgerTransaction tx) {
-    tensor[float, 1, 128] feature_tensor;
-    feature_tensor = tx.global_amount;
+    tensor[float, 1, 128] feature_tensor = strata_tensor(128);
+    strata_tensor_set(feature_tensor, 0, tx.global_amount);
     return feature_tensor;
 }

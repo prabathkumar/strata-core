@@ -167,3 +167,11 @@ static double* strata_predict(void* model, double* input) {
     }
     return out;
 }
+
+/* Element-wise tensor addition. Plain scalar loops — the C compiler may
+   vectorise them, but Strata emits no SIMD intrinsics of its own. */
+static double* strata_tensor_add(double* a, double* b, strata_int n) {
+    double* r = (double*)calloc((size_t)n, sizeof(double));
+    for (strata_int i = 0; i < n; i++) r[i] = a[i] + b[i];
+    return r;
+}
