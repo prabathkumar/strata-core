@@ -97,6 +97,10 @@ static void sb_append_line_f(SB* s, const char* t) {
 }
 """
 
+# Functions already defined by C_PREAMBLE; an imported module redefining one
+# of these would be a duplicate symbol, so they are never re-emitted.
+PREAMBLE_BUILTINS = frozenset(('file_exists', 'file_read', 'file_write', 'float_to_str', 'int_to_str', 'sb_append_f', 'sb_append_line_f', 'sb_new_f', 'str_concat', 'str_eq', 'str_index_of', 'str_len', 'str_slice', 'str_starts_with', 'str_to_int', 'strata_concat', 'strata_float_to_str', 'strata_int_to_str'))
+
 # Native block variable substitution
 def subst_native(code: str, param_names: list) -> str:
     """Replace $varname with the C variable name in native blocks."""
@@ -105,9 +109,10 @@ def subst_native(code: str, param_names: list) -> str:
     return result
 
 class CodeGen:
-    def __init__(self, ast, source_path):
+    def __init__(self, ast, source_path, modules=None):
         self.ast = ast
         self.source_path = source_path
+        self.modules = modules or []
         self.out = []
         self.indent = 0
         self.schemas = {}
@@ -123,20 +128,34 @@ class CodeGen:
 
     def generate(self):
         self.emit_raw(C_PREAMBLE)
-        for d in self.ast.declarations:
-            self._forward_declare(d)
-        for d in self.ast.declarations:
-            self._gen_decl(d)
-        for fn in self.ast.functions:
-            self._forward_fn(fn)
-        for fn in self.ast.functions:
-            self._gen_function(fn)
-        # Add main wrapper if strata_main exists
-        fn_names = [fn.name for fn in self.ast.functions]
-        if 'main' in fn_names:
-            # rename strata main and wrap
-            pass
-        self.emit_raw("""
+
+        # Imported modules first, in dependency order. Names already provided by
+        # the C preamble or by an earlier module are skipped so that a symbol
+        # imported down two paths is emitted exactly once.
+        emitted_decls, emitted_fns = set(), set(PREAMBLE_BUILTINS)
+        units = [(name, m) for name, m in self.modules] + [(None, self.ast)]
+
+        for mod_name, unit in units:
+            is_root = unit is self.ast
+            decls = [d for d in unit.declarations if getattr(d, "name", None) not in emitted_decls]
+            fns = [f for f in unit.functions if f.name not in emitted_fns]
+            if not is_root and (decls or fns):
+                self.emit_raw(f"\n/* ── module {mod_name} ── */")
+            for d in decls:
+                emitted_decls.add(getattr(d, "name", None))
+                self._forward_declare(d)
+            for d in decls:
+                self._gen_decl(d)
+            for fn in fns:
+                emitted_fns.add(fn.name)
+                self._forward_fn(fn)
+            for fn in fns:
+                self._gen_function(fn)
+
+        # A module with no main() is a library unit: emitting the C entry point
+        # would force an undefined reference to strata_main.
+        if any(fn.name == "main" for fn in self.ast.functions):
+            self.emit_raw("""
 int main(int argc, char** argv) {
     __strata_argc = argc;
     __strata_argv = argv;
@@ -389,13 +408,73 @@ int main(int argc, char** argv) {
     def _c_param(self, p):
         return f"{self._c_type(p.param_type)}{'*' if p.borrow else ''} {p.name}"
 
+STDLIB_SOURCES = ("std",)
+
+def _resolve_module(imp, search_root):
+    """Map an ImportDecl onto a .sta file path, or None if not locally resolvable.
+
+    `import core.io from std;` -> <root>/std/io.sta
+    `import io from std;`      -> <root>/std/io.sta
+    Sources other than the bundled stdlib (hub, python_engine, ...) are external
+    registries with no local checkout, so they resolve to None.
+    """
+    if imp.source not in STDLIB_SOURCES:
+        return None
+    leaf = imp.name.split(".")[-1]
+    nested = os.path.join(search_root, imp.source, *imp.name.split("."))
+    for cand in (nested + ".sta", os.path.join(search_root, imp.source, leaf + ".sta")):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+def resolve_imports(ast, source_path, verbose=False):
+    """Transitively parse every locally-resolvable import.
+
+    Returns (modules, unresolved) with modules in dependency order (deepest
+    first) so a module's own dependencies are emitted before it.
+    """
+    search_root = os.path.dirname(os.path.dirname(os.path.abspath(source_path)))
+    if not os.path.isdir(os.path.join(search_root, "std")):
+        search_root = os.path.dirname(os.path.abspath(source_path))
+    modules, unresolved, seen = [], [], set()
+
+    def walk(node_ast):
+        for imp in node_ast.imports:
+            path = _resolve_module(imp, search_root)
+            if path is None:
+                key = f"{imp.name} from {imp.source}"
+                if key not in unresolved:
+                    unresolved.append(key)
+                continue
+            real = os.path.realpath(path)
+            if real in seen:
+                continue
+            seen.add(real)
+            try:
+                mod_ast = parse_file(path)
+            except (Exception, SystemExit) as e:
+                # A broken stdlib module must degrade to a link-time undefined
+                # symbol, never harden into a failure of the importing file.
+                print(f"[STRATA IMPORT WARNING] skipping '{path}': {e}", file=sys.stderr)
+                continue
+            walk(mod_ast)
+            modules.append((imp.name, mod_ast))
+            if verbose:
+                print(f"  import: {imp.name} from {imp.source} -> {os.path.relpath(path, search_root)}")
+    walk(ast)
+    return modules, unresolved
+
 def compile_sta(source_path, output_path, target="native", verbose=False):
     print(f"[Strata Stage 0] Compiling '{source_path}'...")
     try: ast = parse_file(source_path)
     except (LexError, ParseError) as e: print(str(e), file=sys.stderr); sys.exit(1)
     if verbose:
         print(f"  AST: {len(ast.imports)} imports, {len(ast.declarations)} decls, {len(ast.functions)} functions")
-    gen = CodeGen(ast, source_path)
+    modules, unresolved = resolve_imports(ast, source_path, verbose)
+    for u in unresolved:
+        print(f"[STRATA IMPORT] '{u}' is an external module with no local "
+              f"checkout; its symbols must be provided at link time.", file=sys.stderr)
+    gen = CodeGen(ast, source_path, modules)
     c_source = gen.generate()
     base = os.path.splitext(source_path)[0]
     c_path = base + ".c"

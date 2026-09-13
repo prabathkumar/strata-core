@@ -91,7 +91,8 @@ int verification_code = process_ledger_bounds(&active_profile);
 (* Strata Core Context-Free Grammar Definition Reference *)
 CompilationUnit   = { ImportDeclaration } { StructureDeclaration } { FunctionDeclaration } ;
 
-ImportDeclaration = "import" , Identifier , "from" , Identifier , ";" ;
+ImportDeclaration = "import" , ModulePath , "from" , ModulePath , ";" ;
+ModulePath        = Identifier , { "." , Identifier } ;
 
 StructureDeclaration = DatabaseBlock | StreamBlock | ProtocolBlock | ModelBlock | LayoutBlock | ReportBlock ;
 

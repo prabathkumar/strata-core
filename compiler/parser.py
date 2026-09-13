@@ -308,11 +308,19 @@ class Parser:
 
     def _parse_import(self) -> ImportDecl:
         t = self._consume(TT.KW_IMPORT)
-        name = self._consume_name().value
+        name = self._parse_module_path()
         self._consume(TT.KW_FROM)
-        source = self._consume_name().value
+        source = self._parse_module_path()
         self._consume(TT.SEMICOLON)
         return ImportDecl(t.line, t.col, name, source)
+
+    def _parse_module_path(self) -> str:
+        """Dotted module path: Identifier { '.' Identifier }."""
+        parts = [self._consume_name().value]
+        while self._check(TT.DOT):
+            self._advance()
+            parts.append(self._consume_name().value)
+        return ".".join(parts)
 
     # ── Database ──────────────────────────────────────────────────────────────
 
