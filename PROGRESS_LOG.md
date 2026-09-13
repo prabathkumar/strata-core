@@ -23,3 +23,5 @@ Not done, and why:
 - Fibers remain design only. Part 4 of NEXT_STEPS has the breakdown and the
   1–2 week coroutine scope that is worth taking instead.
 
+
+_(check-in path verified: two consecutive commits from the bridge.)_
