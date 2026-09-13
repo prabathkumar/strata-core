@@ -25,6 +25,13 @@ jobs:
 
     # The conformance suite is the compiler's own regression gate: E001-E006
     # plus end-to-end compile-and-run. It exits non-zero on any failure.
+    # A file can exist locally, be required by every build, and never reach
+    # the repository. This runs the suite inside an export of HEAD, which is
+    # exactly what a clone gets, so an untracked dependency fails here rather
+    # than mystifying everyone when every other step goes red at once.
+    - name: Committed Tree Builds
+      run: python3 test_suite/clean_checkout.py
+
     - name: Run Conformance Suite
       run: python3 test_suite/conformance.py
 

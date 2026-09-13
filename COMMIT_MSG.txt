@@ -1,37 +1,27 @@
-feat(layout): render layouts to HTML from the C backend
+fix: track compiler/runtime_preamble.c; verify the committed tree builds
 
-The cross-tier contract is now visible, not only enforced. A layout
-compiles to a C function that writes HTML, `render X to "file"` calls it,
-and declarative properties map onto inline CSS:
+Every CI step failed on b7cc628 while every suite passed locally. The
+cause was not any of them: .gitignore carried `*.c` to exclude generated
+output, and compiler/runtime_preamble.c — extracted in the codegen work
+as the single source of the C runtime prelude — matched that pattern and
+was never committed. The compiler reads it on every run, so a clone had
+no prelude and nothing could build.
 
-  <body style="width:1200px;height:800px">
-    <div style="display:flex;flex-direction:row;padding:16px;background:#0c0c12">
-      <span style="color:#39ff14;font-weight:bold;font-size:16px">OPERATIONS</span>
+.gitignore now excludes generated C but keeps the prelude, which is
+source rather than output.
 
-Server-rendered from the existing backend rather than through WebAssembly:
-no new code generator, and the guarantee is identical either way because
-the check happens in the compiler before anything is emitted. WebAssembly
-remains on the roadmap for compute-heavy client work.
+The real fix is the guard. test_suite/clean_checkout.py exports HEAD with
+`git archive` — exactly what a clone gets — and runs the conformance
+suite inside it. A file the build needs but does not track now fails one
+named step instead of turning every step red at once with no indication
+of why. It runs first in CI, before the suites it would otherwise
+invalidate.
 
-The dynamic section renders no rows, and says so in a comment in the
-generated C. Queries evaluate to NULL because there is no database
-runtime yet; the loop is emitted with a correctly typed row variable so
-the body compiles, and nothing is fabricated to make the page look
-populated.
-
-A property with no CSS mapping is dropped rather than guessed at, and an
-element's label is emitted as a literal, as an expression, or not at all
-when it is a bare identifier naming the element.
-
-Layouts are now registered as renderable alongside reports, so `render`
-accepts either.
-
-Also of note: `title` is a reserved word and could not be used as a local
-variable here — the third time this has come up, after `model` and
-`metrics` in Phase 4. Reserving report-block field names globally is a
-poor trade and they should become contextual keywords.
-
-All eight suites green, fixpoint holds, examples compile 10 of 17.
+This is the third variant of the same failure in this project: a check
+that cannot be run the way it actually runs. The YAML-indented Python
+that made the stdlib appear unparseable, the gcc-versus-clang divergence
+on implicit declarations, and now a working tree that contains a file the
+repository does not.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

@@ -1,6 +1,8 @@
+# Generated C output from the compiler. The runtime prelude below is SOURCE,
+# not output, and must stay tracked — every build reads it.
 __pycache__/
 *.pyc
-*.c
-__pycache__/
-build/
 *.o
+build/
+*.c
+!compiler/runtime_preamble.c
