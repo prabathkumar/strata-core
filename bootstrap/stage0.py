@@ -677,21 +677,31 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     with open(c_path, "w") as f: f.write(c_source)
     if not json_diagnostics:
         print(f"  C source: {c_path}")
-    cc = next((c for c in ("clang","gcc","cc")
-               if subprocess.run(["which",c],capture_output=True).returncode==0), None)
+    # STRATA_CC pins the backend compiler, so a build can be reproduced against
+    # a specific toolchain rather than whichever one happens to be installed.
+    forced = os.environ.get("STRATA_CC")
+    candidates = (forced,) if forced else ("clang", "gcc", "cc")
+    cc = next((c for c in candidates
+               if subprocess.run(["which", c], capture_output=True).returncode == 0), None)
     if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
     # A unit with no main() is a library, not a program: link it as an object
     # file rather than asking the linker for an entry point it cannot have.
     is_library = not any(fn.name == "main" for fn in ast.functions)
+    # Unresolved externals are reported by the import pass and left to the
+    # linker. C99 removed implicit declarations and clang 16+ makes them a hard
+    # error, so without this every program calling an unresolved symbol fails
+    # to build on clang while succeeding on gcc.
+    portability = ["-Wno-implicit-function-declaration"]
     if target == "wasm":
-        flags = [cc,"-O2","--target=wasm32","--no-standard-libraries",
-                 "-Wl,--export-all","-Wl,--no-entry","-o",output_path,c_path]
+        flags = ([cc,"-O2","--target=wasm32","--no-standard-libraries",
+                  "-Wl,--export-all","-Wl,--no-entry"] + portability +
+                 ["-o",output_path,c_path])
     elif is_library:
         if not output_path.endswith(".o"):
             output_path += ".o"
-        flags = [cc,"-O2","-c","-o",output_path,c_path]
+        flags = [cc,"-O2","-c"] + portability + ["-o",output_path,c_path]
     else:
-        flags = [cc,"-O2","-o",output_path,c_path,"-lm"]
+        flags = [cc,"-O2"] + portability + ["-o",output_path,c_path,"-lm"]
     if verbose: print(f"  CC: {' '.join(flags)}")
     r = subprocess.run(flags, capture_output=True, text=True)
     if r.returncode != 0:

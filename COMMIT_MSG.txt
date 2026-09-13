@@ -1,21 +1,30 @@
-fix(ci): stdlib parse check was broken by YAML indentation; untrack build output
+fix(codegen): generated C relied on implicit function declarations
 
-CI has been failing since b97a418. The "Verify Standard Library Parses"
-step embedded a Python one-liner inside a YAML block scalar, so every line
-of that program carried the block's indentation and Python raised
-IndentationError before reading a single module. The step reported that
-the standard library did not parse; the standard library was fine.
+CI failed on a job that passed locally. The cause was not configuration:
+the generated C called unresolved symbols without a declaration, which
+C99 removed and clang 16+ rejects outright. gcc only warns. GitHub's
+runner image has clang, stage0 prefers clang, and this machine has only
+gcc — so the same source compiled here and failed there.
 
-The check now lives in test_suite/stdlib_parses.py and the workflow calls
-it. That is the actual fix: a CI step that cannot be run locally, exactly
-as CI runs it, is a step that fails for reasons unrelated to what it
-claims to test. Every step in the workflow is now a script or a short
-guard that can be executed by hand.
+This was a real portability defect, not a CI problem. Any user on a clang
+toolchain, which is every macOS developer, would have hit it the first
+time a program referenced a symbol Strata could not resolve locally —
+`current_raw_buffer` in the README's own packet example, for instance.
 
-Also untracks build/strata-lexer-sta and adds build/ and *.o to
-.gitignore. A compiled binary had started accumulating in version
-control, which is how bin/strata-stage1 — a committed macOS Mach-O that
-could not run in CI — came to exist in the first place.
+Unresolved externals are an accepted state: the import pass reports them
+and leaves them to the linker. Codegen now passes
+-Wno-implicit-function-declaration so that intent survives a strict
+frontend, rather than depending on which compiler happened to be
+installed.
+
+STRATA_CC pins the backend compiler, and CI now runs the conformance and
+documentation suites under clang as well as the default. Testing one
+toolchain while users have another is the same class of gap as testing
+documentation that is never compiled.
+
+Verified by reproducing the failure locally with
+-Werror=implicit-function-declaration, which turns gcc into clang 16 for
+this diagnostic.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

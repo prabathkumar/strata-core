@@ -1,629 +1,444 @@
 // STRATA COMPILER — compiler/parser.sta
-// Full Strata Parser written IN Strata
-// Compiled by Stage 0 → produces strata-parser binary
+// The Strata parser, written in Strata.
+//
+// Stage 2 of the self-hosting pipeline. Must produce a syntax tree identical
+// to compiler/parser.py, which is the oracle; test_suite/parser_diff.py
+// enforces that by comparing emitted JSON structurally.
+//
+// Uses only the frozen seed subset (see SEED_SUBSET.md).
 
-import io  from std;
-import mem from std;
-import str from std;
+import io    from std;
+import str   from std;
+import lexer from compiler;
 
-// AST Node Type IDs
-int AST_INT_LIT=1; int AST_FLOAT_LIT=2; int AST_STR_LIT=3; int AST_BOOL_LIT=4;
-int AST_IDENT=5; int AST_BINARY=6; int AST_UNARY=7; int AST_CALL=8;
-int AST_BORROW=9; int AST_CAST=10; int AST_PREDICT=11; int AST_QUERY=12;
-int AST_LIST_LIT=13; int AST_MEMBER=14; int AST_VAR_DECL=15; int AST_RETURN=16;
-int AST_IF=17; int AST_PRINT=18; int AST_ASSERT=19; int AST_EXPR_STMT=20;
-int AST_VERIFY=21; int AST_RENDER=22; int AST_IMPORT=30; int AST_FIELD=31;
-int AST_DATABASE=32; int AST_PROTOCOL=33; int AST_MODEL=34; int AST_REPORT=35;
-int AST_FUNCTION=36; int AST_PARAM=37; int AST_COMPILE_UNIT=38;
-int AST_TYPE_PRIM=50; int AST_TYPE_LIST=51; int AST_TYPE_TENSOR=52;
+// ── Node ─────────────────────────────────────────────────────────────────────
+//
+// Strata has no sum types, so every syntax node is one record with slots that
+// each node kind interprets by convention:
+//   s1 s2 s3   strings (name, op, callee, member, ...)
+//   i1 i2      integers (literal value, tensor dims, borrow flag)
+//   f1         float literal
+//   c1 c2 c3   single children, held as Node* cast to int (0 means absent)
+//   v1 v2 v3   child lists, held as NodeVec* cast to int (0 means absent)
+//
+// Pointers are carried as int rather than as record fields so that "absent"
+// is representable as 0 without a null-record concept in the language.
 
-// Token IDs
-int TK_INT_LIT=1; int TK_FLOAT_LIT=2; int TK_STR_LIT=3; int TK_IDENT=4;
-int TK_KW_INT=10; int TK_KW_FLOAT=11; int TK_KW_STR=12; int TK_KW_VOID=13;
-int TK_KW_LIST=14; int TK_KW_TENSOR=15; int TK_KW_BOOL=16;
-int TK_KW_IF=20; int TK_KW_ELSE=21; int TK_KW_RETURN=22; int TK_KW_ASSERT=23;
-int TK_KW_IMPORT=24; int TK_KW_FROM=25; int TK_KW_DEF=26;
-int TK_KW_DATABASE=30; int TK_KW_STREAM=31; int TK_KW_PROTO=32;
-int TK_KW_MODEL=33; int TK_KW_PREDICT=34; int TK_KW_REPORT=35;
-int TK_KW_RENDER=36; int TK_KW_LAYOUT=37; int TK_KW_VERIFY=38;
-int TK_KW_INPUT=40; int TK_KW_OUTPUT=41; int TK_KW_METRICS=42;
-int TK_KW_TITLE=43; int TK_KW_DATASRC=44; int TK_KW_TO=45;
-int TK_KW_PRINT=46; int TK_KW_TRUE=47; int TK_KW_FALSE=48;
-int TK_L_BRACE=50; int TK_R_BRACE=51; int TK_L_PAREN=52; int TK_R_PAREN=53;
-int TK_L_BRACKET=54; int TK_R_BRACKET=55; int TK_SEMICOLON=56;
-int TK_COLON=57; int TK_COMMA=58; int TK_DOT=59; int TK_ASSIGN=60;
-int TK_ARROW_L=61; int TK_CAST_OP=62; int TK_BORROW_OP=63;
-int TK_PLUS=64; int TK_MINUS=65; int TK_STAR=66; int TK_SLASH=67;
-int TK_EQ=69; int TK_NEQ=70; int TK_LT=71; int TK_GT=72;
-int TK_LTE=73; int TK_GTE=74; int TK_AND=75; int TK_OR=76;
-int TK_NOT=77; int TK_EOF=99;
-int NULL_NODE=0;
-
-database Token { int kind; str value; int line; int col; }
-database TokenArray { int buf_ptr; int count; int capacity; }
-database ASTNode {
-    int kind; int ival; float fval;
-    str sval; str sval2;
+database Node {
+    int kind;
+    str s1; str s2; str s3;
+    int i1; int i2;
+    float f1;
+    int c1; int c2; int c3;
+    int v1; int v2; int v3;
     int line; int col;
-    int left; int right; int cond; int body; int next; int alt;
 }
-database NodePool { int buf_ptr; int count; int capacity; }
-database ParserState { int ta_ptr; int pos; str filename; }
 
-NodePool pool_new() {
+database NodeVec { int ptr; int len; int cap; }
+
+// ── Pointer helpers ──────────────────────────────────────────────────────────
+
+Node node_new(int kind) {
     native "
-    static NodePool _p;
-    _p.capacity=131072; _p.count=1;
-    _p.buf_ptr=(int64_t)(uintptr_t)calloc(131072,sizeof(ASTNode));
-    return _p;
+    Node* _n=(Node*)calloc(1,sizeof(Node));
+    _n->kind=$kind; _n->s1=\"\"; _n->s2=\"\"; _n->s3=\"\";
+    return _n;
     ";
 }
 
-int node_new(NodePool &pool, int kind, int line, int col) {
+int node_ptr(Node n) { native "return (int64_t)(uintptr_t)$n;"; }
+Node node_at(int p)  { native "return (Node*)(uintptr_t)$p;"; }
+
+NodeVec nv_new() {
     native "
-    int64_t _idx=$pool.count++;
-    if(_idx>=$pool.capacity){fprintf(stderr,\"[STRATA] AST pool overflow\n\");exit(1);}
-    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-    memset(_n,0,sizeof(ASTNode));
-    _n->kind=$kind;_n->line=$line;_n->col=$col;
-    return _idx;
+    NodeVec* _v=(NodeVec*)malloc(sizeof(NodeVec));
+    _v->cap=16; _v->len=0;
+    _v->ptr=(int64_t)(uintptr_t)malloc(16*sizeof(void*));
+    return _v;
     ";
 }
 
-ASTNode pool_get_node(NodePool &pool, int idx) {
-    native "return ((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];";
-}
+int nv_ptr(NodeVec v) { native "return (int64_t)(uintptr_t)$v;"; }
+NodeVec nv_at(int p)  { native "return (NodeVec*)(uintptr_t)$p;"; }
 
-def pool_set_field_i(NodePool &pool, int idx, str field, int val) {
+def nv_push(NodeVec &v, Node n) {
     native "
-    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
-    if(strcmp($field,\"left\")==0)  _n->left=$val;
-    else if(strcmp($field,\"right\")==0) _n->right=$val;
-    else if(strcmp($field,\"cond\")==0)  _n->cond=$val;
-    else if(strcmp($field,\"body\")==0)  _n->body=$val;
-    else if(strcmp($field,\"next\")==0)  _n->next=$val;
-    else if(strcmp($field,\"alt\")==0)   _n->alt=$val;
-    else if(strcmp($field,\"ival\")==0)  _n->ival=$val;
-    ";
-}
-
-def pool_set_field_s(NodePool &pool, int idx, str field, str val) {
-    native "
-    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
-    if(strcmp($field,\"sval\")==0)  _n->sval=$val;
-    else if(strcmp($field,\"sval2\")==0) _n->sval2=$val;
-    ";
-}
-
-def pool_set_field_f(NodePool &pool, int idx, str field, float val) {
-    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].fval=$val;";
-}
-
-Token ta_get_tok(TokenArray &ta, int idx) {
-    native "return ((Token*)(uintptr_t)$ta.buf_ptr)[$idx];";
-}
-
-ParserState ps_new(TokenArray &ta, str filename) {
-    native "
-    static ParserState _ps;
-    _ps.ta_ptr=(int64_t)(uintptr_t)&$ta;
-    _ps.pos=0; _ps.filename=$filename;
-    return _ps;
-    ";
-}
-
-int ps_kind(ParserState &ps) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos].kind;
-    ";
-}
-
-int ps_kind_at(ParserState &ps, int offset) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    int64_t _i=$ps.pos+$offset;
-    if(_i>=_ta->count)_i=_ta->count-1;
-    return ((Token*)(uintptr_t)_ta->buf_ptr)[_i].kind;
-    ";
-}
-
-Token ps_peek(ParserState &ps) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
-    ";
-}
-
-Token ps_advance(ParserState &ps) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    Token _t=((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
-    if($ps.pos<_ta->count-1)$ps.pos++;
-    return _t;
-    ";
-}
-
-Token ps_consume(ParserState &ps, int kind) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    Token _t=((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos];
-    if(_t.kind!=$kind){
-        fprintf(stderr,\"[STRATA PARSE ERROR] Expected %lld got '%s'(%lld) at %s:%lld:%lld\n\",
-            (long long)$kind,_t.value,(long long)_t.kind,
-            $ps.filename,(long long)_t.line,(long long)_t.col);
-        exit(1);
+    if($v->len>=$v->cap){
+        $v->cap*=2;
+        $v->ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$v->ptr,$v->cap*sizeof(void*));
     }
-    if($ps.pos<_ta->count-1)$ps.pos++;
-    return _t;
+    ((Node**)(uintptr_t)$v->ptr)[$v->len]=$n; $v->len+=1;
     ";
 }
 
-int ps_at_end(ParserState &ps) {
-    native "
-    TokenArray* _ta=(TokenArray*)(uintptr_t)$ps.ta_ptr;
-    return ((Token*)(uintptr_t)_ta->buf_ptr)[$ps.pos].kind==99?1:0;
-    ";
+Node nv_get(NodeVec &v, int i) { native "return ((Node**)(uintptr_t)$v->ptr)[$i];"; }
+
+// ── JSON emission ────────────────────────────────────────────────────────────
+
+str json_escape(str v) {
+    StringBuilder sb = sb_new();
+    int n = str_len(v);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = v[i];
+        if (c == 34) { sb_append(&sb, "\\\""); }
+        if (c == 92) { sb_append(&sb, "\\\\"); }
+        if (c == 10) { sb_append(&sb, "\\n"); }
+        if (c == 9)  { sb_append(&sb, "\\t"); }
+        if (c == 13) { sb_append(&sb, "\\r"); }
+        if (c != 34) { if (c != 92) { if (c != 10) { if (c != 9) { if (c != 13) {
+            sb_append(&sb, char_str(c));
+        } } } } }
+    }
+    return sb_to_str(&sb);
 }
 
-int ps_is_prim_type(ParserState &ps) {
-    native "
-    int64_t _k=ps_kind(&$ps);
-    return(_k==10||_k==11||_k==12||_k==13||_k==16)?1:0;
-    ";
+str jstr(str v) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "\"");
+    sb_append(&sb, json_escape(v));
+    sb_append(&sb, "\"");
+    return sb_to_str(&sb);
 }
 
-int ps_is_type_tok(ParserState &ps) {
-    native "
-    int64_t _k0=ps_kind(&$ps);
-    int64_t _k1=ps_kind_at(&$ps,1);
-    if(_k0==10||_k0==11||_k0==12||_k0==13||_k0==14||_k0==15||_k0==16)return 1;
-    if(_k0==4&&(_k1==4||_k1==63))return 1;
+def jfield(StringBuilder &sb, str key, str value_json) {
+    sb_append(&sb, ",");
+    sb_append(&sb, jstr(key));
+    sb_append(&sb, ":");
+    sb_append(&sb, value_json);
+}
+
+// A child slot: emits the node's JSON, or null when the slot is 0.
+str jchild(int p) {
+    if (p == 0) { return "null"; }
+    return node_json(node_at(p));
+}
+
+// A child list: emits a JSON array, or null when the slot is 0.
+str jlist(int p) {
+    if (p == 0) { return "null"; }
+    NodeVec v = nv_at(p);
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int n = v.len;
+    for (int i = 0; i < n; i = i + 1) {
+        if (i > 0) { sb_append(&sb, ","); }
+        sb_append(&sb, node_json(nv_get(&v, i)));
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
+// Node kinds:
+//  1 CompilationUnit  2 ImportDecl   3 DatabaseDecl  4 ProtocolDecl
+//  5 ModelDecl        6 ReportDecl   7 ReportMetric  8 FieldDecl
+//  9 FunctionDecl    10 Param       11 PrimitiveType 12 ListType
+// 13 TensorType      20 VarDecl     21 ReturnStmt    22 IfStmt
+// 23 ExprStmt        24 AssertStmt  25 RenderStmt    26 VerifyBlock
+// 27 InsertStmt      28 AssignStmt  29 WhileStmt     30 ForStmt
+// 31 BreakStmt       32 ContinueStmt
+// 40 BinaryExpr      41 UnaryExpr   42 CallExpr      43 BorrowExpr
+// 44 CastExpr        45 PredictExpr 46 QueryExpr     47 ListLiteral
+// 48 MemberAccess    49 IndexExpr   50 IntLiteral    51 FloatLiteral
+// 52 StrLiteral      53 BoolLiteral 54 Identifier
+
+str node_name(int k) {
+    if (k == 1)  { return "CompilationUnit"; }
+    if (k == 2)  { return "ImportDecl"; }
+    if (k == 3)  { return "DatabaseDecl"; }
+    if (k == 4)  { return "ProtocolDecl"; }
+    if (k == 5)  { return "ModelDecl"; }
+    if (k == 6)  { return "ReportDecl"; }
+    if (k == 7)  { return "ReportMetric"; }
+    if (k == 8)  { return "FieldDecl"; }
+    if (k == 9)  { return "FunctionDecl"; }
+    if (k == 10) { return "Param"; }
+    if (k == 11) { return "PrimitiveType"; }
+    if (k == 12) { return "ListType"; }
+    if (k == 13) { return "TensorType"; }
+    if (k == 20) { return "VarDecl"; }
+    if (k == 21) { return "ReturnStmt"; }
+    if (k == 22) { return "IfStmt"; }
+    if (k == 23) { return "ExprStmt"; }
+    if (k == 24) { return "AssertStmt"; }
+    if (k == 25) { return "RenderStmt"; }
+    if (k == 26) { return "VerifyBlock"; }
+    if (k == 27) { return "InsertStmt"; }
+    if (k == 28) { return "AssignStmt"; }
+    if (k == 29) { return "WhileStmt"; }
+    if (k == 30) { return "ForStmt"; }
+    if (k == 31) { return "BreakStmt"; }
+    if (k == 32) { return "ContinueStmt"; }
+    if (k == 40) { return "BinaryExpr"; }
+    if (k == 41) { return "UnaryExpr"; }
+    if (k == 42) { return "CallExpr"; }
+    if (k == 43) { return "BorrowExpr"; }
+    if (k == 44) { return "CastExpr"; }
+    if (k == 45) { return "PredictExpr"; }
+    if (k == 46) { return "QueryExpr"; }
+    if (k == 47) { return "ListLiteral"; }
+    if (k == 48) { return "MemberAccess"; }
+    if (k == 49) { return "IndexExpr"; }
+    if (k == 50) { return "IntLiteral"; }
+    if (k == 51) { return "FloatLiteral"; }
+    if (k == 52) { return "StrLiteral"; }
+    if (k == 53) { return "BoolLiteral"; }
+    if (k == 54) { return "Identifier"; }
+    return "Unknown";
+}
+
+str node_json(Node n) {
+    int k = n.kind;
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"node\":");
+    sb_append(&sb, jstr(node_name(k)));
+
+    if (k == 1) {
+        jfield(&sb, "imports", jlist(n.v1));
+        jfield(&sb, "declarations", jlist(n.v2));
+        jfield(&sb, "functions", jlist(n.v3));
+    }
+    if (k == 2) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "source", jstr(n.s2)); }
+    if (k == 3) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "fields", jlist(n.v1)); }
+    if (k == 4) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "fields", jlist(n.v1)); }
+    if (k == 5) {
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "input", jchild(n.c1));
+        jfield(&sb, "output", jchild(n.c2));
+    }
+    if (k == 6) {
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "title", jstr(n.s2));
+        jfield(&sb, "datasource", jchild(n.c1));
+        jfield(&sb, "metrics", jlist(n.v1));
+    }
+    if (k == 7) {
+        jfield(&sb, "type", jchild(n.c1));
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "expr", jchild(n.c2));
+    }
+    if (k == 8) { jfield(&sb, "type", jchild(n.c1)); jfield(&sb, "name", jstr(n.s1)); }
+    if (k == 9) {
+        jfield(&sb, "kind", jstr(n.s1));
+        jfield(&sb, "return_type", jchild(n.c1));
+        jfield(&sb, "name", jstr(n.s2));
+        jfield(&sb, "params", jlist(n.v1));
+        jfield(&sb, "body", jlist(n.v2));
+    }
+    if (k == 10) {
+        jfield(&sb, "type", jchild(n.c1));
+        jfield(&sb, "name", jstr(n.s1));
+        if (n.i1 == 1) { jfield(&sb, "borrow", "true"); }
+        if (n.i1 == 0) { jfield(&sb, "borrow", "false"); }
+    }
+    if (k == 11) { jfield(&sb, "name", jstr(n.s1)); }
+    if (k == 12) { jfield(&sb, "element_type", jchild(n.c1)); }
+    if (k == 13) {
+        jfield(&sb, "dtype", jstr(n.s1));
+        jfield(&sb, "rows", str(n.i1));
+        jfield(&sb, "cols", str(n.i2));
+    }
+    if (k == 20) {
+        jfield(&sb, "type", jchild(n.c1));
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "value", jchild(n.c2));
+    }
+    if (k == 21) { jfield(&sb, "value", jchild(n.c1)); }
+    if (k == 22) {
+        jfield(&sb, "condition", jchild(n.c1));
+        jfield(&sb, "then_block", jlist(n.v1));
+        jfield(&sb, "else_block", jlist(n.v2));
+    }
+    if (k == 23) { jfield(&sb, "expr", jchild(n.c1)); }
+    if (k == 24) { jfield(&sb, "condition", jchild(n.c1)); }
+    if (k == 25) { jfield(&sb, "report", jstr(n.s1)); jfield(&sb, "path", jstr(n.s2)); }
+    if (k == 26) { jfield(&sb, "label", jstr(n.s1)); jfield(&sb, "assertions", jlist(n.v1)); }
+    if (k == 27) { jfield(&sb, "target", jstr(n.s1)); jfield(&sb, "assignments", jassigns(n.v1)); }
+    if (k == 28) { jfield(&sb, "target", jchild(n.c1)); jfield(&sb, "value", jchild(n.c2)); }
+    if (k == 29) { jfield(&sb, "condition", jchild(n.c1)); jfield(&sb, "body", jlist(n.v1)); }
+    if (k == 30) {
+        jfield(&sb, "init", jchild(n.c1));
+        jfield(&sb, "condition", jchild(n.c2));
+        jfield(&sb, "step", jchild(n.c3));
+        jfield(&sb, "body", jlist(n.v1));
+    }
+    if (k == 40) {
+        jfield(&sb, "op", jstr(n.s1));
+        jfield(&sb, "left", jchild(n.c1));
+        jfield(&sb, "right", jchild(n.c2));
+    }
+    if (k == 41) { jfield(&sb, "op", jstr(n.s1)); jfield(&sb, "operand", jchild(n.c1)); }
+    if (k == 42) { jfield(&sb, "callee", jstr(n.s1)); jfield(&sb, "args", jlist(n.v1)); }
+    if (k == 43) { jfield(&sb, "target", jchild(n.c1)); }
+    if (k == 44) { jfield(&sb, "source", jchild(n.c1)); jfield(&sb, "target_type", jstr(n.s1)); }
+    if (k == 45) { jfield(&sb, "model", jstr(n.s1)); jfield(&sb, "arg", jchild(n.c1)); }
+    if (k == 46) { jfield(&sb, "source", jstr(n.s1)); jfield(&sb, "condition", jchild(n.c1)); }
+    if (k == 47) { jfield(&sb, "elements", jlist(n.v1)); }
+    if (k == 48) { jfield(&sb, "obj", jchild(n.c1)); jfield(&sb, "member", jstr(n.s1)); }
+    if (k == 49) { jfield(&sb, "target", jchild(n.c1)); jfield(&sb, "index", jchild(n.c2)); }
+    if (k == 50) { jfield(&sb, "value", str(n.i1)); }
+    if (k == 51) { jfield(&sb, "value", n.s1); }
+    if (k == 52) { jfield(&sb, "value", jstr(n.s1)); }
+    if (k == 53) {
+        if (n.i1 == 1) { jfield(&sb, "value", "true"); }
+        if (n.i1 == 0) { jfield(&sb, "value", "false"); }
+    }
+    if (k == 54) { jfield(&sb, "name", jstr(n.s1)); }
+
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// Insert assignments are {"column":..., "value":...} pairs rather than nodes.
+str jassigns(int p) {
+    if (p == 0) { return "null"; }
+    NodeVec v = nv_at(p);
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int n = v.len;
+    for (int i = 0; i < n; i = i + 1) {
+        if (i > 0) { sb_append(&sb, ","); }
+        Node pair = nv_get(&v, i);
+        sb_append(&sb, "{\"column\":");
+        sb_append(&sb, jstr(pair.s1));
+        sb_append(&sb, ",\"value\":");
+        sb_append(&sb, jchild(pair.c1));
+        sb_append(&sb, "}");
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
+// ── Parser state ─────────────────────────────────────────────────────────────
+
+database P { TokVec toks; int pos; }
+
+P p_new(TokVec t) {
+    native "P* _p=(P*)malloc(sizeof(P)); _p->toks=$t; _p->pos=0; return _p;";
+}
+
+Token p_peek(P &p, int off) { return vec_get(&p.toks, p.pos + off); }
+int p_kind(P &p, int off)   { Token t = p_peek(&p, off); return t.kind; }
+int p_at_end(P &p)          { if (p_kind(&p, 0) == 5) { return 1; } return 0; }
+
+Token p_advance(P &p) {
+    Token t = vec_get(&p.toks, p.pos);
+    p.pos = p.pos + 1;
+    return t;
+}
+
+int p_check(P &p, int kind) { if (p_kind(&p, 0) == kind) { return 1; } return 0; }
+
+Token p_expect(P &p, int kind) {
+    if (p_check(&p, kind) == 0) {
+        Token bad = p_peek(&p, 0);
+        eprint("[STRATA PARSE ERROR] unexpected token");
+        eprint(bad.value);
+    }
+    return p_advance(&p);
+}
+
+def n_pos(Node n, Token t) { n.line = t.line; n.col = t.col; }
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+int is_type_kind(int k) {
+    if (k == 10) { return 1; }   // int
+    if (k == 11) { return 1; }   // float
+    if (k == 12) { return 1; }   // str
+    if (k == 13) { return 1; }   // void
+    if (k == 16) { return 1; }   // bool
+    if (k == 14) { return 1; }   // list
+    if (k == 15) { return 1; }   // tensor
+    if (k == 4)  { return 1; }   // IDENT — a record type name
     return 0;
-    ";
 }
 
-int parse_tensor_type(ParserState &ps, NodePool &pool) {
-    Token t=ps_consume(&ps,15);
-    int idx=node_new(&pool,AST_TYPE_TENSOR,t.line,t.col);
-    ps_consume(&ps,54);
-    Token dt=ps_advance(&ps);
-    ps_consume(&ps,58);
-    Token rows=ps_consume(&ps,1);
-    ps_consume(&ps,58);
-    Token cols=ps_consume(&ps,1);
-    ps_consume(&ps,55);
-    native "
-    ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];
-    _n->sval=$dt.value;
-    _n->ival=(int64_t)atoll($rows.value);
-    _n->right=(int64_t)atoll($cols.value);
-    ";
-    return idx;
+Node parse_type(P &p) {
+    Token t = p_peek(&p, 0);
+
+    if (t.kind == 14) {                       // list[T]
+        Token open = p_advance(&p);
+        p_expect(&p, 54);
+        Node inner = parse_type(&p);
+        p_expect(&p, 55);
+        Node n = node_new(12);
+        n.c1 = node_ptr(inner);
+        n_pos(n, open);
+        return n;
+    }
+
+    if (t.kind == 15) {                       // tensor[dtype, rows, cols]
+        Token open = p_advance(&p);
+        p_expect(&p, 54);
+        Token dt = p_advance(&p);
+        p_expect(&p, 58);
+        Token rows = p_advance(&p);
+        p_expect(&p, 58);
+        Token cols = p_advance(&p);
+        p_expect(&p, 55);
+        Node n = node_new(13);
+        n.s1 = dt.value;
+        n.i1 = str_to_int(rows.value);
+        n.i2 = str_to_int(cols.value);
+        n_pos(n, open);
+        return n;
+    }
+
+    Token prim = p_advance(&p);
+    Node n = node_new(11);
+    n.s1 = prim.value;
+    n_pos(n, prim);
+    return n;
 }
 
-int parse_type(ParserState &ps, NodePool &pool) {
-    if(ps_kind(&ps)==15){return parse_tensor_type(&ps,&pool);}
-    if(ps_kind(&ps)==14){
-        Token t=ps_advance(&ps);
-        int idx=node_new(&pool,AST_TYPE_LIST,t.line,t.col);
-        ps_consume(&ps,54);
-        int elem=parse_type(&ps,&pool);
-        ps_consume(&ps,55);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$elem;";
-        return idx;
+// ── Declarations ─────────────────────────────────────────────────────────────
+
+str parse_module_path(P &p) {
+    StringBuilder sb = sb_new();
+    Token first = p_advance(&p);
+    sb_append(&sb, first.value);
+    while (p_check(&p, 59) == 1) {            // '.'
+        p_advance(&p);
+        Token part = p_advance(&p);
+        sb_append(&sb, ".");
+        sb_append(&sb, part.value);
     }
-    Token t=ps_advance(&ps);
-    int idx=node_new(&pool,AST_TYPE_PRIM,t.line,t.col);
-    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$t.value;";
-    return idx;
+    return sb_to_str(&sb);
 }
 
-int parse_expr(ParserState &ps, NodePool &pool);
-
-int parse_primary(ParserState &ps, NodePool &pool) {
-    Token t=ps_peek(&ps);
-    if(ps_kind(&ps)==1){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_INT_LIT,t.line,t.col);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=(int64_t)atoll($t.value);";
-        return idx;
-    }
-    if(ps_kind(&ps)==2){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_FLOAT_LIT,t.line,t.col);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].fval=atof($t.value);";
-        return idx;
-    }
-    if(ps_kind(&ps)==3){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_STR_LIT,t.line,t.col);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$t.value;";
-        return idx;
-    }
-    if(ps_kind(&ps)==47){ps_advance(&ps);int idx=node_new(&pool,AST_BOOL_LIT,t.line,t.col);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=1;";return idx;}
-    if(ps_kind(&ps)==48){ps_advance(&ps);int idx=node_new(&pool,AST_BOOL_LIT,t.line,t.col);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].ival=0;";return idx;}
-    if(ps_kind(&ps)==54){
-        Token tb=ps_consume(&ps,54);
-        int idx=node_new(&pool,AST_LIST_LIT,tb.line,tb.col);
-        int head=0;int tail=0;
-        native "
-        while(ps_kind(&$ps)!=55){
-            int64_t _e=parse_expr(&$ps,&$pool);
-            if($head==0){$head=_e;$tail=_e;}
-            else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_e;$tail=_e;}
-            if(ps_kind(&$ps)==58)ps_advance(&$ps);
-        }
-        ";
-        ps_consume(&ps,55);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].body=$head;";
-        return idx;
-    }
-    if(ps_kind(&ps)==34){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_PREDICT,t.line,t.col);
-        Token mt=ps_consume(&ps,4);
-        ps_consume(&ps,52);
-        int arg=parse_expr(&ps,&pool);
-        ps_consume(&ps,53);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$mt.value;_n->left=$arg;";
-        return idx;
-    }
-    if(ps_is_prim_type(&ps)==1){
-        Token tn=ps_advance(&ps);
-        ps_consume(&ps,52);
-        int arg=parse_expr(&ps,&pool);
-        ps_consume(&ps,53);
-        int idx=node_new(&pool,AST_CALL,t.line,t.col);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$tn.value;_n->body=$arg;";
-        return idx;
-    }
-    if(ps_kind(&ps)==4){
-        Token nt=ps_advance(&ps);
-        if(ps_kind(&ps)==52){
-            ps_consume(&ps,52);
-            int head=0;int tail=0;
-            native "
-            while(ps_kind(&$ps)!=53){
-                int64_t _a=parse_expr(&$ps,&$pool);
-                if($head==0){$head=_a;$tail=_a;}
-                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_a;$tail=_a;}
-                if(ps_kind(&$ps)==58)ps_advance(&$ps);
-            }
-            ";
-            ps_consume(&ps,53);
-            int idx=node_new(&pool,AST_CALL,t.line,t.col);
-            native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nt.value;_n->body=$head;";
-            native "
-            while(ps_kind(&$ps)==59){
-                ps_advance(&$ps);
-                Token _mt=ps_consume(&$ps,4);
-                int64_t _mi=node_new(&$pool,14,_mt.line,_mt.col);
-                ASTNode* _mn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_mi];
-                _mn->left=$idx;_mn->sval=_mt.value;$idx=_mi;
-            }
-            ";
-            return idx;
-        }
-        int idx=node_new(&pool,AST_IDENT,t.line,t.col);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].sval=$nt.value;";
-        native "
-        while(ps_kind(&$ps)==59){
-            ps_advance(&$ps);
-            Token _mt=ps_consume(&$ps,4);
-            int64_t _mi=node_new(&$pool,14,_mt.line,_mt.col);
-            ASTNode* _mn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_mi];
-            _mn->left=$idx;_mn->sval=_mt.value;$idx=_mi;
-        }
-        ";
-        return idx;
-    }
-    if(ps_kind(&ps)==52){
-        ps_advance(&ps);
-        int inner=parse_expr(&ps,&pool);
-        ps_consume(&ps,53);
-        return inner;
-    }
-    native "
-    Token _et=ps_peek(&$ps);
-    fprintf(stderr,\"[STRATA PARSE ERROR] Unexpected '%s' at %s:%lld:%lld\n\",
-        _et.value,$ps.filename,(long long)_et.line,(long long)_et.col);
-    exit(1);
-    ";
-    return 0;
+Node parse_import(P &p) {
+    Token t = p_expect(&p, 21);
+    str name = parse_module_path(&p);
+    p_expect(&p, 22);                          // from
+    str source = parse_module_path(&p);
+    p_expect(&p, 56);                          // ;
+    Node n = node_new(2);
+    n.s1 = name; n.s2 = source;
+    n_pos(n, t);
+    return n;
 }
 
-int parse_unary(ParserState &ps, NodePool &pool) {
-    Token t=ps_peek(&ps);
-    if(ps_kind(&ps)==77){ps_advance(&ps);int idx=node_new(&pool,AST_UNARY,t.line,t.col);int o=parse_unary(&ps,&pool);native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=\"!\";_n->left=$o;";return idx;}
-    if(ps_kind(&ps)==65){ps_advance(&ps);int idx=node_new(&pool,AST_UNARY,t.line,t.col);int o=parse_unary(&ps,&pool);native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=\"-\";_n->left=$o;";return idx;}
-    if(ps_kind(&ps)==63){ps_advance(&ps);int idx=node_new(&pool,AST_BORROW,t.line,t.col);int tgt=parse_primary(&ps,&pool);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$tgt;";return idx;}
-    int base=parse_primary(&ps,&pool);
-    if(ps_kind(&ps)==62){
-        Token ct=ps_advance(&ps);
-        Token tt=ps_consume(&ps,4);
-        int idx=node_new(&pool,AST_CAST,ct.line,ct.col);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->left=$base;_n->sval=$tt.value;";
-        return idx;
+// database / protocol share a shape; `kind` selects the node type.
+Node parse_record(P &p, int kw, int node_kind) {
+    Token t = p_expect(&p, kw);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 50);                          // {
+    NodeVec fields = nv_new();
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        Node ftype = parse_type(&p);
+        Token fname = p_expect(&p, 4);
+        p_expect(&p, 56);
+        Node f = node_new(8);
+        f.c1 = node_ptr(ftype);
+        f.s1 = fname.value;
+        n_pos(f, fname);
+        nv_push(&fields, f);
     }
-    return base;
-}
-
-int parse_addition(ParserState &ps, NodePool &pool) {
-    int left=parse_unary(&ps,&pool);
-    native "
-    while(1){
-        int64_t _k=ps_kind(&$ps);
-        if(_k!=64&&_k!=65)break;
-        Token _t=ps_advance(&$ps);
-        int64_t _r=parse_unary(&$ps,&$pool);
-        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
-        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
-    }
-    ";
-    return left;
-}
-
-int parse_comparison(ParserState &ps, NodePool &pool) {
-    int left=parse_addition(&ps,&pool);
-    native "
-    while(1){
-        int64_t _k=ps_kind(&$ps);
-        if(_k!=71&&_k!=72&&_k!=73&&_k!=74)break;
-        Token _t=ps_advance(&$ps);
-        int64_t _r=parse_addition(&$ps,&$pool);
-        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
-        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
-    }
-    ";
-    return left;
-}
-
-int parse_equality(ParserState &ps, NodePool &pool) {
-    int left=parse_comparison(&ps,&pool);
-    native "
-    while(1){
-        int64_t _k=ps_kind(&$ps);
-        if(_k!=69&&_k!=70)break;
-        Token _t=ps_advance(&$ps);
-        int64_t _r=parse_comparison(&$ps,&$pool);
-        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
-        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
-    }
-    ";
-    return left;
-}
-
-int parse_and(ParserState &ps, NodePool &pool) {
-    int left=parse_equality(&ps,&pool);
-    native "
-    while(ps_kind(&$ps)==75){
-        Token _t=ps_advance(&$ps);
-        int64_t _r=parse_equality(&$ps,&$pool);
-        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
-        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
-    }
-    ";
-    return left;
-}
-
-int parse_expr(ParserState &ps, NodePool &pool) {
-    int left=parse_and(&ps,&pool);
-    native "
-    while(ps_kind(&$ps)==76){
-        Token _t=ps_advance(&$ps);
-        int64_t _r=parse_and(&$ps,&$pool);
-        int64_t _idx=node_new(&$pool,6,_t.line,_t.col);
-        ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_idx];
-        _n->sval=_t.value;_n->left=$left;_n->right=_r;$left=_idx;
-    }
-    ";
-    return left;
-}
-
-int parse_stmt(ParserState &ps, NodePool &pool);
-
-int parse_body(ParserState &ps, NodePool &pool) {
-    int head=0;int tail=0;
-    native "
-    while(ps_kind(&$ps)!=51&&ps_kind(&$ps)!=99){
-        int64_t _s=parse_stmt(&$ps,&$pool);
-        if($head==0){$head=_s;$tail=_s;}
-        else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_s;$tail=_s;}
-    }
-    ";
-    return head;
-}
-
-int parse_stmt(ParserState &ps, NodePool &pool) {
-    Token t=ps_peek(&ps);
-    if(ps_kind(&ps)==22){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_RETURN,t.line,t.col);
-        if(ps_kind(&ps)!=56){int v=parse_expr(&ps,&pool);native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$v;";}
-        ps_consume(&ps,56);
-        return idx;
-    }
-    if(ps_kind(&ps)==20){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_IF,t.line,t.col);
-        ps_consume(&ps,52);int cond=parse_expr(&ps,&pool);ps_consume(&ps,53);
-        ps_consume(&ps,50);int then=parse_body(&ps,&pool);ps_consume(&ps,51);
-        int els=0;
-        if(ps_kind(&ps)==21){ps_advance(&ps);ps_consume(&ps,50);els=parse_body(&ps,&pool);ps_consume(&ps,51);}
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->cond=$cond;_n->body=$then;_n->alt=$els;";
-        return idx;
-    }
-    if(ps_kind(&ps)==23){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_ASSERT,t.line,t.col);
-        int c=parse_expr(&ps,&pool);ps_consume(&ps,56);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].cond=$c;";
-        return idx;
-    }
-    if(ps_kind(&ps)==46){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_PRINT,t.line,t.col);
-        ps_consume(&ps,52);int v=parse_expr(&ps,&pool);ps_consume(&ps,53);ps_consume(&ps,56);
-        native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$v;";
-        return idx;
-    }
-    if(ps_kind(&ps)==36){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_RENDER,t.line,t.col);
-        Token rt=ps_consume(&ps,4);ps_consume(&ps,45);Token pt=ps_consume(&ps,3);ps_consume(&ps,56);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$rt.value;_n->sval2=$pt.value;";
-        return idx;
-    }
-    if(ps_kind(&ps)==38){
-        ps_advance(&ps);
-        int idx=node_new(&pool,AST_VERIFY,t.line,t.col);
-        Token lb=ps_consume(&ps,3);ps_consume(&ps,50);
-        int head=0;int tail=0;
-        native "
-        while(ps_kind(&$ps)!=51){
-            ps_consume(&$ps,23);
-            int64_t _c=parse_expr(&$ps,&$pool);ps_consume(&$ps,56);
-            int64_t _a=node_new(&$pool,19,$t.line,$t.col);
-            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_a].cond=_c;
-            if($head==0){$head=_a;$tail=_a;}
-            else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_a;$tail=_a;}
-        }
-        ";
-        ps_consume(&ps,51);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$lb.value;_n->body=$head;";
-        return idx;
-    }
-    if(ps_is_type_tok(&ps)==1){
-        int tn=parse_type(&ps,&pool);
-        Token nm=ps_consume(&ps,4);ps_consume(&ps,60);
-        int idx=node_new(&pool,AST_VAR_DECL,t.line,t.col);
-        if(ps_kind(&ps)==4&&ps_kind_at(&ps,1)==61){
-            Token src=ps_advance(&ps);ps_consume(&ps,61);
-            ps_consume(&ps,54);int cond=parse_expr(&ps,&pool);ps_consume(&ps,55);ps_consume(&ps,56);
-            int qi=node_new(&pool,AST_QUERY,t.line,t.col);
-            native "ASTNode* _qn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$qi];_qn->sval=$src.value;_qn->cond=$cond;ASTNode* _vn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_vn->sval=$nm.value;_vn->left=$tn;_vn->right=$qi;";
-            return idx;
-        }
-        int v=parse_expr(&ps,&pool);ps_consume(&ps,56);
-        native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nm.value;_n->left=$tn;_n->right=$v;";
-        return idx;
-    }
-    int ex=parse_expr(&ps,&pool);ps_consume(&ps,56);
-    int idx=node_new(&pool,AST_EXPR_STMT,t.line,t.col);
-    native "((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx].left=$ex;";
-    return idx;
-}
-
-int parse_params(ParserState &ps, NodePool &pool) {
-    int head=0;int tail=0;
-    native "
-    while(ps_kind(&$ps)!=53){
-        Token _t=ps_peek(&$ps);
-        int64_t _pt=parse_type(&$ps,&$pool);
-        int64_t _borrow=0;
-        if(ps_kind(&$ps)==63){ps_advance(&$ps);_borrow=1;}
-        Token _nt=ps_consume(&$ps,4);
-        int64_t _pi=node_new(&$pool,37,_nt.line,_nt.col);
-        ASTNode* _pn=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_pi];
-        _pn->left=_pt;_pn->sval=_nt.value;_pn->ival=_borrow;
-        if($head==0){$head=_pi;$tail=_pi;}
-        else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$tail].next=_pi;$tail=_pi;}
-        if(ps_kind(&$ps)==58)ps_advance(&$ps);
-    }
-    ";
-    return head;
-}
-
-int parse_function(ParserState &ps, NodePool &pool, int kind_val) {
-    Token t=ps_peek(&ps);
-    int rt=0;
-    if(kind_val==0){rt=parse_type(&ps,&pool);}else{ps_advance(&ps);}
-    Token nm=ps_consume(&ps,4);
-    ps_consume(&ps,52);int params=parse_params(&ps,&pool);ps_consume(&ps,53);
-    ps_consume(&ps,50);int body=parse_body(&ps,&pool);ps_consume(&ps,51);
-    int idx=node_new(&pool,AST_FUNCTION,t.line,t.col);
-    native "ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$idx];_n->sval=$nm.value;_n->ival=$kind_val;_n->left=$rt;_n->cond=$params;_n->body=$body;";
-    return idx;
-}
-
-int parse(ParserState &ps, NodePool &pool) {
-    int ih=0;int it=0;int dh=0;int dt=0;int fh=0;int ft=0;
-    native "
-    while(!ps_at_end(&$ps)){
-        int64_t _k=ps_kind(&$ps);
-        int64_t _node=0;int64_t _dest=0;
-        if(_k==24){
-            Token _t=ps_advance(&$ps);
-            Token _nm=ps_consume(&$ps,4);
-            ps_consume(&$ps,25);Token _src=ps_consume(&$ps,4);ps_consume(&$ps,56);
-            _node=node_new(&$pool,30,_t.line,_t.col);
-            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
-            _n->sval=_nm.value;_n->sval2=_src.value;_dest=1;
-        } else if(_k==30){
-            Token _t=ps_advance(&$ps);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
-            int64_t _fh=0,_ft=0;
-            while(ps_kind(&$ps)!=51){
-                int64_t _ft2=parse_type(&$ps,&$pool);Token _fn=ps_consume(&$ps,4);ps_consume(&$ps,56);
-                int64_t _fi=node_new(&$pool,31,_fn.line,_fn.col);
-                ASTNode* _f=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi];
-                _f->left=_ft2;_f->sval=_fn.value;
-                if(_fh==0){_fh=_fi;_ft=_fi;}
-                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[_ft].next=_fi;_ft=_fi;}
-            }
-            ps_consume(&$ps,51);
-            _node=node_new(&$pool,32,_t.line,_t.col);
-            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
-            _n->sval=_nm.value;_n->body=_fh;_dest=2;
-        } else if(_k==32){
-            Token _t=ps_advance(&$ps);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
-            int64_t _fh=0,_ft=0;
-            while(ps_kind(&$ps)!=51){
-                int64_t _ft2=parse_type(&$ps,&$pool);Token _fn=ps_consume(&$ps,4);ps_consume(&$ps,56);
-                int64_t _fi=node_new(&$pool,31,_fn.line,_fn.col);
-                ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi].left=_ft2;
-                ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_fi].sval=_fn.value;
-                if(_fh==0){_fh=_fi;_ft=_fi;}
-                else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[_ft].next=_fi;_ft=_fi;}
-            }
-            ps_consume(&$ps,51);
-            _node=node_new(&$pool,33,_t.line,_t.col);
-            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node].sval=_nm.value;
-            ((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node].body=_fh;_dest=2;
-        } else if(_k==33){
-            Token _t=ps_consume(&$ps,33);Token _nm=ps_consume(&$ps,4);ps_consume(&$ps,50);
-            ps_consume(&$ps,40);ps_consume(&$ps,57);
-            int64_t _it=parse_tensor_type(&$ps,&$pool);ps_consume(&$ps,56);
-            ps_consume(&$ps,41);ps_consume(&$ps,57);
-            int64_t _ot=parse_tensor_type(&$ps,&$pool);ps_consume(&$ps,56);
-            ps_consume(&$ps,51);
-            _node=node_new(&$pool,34,_t.line,_t.col);
-            ASTNode* _n=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[_node];
-            _n->sval=_nm.value;_n->left=_it;_n->right=_ot;_dest=2;
-        } else if(_k==26){_node=parse_function(&$ps,&$pool,1);_dest=3;
-        } else if(_k==31){_node=parse_function(&$ps,&$pool,2);_dest=3;
-        } else if(ps_is_type_tok(&$ps)){_node=parse_function(&$ps,&$pool,0);_dest=3;
-        } else {
-            Token _et=ps_peek(&$ps);
-            fprintf(stderr,\"[STRATA PARSE ERROR] Unexpected '%s' at %s:%lld:%lld\n\",
-                _et.value,$ps.filename,(long long)_et.line,(long long)_et.col);
-            exit(1);
-        }
-        if(_dest==1){if($ih==0){$ih=_node;$it=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$it].next=_node;$it=_node;}}
-        else if(_dest==2){if($dh==0){$dh=_node;$dt=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$dt].next=_node;$dt=_node;}}
-        else{if($fh==0){$fh=_node;$ft=_node;}else{((ASTNode*)(uintptr_t)$pool.buf_ptr)[$ft].next=_node;$ft=_node;}}
-    }
-    ";
-    int root=node_new(&pool,AST_COMPILE_UNIT,0,0);
-    native "ASTNode* _r=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$root];_r->left=$ih;_r->cond=$dh;_r->body=$fh;";
-    return root;
-}
-
-int main() {
-    print("[Strata Parser] Stage 1 — written in Strata.");
-    return 0;
+    p_expect(&p, 51);                          // }
+    Node n = node_new(node_kind);
+    n.s1 = name.value;
+    n.v1 = nv_ptr(fields);
+    n_pos(n, t);
+    return n;
 }
