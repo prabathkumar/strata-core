@@ -100,10 +100,9 @@ static void sb_append_line_f(SB* s, const char* t) {
 # Native block variable substitution
 def subst_native(code: str, param_names: list) -> str:
     """Replace $varname with the C variable name in native blocks."""
-    def replacer(m):
-        name = m.group(1)
-        return name  # In Stage 0 params map directly
-    return re.sub(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', lambda m: m.group(1), code)
+    # Replace $varname with varname
+    result = re.sub(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', lambda m: m.group(1), code)
+    return result
 
 class CodeGen:
     def __init__(self, ast, source_path):
@@ -218,8 +217,8 @@ int main(int argc, char** argv) {
                 if stmt.expr.args and isinstance(stmt.expr.args[0], StrLiteral):
                     raw_c = stmt.expr.args[0].value
                     raw_c = subst_native(raw_c, param_names)
-                    for line in raw_c.strip().split('\n'):
-                        self.emit(line)
+                    # Emit as-is, preserving all newlines
+                    self.emit_raw(raw_c)
                 return
 
         if isinstance(stmt, VarDecl):
@@ -256,10 +255,9 @@ int main(int argc, char** argv) {
                 raw_c = stmt.value.args[0].value
                 raw_c = subst_native(raw_c, param_names)
                 self.emit(f"{ctype} {name};")
-                self.emit("{")
-                for line in raw_c.strip().split('\n'):
-                    self.emit("    " + line)
-                self.emit("}")
+                self.emit_raw("{")
+                self.emit_raw(raw_c)
+                self.emit_raw("}")
                 self.var_types[name] = ctype
                 return
 
@@ -317,11 +315,16 @@ int main(int argc, char** argv) {
                 if expr.args and isinstance(expr.args[0], StrLiteral):
                     raw_c = expr.args[0].value
                     raw_c = subst_native(raw_c, param_names)
+                    # Strip outer whitespace but keep internal newlines
                     return f"({raw_c.strip()})"
                 return "/* native */"
             return self._gen_call(expr, param_names)
         if isinstance(expr, BorrowExpr):
-            return f"(&{self._gen_expr(expr.target, param_names)})"
+            inner = self._gen_expr(expr.target, param_names)
+            # If borrowing a member access, just pass value directly
+            if "." in inner:
+                return inner
+            return f"(&{inner})"
         if isinstance(expr, CastExpr):
             return f"(({expr.target_type}*)({self._gen_expr(expr.source, param_names)}))"
         if isinstance(expr, PredictExpr):
