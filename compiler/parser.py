@@ -770,6 +770,9 @@ class Parser:
     def _check(self, tt: TT) -> bool:
         return self._peek().type == tt
 
+    def _consume_name(self):
+        t=self._peek(); self._advance(); return t
+
     def _at_end(self) -> bool:
         return self._peek().type == TT.EOF
 
