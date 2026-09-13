@@ -70,7 +70,8 @@ Strata strictly outlaws implicit type coercion or runtime variable layout assump
 
 ### 3.3 `core.tls` Namespace
 *   `int execute_secure_handshake(int socket_id, str cert_path, str key_path)`  
-    Natively establishes a non-blocking TLS 1.3 cryptographic session boundary (`TLS_AES_256_GCM_SHA384`) directly inside an isolated **4 KB Virtual Event Fiber**.
+    Natively establishes a non-blocking TLS 1.3 cryptographic session boundary (`TLS_AES_256_GCM_SHA384`) inside a `stream` task. (Virtual Event Fibers are a design goal, not
+    implemented; `stream` currently compiles to an ordinary function.)
 
 ### 3.4 `core.testing` Namespace
 *   `int assert_true(str criterion_label, int conditional_boolean_flag)`  
@@ -81,7 +82,7 @@ Strata strictly outlaws implicit type coercion or runtime variable layout assump
 ## 4. Production Architectural Tutorials
 
 ### 4.1 Asynchronous High-Scale Message Ingestion
-This example demonstrates a secure transaction ledger microservice handling raw bitstreams and querying databases inside an isolated 4 KB Event Fiber:
+This example demonstrates a secure transaction ledger microservice handling raw bitstreams and querying databases from a `stream` task:
 
 ```text
 import core.io from std;

@@ -12,6 +12,7 @@ from compiler.parser import (
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
+    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
@@ -262,6 +263,22 @@ int main(int argc, char** argv) {
                 self.emit("return;")
         elif isinstance(stmt, IfStmt):
             self._gen_if(stmt, param_names)
+        elif isinstance(stmt, AssignStmt):
+            tgt = self._gen_expr(stmt.target, param_names)
+            val = self._gen_expr(stmt.value, param_names)
+            self.emit(f"{tgt} = {val};")
+        elif isinstance(stmt, WhileStmt):
+            self.emit(f"while ({self._gen_expr(stmt.condition, param_names)}) {{")
+            self.indent += 1
+            for st in stmt.body: self._gen_stmt(st, param_names)
+            self.indent -= 1
+            self.emit("}")
+        elif isinstance(stmt, ForStmt):
+            self._gen_for(stmt, param_names)
+        elif isinstance(stmt, BreakStmt):
+            self.emit("break;")
+        elif isinstance(stmt, ContinueStmt):
+            self.emit("continue;")
         elif isinstance(stmt, PrintStmt):
             val = self._gen_expr(stmt.value, param_names)
             self.emit(f'printf("%s\\n",(strata_str)({val}));')
@@ -327,6 +344,26 @@ int main(int argc, char** argv) {
             self._validate_query_columns(cond.left, schema, line)
             self._validate_query_columns(cond.right, schema, line)
 
+    def _gen_for(self, stmt, param_names):
+        init = ""
+        if isinstance(stmt.init, VarDecl):
+            ctype = self._c_type(stmt.init.var_type)
+            init = f"{ctype} {stmt.init.name} = {self._gen_expr(stmt.init.value, param_names)}"
+            self.var_types[stmt.init.name] = ctype
+        elif isinstance(stmt.init, AssignStmt):
+            init = (f"{self._gen_expr(stmt.init.target, param_names)} = "
+                    f"{self._gen_expr(stmt.init.value, param_names)}")
+        cond = self._gen_expr(stmt.condition, param_names)
+        step = ""
+        if isinstance(stmt.step, AssignStmt):
+            step = (f"{self._gen_expr(stmt.step.target, param_names)} = "
+                    f"{self._gen_expr(stmt.step.value, param_names)}")
+        self.emit(f"for ({init}; {cond}; {step}) {{")
+        self.indent += 1
+        for st in stmt.body: self._gen_stmt(st, param_names)
+        self.indent -= 1
+        self.emit("}")
+
     def _gen_if(self, stmt, param_names):
         cond = self._gen_expr(stmt.condition, param_names)
         self.emit(f"if ({cond}) {{")
@@ -364,6 +401,12 @@ int main(int argc, char** argv) {
             return f"{t}*" if t else None
         if isinstance(expr, MemberAccess):
             return None
+        if isinstance(expr, IndexExpr):
+            base = self._expr_ctype(expr.target, param_names)
+            # Indexing a str yields a character code.
+            if base == "strata_str": return "strata_int"
+            # list[T] is T* in C, so an element is the pointee.
+            return base[:-1] if base and base.endswith("*") else None
         if isinstance(expr, QueryExpr):
             return f"{expr.source}*" if expr.source in self.record_types else None
         if isinstance(expr, BorrowExpr):
@@ -423,7 +466,17 @@ int main(int argc, char** argv) {
             return f"(({expr.target_type}*)({self._gen_expr(expr.source, param_names)}))"
         if isinstance(expr, PredictExpr):
             return f"strata_predict(&{expr.model}_instance,{self._gen_expr(expr.arg, param_names)})"
-        if isinstance(expr, ListLiteral): return "NULL"
+        if isinstance(expr, ListLiteral):
+            if not expr.elements:
+                return "NULL"
+            # C99 compound literal: gives the list backing storage so that
+            # indexing reads real memory instead of dereferencing NULL.
+            elems = ", ".join(self._gen_expr(e, param_names) for e in expr.elements)
+            et = self._expr_ctype(expr.elements[0], param_names) or "strata_int"
+            return f"({et}[]){{{elems}}}"
+        if isinstance(expr, IndexExpr):
+            return (f"{self._gen_expr(expr.target, param_names)}"
+                    f"[{self._gen_expr(expr.index, param_names)}]")
         if isinstance(expr, MemberAccess):
             obj = self._gen_expr(expr.obj, param_names)
             ct = self._expr_ctype(expr.obj, param_names) or ""

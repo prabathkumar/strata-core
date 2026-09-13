@@ -37,7 +37,7 @@ Strata eliminates the **Fragmented Stack Paradox** by running a unified, single-
               ▼                                       ▼
   [ TARGET 1: BARE-METAL SERVER ]         [ TARGET 2: PRESENTATION BROWSER ]
    • Native x86_64 / ARM64 ELF             • Optimized WebAssembly Text (WAT)
-   • 4 KB Virtual Event Fibers             • Ultra-Lean 14.8 KB Target Binary
+   • Virtual Event Fibers (not built)       • Compact binary target (unmeasured)
    • Zero Runtime Garbage Collection       • 0% Client-Side JavaScript Baggage
 ========================================================================================
 ```
@@ -46,13 +46,19 @@ Strata eliminates the **Fragmented Stack Paradox** by running a unified, single-
 
 ## 2. Low-Level Memory Model & Register Vectorization
 
-### 2.1 Concurrency Layer: 4 KB Virtual Event Fibers
-Unlike traditional heavyweight operating system threads that request up to 1 MB of memory stack space by default and incur severe latency during context switching, Strata handles asynchronous tasks (`stream`) inside isolated, non-blocking **Virtual Event Fibers**.
+### 2.1 Concurrency Layer: Virtual Event Fibers — DESIGN ONLY, NOT BUILT
 
-*   **Memory Profile Allocation:** Exactly **4 KB** of memory allocated per fiber loop.
-*   **Throughput Benchmarks:** Supports **1,000,000+ simultaneous data ingestion pipelines** inside a single cloud container without resource thrashing or deadlocks.
+> **Status: not implemented.** No scheduler exists; the word "fiber" does not
+> appear anywhere in the compiler. `stream` currently compiles to an ordinary
+> function. The design below describes intent, and no figure here has been
+> measured. Numbers will be published when a benchmark produces them.
+
+The intended model: rather than heavyweight OS threads, which reserve large
+stacks and pay a context-switching cost, `stream` tasks would run as isolated
+non-blocking fibers with small stacks, multiplexed onto a scheduler.
 
 ```text
+  (Illustration of the intended design. Not implemented.)
   OS Thread Context (Heavy, Context Switching Tax)
   ┌─────────────────────────────────────────────────────────────┐
   │  [ 1 MB Stack ]    [ 1 MB Stack ]    [ 1 MB Stack ]         │

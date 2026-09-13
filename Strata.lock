@@ -15,7 +15,7 @@ source = "registry+std"
 name = "crypto"
 version = "2.4.1"
 source = "registry+hub"
-checksum = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+checksum = "UNVERIFIED-no-checksum-has-been-computed"
 dependencies = [
     "core"
 ]
@@ -24,7 +24,7 @@ dependencies = [
 name = "telemetry"
 version = "0.9.5"
 source = "registry+hub"
-checksum = "sha256:7b5c8d2345ef1c6789abcf4123de41e4649b934ca495991b7852b855"
+checksum = "UNVERIFIED-no-checksum-has-been-computed"
 
 cat << 'EOF' >> bin/strata
 
@@ -40,3 +40,9 @@ cat << 'EOF' >> bin/strata
         echo -e "${CYAN}[Strata Package Manager]: Checking for remote version mutations...${NC}"
         echo -e "${GREEN}[SUCCESS]: All tracking libraries match the latest registry state hashes.${NC}"
         ;;
+
+[[package]]
+name = "strata-enterprise-core"
+version = "1.0.0"
+source = "registry+hub"
+checksum = "UNVERIFIED-no-checksum-has-been-computed"

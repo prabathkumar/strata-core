@@ -261,21 +261,35 @@ compiler already enforces them (`E006`). What does not exist is an inference
 runtime. The intent is that a shape mismatch is a build error rather than a
 production exception — the same argument as the database contract, applied to ML.
 
-Illustrative of the language core still to land in Phase 1 — this **does not
-compile today**:
+### Loops, assignment and indexing
+
+Landed in Phase 1. A bubble sort is a reasonable smoke test for a language core:
 
 ```text
+import io from std;
+
 int main() {
-    int i = 0;
-    while (i < 10) {
-        i = i + 1;
+    list[int] data = [37, 5, 91, 12, 68, 4, 23];
+    int n = 7;
+
+    for (int i = 0; i < n - 1; i = i + 1) {
+        for (int j = 0; j < n - i - 1; j = j + 1) {
+            if (data[j] > data[j + 1]) {
+                int tmp = data[j];
+                data[j] = data[j + 1];
+                data[j + 1] = tmp;
+            }
+        }
     }
+
+    for (int k = 0; k < n; k = k + 1) { print(str(data[k])); }
     return 0;
 }
 ```
 
-There are no loops, no assignment statements and no array indexing in Strata
-yet. That is the current floor, and it is why self-hosting has not started.
+`while`, `for`, `break`, `continue`, assignment and list indexing all work.
+Assigning the wrong type to an existing binding is `E001`; indexing with a
+non-integer, or indexing something that is not a list, is caught at build time.
 
 ---
 
@@ -286,8 +300,8 @@ what runs and what is planned is unambiguous.
 
 | Area | Status |
 |------|--------|
-| Loops (`while`, `for`), assignment statements, array indexing | **Not implemented.** Required before self-hosting. |
-| Self-hosting compiler (`compiler/*.sta`) | Sketched. Blocked on the language core above. |
+| Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
+| Self-hosting compiler (`compiler/*.sta`) | **Lexer done** — `compiler/lexer.sta` produces byte-identical token streams to the Python lexer across the corpus, including its own source. Parser, checker and codegen remain. |
 | `layout` blocks and the UI tier | Specified in the grammar, not implemented. |
 | WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |

@@ -106,6 +106,30 @@ test("insert_valid",
 test("insert_multi_column",
      'database Audit { int id; str actor; }\nint main() { Audit <- [id = 1, actor = "p"]; return 0; }')
 
+print("\n── Phase 1: assignment, loops, indexing ─────────────────────────")
+test("assign_type_mismatch", 'int main() { int i = 0; i = "text"; return 0; }', "E001")
+test("assign_undeclared", 'int main() { ghost = 5; return 0; }', "E001")
+test("assign_valid", 'int main() { int i = 0; i = 5; return 0; }')
+test("index_non_int", 'int main() { list[int] a = [1,2]; int x = a["k"]; return 0; }', "E001")
+test("index_non_list", 'int main() { int n = 5; int x = n[0]; return 0; }', "E003")
+test("index_valid", 'int main() { list[int] a = [1,2]; int x = a[0]; return 0; }')
+test("while_valid", 'int main() { int i = 0; while (i < 3) { i = i + 1; } return 0; }')
+test("for_valid", 'int main() { int t = 0; for (int i = 0; i < 3; i = i + 1) { t = t + i; } return 0; }')
+
+print("\n── Seed subset: constructs the self-hosted compiler needs ──────")
+compile_run("seed_string_builder",
+    'import io from std;\nimport str from std;\nint main() { StringBuilder sb = sb_new(); sb_append(&sb, "int "); sb_append(&sb, "main"); print(sb_to_str(&sb)); return 0; }',
+    "int main")
+compile_run("seed_char_scan",
+    'import io from std;\nint main() { str s = "AB"; int n = str_len(s); int acc = 0; for (int i = 0; i < n; i = i + 1) { acc = acc + s[i]; } print(str(acc)); return 0; }',
+    "131")
+compile_run("seed_record_construct",
+    'import io from std;\ndatabase Token { int kind; int line; }\nToken tok_new(int k, int l) { native "Token* t=(Token*)malloc(sizeof(Token)); t->kind=k; t->line=l; return t;"; }\nint main() { Token t = tok_new(7, 42); t.line = 43; print(str(t.kind + t.line)); return 0; }',
+    "50")
+compile_run("seed_growable_vector",
+    'import io from std;\ndatabase IntVec { int ptr; int len; int cap; }\nIntVec vec_new() { native "IntVec* v=(IntVec*)malloc(sizeof(IntVec)); v->cap=2; v->len=0; v->ptr=(int64_t)(uintptr_t)malloc(2*sizeof(int64_t)); return v;"; }\ndef vec_push(IntVec &v, int x) { native "if($v->len>=$v->cap){ $v->cap*=2; $v->ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$v->ptr,$v->cap*sizeof(int64_t)); } ((int64_t*)(uintptr_t)$v->ptr)[$v->len]=$x; $v->len+=1;"; }\nint vec_get(IntVec &v, int i) { native "return ((int64_t*)(uintptr_t)$v->ptr)[$i];"; }\nint main() { IntVec v = vec_new(); for (int i = 0; i < 50; i = i + 1) { vec_push(&v, i * 2); } print(str(vec_get(&v, 49))); return 0; }',
+    "98")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',
@@ -154,6 +178,22 @@ compile_run("e2e_string_concat",
 compile_run("e2e_stdlib_print_is_library",
     'import io from std;\nint main() { print("via stdlib"); return 0; }',
     "via stdlib")
+
+compile_run("e2e_while_countdown",
+    'import io from std;\nint main() { int i = 3; while (i > 0) { print(str(i)); i = i - 1; } return 0; }',
+    "3\n2\n1")
+compile_run("e2e_for_sum",
+    'import io from std;\nint main() { int t = 0; for (int i = 1; i <= 10; i = i + 1) { t = t + i; } print(str(t)); return 0; }',
+    "55")
+compile_run("e2e_break",
+    'import io from std;\nint main() { int i = 0; while (i < 100) { if (i == 5) { break; } i = i + 1; } print(str(i)); return 0; }',
+    "5")
+compile_run("e2e_list_index",
+    'import io from std;\nint main() { list[int] a = [10,20,30]; a[0] = 99; print(str(a[0] + a[2])); return 0; }',
+    "129")
+compile_run("e2e_bubble_sort",
+    'import io from std;\nint main() { list[int] d = [3,1,2]; int n = 3; for (int i = 0; i < n-1; i = i+1) { for (int j = 0; j < n-i-1; j = j+1) { if (d[j] > d[j+1]) { int t = d[j]; d[j] = d[j+1]; d[j+1] = t; } } } for (int k = 0; k < n; k = k+1) { print(str(d[k])); } return 0; }',
+    "1\n2\n3")
 
 total = PASS + FAIL
 print(f"\n{'='*60}")

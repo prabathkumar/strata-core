@@ -141,6 +141,50 @@ class VarDecl(Node):
                                "name":self.name,"value":self.value.to_dict()}
 
 @dataclass
+class AssignStmt(Node):
+    """`target = value;` — assignment to an existing binding."""
+    target: Any          # Identifier, MemberAccess or IndexExpr
+    value: Any
+    def to_dict(self): return {"node":"AssignStmt","target":self.target.to_dict(),
+                               "value":self.value.to_dict()}
+
+@dataclass
+class WhileStmt(Node):
+    condition: Any
+    body: List[Any]
+    def to_dict(self): return {"node":"WhileStmt","condition":self.condition.to_dict(),
+                               "body":[s.to_dict() for s in self.body]}
+
+@dataclass
+class ForStmt(Node):
+    """`for (init; condition; step) { ... }` — C-style counted loop."""
+    init: Any
+    condition: Any
+    step: Any
+    body: List[Any]
+    def to_dict(self): return {"node":"ForStmt",
+                               "init":self.init.to_dict() if self.init else None,
+                               "condition":self.condition.to_dict(),
+                               "step":self.step.to_dict() if self.step else None,
+                               "body":[s.to_dict() for s in self.body]}
+
+@dataclass
+class BreakStmt(Node):
+    def to_dict(self): return {"node":"BreakStmt"}
+
+@dataclass
+class ContinueStmt(Node):
+    def to_dict(self): return {"node":"ContinueStmt"}
+
+@dataclass
+class IndexExpr(Node):
+    """`target[index]` — element access into a list."""
+    target: Any
+    index: Any
+    def to_dict(self): return {"node":"IndexExpr","target":self.target.to_dict(),
+                               "index":self.index.to_dict()}
+
+@dataclass
 class ReturnStmt(Node):
     value: Optional[Any]
     def to_dict(self): return {"node":"ReturnStmt",
@@ -511,6 +555,20 @@ class Parser:
         if self._check(TT.KW_IF):
             return self._parse_if()
 
+        if self._check(TT.KW_WHILE):
+            return self._parse_while()
+
+        if self._check(TT.KW_FOR):
+            return self._parse_for()
+
+        if self._check(TT.KW_BREAK):
+            t2 = self._advance(); self._consume(TT.SEMICOLON)
+            return BreakStmt(t2.line, t2.col)
+
+        if self._check(TT.KW_CONTINUE):
+            t2 = self._advance(); self._consume(TT.SEMICOLON)
+            return ContinueStmt(t2.line, t2.col)
+
         if self._check(TT.KW_ASSERT):
             self._advance()
             cond = self._parse_expr()
@@ -527,6 +585,25 @@ class Parser:
         if self._is_type_token():
             return self._parse_var_decl()
 
+        # Assignment: an lvalue followed by '='. Scan ahead across member and
+        # index access so `a.b = x;` and `a[i] = x;` are recognised too.
+        if self._check(TT.IDENT):
+            j, depth = 1, 0
+            while True:
+                tt = self._peek_at(j).type
+                if tt == TT.L_BRACKET:
+                    depth += 1
+                elif tt == TT.R_BRACKET:
+                    depth -= 1
+                elif depth == 0:
+                    if tt == TT.ASSIGN:
+                        return self._parse_assignment()
+                    if tt not in (TT.DOT, TT.IDENT):
+                        break
+                elif tt in (TT.SEMICOLON, TT.EOF):
+                    break
+                j += 1
+
         # Expression statement
         expr = self._parse_expr()
         self._consume(TT.SEMICOLON)
@@ -540,6 +617,49 @@ class Parser:
         val = self._parse_expr()
         self._consume(TT.SEMICOLON)
         return ReturnStmt(t.line, t.col, val)
+
+    def _parse_while(self) -> WhileStmt:
+        t = self._consume(TT.KW_WHILE)
+        self._consume(TT.L_PAREN)
+        cond = self._parse_expr()
+        self._consume(TT.R_PAREN)
+        body = self._parse_block()
+        return WhileStmt(t.line, t.col, cond, body)
+
+    def _parse_for(self) -> ForStmt:
+        t = self._consume(TT.KW_FOR)
+        self._consume(TT.L_PAREN)
+        init = None if self._check(TT.SEMICOLON) else self._parse_for_clause()
+        self._consume(TT.SEMICOLON)
+        cond = self._parse_expr()
+        self._consume(TT.SEMICOLON)
+        step = None if self._check(TT.R_PAREN) else self._parse_for_clause()
+        self._consume(TT.R_PAREN)
+        body = self._parse_block()
+        return ForStmt(t.line, t.col, init, cond, step, body)
+
+    def _parse_for_clause(self):
+        """init/step of a for header: a declaration or an assignment, no ';'."""
+        if self._is_type_token():
+            return self._parse_var_decl(consume_semicolon=False)
+        return self._parse_assignment(consume_semicolon=False)
+
+    def _parse_assignment(self, consume_semicolon=True) -> AssignStmt:
+        t = self._peek()
+        target = self._parse_unary()
+        self._consume(TT.ASSIGN)
+        value = self._parse_expr()
+        if consume_semicolon:
+            self._consume(TT.SEMICOLON)
+        return AssignStmt(t.line, t.col, target, value)
+
+    def _parse_block(self) -> list:
+        self._consume(TT.L_BRACE)
+        body = []
+        while not self._check(TT.R_BRACE) and not self._at_end():
+            body.append(self._parse_statement())
+        self._consume(TT.R_BRACE)
+        return body
 
     def _parse_if(self) -> IfStmt:
         t = self._consume(TT.KW_IF)
@@ -557,7 +677,7 @@ class Parser:
             self._consume(TT.R_BRACE)
         return IfStmt(t.line, t.col, cond, then_block, else_block)
 
-    def _parse_var_decl(self) -> VarDecl:
+    def _parse_var_decl(self, consume_semicolon=True) -> VarDecl:
         vtype = self._parse_type()
         name = self._consume(TT.IDENT).value
         self._consume(TT.ASSIGN)
@@ -572,7 +692,8 @@ class Parser:
             return VarDecl(vtype.line, vtype.col, vtype, name,
                            QueryExpr(vtype.line, vtype.col, src, cond))
         val = self._parse_expr()
-        self._consume(TT.SEMICOLON)
+        if consume_semicolon:
+            self._consume(TT.SEMICOLON)
         return VarDecl(vtype.line, vtype.col, vtype, name, val)
 
     def _parse_render(self) -> RenderStmt:
@@ -711,11 +832,18 @@ class Parser:
                 expr = CallExpr(t.line, t.col, name, args)
             else:
                 expr = Identifier(t.line, t.col, name)
-            # Member access
-            while self._check(TT.DOT):
-                self._advance()
-                member = self._consume(TT.IDENT).value
-                expr = MemberAccess(t.line, t.col, expr, member)
+            # Postfix chain: member access and indexing, in any order, so
+            # that `a[i].field` and `rows[i][j]` both parse.
+            while self._check(TT.DOT) or self._check(TT.L_BRACKET):
+                if self._check(TT.DOT):
+                    self._advance()
+                    member = self._consume(TT.IDENT).value
+                    expr = MemberAccess(t.line, t.col, expr, member)
+                else:
+                    self._advance()
+                    idx = self._parse_expr()
+                    self._consume(TT.R_BRACKET)
+                    expr = IndexExpr(t.line, t.col, expr, idx)
             return expr
 
         if self._check(TT.L_PAREN):

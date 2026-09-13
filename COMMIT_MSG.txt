@@ -1,0 +1,34 @@
+feat(phase3): lexer.sta — the Strata lexer, written in Strata
+
+Stage 1 of self-hosting. compiler/lexer.sta is written entirely within the
+frozen seed subset and produces token streams byte-identical to
+compiler/lexer.py across the corpus: 32 files covering std/, examples/
+and test_suite/, plus its own 3,617-token source.
+
+The method is differential testing, not inspection. test_suite/lexer_diff.py
+treats the Python lexer as the oracle and compares canonical dumps
+(KIND<TAB>value<TAB>line<TAB>col, with escapes so a token never spans
+lines), reporting the first divergent token rather than a wall of diff.
+Nothing here was accepted because it looked right; every file is compared
+byte for byte, and CI now runs it on every push.
+
+The previous compiler/lexer.sta was 92 lines of token-kind constants and
+two functions — a lexer that could not be written, because the language
+had no loops, no mutation and no indexing. Phase 1 supplied those and
+Phase 2 confirmed the rest: records constructed through native
+constructors, a growable token array as a record holding ptr/len/cap, and
+StringBuilder for assembling output.
+
+27 of 419 lines (6%) are native blocks, all of them allocation
+primitives: malloc/realloc for the token vector, the Lex state record,
+Token construction and single-character strings. Scanning, keyword
+lookup, the operator table, comment handling, string-escape decoding and
+number/identifier accumulation are ordinary Strata. This matters because
+a self-hosted compiler that turned out to be C wearing a Strata coat
+would not be self-hosted in any sense worth announcing.
+
+Remaining for self-hosting: parser.sta, typechecker.sta, codegen.sta,
+then the stage1/stage2 fixpoint.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

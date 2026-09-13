@@ -15,6 +15,7 @@ from compiler.parser import (
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
+    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
@@ -139,6 +140,22 @@ class TypeChecker:
                     f"Valid columns: {sorted(fields)}")
             self._infer_type(value,scope)
 
+    def _check_assign(self,stmt,scope):
+        """`target = value` must not change the target's declared type."""
+        target=self._infer_type(stmt.target,scope)
+        value=self._infer_type(stmt.value,scope)
+        if isinstance(stmt.target,Identifier) and target is None:
+            self._error("E001",f"'{stmt.target.name}' is not declared",
+                stmt.line,stmt.col,
+                f"Declare it first, e.g. 'int {stmt.target.name} = ...;'")
+            return
+        if target and value and not is_compatible(target,value):
+            name=getattr(stmt.target,"name","target")
+            self._error("E001",
+                f"Type mismatch: '{name}' is '{target}' but assigned '{value}'",
+                stmt.line,stmt.col,
+                f"Assign a value of type '{target}'")
+
     def _check_report(self,decl):
         """A report's datasource is a query and gets the same E004 treatment.
 
@@ -158,6 +175,18 @@ class TypeChecker:
         if isinstance(stmt,VarDecl): self._check_var_decl(stmt,scope)
         elif isinstance(stmt,ReturnStmt): self._check_return(stmt,scope)
         elif isinstance(stmt,IfStmt): self._check_if(stmt,scope)
+        elif isinstance(stmt,AssignStmt): self._check_assign(stmt,scope)
+        elif isinstance(stmt,WhileStmt):
+            self._infer_type(stmt.condition,scope)
+            inner=Scope(scope)
+            for st in stmt.body: self._check_stmt(st,inner)
+        elif isinstance(stmt,ForStmt):
+            inner=Scope(scope)
+            if stmt.init is not None: self._check_stmt(stmt.init,inner)
+            self._infer_type(stmt.condition,inner)
+            if stmt.step is not None: self._check_stmt(stmt.step,inner)
+            for st in stmt.body: self._check_stmt(st,inner)
+        elif isinstance(stmt,(BreakStmt,ContinueStmt)): pass
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
         elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
@@ -237,6 +266,20 @@ class TypeChecker:
                         expr.line,expr.col,f"Valid fields: {list(fields.keys())}")
                     return None
                 return fields[expr.member]
+        if isinstance(expr,IndexExpr):
+            bt=self._infer_type(expr.target,scope)
+            it=self._infer_type(expr.index,scope)
+            if it and it!=T_INT:
+                self._error("E001",f"List index must be 'int', got '{it}'",
+                    expr.line,expr.col,"Use an integer expression as the index")
+            if bt and bt.is_list: return bt.element_type
+            # A str indexes to its character code, which is what makes
+            # character scanning expressible in the language.
+            if bt==T_STR: return T_INT
+            if bt:
+                self._error("E003",f"Cannot index into '{bt}' — not a list or str",
+                    expr.line,expr.col,"Indexing applies to list[T] and str values")
+            return None
         if isinstance(expr,QueryExpr):
             src=expr.source
             if src in self.schemas:
@@ -258,13 +301,25 @@ class TypeChecker:
         return left
 
     def _infer_call(self,expr,scope):
-        if expr.callee=="str": return T_STR
-        if expr.callee=="int": return T_INT
-        if expr.callee=="float": return T_FLOAT
-        if expr.callee=="bool": return T_BOOL
-        if expr.callee in ("sum","avg","min","max","count"): return T_FLOAT
+        if expr.callee in ("str","int","float"):
+            # Infer the arguments even though the result type is fixed:
+            # otherwise every rule is silently skipped inside str(...).
+            for a in expr.args: self._infer_type(a,scope)
+            return {"str":T_STR,"int":T_INT,"float":T_FLOAT}[expr.callee]
+        if expr.callee=="bool":
+            for a in expr.args: self._infer_type(a,scope)
+            return T_BOOL
+        if expr.callee in ("sum","avg","min","max","count"):
+            for a in expr.args: self._infer_type(a,scope)
+            return T_FLOAT
         fn=self.functions.get(expr.callee)
-        if fn is None: return None
+        if fn is None:
+            # An imported or not-yet-resolved callee. Its signature is unknown,
+            # but its arguments are ordinary expressions and every rule still
+            # applies inside them — otherwise any call into std/ is a hole
+            # through which unchecked code passes.
+            for a in expr.args: self._infer_type(a,scope)
+            return None
         rt,pts=fn
         if len(expr.args)!=len(pts):
             self._error("E002",f"'{expr.callee}' expects {len(pts)} args, got {len(expr.args)}",

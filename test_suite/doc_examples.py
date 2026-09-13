@@ -41,7 +41,8 @@ KNOWN_BROKEN = {
 # unbuilt, and this suite reports the moment one starts compiling so it can be
 # promoted out of the roadmap and into the shipped feature set.
 ROADMAP_BLOCKS = {
-    "README.md#e11203d6": "while loop and assignment statement — Phase 1 language\n                            core, not yet implemented",
+    # Empty: Phase 1 landed loops, assignment and indexing, so the README's
+    # former roadmap illustration now compiles as a normal example.
 }
 
 # A fenced block is Strata source only if it looks like code. Diagrams and

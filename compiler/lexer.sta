@@ -1,92 +1,419 @@
 // STRATA COMPILER — compiler/lexer.sta
-// The Strata Lexer written IN Strata
-// Compiled by Stage 0 bootstrap → produces strata-lexer binary
-// This is Stage 1 of the self-hosting pipeline
+// The Strata lexer, written in Strata.
+//
+// Stage 1 of the self-hosting pipeline. Compiled by bootstrap/stage0.py, it
+// must produce a token stream byte-identical to compiler/lexer.py, which is
+// the oracle. test_suite/lexer_diff.py enforces that over the whole corpus.
+//
+// Uses only the frozen seed subset (see SEED_SUBSET.md).
 
 import io  from std;
-import mem from std;
 import str from std;
 
-// Token kind IDs
-int TK_INT_LIT   = 1;   int TK_FLOAT_LIT = 2;   int TK_STR_LIT  = 3;
-int TK_IDENT     = 4;   int TK_KW_INT    = 10;  int TK_KW_FLOAT = 11;
-int TK_KW_STR    = 12;  int TK_KW_VOID   = 13;  int TK_KW_LIST  = 14;
-int TK_KW_TENSOR = 15;  int TK_KW_BOOL   = 16;  int TK_KW_IF    = 20;
-int TK_KW_ELSE   = 21;  int TK_KW_RETURN = 22;  int TK_KW_ASSERT= 23;
-int TK_KW_IMPORT = 24;  int TK_KW_FROM   = 25;  int TK_KW_DEF   = 26;
-int TK_KW_DATABASE=30;  int TK_KW_STREAM = 31;  int TK_KW_PROTO = 32;
-int TK_KW_MODEL  = 33;  int TK_KW_PREDICT= 34;  int TK_KW_REPORT= 35;
-int TK_KW_RENDER = 36;  int TK_KW_LAYOUT = 37;  int TK_KW_VERIFY= 38;
-int TK_KW_INPUT  = 40;  int TK_KW_OUTPUT = 41;  int TK_KW_METRICS=42;
-int TK_KW_TITLE  = 43;  int TK_KW_DATASRC= 44;  int TK_KW_TO    = 45;
-int TK_KW_PRINT  = 46;  int TK_KW_TRUE   = 47;  int TK_KW_FALSE = 48;
-int TK_L_BRACE   = 50;  int TK_R_BRACE   = 51;  int TK_L_PAREN  = 52;
-int TK_R_PAREN   = 53;  int TK_L_BRACKET = 54;  int TK_R_BRACKET= 55;
-int TK_SEMICOLON = 56;  int TK_COLON     = 57;  int TK_COMMA    = 58;
-int TK_DOT       = 59;  int TK_ASSIGN    = 60;  int TK_ARROW_L  = 61;
-int TK_CAST_OP   = 62;  int TK_BORROW    = 63;  int TK_PLUS     = 64;
-int TK_MINUS     = 65;  int TK_STAR      = 66;  int TK_SLASH    = 67;
-int TK_EQ        = 69;  int TK_NEQ       = 70;  int TK_LT       = 71;
-int TK_GT        = 72;  int TK_LTE       = 73;  int TK_GTE      = 74;
-int TK_AND       = 75;  int TK_OR        = 76;  int TK_NOT      = 77;
-int TK_EOF       = 99;
+// ── Data ─────────────────────────────────────────────────────────────────────
 
-database Token {
-    int kind;
-    str value;
-    int line;
-    int col;
+database Token { int kind; str value; int line; int col; }
+
+// Growable token array: a record holding pointer, length and capacity, with
+// allocation done through native blocks. Same shape as StringBuilder.
+database TokVec { int ptr; int len; int cap; }
+
+// Scanner state, threaded explicitly since there are no module-level variables.
+database Lex { str src; int pos; int len; int line; int col; }
+
+// ── Native primitives ────────────────────────────────────────────────────────
+
+str arg_at(int i) { native "return __strata_argv[$i];"; }
+
+str char_str(int c) {
+    native "char* _b=(char*)malloc(2); _b[0]=(char)$c; _b[1]='\\0'; return _b;";
 }
 
-database LexerState {
-    str source;
-    int source_len;
-    int pos;
-    int line;
-    int col;
-    str filename;
-}
-
-int keyword_id(str word) {
+Token tok_new(int kind, str value, int line, int col) {
     native "
-    if(strcmp($word,\"int\")==0)        return 10;
-    if(strcmp($word,\"float\")==0)      return 11;
-    if(strcmp($word,\"str\")==0)        return 12;
-    if(strcmp($word,\"void\")==0)       return 13;
-    if(strcmp($word,\"list\")==0)       return 14;
-    if(strcmp($word,\"tensor\")==0)     return 15;
-    if(strcmp($word,\"bool\")==0)       return 16;
-    if(strcmp($word,\"if\")==0)         return 20;
-    if(strcmp($word,\"else\")==0)       return 21;
-    if(strcmp($word,\"return\")==0)     return 22;
-    if(strcmp($word,\"assert\")==0)     return 23;
-    if(strcmp($word,\"import\")==0)     return 24;
-    if(strcmp($word,\"from\")==0)       return 25;
-    if(strcmp($word,\"def\")==0)        return 26;
-    if(strcmp($word,\"database\")==0)   return 30;
-    if(strcmp($word,\"stream\")==0)     return 31;
-    if(strcmp($word,\"protocol\")==0)   return 32;
-    if(strcmp($word,\"model\")==0)      return 33;
-    if(strcmp($word,\"predict\")==0)    return 34;
-    if(strcmp($word,\"report\")==0)     return 35;
-    if(strcmp($word,\"render\")==0)     return 36;
-    if(strcmp($word,\"layout\")==0)     return 37;
-    if(strcmp($word,\"verify\")==0)     return 38;
-    if(strcmp($word,\"input\")==0)      return 40;
-    if(strcmp($word,\"output\")==0)     return 41;
-    if(strcmp($word,\"metrics\")==0)    return 42;
-    if(strcmp($word,\"title\")==0)      return 43;
-    if(strcmp($word,\"datasource\")==0) return 44;
-    if(strcmp($word,\"to\")==0)         return 45;
-    if(strcmp($word,\"print\")==0)      return 46;
-    if(strcmp($word,\"true\")==0)       return 47;
-    if(strcmp($word,\"false\")==0)      return 48;
-    return 4;
+    Token* _t=(Token*)malloc(sizeof(Token));
+    _t->kind=$kind; _t->value=$value; _t->line=$line; _t->col=$col;
+    return _t;
     ";
 }
 
+TokVec vec_new() {
+    native "
+    TokVec* _v=(TokVec*)malloc(sizeof(TokVec));
+    _v->cap=256; _v->len=0;
+    _v->ptr=(int64_t)(uintptr_t)malloc(256*sizeof(void*));
+    return _v;
+    ";
+}
+
+def vec_push(TokVec &v, Token t) {
+    native "
+    if($v->len>=$v->cap){
+        $v->cap*=2;
+        $v->ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$v->ptr,$v->cap*sizeof(void*));
+    }
+    ((Token**)(uintptr_t)$v->ptr)[$v->len]=$t; $v->len+=1;
+    ";
+}
+
+Token vec_get(TokVec &v, int i) {
+    native "return ((Token**)(uintptr_t)$v->ptr)[$i];";
+}
+
+Lex lex_new(str source) {
+    native "
+    Lex* _l=(Lex*)malloc(sizeof(Lex));
+    _l->src=$source; _l->pos=0; _l->len=(int64_t)strlen($source);
+    _l->line=1; _l->col=1;
+    return _l;
+    ";
+}
+
+// ── Character classes ────────────────────────────────────────────────────────
+
+int is_digit(int c) { if (c >= 48) { if (c <= 57) { return 1; } } return 0; }
+
+int is_alpha(int c) {
+    if (c >= 97) { if (c <= 122) { return 1; } }
+    if (c >= 65) { if (c <= 90) { return 1; } }
+    if (c == 95) { return 1; }
+    return 0;
+}
+
+int is_alnum(int c) {
+    if (is_alpha(c) == 1) { return 1; }
+    if (is_digit(c) == 1) { return 1; }
+    return 0;
+}
+
+// ── Cursor ───────────────────────────────────────────────────────────────────
+
+int lex_at_end(Lex &l) { if (l.pos >= l.len) { return 1; } return 0; }
+
+int lex_peek(Lex &l, int off) {
+    int i = l.pos + off;
+    if (i >= l.len) { return 0; }
+    return l.src[i];
+}
+
+int lex_advance(Lex &l) {
+    int c = l.src[l.pos];
+    l.pos = l.pos + 1;
+    l.col = l.col + 1;
+    return c;
+}
+
+// ── Keyword table ────────────────────────────────────────────────────────────
+// Kinds: 1 INT_LIT, 2 FLOAT_LIT, 3 STR_LIT, 4 IDENT, 5 EOF,
+//        10+ keywords, 50+ operators.
+
+int kw_kind(str w) {
+    if (str_eq(w, "int")) { return 10; }
+    if (str_eq(w, "float")) { return 11; }
+    if (str_eq(w, "str")) { return 12; }
+    if (str_eq(w, "void")) { return 13; }
+    if (str_eq(w, "list")) { return 14; }
+    if (str_eq(w, "tensor")) { return 15; }
+    if (str_eq(w, "bool")) { return 16; }
+    if (str_eq(w, "if")) { return 17; }
+    if (str_eq(w, "else")) { return 18; }
+    if (str_eq(w, "return")) { return 19; }
+    if (str_eq(w, "assert")) { return 20; }
+    if (str_eq(w, "import")) { return 21; }
+    if (str_eq(w, "from")) { return 22; }
+    if (str_eq(w, "def")) { return 23; }
+    if (str_eq(w, "database")) { return 24; }
+    if (str_eq(w, "stream")) { return 25; }
+    if (str_eq(w, "protocol")) { return 26; }
+    if (str_eq(w, "model")) { return 27; }
+    if (str_eq(w, "predict")) { return 28; }
+    if (str_eq(w, "report")) { return 29; }
+    if (str_eq(w, "render")) { return 30; }
+    if (str_eq(w, "layout")) { return 31; }
+    if (str_eq(w, "verify")) { return 32; }
+    if (str_eq(w, "input")) { return 33; }
+    if (str_eq(w, "output")) { return 34; }
+    if (str_eq(w, "metrics")) { return 35; }
+    if (str_eq(w, "title")) { return 36; }
+    if (str_eq(w, "datasource")) { return 37; }
+    if (str_eq(w, "to")) { return 38; }
+    if (str_eq(w, "true")) { return 39; }
+    if (str_eq(w, "false")) { return 40; }
+    if (str_eq(w, "while")) { return 41; }
+    if (str_eq(w, "for")) { return 42; }
+    if (str_eq(w, "break")) { return 43; }
+    if (str_eq(w, "continue")) { return 44; }
+    return 4;
+}
+
+str kind_name(int k) {
+    if (k == 1) { return "INT_LIT"; }
+    if (k == 2) { return "FLOAT_LIT"; }
+    if (k == 3) { return "STR_LIT"; }
+    if (k == 4) { return "IDENT"; }
+    if (k == 5) { return "EOF"; }
+    if (k == 10) { return "KW_INT"; }
+    if (k == 11) { return "KW_FLOAT"; }
+    if (k == 12) { return "KW_STR"; }
+    if (k == 13) { return "KW_VOID"; }
+    if (k == 14) { return "KW_LIST"; }
+    if (k == 15) { return "KW_TENSOR"; }
+    if (k == 16) { return "KW_BOOL"; }
+    if (k == 17) { return "KW_IF"; }
+    if (k == 18) { return "KW_ELSE"; }
+    if (k == 19) { return "KW_RETURN"; }
+    if (k == 20) { return "KW_ASSERT"; }
+    if (k == 21) { return "KW_IMPORT"; }
+    if (k == 22) { return "KW_FROM"; }
+    if (k == 23) { return "KW_DEF"; }
+    if (k == 24) { return "KW_DATABASE"; }
+    if (k == 25) { return "KW_STREAM"; }
+    if (k == 26) { return "KW_PROTOCOL"; }
+    if (k == 27) { return "KW_MODEL"; }
+    if (k == 28) { return "KW_PREDICT"; }
+    if (k == 29) { return "KW_REPORT"; }
+    if (k == 30) { return "KW_RENDER"; }
+    if (k == 31) { return "KW_LAYOUT"; }
+    if (k == 32) { return "KW_VERIFY"; }
+    if (k == 33) { return "KW_INPUT"; }
+    if (k == 34) { return "KW_OUTPUT"; }
+    if (k == 35) { return "KW_METRICS"; }
+    if (k == 36) { return "KW_TITLE"; }
+    if (k == 37) { return "KW_DATASRC"; }
+    if (k == 38) { return "KW_TO"; }
+    if (k == 39) { return "KW_TRUE"; }
+    if (k == 40) { return "KW_FALSE"; }
+    if (k == 41) { return "KW_WHILE"; }
+    if (k == 42) { return "KW_FOR"; }
+    if (k == 43) { return "KW_BREAK"; }
+    if (k == 44) { return "KW_CONTINUE"; }
+    if (k == 50) { return "L_BRACE"; }
+    if (k == 51) { return "R_BRACE"; }
+    if (k == 52) { return "L_PAREN"; }
+    if (k == 53) { return "R_PAREN"; }
+    if (k == 54) { return "L_BRACKET"; }
+    if (k == 55) { return "R_BRACKET"; }
+    if (k == 56) { return "SEMICOLON"; }
+    if (k == 57) { return "COLON"; }
+    if (k == 58) { return "COMMA"; }
+    if (k == 59) { return "DOT"; }
+    if (k == 60) { return "ASSIGN"; }
+    if (k == 61) { return "BORROW"; }
+    if (k == 62) { return "PLUS"; }
+    if (k == 63) { return "MINUS"; }
+    if (k == 64) { return "STAR"; }
+    if (k == 65) { return "SLASH"; }
+    if (k == 66) { return "PERCENT"; }
+    if (k == 67) { return "LT"; }
+    if (k == 68) { return "GT"; }
+    if (k == 69) { return "NOT"; }
+    if (k == 70) { return "EQ"; }
+    if (k == 71) { return "NEQ"; }
+    if (k == 72) { return "LTE"; }
+    if (k == 73) { return "GTE"; }
+    if (k == 74) { return "AND"; }
+    if (k == 75) { return "OR"; }
+    if (k == 76) { return "ARROW_L"; }
+    if (k == 77) { return "CAST_OP"; }
+    return "UNKNOWN";
+}
+
+int single_kind(int c) {
+    if (c == 123) { return 50; }
+    if (c == 125) { return 51; }
+    if (c == 40)  { return 52; }
+    if (c == 41)  { return 53; }
+    if (c == 91)  { return 54; }
+    if (c == 93)  { return 55; }
+    if (c == 59)  { return 56; }
+    if (c == 58)  { return 57; }
+    if (c == 44)  { return 58; }
+    if (c == 46)  { return 59; }
+    if (c == 61)  { return 60; }
+    if (c == 38)  { return 61; }
+    if (c == 43)  { return 62; }
+    if (c == 45)  { return 63; }
+    if (c == 42)  { return 64; }
+    if (c == 47)  { return 65; }
+    if (c == 37)  { return 66; }
+    if (c == 60)  { return 67; }
+    if (c == 62)  { return 68; }
+    if (c == 33)  { return 69; }
+    return 0;
+}
+
+// ── Sub-scanners ─────────────────────────────────────────────────────────────
+
+def skip_line_comment(Lex &l) {
+    while (lex_at_end(&l) == 0) {
+        if (lex_peek(&l, 0) == 10) { return; }
+        int ignored = lex_advance(&l);
+    }
+}
+
+def skip_block_comment(Lex &l) {
+    int done = 0;
+    int opened = lex_advance(&l);
+    while (done == 0) {
+        if (lex_at_end(&l) == 1) { return; }
+        int c = lex_advance(&l);
+        if (c == 10) { l.line = l.line + 1; l.col = 1; }
+        if (c == 42) {
+            if (lex_peek(&l, 0) == 47) {
+                int close = lex_advance(&l);
+                done = 1;
+            }
+        }
+    }
+}
+
+// Mirrors the oracle: escapes are decoded, and a literal newline inside a
+// string advances the line counter while staying part of the value.
+str scan_string_body(Lex &l) {
+    StringBuilder sb = sb_new();
+    while (lex_at_end(&l) == 0) {
+        int c = lex_advance(&l);
+        if (c == 92) {
+            int e = lex_advance(&l);
+            if (e == 110) { sb_append(&sb, char_str(10)); }
+            if (e == 116) { sb_append(&sb, char_str(9)); }
+            if (e == 114) { sb_append(&sb, char_str(13)); }
+            if (e == 34)  { sb_append(&sb, char_str(34)); }
+            if (e == 92)  { sb_append(&sb, char_str(92)); }
+            if (e != 110) { if (e != 116) { if (e != 114) { if (e != 34) { if (e != 92) {
+                sb_append(&sb, char_str(e));
+            } } } } }
+        }
+        if (c == 34) { return sb_to_str(&sb); }
+        if (c == 10) {
+            l.line = l.line + 1;
+            l.col = 1;
+            sb_append(&sb, char_str(10));
+        }
+        if (c != 92) { if (c != 34) { if (c != 10) { sb_append(&sb, char_str(c)); } } }
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Scanner ──────────────────────────────────────────────────────────────────
+
+def scan_token(Lex &l, TokVec &out) {
+    int sl = l.line;
+    int sc = l.col;
+    int c = lex_advance(&l);
+
+    if (c == 32) { return; }
+    if (c == 9)  { return; }
+    if (c == 13) { return; }
+    if (c == 10) { l.line = l.line + 1; l.col = 1; return; }
+
+    if (c == 47) {
+        if (lex_peek(&l, 0) == 47) { skip_line_comment(&l); return; }
+        if (lex_peek(&l, 0) == 42) { skip_block_comment(&l); return; }
+    }
+
+    if (c == 35) { skip_line_comment(&l); return; }
+
+    if (c == 34) {
+        str body = scan_string_body(&l);
+        vec_push(&out, tok_new(3, body, sl, sc));
+        return;
+    }
+
+    if (is_digit(c) == 1) {
+        int start = l.pos - 1;
+        int is_float = 0;
+        while (lex_at_end(&l) == 0) {
+            int p = lex_peek(&l, 0);
+            if (is_digit(p) == 0) { if (p != 46) { break; } }
+            if (p == 46) { is_float = 1; }
+            int consumed = lex_advance(&l);
+        }
+        str text = str_slice(l.src, start, l.pos);
+        int kind = 1;
+        if (is_float == 1) { kind = 2; }
+        vec_push(&out, tok_new(kind, text, sl, sc));
+        return;
+    }
+
+    if (is_alpha(c) == 1) {
+        int start = l.pos - 1;
+        while (lex_at_end(&l) == 0) {
+            if (is_alnum(lex_peek(&l, 0)) == 0) { break; }
+            int consumed = lex_advance(&l);
+        }
+        str word = str_slice(l.src, start, l.pos);
+        vec_push(&out, tok_new(kw_kind(word), word, sl, sc));
+        return;
+    }
+
+    // Two-character operators, in the oracle's order.
+    if (c == 60) { if (lex_peek(&l, 0) == 45) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(76, "<-", sl, sc)); return; } }
+    if (c == 58) { if (lex_peek(&l, 0) == 58) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(77, "::", sl, sc)); return; } }
+    if (c == 61) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(70, "==", sl, sc)); return; } }
+    if (c == 33) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(71, "!=", sl, sc)); return; } }
+    if (c == 60) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(72, "<=", sl, sc)); return; } }
+    if (c == 62) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(73, ">=", sl, sc)); return; } }
+    if (c == 38) { if (lex_peek(&l, 0) == 38) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(74, "&&", sl, sc)); return; } }
+    if (c == 124) { if (lex_peek(&l, 0) == 124) { int a = lex_advance(&l);
+        vec_push(&out, tok_new(75, "||", sl, sc)); return; } }
+
+    int sk = single_kind(c);
+    if (sk > 0) { vec_push(&out, tok_new(sk, char_str(c), sl, sc)); return; }
+
+    eprint("[STRATA LEX ERROR] Unexpected character");
+}
+
+TokVec tokenise(str source) {
+    Lex l = lex_new(source);
+    TokVec out = vec_new();
+    while (lex_at_end(&l) == 0) { scan_token(&l, &out); }
+    vec_push(&out, tok_new(5, "", l.line, l.col));
+    return out;
+}
+
+// ── Output ───────────────────────────────────────────────────────────────────
+
+str escape_value(str v) {
+    StringBuilder sb = sb_new();
+    int n = str_len(v);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = v[i];
+        if (c == 92) { sb_append(&sb, "\\\\"); }
+        if (c == 10) { sb_append(&sb, "\\n"); }
+        if (c == 9)  { sb_append(&sb, "\\t"); }
+        if (c == 13) { sb_append(&sb, "\\r"); }
+        if (c != 92) { if (c != 10) { if (c != 9) { if (c != 13) {
+            sb_append(&sb, char_str(c));
+        } } } }
+    }
+    return sb_to_str(&sb);
+}
+
 int main() {
-    print("[Strata Lexer] Stage 1 — written in Strata, compiled by Stage 0.");
-    print("Usage: strata-lexer <file.sta>");
+    str path = arg_at(1);
+    str source = file_read(path);
+    TokVec toks = tokenise(source);
+
+    int n = toks.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Token t = vec_get(&toks, i);
+        StringBuilder line = sb_new();
+        sb_append(&line, kind_name(t.kind));
+        sb_append(&line, char_str(9));
+        sb_append(&line, escape_value(t.value));
+        sb_append(&line, char_str(9));
+        sb_append(&line, str(t.line));
+        sb_append(&line, char_str(9));
+        sb_append(&line, str(t.col));
+        print(sb_to_str(&line));
+    }
     return 0;
 }

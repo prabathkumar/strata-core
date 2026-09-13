@@ -11,6 +11,7 @@ class TT(Enum):
     KW_INT=auto(); KW_FLOAT=auto(); KW_STR=auto(); KW_VOID=auto()
     KW_LIST=auto(); KW_TENSOR=auto(); KW_BOOL=auto()
     KW_IF=auto(); KW_ELSE=auto(); KW_RETURN=auto(); KW_ASSERT=auto()
+    KW_WHILE=auto(); KW_FOR=auto(); KW_BREAK=auto(); KW_CONTINUE=auto()
     KW_IMPORT=auto(); KW_FROM=auto(); KW_DEF=auto()
     KW_DATABASE=auto(); KW_STREAM=auto(); KW_PROTOCOL=auto()
     KW_MODEL=auto(); KW_PREDICT=auto(); KW_REPORT=auto()
@@ -30,6 +31,8 @@ KEYWORDS = {
     "int":TT.KW_INT,"float":TT.KW_FLOAT,"str":TT.KW_STR,"void":TT.KW_VOID,
     "list":TT.KW_LIST,"tensor":TT.KW_TENSOR,"bool":TT.KW_BOOL,
     "if":TT.KW_IF,"else":TT.KW_ELSE,"return":TT.KW_RETURN,
+    "while":TT.KW_WHILE,"for":TT.KW_FOR,
+    "break":TT.KW_BREAK,"continue":TT.KW_CONTINUE,
     "assert":TT.KW_ASSERT,"import":TT.KW_IMPORT,"from":TT.KW_FROM,"def":TT.KW_DEF,
     "database":TT.KW_DATABASE,"stream":TT.KW_STREAM,"protocol":TT.KW_PROTOCOL,
     "model":TT.KW_MODEL,"predict":TT.KW_PREDICT,"report":TT.KW_REPORT,
