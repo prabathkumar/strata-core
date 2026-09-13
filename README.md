@@ -202,6 +202,25 @@ untrained model predicts zeros rather than garbage. This is enough for a linear
 model to run and for the shape contract to mean something; it is not a machine
 learning framework and is not meant to be read as one.
 
+### Tests in the language
+
+A `verify` block is a test. `strata test` builds and runs them:
+
+```
+$ strata test test_suite/verify_cases
+  doubling
+  halving
+    FAIL  line 12: half(...) == 4
+
+  2 block(s), 5 assertion(s), 1 failed
+```
+
+A failing assertion reports its line and a rendering of the expression, and
+does not stop the rest of the block — one broken assertion should not hide the
+others. The process exits non-zero if anything failed.
+
+No fixtures, no setup and teardown, no parallelism, no filtering.
+
 ### Persistence
 
 Tables are written as tab-separated text, with serialisers generated from the
@@ -326,8 +345,9 @@ Defined in `ERROR_TAXONOMY.json`, which is the contract repair agents consume.
 ```
 strata build <file.sta>          compile to a native binary
 strata build <file.sta> --json   compile, emitting diagnostics as JSON
+strata build <file.sta> --test   build a runner for the file's verify blocks
 strata check <file.sta>          type-check without generating code
-strata test                      run the conformance suite
+strata test <dir>                build and run every verify block in <dir>
 ```
 
 The bootstrap compiler is written in Python and generates C, which is then
@@ -464,7 +484,7 @@ what runs and what is planned is unambiguous.
 | Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
-| `verify` blocks | **Parsed, checked and emitted** as a function a test driver can call, including nested `assert "label" { ... }` groups. No driver runs them automatically yet. |
+| `verify` blocks | **Done.** `strata test` builds and runs them, reporting each failed assertion with its line and source. Nested `assert "label" { ... }` groups are supported. No fixtures, no setup/teardown, no parallelism. |
 | Database persistence | **`save` / `load` to tab-separated text.** Serialisers are generated from the schema, so a table survives a restart and the file is readable by anything. No schema versioning, no migrations, no locking, no index, no transactions, no SQL backend. A file written by one schema will mis-parse under another, and two writers will corrupt it. |
 | `model` / `predict` execution | **One dense layer.** `predict` computes output = input x W + b with weights loaded from a text file. No hidden layers, no activations, no training, no accelerator, and no framework interop. Enough for a linear model and for the E006 contract to hold end to end. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |

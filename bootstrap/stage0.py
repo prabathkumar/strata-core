@@ -78,6 +78,28 @@ BUILTIN_RETURNS = {
 }
 
 
+def _verify_symbol(label):
+    """A C identifier derived from a verify block's label."""
+    return "".join(c if c.isalnum() else "_" for c in label)[:48]
+
+
+def _assert_text(node):
+    """Short source-like rendering of an assertion, for the failure line."""
+    if isinstance(node, BinaryExpr):
+        return f"{_assert_text(node.left)} {node.op} {_assert_text(node.right)}"
+    if isinstance(node, Identifier):
+        return node.name
+    if isinstance(node, IntLiteral):
+        return str(node.value)
+    if isinstance(node, StrLiteral):
+        return f"'{node.value}'"
+    if isinstance(node, CallExpr):
+        return f"{node.callee}(...)"
+    if isinstance(node, MemberAccess):
+        return f"{_assert_text(node.obj)}.{node.member}"
+    return "<expr>"
+
+
 def cname(name):
     """A C-safe spelling of a Strata identifier."""
     return name + "_" if name in C_RESERVED else name
@@ -91,8 +113,12 @@ def subst_native(code: str, param_names: list) -> str:
     return result
 
 class CodeGen:
-    def __init__(self, ast, source_path, modules=None, target="native"):
+    def __init__(self, ast, source_path, modules=None, target="native",
+                 test_mode=False):
         self.target = target
+        # In test mode the entry point runs verify blocks instead of main().
+        self.test_mode = test_mode
+        self.verify_blocks = []
         self.ast = ast
         self.source_path = source_path
         self.modules = modules or []
@@ -174,11 +200,14 @@ class CodeGen:
         for _, unit in units:
             for d in unit.declarations:
                 if isinstance(d, VerifyBlock):
+                    self.verify_blocks.append(d)
                     self._gen_verify(d)
 
         # A module with no main() is a library unit: emitting the C entry point
         # would force an undefined reference to strata_main.
-        if self.target != "wasm" and any(fn.name == "main" for fn in self.ast.functions):
+        if self.test_mode:
+            self._gen_test_main()
+        elif self.target != "wasm" and any(fn.name == "main" for fn in self.ast.functions):
             self.emit_raw("""
 int main(int argc, char** argv) {
     __strata_argc = argc;
@@ -334,9 +363,29 @@ int main(int argc, char** argv) {
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
         return ";".join(parts)
 
+    def _gen_test_main(self):
+        """An entry point that runs every verify block and reports."""
+        self.emit_raw("\nint main(int argc, char** argv) {")
+        self.emit_raw("    __strata_argc = argc; __strata_argv = argv;")
+        self.emit_raw("    int blocks = 0, failed_blocks = 0;")
+        for d in self.verify_blocks:
+            safe = _verify_symbol(d.label)
+            label = d.label.replace('"', '\\"')
+            self.emit_raw("    {")
+            self.emit_raw("        int before = __strata_fail_count;")
+            self.emit_raw(f'        fprintf(stderr, "  {label}\\n");')
+            self.emit_raw(f"        __strata_verify_{safe}();")
+            self.emit_raw("        blocks++;")
+            self.emit_raw("        if (__strata_fail_count > before) failed_blocks++;")
+            self.emit_raw("    }")
+        self.emit_raw('    fprintf(stderr, "\\n  %d block(s), %d assertion(s), '
+                      '%d failed\\n", blocks, __strata_assert_count, __strata_fail_count);')
+        self.emit_raw("    return __strata_fail_count == 0 ? 0 : 1;")
+        self.emit_raw("}")
+
     def _gen_verify(self, decl):
         """A verify block becomes a function a test driver can call."""
-        safe = "".join(c if c.isalnum() else "_" for c in decl.label)[:48]
+        safe = _verify_symbol(decl.label)
         self.emit_raw(f"\n/* verify: {decl.label} */")
         self.emit_raw(f"void __strata_verify_{safe}(void) {{")
         self.indent = 1
@@ -513,7 +562,13 @@ int main(int argc, char** argv) {
                 self._gen_stmt(st, param_names)
         elif isinstance(stmt, AssertStmt):
             cond = self._gen_expr(stmt.condition, param_names)
-            self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')
+            if self.test_mode:
+                # Record and continue: one failure should not hide the rest of
+                # the block.
+                src = _assert_text(stmt.condition).replace('"', '\\"')
+                self.emit(f'__strata_assert(({cond}), "{src}", {stmt.line});')
+            else:
+                self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')
         elif isinstance(stmt, RenderStmt):
             self.emit(f'{{FILE* _rf=fopen("{stmt.path}","w");{stmt.report}_generate(_rf);fclose(_rf);}}')
         elif isinstance(stmt, VerifyBlock):
@@ -935,7 +990,7 @@ def diagnostics_payload(source_path, errors, stage):
 
 
 def compile_sta(source_path, output_path, target="native", verbose=False,
-                json_diagnostics=False):
+                json_diagnostics=False, test_mode=False):
     if not json_diagnostics:
         print(f"[Strata Stage 0] Compiling '{source_path}'...")
     try:
@@ -983,7 +1038,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     for u in unresolved:
         print(f"[STRATA IMPORT] '{u}' is an external module with no local "
               f"checkout; its symbols must be provided at link time.", file=sys.stderr)
-    gen = CodeGen(ast, source_path, modules, target=target)
+    gen = CodeGen(ast, source_path, modules, target=target, test_mode=test_mode)
     c_source = gen.generate()
     link_flags = [f"-l{l}" for l in dict.fromkeys(gen.link_libs)]
     base = os.path.splitext(source_path)[0]
@@ -1000,7 +1055,9 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
     # A unit with no main() is a library, not a program: link it as an object
     # file rather than asking the linker for an entry point it cannot have.
-    is_library = not any(fn.name == "main" for fn in ast.functions)
+    # In test mode the generated entry point is main(), so the unit is a
+    # program even when the source declares no main of its own.
+    is_library = (not test_mode) and not any(fn.name == "main" for fn in ast.functions)
     # Unresolved externals are reported by the import pass and left to the
     # linker. C99 removed implicit declarations and clang 16+ makes them a hard
     # error, so without this every program calling an unresolved symbol fails
@@ -1038,6 +1095,8 @@ def main():
     ap.add_argument("--ast",action="store_true")
     ap.add_argument("--emit-c",action="store_true")
     ap.add_argument("-v","--verbose",action="store_true")
+    ap.add_argument("--test",action="store_true",
+                    help="build a runner for this file's verify blocks")
     ap.add_argument("--json",action="store_true",
                     help="emit machine-readable diagnostics for repair agents")
     args = ap.parse_args()
@@ -1053,6 +1112,6 @@ def main():
         modules,_ = resolve_imports(ast, args.file, args.verbose)
         print(CodeGen(ast,args.file,modules,target=args.target).generate()); return
     compile_sta(args.file, out, target=args.target, verbose=args.verbose,
-                json_diagnostics=args.json)
+                json_diagnostics=args.json, test_mode=args.test)
 
 if __name__=="__main__": main()

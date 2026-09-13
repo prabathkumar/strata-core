@@ -247,6 +247,35 @@ compile_run("persist_second_run_loads", PERSIST, "1")
 test("persist_unknown_table_is_e004",
      'int main() { save Ghost to "/tmp/x"; return 0; }', "E004")
 
+print("\n── Test runner ───────────────────────────────────────────────────")
+import subprocess as _sp, tempfile as _tf, os as _os
+def run_test_build(name, source, want_exit, want_in_output):
+    global PASS, FAIL
+    d = _tf.mkdtemp()
+    f = _os.path.join(d, "t.sta"); open(f, "w").write(source)
+    b = _os.path.join(d, "t")
+    r = _sp.run(["python3", "bootstrap/stage0.py", f, "--test", "-o", b],
+                capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  FAIL  {name} — build: {r.stderr[:60]}"); FAIL += 1; return
+    r2 = _sp.run([b], capture_output=True, text=True)
+    out = r2.stdout + r2.stderr
+    if r2.returncode == want_exit and want_in_output in out:
+        print(f"  PASS  {name}"); PASS += 1
+    else:
+        print(f"  FAIL  {name} — exit {r2.returncode} (want {want_exit}); output: {out[:70]!r}")
+        FAIL += 1
+
+run_test_build("test_all_assertions_pass",
+    'int twice(int x) { return x * 2; }\nverify "doubling" { assert twice(21) == 42; }',
+    0, "0 failed")
+run_test_build("test_failure_is_reported_and_exits_nonzero",
+    'int half(int x) { return x / 2; }\nverify "halving" { assert half(7) == 4; }',
+    1, "1 failed")
+run_test_build("test_failure_does_not_hide_later_assertions",
+    'verify "several" { assert 1 == 2; assert 2 == 3; assert 1 == 1; }',
+    1, "3 assertion(s), 2 failed")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

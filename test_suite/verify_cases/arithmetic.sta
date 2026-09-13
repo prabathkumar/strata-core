@@ -1,0 +1,17 @@
+// Verify blocks exercised by `strata test`.
+int twice(int x) { return x * 2; }
+int half(int x)  { return x / 2; }
+
+verify "doubling" {
+    int a = 21;
+    assert twice(a) == 42;
+    assert twice(0) == 0;
+}
+
+verify "halving" {
+    assert half(10) == 5;
+    assert "edge cases" {
+        assert half(1) == 0;
+        assert half(0) == 0;
+    }
+}

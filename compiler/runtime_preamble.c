@@ -218,3 +218,18 @@ static strata_str strata_dup(const char* s) {
     size_t n = strlen(s); char* r = (char*)malloc(n + 1);
     memcpy(r, s, n + 1); return r;
 }
+
+/* ── Test harness ─────────────────────────────────────────────────────────
+   A `verify` block compiles to a function; in test mode an entry point runs
+   each one and reports. Assertions record a failure rather than terminating,
+   so one broken assertion does not hide the rest of the block. */
+static int __strata_fail_count = 0;
+static int __strata_assert_count = 0;
+
+static void __strata_assert(int cond, const char* expr, int line) {
+    __strata_assert_count++;
+    if (!cond) {
+        __strata_fail_count++;
+        fprintf(stderr, "    FAIL  line %d: %s\n", line, expr);
+    }
+}

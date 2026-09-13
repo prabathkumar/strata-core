@@ -48,6 +48,8 @@ int bind_has(int head, str name) {
 
 database Gen {
     int out;          // StringBuilder*
+    int test_mode;    // entry point runs verify blocks instead of main()
+    int verifies;     // NodeVec* of verify blocks, for the runner
     str target;       // "native" or "wasm"
     str query_row;    // table whose condition is being generated, else ""
     int indent;
@@ -606,6 +608,18 @@ def gen_stmt(Gen &g, Node st) {
     if (k == 32) { cg_emit(&g, "continue;"); return; }
 
     if (k == 24) {                                    // assert
+        if (g.test_mode == 1) {
+            // Record and continue: one failure should not hide the rest of
+            // the block.
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "__strata_assert(("); sb_append(&sb, gen_expr(&g, st.c1));
+            sb_append(&sb, "), \""); sb_append(&sb, assert_text(st.c1));
+            sb_append(&sb, "\", "); sb_append(&sb, str(st.line)); sb_append(&sb, ");");
+            cg_emit(&g, sb_to_str(&sb));
+            return;
+        }
+    }
+    if (k == 24) {                                    // assert
         StringBuilder sb = sb_new();
         sb_append(&sb, "if(!(");
         sb_append(&sb, gen_expr(&g, st.c1));
@@ -1148,8 +1162,14 @@ str generate(str root, str source_path) {
 }
 
 str generate_for(str root, str source_path, str target) {
+    return generate_mode(root, source_path, target, 0);
+}
+
+str generate_mode(str root, str source_path, str target, int test_mode) {
     Gen g = gen_new();
     g.target = target;
+    g.test_mode = test_mode;
+    g.verifies = nv_ptr(nv_new());
     StringBuilder out = sb_new();
     g.out = sb_ptr(out);
 
@@ -1186,7 +1206,9 @@ str generate_for(str root, str source_path, str target) {
     for (int v = 0; v < nm; v = v + 1) { gen_verifies(&g, nv_get(&mods, v)); }
     gen_verifies(&g, unit);
 
+    if (g.test_mode == 1) { gen_test_main(&g); }
     int emit_entry = has_main(unit);
+    if (g.test_mode == 1) { emit_entry = 0; }
     if (str_eq(g.target, "wasm") == 1) { emit_entry = 0; }
     if (emit_entry == 1) {
         emit_raw(&g, "\nint main(int argc, char** argv) {\n    __strata_argc = argc;\n    __strata_argv = argv;\n    return (int)strata_main();\n}\n");
@@ -1205,18 +1227,53 @@ def gen_verifies(Gen &g, Node unit) {
     int n = decls.len;
     for (int i = 0; i < n; i = i + 1) {
         Node d = nv_get(&decls, i);
-        if (d.kind == 26) { gen_verify(&g, d); }
+        if (d.kind == 26) {
+            NodeVec vs = nv_at(g.verifies);
+            nv_push(&vs, d);
+            gen_verify(&g, d);
+        }
     }
 }
 
-def gen_verify(Gen &g, Node decl) {
-    // A verify block becomes a function a test driver can call.
+// Short source-like rendering of an assertion, for the failure line.
+str assert_text(int p) {
+    if (p == 0) { return "<expr>"; }
+    Node e = node_at(p);
+    if (e.kind == 40) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, assert_text(e.c1)); sb_append(&sb, " ");
+        sb_append(&sb, e.s1); sb_append(&sb, " ");
+        sb_append(&sb, assert_text(e.c2));
+        return sb_to_str(&sb);
+    }
+    if (e.kind == 54) { return e.s1; }
+    if (e.kind == 50) { return str(e.i1); }
+    if (e.kind == 52) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'"); sb_append(&sb, e.s1); sb_append(&sb, "'");
+        return sb_to_str(&sb);
+    }
+    if (e.kind == 42) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, e.s1); sb_append(&sb, "(...)");
+        return sb_to_str(&sb);
+    }
+    if (e.kind == 48) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, assert_text(e.c1)); sb_append(&sb, ".");
+        sb_append(&sb, e.s1);
+        return sb_to_str(&sb);
+    }
+    return "<expr>";
+}
+
+str verify_symbol(str label) {
     StringBuilder safe = sb_new();
-    int n = str_len(decl.s1);
+    int n = str_len(label);
     int cap = n;
     if (cap > 48) { cap = 48; }
     for (int i = 0; i < cap; i = i + 1) {
-        int c = decl.s1[i];
+        int c = label[i];
         int alnum = 0;
         if (c >= 48) { if (c <= 57) { alnum = 1; } }
         if (c >= 65) { if (c <= 90) { alnum = 1; } }
@@ -1224,11 +1281,45 @@ def gen_verify(Gen &g, Node decl) {
         if (alnum == 1) { sb_append(&safe, char_str(c)); }
         if (alnum == 0) { sb_append(&safe, "_"); }
     }
+    return sb_to_str(&safe);
+}
+
+// An entry point that runs every verify block and reports.
+def gen_test_main(Gen &g) {
+    emit_raw(&g, "\nint main(int argc, char** argv) {");
+    emit_raw(&g, "    __strata_argc = argc; __strata_argv = argv;");
+    emit_raw(&g, "    int blocks = 0, failed_blocks = 0;");
+    NodeVec vs = nv_at(g.verifies);
+    int n = vs.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node d = nv_get(&vs, i);
+        emit_raw(&g, "    {");
+        emit_raw(&g, "        int before = __strata_fail_count;");
+        StringBuilder lab = sb_new();
+        sb_append(&lab, "        fprintf(stderr, \""); sb_append(&lab, d.s1);
+        sb_append(&lab, "\\n\");");
+        emit_raw(&g, sb_to_str(&lab));
+        StringBuilder call = sb_new();
+        sb_append(&call, "        __strata_verify_"); sb_append(&call, verify_symbol(d.s1));
+        sb_append(&call, "();");
+        emit_raw(&g, sb_to_str(&call));
+        emit_raw(&g, "        blocks++;");
+        emit_raw(&g, "        if (__strata_fail_count > before) failed_blocks++;");
+        emit_raw(&g, "    }");
+    }
+    emit_raw(&g, "    fprintf(stderr, \"\\n  %d block(s), %d assertion(s), %d failed\\n\", blocks, __strata_assert_count, __strata_fail_count);");
+    emit_raw(&g, "    return __strata_fail_count == 0 ? 0 : 1;");
+    emit_raw(&g, "}");
+}
+
+def gen_verify(Gen &g, Node decl) {
+    // A verify block becomes a function a test driver can call.
+    str safe = verify_symbol(decl.s1);
     StringBuilder head = sb_new();
     sb_append(&head, "\n/* verify: "); sb_append(&head, decl.s1); sb_append(&head, " */");
     emit_raw(&g, sb_to_str(&head));
     StringBuilder sig = sb_new();
-    sb_append(&sig, "void __strata_verify_"); sb_append(&sig, sb_to_str(&safe));
+    sb_append(&sig, "void __strata_verify_"); sb_append(&sig, safe);
     sb_append(&sig, "(void) {");
     emit_raw(&g, sb_to_str(&sig));
     g.indent = 1;

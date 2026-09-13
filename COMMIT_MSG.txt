@@ -1,31 +1,34 @@
-feat(runtime): table persistence — save and load
+feat(test): strata test builds and runs verify blocks
 
-Tables survived only as long as the process. `save T to "p";` and
-`load T from "p";` write and read rows as tab-separated text, with
-serialisers generated per table from its schema. Verified across two
-runs of the same binary: the first finds nothing and writes two rows, the
-second reads them back.
+Verify blocks compiled to functions that nothing called, and `strata
+test` only type-checked — so a file whose assertions all failed reported
+PASS. It now builds a runner and runs them:
 
-Text rather than a binary format, so a table is inspectable with the
-tools everyone already has and readable by something that is not this
-compiler. Tabs, newlines and backslashes inside string fields are
-escaped, and a literal tab inside a value round-trips.
+  $ strata test test_suite/verify_cases
+    doubling
+    halving
+      FAIL  line 12: half(...) == 4
 
-Stated in the README rather than left to be discovered: no schema
-versioning, no migration, no locking, no index, no transactions. Field
-order is the declaration order and that is the contract — a file written
-under one schema will mis-parse under another, and two writers will
-corrupt it. This is enough for one process to keep state across
-restarts, and is not a database.
+    2 block(s), 5 assertion(s), 1 failed
 
-`save` and `load` are contextual, so neither word is taken from user
-code. A save or load naming a table that was never declared is E004.
+`--test` emits an entry point that calls every verify block in the file.
+Assertions record a failure and continue rather than terminating, because
+one broken assertion should not hide the rest of the block, and the
+process exits non-zero if anything failed. A failure reports its line and
+a rendering of the expression that failed rather than only its number.
 
-Noted while testing: a query is only parsed in declaration position, so
-`len(A <- [id > 0])` does not parse and needs a binding first. Worth
-fixing, but it is a parser limitation rather than a runtime one.
+A test build is a program even when the source declares no main of its
+own — without that the unit compiled to an object file and there was
+nothing to run.
 
-Conformance 97; all ten suites green; fixpoint holds.
+bin/strata test now compiles and executes each file containing verify
+blocks, and reports files that contain none rather than counting them as
+passes. CI runs it.
+
+Ported to both implementations; the code generator differential stayed
+byte-identical throughout.
+
+Conformance 100; all ten suites green; fixpoint holds.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

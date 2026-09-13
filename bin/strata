@@ -143,37 +143,36 @@ STA
 }
 
 cmd_test() {
+    # Builds and runs the verify blocks in each file. Previously this only
+    # type-checked, so a file with a failing assertion reported PASS.
     local dir="${1:-test_suite}"
-    echo "[Strata Test] Scanning '$dir'..."
-    local p=0 f=0
+    echo "[Strata Test] $dir"
+    local p=0 f=0 skipped=0
+    local tmp; tmp="$(mktemp -d)"
     for sta in "$dir"/*.sta; do
         [ -f "$sta" ] || continue
-        if python3 << PYEOF 2>/dev/null
-import sys
-sys.path.insert(0, '$ROOT')
-from compiler.lexer import tokenise_file
-from compiler.parser import Parser
-from compiler.typechecker import TypeChecker
-toks = tokenise_file('$sta')
-ast  = Parser(toks).parse()
-tc   = TypeChecker(ast)
-errs = tc.check()
-sys.exit(0 if not errs else 1)
-PYEOF
-        then
-            echo "  PASS: $sta"; ((p++)) || true
+        if ! grep -q '^verify ' "$sta"; then
+            skipped=$((skipped+1)); continue
+        fi
+        local bin="$tmp/$(basename "$sta" .sta)"
+        if ! python3 "$ROOT/bootstrap/stage0.py" "$sta" --test -o "$bin" >/dev/null 2>&1; then
+            echo "  BUILD FAIL: $sta"; f=$((f+1)); continue
+        fi
+        if "$bin"; then
+            echo "  PASS: $sta"; p=$((p+1))
         else
-            echo "  FAIL: $sta"; ((f++)) || true
+            echo "  FAIL: $sta"; f=$((f+1))
         fi
     done
-    echo "[Strata Test] $p passed, $f failed."
+    rm -rf "$tmp"
+    echo "[Strata Test] $p passed, $f failed, $skipped file(s) with no verify blocks."
     [ "$f" -eq 0 ] || exit 1
 }
 
 cmd_version() {
-    echo "Strata v1.0.0 | Self-Hosting Compiler"
+    echo "Strata v0.4.0-alpha | self-hosting front end"
     echo "  Stage 0: Python bootstrap (bootstrap/stage0.py)"
-    echo "  Stage 1: compiler/compiler.sta (Strata)"
+    echo "  Stage 1: compiler/{lexer,parser,typechecker,codegen}.sta (Strata)"
     echo "  Targets: native, wasm, c"
 }
 

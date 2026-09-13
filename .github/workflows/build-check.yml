@@ -82,6 +82,10 @@ jobs:
     - name: WebAssembly Target
       run: python3 test_suite/wasm_target.py
 
+    # The language's own test blocks, run rather than only type-checked.
+    - name: Run Strata Verify Blocks
+      run: ./bin/strata test test_suite/verify_cases
+
     - name: Verify Standard Library Parses
       run: python3 test_suite/stdlib_parses.py
 
