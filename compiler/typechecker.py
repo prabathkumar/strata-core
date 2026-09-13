@@ -291,7 +291,11 @@ class TypeChecker:
         right=self._infer_type(expr.right,scope)
         if expr.op in ("==","!=","<",">","<=",">=","&&","||"): return T_BOOL
         if expr.op=="+" and left==T_STR:
-            if right!=T_STR:
+            # `right is None` means the type could not be inferred — typically a
+            # call into an imported module, since only the root file is checked.
+            # Reporting that as contamination makes E005 fire on every
+            # multi-module program, including this project's own stdlib.
+            if right is not None and right!=T_STR:
                 self._error("E005",f"Cannot concat str with '{right}' — wrap in str()",
                     expr.line,expr.col,"Use str() to convert first")
             return T_STR

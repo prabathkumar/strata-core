@@ -301,7 +301,7 @@ what runs and what is planned is unambiguous.
 | Area | Status |
 |------|--------|
 | Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
-| Self-hosting compiler (`compiler/*.sta`) | **Lexer and parser done.** `compiler/lexer.sta` produces byte-identical token streams and `compiler/parser.sta` produces identical syntax trees to the Python implementations, across the corpus and on their own sources. Type checker and code generator remain, then the stage1/stage2 fixpoint. |
+| Self-hosting compiler (`compiler/*.sta`) | **Lexer, parser and type checker done** — 2,313 lines of Strata, 4% of it `native`. Each produces output identical to its Python counterpart across the corpus and on its own source: byte-identical token streams, identical syntax trees, identical diagnostics. Code generator remains, then the stage1/stage2 fixpoint. |
 | `layout` blocks and the UI tier | Specified in the grammar, not implemented. |
 | WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |

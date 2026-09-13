@@ -1,0 +1,1 @@
+int main() { list[int] n = [1, 2, "three"]; return 0; }

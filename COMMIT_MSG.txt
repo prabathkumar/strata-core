@@ -1,45 +1,39 @@
-feat(phase4): parser.sta — the Strata parser, written in Strata
+feat(phase5): typechecker.sta — E001-E006 in Strata; fix an E005 false positive
 
-Stage 2 of self-hosting. compiler/parser.sta produces syntax trees
-identical to compiler/parser.py across 29 files — std/, examples/,
-test_suite/ and compiler/ — including its own 1,109-line source and the
-lexer's. The 9 skipped files are ones the oracle cannot parse either
-(verify blocks, uninitialised declarations, the corrupted simd example).
+Stage 3 of self-hosting. compiler/typechecker.sta emits diagnostics
+identical to compiler/typechecker.py — same codes, locations, messages
+and order — across 43 files: the corpus, the compiler's own sources, and
+twelve deliberately broken programs, one per rule, now kept as fixtures
+in test_suite/typecheck_cases/. A checker compared only against code that
+passes has not been compared.
 
-test_suite/parser_diff.py compares trees as parsed JSON rather than text,
-so key order and whitespace are irrelevant and only structure counts. On a
-mismatch it reports the path to the first differing node — for example
-`$.functions[0].body: oracle has 6 items, strata has 10` — because a diff
-of two thousand-line trees is unreadable and a path is actionable. That
-message is what located both real bugs:
+Building the second implementation exposed a bug in the first. E005 read
+an uninferred right operand as a contaminated boundary, so
+`"id " + convert_int_to_str(n)` was reported as an error whenever the
+callee lived in another module — which is every multi-module program.
+It was firing on std/runtime.sta and examples/high_frequency_ledger.sta,
+i.e. on this project's own standard library. Only the root file is type
+checked, so an unknown type is the normal case for an imported call, not
+a fault. Fixed in the oracle first, with regression tests, rather than
+reproduced in Strata.
 
-  - The insert-statement list checked for a trailing comma after
-    consuming it, so every `Table <- [a = x, b = y]` terminated after its
-    first pair and the remainder parsed as separate expression
-    statements. Found in four std modules at once.
-  - model and report declarations were unimplemented, which ml_bridge
-    exposed.
+The differential also caught a parser divergence that the syntax-tree
+comparison structurally could not: the oracle positions a VarDecl at its
+type token and this parser positioned it at its name, so diagnostics
+quoted a different column. to_dict() does not serialise line and col, so
+the AST diff is blind to position — it took a stage that consumes
+positions to see it. Each stage's oracle catches what the previous one
+cannot.
 
-Strata has no sum types, so every syntax node is one record whose slots
-each kind interprets by convention, with child pointers held as int so
-that "absent" is representable as 0 without a null-record concept.
+C keyword collisions are now mangled in codegen. A Strata function named
+`register` emitted `void register(...)`, which is not valid C, and the
+error pointed at generated source the user never wrote. Strata is not
+required to know what C reserves.
 
-33 of 1,109 lines (2%) are native blocks, all allocation primitives —
-down from 6% in the lexer. Parsing, precedence, the postfix chain and
-JSON emission are ordinary Strata.
+93 of 2,313 lines across lexer, parser and type checker are native
+blocks — 4%, all allocation primitives.
 
-Also: a compiler/ module that fails to parse is now a hard error rather
-than a skipped import. Silently skipping produced `unknown type name
-'Node'` from the C compiler instead of naming the syntax error, which
-cost real time during this work.
-
-Three keyword collisions surfaced while writing it — `model`, `metrics`
-and `title` are reserved and could not be used as variable names. Worth
-revisiting: reserving `title` and `metrics` globally for the report
-syntax is a poor trade.
-
-Remaining for self-hosting: typechecker.sta, codegen.sta, then the
-stage1/stage2 fixpoint.
+Remaining for self-hosting: codegen.sta, then the stage1/stage2 fixpoint.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

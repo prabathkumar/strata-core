@@ -1,0 +1,2 @@
+database A { int id; str actor; }
+int main() { A <- [nope = "x"]; return 0; }

@@ -1,0 +1,18 @@
+// STRATA COMPILER — compiler/typechecker_cli.sta
+// Prints one diagnostic per line as `CODE line:col message`, for comparison
+// against the Python type checker.
+
+import io          from std;
+import str         from std;
+import lexer       from compiler;
+import parser      from compiler;
+import typechecker from compiler;
+
+int main() {
+    str path = arg_at(1);
+    str source = file_read(path);
+    Node unit = parse_source(source);
+    int errors = check_unit(unit);
+    if (errors > 0) { return 1; }
+    return 0;
+}

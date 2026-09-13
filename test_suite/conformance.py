@@ -93,6 +93,11 @@ test("e005_str_concat_with_int", 'int main() { str msg = "count: " + 42; return 
 test("e005_valid_str_concat", 'int main() { str a = "hello"; str b = "world"; str c = a + b; return 0; }')
 test("e005_arg_type_mismatch", 'int process(int x) { return x; }\nint main() { int r = process("bad"); return 0; }', "E005")
 
+test("e005_unknown_callee_not_flagged",
+     'int main() { str m = "id " + imported_helper(1); return 0; }')
+test("e005_known_int_still_flagged",
+     'int main() { int n = 1; str m = "id " + n; return 0; }', "E005")
+
 print("\n── E006: Tensor Dimension Drift ──────────────────────────────────")
 test("e006_undeclared_model", 'int main() { int x = predict GhostModel(x); return 0; }', "E006")
 test("e006_valid_model_decl",
@@ -191,6 +196,10 @@ compile_run("e2e_break",
 compile_run("e2e_list_index",
     'import io from std;\nint main() { list[int] a = [10,20,30]; a[0] = 99; print(str(a[0] + a[2])); return 0; }',
     "129")
+compile_run("e2e_c_reserved_words_as_names",
+    'import io from std;\nint register(int switch_in) { int const_ = switch_in * 2; return const_; }\nint main() { int auto_ = 5; print(str(register(auto_))); return 0; }',
+    "10")
+
 compile_run("e2e_bubble_sort",
     'import io from std;\nint main() { list[int] d = [3,1,2]; int n = 3; for (int i = 0; i < n-1; i = i+1) { for (int j = 0; j < n-i-1; j = j+1) { if (d[j] > d[j+1]) { int t = d[j]; d[j] = d[j+1]; d[j+1] = t; } } } for (int k = 0; k < n; k = k+1) { print(str(d[k])); } return 0; }',
     "1\n2\n3")

@@ -616,7 +616,10 @@ Node parse_var_decl(P &p, int want_semicolon) {
     Node n = node_new(20);
     n.c1 = node_ptr(vtype);
     n.s1 = name.value;
-    n_pos(n, name);
+    // The oracle positions a declaration at its TYPE, not its name, and
+    // diagnostics quote that column. Syntax-tree comparison cannot catch this
+    // because to_dict() does not serialise positions.
+    n.line = vtype.line; n.col = vtype.col;
 
     // Query form: list[T] name = Source <- [cond];
     if (p_kind(&p, 0) == 4) {

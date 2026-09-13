@@ -1,0 +1,2 @@
+model M { input: tensor[float, 1, 64]; output: tensor[float, 1, 2]; }
+int f(tensor[float, 1, 32] t) { tensor[float, 1, 2] o = predict M(t); return 0; }

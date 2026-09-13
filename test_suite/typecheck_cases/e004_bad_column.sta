@@ -1,0 +1,2 @@
+database U { int id; str name; }
+int main() { list[U] r = U <- [bad_col == "x"]; return 0; }

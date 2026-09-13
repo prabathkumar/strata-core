@@ -1,0 +1,2 @@
+int process(int x) { return x; }
+int main() { int r = process("bad"); return 0; }

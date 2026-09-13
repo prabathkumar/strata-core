@@ -49,6 +49,12 @@ jobs:
     - name: Parser Differential (Strata vs Python oracle)
       run: python3 test_suite/parser_diff.py
 
+    # Stage 3 of self-hosting: the Strata-written type checker must emit the
+    # same diagnostics — codes, locations, messages and order — as the oracle,
+    # over clean code and over one deliberately broken program per rule.
+    - name: Type Checker Differential (Strata vs Python oracle)
+      run: python3 test_suite/typecheck_diff.py
+
     - name: Conformance Under clang
       run: STRATA_CC=clang python3 test_suite/conformance.py
 

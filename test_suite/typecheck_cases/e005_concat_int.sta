@@ -1,0 +1,1 @@
+int main() { int n = 1; str m = "c: " + n; return 0; }

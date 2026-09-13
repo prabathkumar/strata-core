@@ -102,6 +102,24 @@ static void sb_append_line_f(SB* s, const char* t) {
 # of these would be a duplicate symbol, so they are never re-emitted.
 PREAMBLE_BUILTINS = frozenset(('file_exists', 'file_read', 'file_write', 'float_to_str', 'int_to_str', 'sb_append_f', 'sb_append_line_f', 'sb_new_f', 'str_concat', 'str_eq', 'str_index_of', 'str_len', 'str_slice', 'str_starts_with', 'str_to_int', 'strata_concat', 'strata_float_to_str', 'strata_int_to_str'))
 
+# Identifiers that are legal in Strata but reserved in C. A Strata program is
+# not required to know what C reserves, so any collision is mangled on the way
+# out. Without this, a function named `register` or a variable named `class`
+# emits code the backend compiler rejects with a syntax error pointing at
+# generated source the user never wrote.
+C_RESERVED = frozenset("""
+auto break case char const continue default do double else enum extern float
+for goto if inline int long register restrict return short signed sizeof static
+struct switch typedef union unsigned void volatile while
+_Bool _Complex _Imaginary bool complex imaginary
+""".split())
+
+
+def cname(name):
+    """A C-safe spelling of a Strata identifier."""
+    return name + "_" if name in C_RESERVED else name
+
+
 # Native block variable substitution
 def subst_native(code: str, param_names: list) -> str:
     """Replace $varname with the C variable name in native blocks."""
@@ -193,7 +211,7 @@ int main(int argc, char** argv) {
         rt = self._c_type(fn.return_type) if fn.return_type else "void"
         if fn.kind == "def": rt = "void"
         params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
-        self.emit_raw(f"{rt} {fn.name}({params});")
+        self.emit_raw(f"{rt} {cname(fn.name)}({params});")
 
     def _gen_decl(self, decl):
         if isinstance(decl, DatabaseDecl):
@@ -231,7 +249,7 @@ int main(int argc, char** argv) {
             self.var_types[p.name] = self._c_type(p.param_type)
         # Collect param names for native substitution
         param_names = [p.name for p in fn.params]
-        self.emit_raw(f"\n{rt} {fn.name}({params}) {{")
+        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{")
         self.indent = 1
         for stmt in fn.body:
             self._gen_stmt(stmt, param_names)
@@ -303,7 +321,7 @@ int main(int argc, char** argv) {
             if stmt.value.args and isinstance(stmt.value.args[0], StrLiteral):
                 raw_c = stmt.value.args[0].value
                 raw_c = subst_native(raw_c, param_names)
-                self.emit(f"{ctype} {name};")
+                self.emit(f"{ctype} {cname(name)};")
                 self.emit_raw("{")
                 self.emit_raw(raw_c)
                 self.emit_raw("}")
@@ -314,10 +332,10 @@ int main(int argc, char** argv) {
             src = stmt.value.source
             if src in self.schemas:
                 self._validate_query_columns(stmt.value.condition, src, stmt.line)
-            self.emit(f"{ctype} {name} = NULL; /* query:{src} */")
+            self.emit(f"{ctype} {cname(name)} = NULL; /* query:{src} */")
         else:
             val = self._gen_expr(stmt.value, param_names)
-            self.emit(f"{ctype} {name} = {val};")
+            self.emit(f"{ctype} {cname(name)} = {val};")
         self.var_types[name] = ctype
 
     def _gen_insert(self, stmt, param_names):
@@ -348,7 +366,7 @@ int main(int argc, char** argv) {
         init = ""
         if isinstance(stmt.init, VarDecl):
             ctype = self._c_type(stmt.init.var_type)
-            init = f"{ctype} {stmt.init.name} = {self._gen_expr(stmt.init.value, param_names)}"
+            init = f"{ctype} {cname(stmt.init.name)} = {self._gen_expr(stmt.init.value, param_names)}"
             self.var_types[stmt.init.name] = ctype
         elif isinstance(stmt.init, AssignStmt):
             init = (f"{self._gen_expr(stmt.init.target, param_names)} = "
@@ -426,7 +444,7 @@ int main(int argc, char** argv) {
             esc = expr.value.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n')
             return f'"{esc}"'
         if isinstance(expr, BoolLiteral): return "1" if expr.value else "0"
-        if isinstance(expr, Identifier): return expr.name
+        if isinstance(expr, Identifier): return cname(expr.name)
         if isinstance(expr, BinaryExpr):
             l = self._gen_expr(expr.left, param_names)
             r = self._gen_expr(expr.right, param_names)
@@ -490,7 +508,7 @@ int main(int argc, char** argv) {
         if expr.callee == "int":   return f"((strata_int)({self._gen_expr(expr.args[0], param_names)}))"
         if expr.callee == "float": return f"((strata_float)({self._gen_expr(expr.args[0], param_names)}))"
         args = ", ".join(self._gen_expr(a, param_names) for a in expr.args)
-        return f"{expr.callee}({args})"
+        return f"{cname(expr.callee)}({args})"
 
     def _c_type(self, t):
         if t is None: return "void"
@@ -508,7 +526,7 @@ int main(int argc, char** argv) {
         # A record is already a pointer; '&' on it is a no-op, not a double
         # indirection.
         star = "*" if (p.borrow and not ct.endswith("*")) else ""
-        return f"{ct}{star} {p.name}"
+        return f"{ct}{star} {cname(p.name)}"
 
 # Import sources backed by a directory in the project tree. `std` is the
 # bundled standard library; `compiler` lets the self-hosting sources import one
