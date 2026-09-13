@@ -162,6 +162,46 @@ This suits computation, not a server. And WebAssembly cannot touch the DOM, so
 a UI still needs a JavaScript shim — the `layout` tier is server-rendered
 instead.
 
+### Model inference
+
+A `model` declares a tensor contract the compiler enforces, and `predict` runs
+it:
+
+```text
+import io from std;
+
+model RiskScorer {
+    input:  tensor[float, 1, 3];
+    output: tensor[float, 1, 2];
+}
+
+int main() {
+    tensor[float, 1, 3] features = strata_tensor(3);
+    strata_tensor_set(features, 0, 2.0);
+    strata_tensor_set(features, 1, 3.0);
+    strata_tensor_set(features, 2, 4.0);
+
+    strata_model_load(RiskScorer, "examples/risk_weights.txt");
+
+    tensor[float, 1, 2] scores = predict RiskScorer(features);
+    print(str(strata_tensor_get(scores, 0)));
+    return 0;
+}
+```
+
+Pass a tensor of the wrong shape and the build stops:
+
+```
+[E006] Tensor shape mismatch for 'RiskScorer': expected [1,3], got [1,32]
+```
+
+**The runtime is one dense layer** — `output = input x W + b`, weights read
+from a whitespace-separated text file. No hidden layers, no activations beyond
+the identity, no training, no GPU, no interop with existing frameworks. An
+untrained model predicts zeros rather than garbage. This is enough for a linear
+model to run and for the shape contract to mean something; it is not a machine
+learning framework and is not meant to be read as one.
+
 ### Calling existing C libraries
 
 A `foreign` block declares what a library provides. The signatures are
@@ -396,7 +436,7 @@ what runs and what is planned is unambiguous.
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
 | Database persistence | In-memory tables only. `database` blocks get fixed-capacity storage, inserts append and queries filter — enough for the contract to be observable end to end. No disk, no index, no transactions, no SQL backend. |
-| `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
+| `model` / `predict` execution | **One dense layer.** `predict` computes output = input x W + b with weights loaded from a text file. No hidden layers, no activations, no training, no accelerator, and no framework interop. Enough for a linear model and for the E006 contract to hold end to end. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
 | Virtual Event Fibers | Design only. No scheduler exists. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |

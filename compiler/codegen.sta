@@ -57,6 +57,7 @@ database Gen {
     int records;      // Bind list: record type name -> "1"
     int schemas;      // Bind list: table -> ",col,col,"
     int field_types;  // Bind list: "Table.col" -> C type
+    int models;       // Bind list: model name -> "1"
 }
 
 Gen gen_new() {
@@ -222,8 +223,38 @@ str expr_ctype(Gen &g, int p) {
         if (str_eq(e.s1, "str"))   { return "strata_str"; }
         if (str_eq(e.s1, "int"))   { return "strata_int"; }
         if (str_eq(e.s1, "float")) { return "strata_float"; }
-        return bind_get(g.func_returns, e.s1);
+        str declared = bind_get(g.func_returns, e.s1);
+        if (str_len(declared) > 0) { return declared; }
+        return builtin_return(e.s1);
     }
+    return "";
+}
+
+// Return types of the prelude's own functions. Without these a conversion such
+// as str(strata_tensor_get(t, 0)) cannot tell a float from an int and silently
+// truncates 6.5 to 6.
+str builtin_return(str name) {
+    if (str_eq(name, "strata_concat")) { return "strata_str"; }
+    if (str_eq(name, "strata_int_to_str")) { return "strata_str"; }
+    if (str_eq(name, "strata_float_to_str")) { return "strata_str"; }
+    if (str_eq(name, "str_concat")) { return "strata_str"; }
+    if (str_eq(name, "int_to_str")) { return "strata_str"; }
+    if (str_eq(name, "float_to_str")) { return "strata_str"; }
+    if (str_eq(name, "str_slice")) { return "strata_str"; }
+    if (str_eq(name, "file_read")) { return "strata_str"; }
+    if (str_eq(name, "str_len")) { return "strata_int"; }
+    if (str_eq(name, "str_eq")) { return "strata_int"; }
+    if (str_eq(name, "str_to_int")) { return "strata_int"; }
+    if (str_eq(name, "str_index_of")) { return "strata_int"; }
+    if (str_eq(name, "str_starts_with")) { return "strata_int"; }
+    if (str_eq(name, "file_write")) { return "strata_int"; }
+    if (str_eq(name, "file_exists")) { return "strata_int"; }
+    if (str_eq(name, "strata_len")) { return "strata_int"; }
+    if (str_eq(name, "strata_model_load")) { return "strata_int"; }
+    if (str_eq(name, "strata_tensor")) { return "double*"; }
+    if (str_eq(name, "strata_predict")) { return "double*"; }
+    if (str_eq(name, "strata_tensor_get")) { return "strata_float"; }
+    if (str_eq(name, "strata_tensor_set")) { return "void"; }
     return "";
 }
 
@@ -300,6 +331,13 @@ str gen_expr(Gen &g, int p) {
     }
     if (k == 53) { if (e.i1 == 1) { return "1"; } return "0"; }
     if (k == 54) {
+        // A bare model name is the model itself, so Strata code never has to
+        // name the generated C global.
+        if (bind_has(g.models, e.s1) == 1) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "&"); sb_append(&sb, e.s1); sb_append(&sb, "_instance");
+            return sb_to_str(&sb);
+        }
         // Inside a query condition a bare identifier naming a column of the
         // table under test refers to the candidate row.
         if (str_len(g.query_row) > 0) {
@@ -794,7 +832,9 @@ def gen_decl(Gen &g, Node d) {
 
 def gen_model(Gen &g, Node d) {
     StringBuilder a = sb_new();
-    sb_append(&a, "\ntypedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } ");
+    // Same layout as StrataModel in the prelude, so strata_predict can read
+    // it without depending on field order.
+    sb_append(&a, "\ntypedef StrataModel ");
     sb_append(&a, d.s1); sb_append(&a, ";");
     emit_raw(&g, sb_to_str(&a));
     Node in_t = node_at(d.c1);
@@ -1009,6 +1049,7 @@ def note_records(Gen &g, Node unit) {
         Node d = nv_get(&decls, i);
         if (d.kind == 3) { note_record(&g, d); }
         if (d.kind == 4) { note_record(&g, d); }
+        if (d.kind == 5) { g.models = bind_cons(d.s1, "1", g.models); }
     }
 }
 

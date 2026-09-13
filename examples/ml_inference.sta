@@ -1,0 +1,34 @@
+// STRATA — Model inference
+//
+// A `model` block declares a tensor contract the compiler enforces, and
+// `predict` runs it. One dense layer: output = input × W + b. That is the
+// whole runtime — no hidden layers, no activations, no training, no
+// accelerator. It is enough for a linear model to run and for the E006 shape
+// contract to mean something end to end.
+//
+// Pass a tensor of the wrong shape and the build stops with E006, naming both
+// shapes, rather than producing a silently wrong number.
+
+import io from std;
+
+model RiskScorer {
+    input:  tensor[float, 1, 3];
+    output: tensor[float, 1, 2];
+}
+
+int main() {
+    tensor[float, 1, 3] features = strata_tensor(3);
+    strata_tensor_set(features, 0, 2.0);
+    strata_tensor_set(features, 1, 3.0);
+    strata_tensor_set(features, 2, 4.0);
+
+    // Weights are whitespace-separated: cols_in * cols_out, then the biases.
+    if (strata_model_load(RiskScorer, "examples/risk_weights.txt") == 0) {
+        print("weights not loaded — predicting from zeros");
+    }
+
+    tensor[float, 1, 2] scores = predict RiskScorer(features);
+    print(str(strata_tensor_get(scores, 0)));
+    print(str(strata_tensor_get(scores, 1)));
+    return 0;
+}

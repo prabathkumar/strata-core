@@ -112,3 +112,50 @@ static strata_int strata_len(void* rows) {
     while (r[n]) n++;
     return n;
 }
+
+/* ── Inference runtime ────────────────────────────────────────────────────
+   A model is one dense layer: output = input × W + b, with W laid out
+   row-major as cols_in × cols_out followed by cols_out bias terms. That is
+   the whole of it — no hidden layers, no activations beyond the identity, no
+   training, no accelerator. It is enough for a linear model to run and for
+   the E006 shape contract to mean something end to end, and nothing more is
+   claimed. */
+typedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } StrataModel;
+
+static double* strata_tensor(strata_int n) {
+    double* t = (double*)calloc((size_t)n, sizeof(double));
+    return t;
+}
+static void strata_tensor_set(double* t, strata_int i, strata_float v) { t[i] = v; }
+static strata_float strata_tensor_get(double* t, strata_int i) { return t[i]; }
+
+static double* strata_predict(void* model, double* input) {
+    StrataModel* m = (StrataModel*)model;
+    int ci = m->cols_in, co = m->cols_out;
+    double* out = (double*)calloc((size_t)co, sizeof(double));
+    if (!m->weights) return out;            /* untrained: zeros, not garbage */
+    for (int j = 0; j < co; j++) {
+        double acc = m->weights[(size_t)ci * co + j];   /* bias */
+        for (int i = 0; i < ci; i++)
+            acc += input[i] * m->weights[(size_t)i * co + j];
+        out[j] = acc;
+    }
+    return out;
+}
+
+/* Weights are plain whitespace-separated numbers: cols_in*cols_out of them,
+   then cols_out biases. A text format keeps the runtime dependency-free and
+   the file inspectable. */
+static strata_int strata_model_load(void* model, strata_str path) {
+    StrataModel* m = (StrataModel*)model;
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = (size_t)m->cols_in * m->cols_out + m->cols_out;
+    double* w = (double*)calloc(n, sizeof(double));
+    size_t got = 0;
+    while (got < n && fscanf(f, "%lf", &w[got]) == 1) got++;
+    fclose(f);
+    if (got < n) { free(w); return 0; }
+    m->weights = w;
+    return 1;
+}

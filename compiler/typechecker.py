@@ -309,6 +309,10 @@ class TypeChecker:
         if isinstance(expr,BoolLiteral): return T_BOOL
         if isinstance(expr,Identifier):
             t=scope.lookup(expr.name)
+            if t is None and expr.name in self.models:
+                # A bare model name is the model itself, so it can be passed
+                # to the runtime without exposing a generated C global.
+                return SType("model")
             if t is None and expr.name in self.functions:
                 # A bare function name is a reference, not a call — an event
                 # handler passed to a layout element, for instance. Its type is

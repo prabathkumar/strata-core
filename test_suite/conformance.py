@@ -194,6 +194,30 @@ test("ffi_arg_count_checked",
 test("ffi_return_type_flows",
     'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { str s = sqrt(4.0); return 0; }', "E001")
 
+print("\n── Inference runtime ─────────────────────────────────────────────")
+compile_run("ml_predict_dense_layer",
+    'import io from std;\nmodel M { input: tensor[float,1,3]; output: tensor[float,1,2]; }\n'
+    'int main() { tensor[float,1,3] x = strata_tensor(3);\n'
+    '  strata_tensor_set(x,0,2.0); strata_tensor_set(x,1,3.0); strata_tensor_set(x,2,4.0);\n'
+    '  file_write("/tmp/_w.txt", "1 0 0 1 1 1 0.5 0.25");\n'
+    '  strata_model_load(M, "/tmp/_w.txt");\n'
+    '  tensor[float,1,2] y = predict M(x);\n'
+    '  print(str(strata_tensor_get(y,0))); print(str(strata_tensor_get(y,1))); return 0; }',
+    "6.5\n7.25")
+compile_run("ml_untrained_predicts_zeros",
+    'import io from std;\nmodel M { input: tensor[float,1,2]; output: tensor[float,1,1]; }\n'
+    'int main() { tensor[float,1,2] x = strata_tensor(2);\n'
+    '  tensor[float,1,1] y = predict M(x); print(str(strata_tensor_get(y,0))); return 0; }',
+    "0.0")
+test("ml_shape_mismatch_is_e006",
+    'model M { input: tensor[float,1,64]; output: tensor[float,1,2]; }\n'
+    'int f(tensor[float,1,32] w) { tensor[float,1,2] y = predict M(w); return 0; }', "E006")
+test("ml_undeclared_model_is_e006",
+    'int main() { int x = predict Ghost(x); return 0; }', "E006")
+
+test("utf8_columns_count_characters",
+     'int main() { str s = "em—dash"; int n = str_len(s); return 0; }')
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

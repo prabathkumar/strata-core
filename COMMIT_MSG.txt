@@ -1,41 +1,43 @@
-feat(wasm): freestanding WebAssembly target, with measured sizes
+feat(ml): inference runtime for model/predict; fix UTF-8 column counting
 
-`--target wasm` now produces a real module. Verified by building and
-running one: exports ['memory','classify','label','checksum','score_of'],
-classify(900) returns "PRIME", label(900) returns "tier: PRIME", and
-fib(25) returns 75025. Strings and allocation work inside the module —
-label concatenates through the prelude's bump allocator.
+`predict` was emitting a call to strata_predict, which was defined
+nowhere — any program that used the feature failed to link. It now runs:
 
-A freestanding wasm build has no libc, so compiler/runtime_preamble_wasm.c
-supplies the subset the language needs: a bump allocator, strlen/strcmp/
-memcpy, integer and float formatting, and the string helpers. `print` goes
-through one imported host function, so a module that never prints imports
-nothing. Every top-level function carries an export_name attribute,
-because a wasm module has no main() to start from.
+  model RiskScorer { input: tensor[float,1,3]; output: tensor[float,1,2]; }
+  tensor[float,1,2] scores = predict RiskScorer(features);   -> 6.5, 7.25
 
-The trade-offs are in the README rather than omitted: no free, so a
-long-running module exhausts its heap; no file I/O; floats format to six
-decimals because shortest-round-trip needs snprintf and strtod. This
-suits computation, not a server, and WebAssembly still cannot touch the
-DOM — the layout tier stays server-rendered.
+One dense layer, output = input x W + b, with weights read from a
+whitespace-separated text file. No hidden layers, no activations beyond
+the identity, no training, no accelerator, no framework interop. An
+untrained model predicts zeros rather than garbage. The README says all
+of that rather than letting "native ML" stand.
 
-Measured, not estimated:
+That is enough for the E006 contract to mean something end to end: a
+tensor of the wrong shape stops the build naming both shapes, and the
+value that would have been silently wrong is never computed.
 
-  two integer functions            136 bytes
-  four string functions            595 bytes  (436 gzipped)
+A bare model name is now the model itself, so Strata code never has to
+name the generated C global — `strata_model_load(RiskScorer, path)`
+rather than `&RiskScorer_instance`. The model struct aliases the runtime
+type so strata_predict reads it without depending on field order.
 
-This replaces the "15 KB browser bundle" the README claimed before any of
-it was built. The real figure is smaller, but the point is that it is now
-a measurement rather than a number someone wrote down.
+Prelude return types are registered for code generation. Without them
+str(strata_tensor_get(t, 0)) could not tell a float from an int and
+truncated 6.5 to 6 — the same class of bug as the foreign return types
+last change, now fixed at the source with a table rather than one call
+site at a time.
 
-test_suite/wasm_target.py builds a module and checks its magic number and
-exports. It needs clang with a wasm32 target, which gcc cannot provide, so
-it reports a skip on machines without one and runs in CI, which has it.
-Sizes are printed rather than asserted: an assertion would be either
-meaningless or brittle, and this project has already published one bundle
-size that nothing measured.
+The wasm prelude gets the same dense layer. Weight loading is absent
+there: a freestanding module has no file system, so a host must write
+weights into memory.
 
-Ported to both implementations; all suites green and the fixpoint holds.
+Separately, the lexer differential caught a real defect the moment a
+source file contained an em-dash: the Strata lexer counted columns in
+bytes while the oracle counts characters, so one multi-byte character in
+a comment shifted every diagnostic column on that line. UTF-8
+continuation bytes no longer advance the column.
+
+Conformance 89; all ten suites green; fixpoint holds.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

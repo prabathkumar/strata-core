@@ -59,6 +59,23 @@ _Bool _Complex _Imaginary bool complex imaginary
 """.split())
 
 
+# Return types of the prelude's own functions. Without these, a conversion
+# such as str(strata_tensor_get(t, 0)) cannot tell a float from an int and
+# routes it through the integer converter, silently truncating 6.5 to 6.
+BUILTIN_RETURNS = {
+    "strata_concat": "strata_str", "strata_int_to_str": "strata_str",
+    "strata_float_to_str": "strata_str", "str_concat": "strata_str",
+    "int_to_str": "strata_str", "float_to_str": "strata_str",
+    "str_slice": "strata_str", "file_read": "strata_str",
+    "str_len": "strata_int", "str_eq": "strata_int", "str_to_int": "strata_int",
+    "str_index_of": "strata_int", "str_starts_with": "strata_int",
+    "file_write": "strata_int", "file_exists": "strata_int",
+    "strata_len": "strata_int", "strata_model_load": "strata_int",
+    "strata_tensor": "double*", "strata_predict": "double*",
+    "strata_tensor_get": "strata_float", "strata_tensor_set": "void",
+}
+
+
 def cname(name):
     """A C-safe spelling of a Strata identifier."""
     return name + "_" if name in C_RESERVED else name
@@ -86,6 +103,7 @@ class CodeGen:
         # database/protocol/model names. Records are always handled by
         # reference in C, so these map to 'T*' rather than 'T'.
         self.record_types = set()
+        self.model_names = set()
         # Parameters declared `T &x` where T is not already a pointer. They
         # arrive as T*, so every use must dereference; without this a write
         # through a borrowed scalar performs pointer arithmetic instead, and
@@ -117,6 +135,8 @@ class CodeGen:
             for d in unit.declarations:
                 if isinstance(d, (DatabaseDecl, ProtocolDecl)):
                     self.record_types.add(d.name)
+                elif isinstance(d, ModelDecl):
+                    self.model_names.add(d.name)
 
         for mod_name, unit in units:
             is_root = unit is self.ast
@@ -210,7 +230,9 @@ int main(int argc, char** argv) {
         self.emit_raw(f"}};")
 
     def _gen_model(self, decl):
-        self.emit_raw(f"\ntypedef struct {{ int rows_in,cols_in,rows_out,cols_out; double* weights; }} {decl.name};")
+        # Same layout as StrataModel in the prelude, so strata_predict can
+        # read it without a cast that depends on field order.
+        self.emit_raw(f"\ntypedef StrataModel {decl.name};")
         self.emit_raw(f"static {decl.name} {decl.name}_instance = {{{decl.input_type.rows},{decl.input_type.cols},{decl.output_type.rows},{decl.output_type.cols},NULL}};")
 
     # Layout properties are declarative and map onto CSS. Anything not listed
@@ -576,7 +598,7 @@ int main(int argc, char** argv) {
             if expr.callee == "str":   return "strata_str"
             if expr.callee == "int":   return "strata_int"
             if expr.callee == "float": return "strata_float"
-            return self.func_returns.get(expr.callee)
+            return self.func_returns.get(expr.callee) or BUILTIN_RETURNS.get(expr.callee)
         return None
 
     def _gen_expr(self, expr, param_names=None):
@@ -588,6 +610,8 @@ int main(int argc, char** argv) {
             return f'"{esc}"'
         if isinstance(expr, BoolLiteral): return "1" if expr.value else "0"
         if isinstance(expr, Identifier):
+            if expr.name in self.model_names:
+                return f"&{expr.name}_instance"
             if self.query_row_type and expr.name in self.schemas.get(self.query_row_type, []):
                 return f"_row->{expr.name}"
             if expr.name in self.borrowed_scalars:

@@ -351,6 +351,9 @@ int infer(TC &tc, int node_p, int scope_p) {
     if (k == 54) {                                   // Identifier
         int t = scp_lookup(scope_p, e.s1);
         if (t == 0) {
+            // A bare model name is the model itself, so Strata code never has
+            // to name a generated C global.
+            if (mdl_find(tc.models, e.s1) != 0) { return 0; }
             // A bare function name is a reference — an event handler passed to
             // a layout element, for instance — not an undefined variable.
             if (fn_find(tc.fns, e.s1) != 0) { return 0; }

@@ -99,7 +99,11 @@ int lex_peek(Lex &l, int off) {
 int lex_advance(Lex &l) {
     int c = l.src[l.pos];
     l.pos = l.pos + 1;
-    l.col = l.col + 1;
+    // Columns count characters, not bytes. A UTF-8 continuation byte
+    // (0x80..0xBF, which reads as -128..-65 through a signed char) belongs to
+    // the character before it, so it must not advance the column — otherwise
+    // one em-dash in a comment shifts every diagnostic on that line.
+    if (c >= -64) { l.col = l.col + 1; }
     return c;
 }
 

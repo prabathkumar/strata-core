@@ -141,3 +141,29 @@ static strata_int strata_len(void* rows) {
     while (r[n]) n++;
     return n;
 }
+
+/* ── Inference runtime ────────────────────────────────────────────────────
+   The same dense layer as the native prelude. Weight loading is absent: a
+   freestanding module has no file system, so weights must be written into the
+   model by the host through memory. */
+typedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } StrataModel;
+
+static double* strata_tensor(strata_int n) {
+    return (double*)calloc((size_t)n, sizeof(double));
+}
+static void strata_tensor_set(double* t, strata_int i, strata_float v) { t[i] = v; }
+static strata_float strata_tensor_get(double* t, strata_int i) { return t[i]; }
+
+static double* strata_predict(void* model, double* input) {
+    StrataModel* m = (StrataModel*)model;
+    int ci = m->cols_in, co = m->cols_out;
+    double* out = (double*)calloc((size_t)co, sizeof(double));
+    if (!m->weights) return out;
+    for (int j = 0; j < co; j++) {
+        double acc = m->weights[(size_t)ci * co + j];
+        for (int i = 0; i < ci; i++)
+            acc += input[i] * m->weights[(size_t)i * co + j];
+        out[j] = acc;
+    }
+    return out;
+}
