@@ -44,4 +44,7 @@ layout OperationsConsole() {
     }
 }
 
-int main() { return 0; }
+int main() {
+    render OperationsConsole to "console.html";
+    return 0;
+}

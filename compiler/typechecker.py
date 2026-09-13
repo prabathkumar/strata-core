@@ -108,6 +108,9 @@ class TypeChecker:
                 self.global_scope.define(d.name, SType(d.name))
             elif isinstance(d, ReportDecl):
                 self.global_scope.define(d.name, SType(d.name))
+            elif isinstance(d, LayoutDecl):
+                # A layout is renderable in the same way a report is.
+                self.global_scope.define(d.name, SType(d.name))
 
 
     def _register_functions(self):

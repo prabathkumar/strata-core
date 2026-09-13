@@ -1,45 +1,37 @@
-feat(layout): cross-tier contract — a renamed column fails the build at the UI
+feat(layout): render layouts to HTML from the C backend
 
-The argument for Strata being a language rather than a library, working
-end to end. A column declared in a database block, queried in the middle
-tier and rendered in a layout is resolved at build time, so:
+The cross-tier contract is now visible, not only enforced. A layout
+compiles to a C function that writes HTML, `render X to "file"` calls it,
+and declarative properties map onto inline CSS:
 
-  [E004] Field 'service_name' not in 'ServiceMetric' (line 38, col 26)
-  Hint: Valid fields: ['id', 'svc_name', ...]
+  <body style="width:1200px;height:800px">
+    <div style="display:flex;flex-direction:row;padding:16px;background:#0c0c12">
+      <span style="color:#39ff14;font-weight:bold;font-size:16px">OPERATIONS</span>
 
-points at the line of UI that used it. Not a runtime 500 in front of a
-user. The for-in loop variable carries the row type from the query to the
-screen, which is the part a library cannot do.
+Server-rendered from the existing backend rather than through WebAssembly:
+no new code generator, and the guarantee is identical either way because
+the check happens in the compiler before anything is emitted. WebAssembly
+remains on the roadmap for compute-heavy client work.
 
-Layouts parse and type check in both implementations; all eight suites
-stay green and the fixpoint still holds. They do not render yet — that is
-marked in the roadmap rather than implied.
+The dynamic section renders no rows, and says so in a comment in the
+generated C. Queries evaluate to NULL because there is no database
+runtime yet; the loop is emitted with a correctly typed row variable so
+the body compiles, and nothing is fabricated to make the page look
+populated.
 
-Element tags are contextual, not reserved. Rather than fixing a tag list
-— which would make every new widget a compiler change — an identifier in
-statement position is an element unless it is being assigned, accessed,
-called or queried. `row`, `text` and `chart_bar` all work, and a variable
-may still be called `row` outside a layout.
+A property with no CSS mapping is dropped rather than guessed at, and an
+element's label is emitted as a literal, as an expression, or not at all
+when it is a bare identifier naming the element.
 
-Three ambiguities had to be settled:
+Layouts are now registered as renderable alongside reports, so `render`
+accepts either.
 
-  - `[` after an element label opens a property list, not an index. The
-    postfix chain added in Phase 1 swallowed it, so `canvas view
-    [width = 500]` parsed the props as a subscript. The guard is checked
-    both at the top of the postfix loop and inside its index branch,
-    because a member access consumed earlier in the same iteration
-    otherwise falls straight through — `text Row.service_name [...]`.
-  - A bare identifier after a tag names the element rather than referring
-    to a value, so `canvas topology_view` is not an undefined variable.
-    It is inferred as an expression only when it actually resolves.
-  - A bare function name is a reference, not a call: an event handler
-    passed as `[action = on_click]`. Reports and layouts are now checked
-    after functions are registered, since a handler may be declared
-    further down the file.
+Also of note: `title` is a reserved word and could not be used as a local
+variable here — the third time this has come up, after `model` and
+`metrics` in Phase 4. Reserving report-block field names globally is a
+poor trade and they should become contextual keywords.
 
-examples/cross_tier_contract.sta is the demo, and six conformance tests
-cover the rules including the rename. examples/ now compiles 9 of 16, up
-from 7: both dashboards build.
+All eight suites green, fixpoint holds, examples compile 10 of 17.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

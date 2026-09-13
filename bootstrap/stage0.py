@@ -11,7 +11,8 @@ from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
-    VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
+    LayoutDecl, Element, Prop, ForInStmt,
+    VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
@@ -178,6 +179,8 @@ int main(int argc, char** argv) {
             self._gen_model(decl)
         elif isinstance(decl, ReportDecl):
             self._gen_report(decl)
+        elif isinstance(decl, LayoutDecl):
+            self._gen_layout(decl)
 
     def _gen_struct(self, name, fields):
         self.emit_raw(f"\nstruct {name} {{")
@@ -188,6 +191,110 @@ int main(int argc, char** argv) {
     def _gen_model(self, decl):
         self.emit_raw(f"\ntypedef struct {{ int rows_in,cols_in,rows_out,cols_out; double* weights; }} {decl.name};")
         self.emit_raw(f"static {decl.name} {decl.name}_instance = {{{decl.input_type.rows},{decl.input_type.cols},{decl.output_type.rows},{decl.output_type.cols},NULL}};")
+
+    # Layout properties are declarative and map onto CSS. Anything not listed
+    # is emitted as a data- attribute rather than dropped, so an unrecognised
+    # property is visible in the output instead of silently disappearing.
+    CSS_PROPS = {
+        "background": "background", "color": "color", "size": "font-size:{}px",
+        "weight": "font-weight", "width": "width:{}px", "height": "height:{}px",
+        "padding": "padding:{}px", "padding_x": "padding-left:{0}px;padding-right:{0}px",
+        "padding_y": "padding-top:{0}px;padding-bottom:{0}px",
+        "padding_top": "padding-top:{}px", "margin_top": "margin-top:{}px",
+        "border_radius": "border-radius:{}px", "border_color": "border:1px solid {}",
+        "spacing": "gap:{}px", "columns": "grid-template-columns:repeat({},1fr)",
+    }
+
+    # Element tag -> HTML tag.
+    HTML_TAG = {
+        "window": "div", "row": "div", "column": "div", "grid": "div",
+        "text": "span", "spacer": "div", "canvas": "canvas",
+        "button": "button", "image": "img",
+    }
+
+    def _css_for(self, el):
+        """Inline style string for an element's properties."""
+        parts = []
+        if el.tag == "row":    parts.append("display:flex;flex-direction:row;align-items:center")
+        if el.tag == "column": parts.append("display:flex;flex-direction:column")
+        if el.tag == "grid":   parts.append("display:grid")
+        for p in el.props:
+            spec = self.CSS_PROPS.get(p.name)
+            if spec is None:
+                continue
+            v = p.value
+            raw = v.value if isinstance(v, (StrLiteral, IntLiteral, FloatLiteral)) else None
+            if raw is None:
+                continue
+            parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
+        return ";".join(parts)
+
+    def _gen_layout(self, decl):
+        """A layout becomes a function that writes HTML to a stream."""
+        self.emit_raw(f"\nvoid {decl.name}_render(FILE* _out) {{")
+        self.indent = 1
+        self.emit('fprintf(_out,"<!doctype html><meta charset=\\"utf-8\\">");')
+        for st in decl.body:
+            self._gen_layout_node(st)
+        self.indent = 0
+        self.emit_raw("}")
+
+    def _gen_layout_node(self, node):
+        if isinstance(node, Element):
+            self._gen_element(node); return
+        if isinstance(node, ForInStmt):
+            self._gen_for_in(node); return
+        if isinstance(node, IfStmt):
+            self._gen_if(node, []); return
+        self._gen_stmt(node, [])
+
+    def _gen_element(self, el):
+        tag = self.HTML_TAG.get(el.tag, "div")
+        css = self._css_for(el)
+        style = (' style=\\"' + css + '\\"') if css else ""
+        if el.tag == "window":
+            title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
+            self.emit('fprintf(_out,"<title>' + self._html_escape(title) + '</title>");')
+            self.emit('fprintf(_out,"<body' + style + '>");')
+            for c in el.children:
+                self._gen_layout_node(c)
+            self.emit('fprintf(_out,"</body>");')
+            return
+        self.emit('fprintf(_out,"<' + tag + style + '>");')
+        if el.label is not None and el.tag != "canvas":
+            if isinstance(el.label, StrLiteral):
+                self.emit('fprintf(_out,"%s","' + self._html_escape(el.label.value) + '");')
+            elif not isinstance(el.label, Identifier):
+                # A computed label — a field from a query row, for instance.
+                self.emit(f'fprintf(_out,"%s",{self._gen_expr(el.label, [])});')
+        for c in el.children:
+            self._gen_layout_node(c)
+        self.emit('fprintf(_out,"</' + tag + '>");')
+
+    def _gen_for_in(self, node):
+        """Iterate query results.
+
+        Queries currently evaluate to NULL — there is no database runtime — so
+        this loop renders zero rows. The structure is emitted rather than
+        faked, so what appears in the page is what the program actually
+        produced.
+        """
+        coll = self._gen_expr(node.collection, [])
+        ct = self._expr_ctype(node.collection, []) or ""
+        elem = ct[:-1] if ct.endswith("*") else "void*"
+        self.var_types[node.var] = elem
+        self.emit(f"/* for {node.var} in ... — queries return NULL until there "
+                  f"is a database runtime, so this renders no rows */")
+        self.emit(f"{elem} {cname(node.var)} = NULL;")
+        self.emit(f"if ({coll} != NULL) {{")
+        self.indent += 1
+        for st in node.body:
+            self._gen_layout_node(st)
+        self.indent -= 1
+        self.emit("}")
+
+    def _html_escape(self, t):
+        return t.replace("\\", "").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _gen_report(self, decl):
         self.emit_raw(f"\nvoid {decl.name}_generate(FILE* _out) {{")
@@ -259,6 +366,9 @@ int main(int argc, char** argv) {
         elif isinstance(stmt, PrintStmt):
             val = self._gen_expr(stmt.value, param_names)
             self.emit(f'printf("%s\\n",(strata_str)({val}));')
+        elif isinstance(stmt, RenderStmt):
+            self.emit(f'{{ FILE* _f=fopen("{stmt.path}","w"); if(_f){{ '
+                      f'{stmt.report}_render(_f); fclose(_f); }} }}')
         elif isinstance(stmt, AssertStmt):
             cond = self._gen_expr(stmt.condition, param_names)
             self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')

@@ -536,6 +536,15 @@ def gen_stmt(Gen &g, Node st) {
         return;
     }
 
+    if (k == 25) {                                    // render X to "path"
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "{ FILE* _f=fopen(\""); sb_append(&sb, st.s2);
+        sb_append(&sb, "\",\"w\"); if(_f){ "); sb_append(&sb, st.s1);
+        sb_append(&sb, "_render(_f); fclose(_f); } }");
+        cg_emit(&g, sb_to_str(&sb));
+        return;
+    }
+
     if (k == 27) {                                    // insert
         NodeVec pairs = nv_at(st.v1);
         StringBuilder sb = sb_new();
@@ -668,6 +677,7 @@ def gen_decl(Gen &g, Node d) {
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
+    if (d.kind == 70) { gen_layout(&g, d); return; }
 }
 
 def gen_model(Gen &g, Node d) {
@@ -934,4 +944,227 @@ int preamble_builtins() {
     h = bind_cons("strata_float_to_str", "1", h);
     h = bind_cons("strata_int_to_str", "1", h);
     return h;
+}
+
+// ── Layout rendering ─────────────────────────────────────────────────────────
+//
+// A layout becomes a function that writes HTML to a stream. Declarative
+// properties map onto inline CSS; a property with no mapping is dropped rather
+// than guessed at.
+
+str html_tag(str tag) {
+    if (str_eq(tag, "window")) { return "div"; }
+    if (str_eq(tag, "row"))    { return "div"; }
+    if (str_eq(tag, "column")) { return "div"; }
+    if (str_eq(tag, "grid"))   { return "div"; }
+    if (str_eq(tag, "text"))   { return "span"; }
+    if (str_eq(tag, "spacer")) { return "div"; }
+    if (str_eq(tag, "canvas")) { return "canvas"; }
+    if (str_eq(tag, "button")) { return "button"; }
+    if (str_eq(tag, "image"))  { return "img"; }
+    return "div";
+}
+
+str css_for_prop(str name, str raw) {
+    StringBuilder sb = sb_new();
+    if (str_eq(name, "background")) { sb_append(&sb, "background:"); sb_append(&sb, raw); return sb_to_str(&sb); }
+    if (str_eq(name, "color"))      { sb_append(&sb, "color:"); sb_append(&sb, raw); return sb_to_str(&sb); }
+    if (str_eq(name, "weight"))     { sb_append(&sb, "font-weight:"); sb_append(&sb, raw); return sb_to_str(&sb); }
+    if (str_eq(name, "size"))       { sb_append(&sb, "font-size:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "width"))      { sb_append(&sb, "width:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "height"))     { sb_append(&sb, "height:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "padding"))    { sb_append(&sb, "padding:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "padding_top")){ sb_append(&sb, "padding-top:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "margin_top")) { sb_append(&sb, "margin-top:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "border_radius")) { sb_append(&sb, "border-radius:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "border_color")) { sb_append(&sb, "border:1px solid "); sb_append(&sb, raw); return sb_to_str(&sb); }
+    if (str_eq(name, "spacing"))    { sb_append(&sb, "gap:"); sb_append(&sb, raw); sb_append(&sb, "px"); return sb_to_str(&sb); }
+    if (str_eq(name, "padding_x"))  {
+        sb_append(&sb, "padding-left:"); sb_append(&sb, raw);
+        sb_append(&sb, "px;padding-right:"); sb_append(&sb, raw); sb_append(&sb, "px");
+        return sb_to_str(&sb);
+    }
+    if (str_eq(name, "padding_y"))  {
+        sb_append(&sb, "padding-top:"); sb_append(&sb, raw);
+        sb_append(&sb, "px;padding-bottom:"); sb_append(&sb, raw); sb_append(&sb, "px");
+        return sb_to_str(&sb);
+    }
+    if (str_eq(name, "columns"))    {
+        sb_append(&sb, "grid-template-columns:repeat("); sb_append(&sb, raw); sb_append(&sb, ",1fr)");
+        return sb_to_str(&sb);
+    }
+    return "";
+}
+
+str raw_literal(int p) {
+    if (p == 0) { return ""; }
+    Node v = node_at(p);
+    if (v.kind == 52) { return v.s1; }
+    if (v.kind == 50) { return str(v.i1); }
+    if (v.kind == 51) { return norm_float(v.s1); }
+    return "";
+}
+
+str css_for(Gen &g, Node el) {
+    StringBuilder sb = sb_new();
+    int first = 1;
+    if (str_eq(el.s1, "row") == 1) {
+        sb_append(&sb, "display:flex;flex-direction:row;align-items:center"); first = 0;
+    }
+    if (str_eq(el.s1, "column") == 1) {
+        sb_append(&sb, "display:flex;flex-direction:column"); first = 0;
+    }
+    if (str_eq(el.s1, "grid") == 1) { sb_append(&sb, "display:grid"); first = 0; }
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node pr = nv_get(&props, i);
+        str raw = raw_literal(pr.c1);
+        if (str_len(raw) > 0) {
+            str css = css_for_prop(pr.s1, raw);
+            if (str_len(css) > 0) {
+                if (first == 0) { sb_append(&sb, ";"); }
+                sb_append(&sb, css);
+                first = 0;
+            }
+        }
+    }
+    return sb_to_str(&sb);
+}
+
+str html_escape(str t) {
+    StringBuilder sb = sb_new();
+    int n = str_len(t);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = t[i];
+        if (c == 34) { sb_append(&sb, "&quot;"); }
+        if (c == 60) { sb_append(&sb, "&lt;"); }
+        if (c == 62) { sb_append(&sb, "&gt;"); }
+        if (c == 92) { }
+        if (c != 34) { if (c != 60) { if (c != 62) { if (c != 92) {
+            sb_append(&sb, char_str(c));
+        } } } }
+    }
+    return sb_to_str(&sb);
+}
+
+def emit_fprintf(Gen &g, str literal) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "fprintf(_out,\"");
+    sb_append(&sb, literal);
+    sb_append(&sb, "\");");
+    cg_emit(&g, sb_to_str(&sb));
+}
+
+def gen_layout(Gen &g, Node decl) {
+    StringBuilder head = sb_new();
+    sb_append(&head, "\nvoid "); sb_append(&head, decl.s1);
+    sb_append(&head, "_render(FILE* _out) {");
+    emit_raw(&g, sb_to_str(&head));
+    g.indent = 1;
+    emit_fprintf(&g, "<!doctype html><meta charset=\\\"utf-8\\\">");
+    NodeVec body = nv_at(decl.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { gen_layout_node(&g, nv_get(&body, i)); }
+    g.indent = 0;
+    emit_raw(&g, "}");
+}
+
+def gen_layout_node(Gen &g, Node node) {
+    if (node.kind == 71) { gen_element(&g, node); return; }
+    if (node.kind == 73) { gen_for_in(&g, node); return; }
+    gen_stmt(&g, node);
+}
+
+str style_attr(Gen &g, Node el) {
+    str css = css_for(&g, el);
+    if (str_len(css) == 0) { return ""; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, " style=\\\""); sb_append(&sb, css); sb_append(&sb, "\\\"");
+    return sb_to_str(&sb);
+}
+
+def gen_element(Gen &g, Node el) {
+    str tag = html_tag(el.s1);
+    str style = style_attr(&g, el);
+
+    if (str_eq(el.s1, "window") == 1) {
+        str win_title = "window";
+        if (el.c1 != 0) {
+            Node lab = node_at(el.c1);
+            if (lab.kind == 52) { win_title = lab.s1; }
+        }
+        StringBuilder t = sb_new();
+        sb_append(&t, "<title>"); sb_append(&t, html_escape(win_title)); sb_append(&t, "</title>");
+        emit_fprintf(&g, sb_to_str(&t));
+        StringBuilder b = sb_new();
+        sb_append(&b, "<body"); sb_append(&b, style); sb_append(&b, ">");
+        emit_fprintf(&g, sb_to_str(&b));
+        NodeVec kids = nv_at(el.v2);
+        int nk = kids.len;
+        for (int i = 0; i < nk; i = i + 1) { gen_layout_node(&g, nv_get(&kids, i)); }
+        emit_fprintf(&g, "</body>");
+        return;
+    }
+
+    StringBuilder open = sb_new();
+    sb_append(&open, "<"); sb_append(&open, tag); sb_append(&open, style); sb_append(&open, ">");
+    emit_fprintf(&g, sb_to_str(&open));
+
+    if (el.c1 != 0) {
+        if (str_eq(el.s1, "canvas") == 0) {
+            Node lab = node_at(el.c1);
+            if (lab.kind == 52) {
+                StringBuilder s = sb_new();
+                sb_append(&s, "fprintf(_out,\"%s\",\"");
+                sb_append(&s, html_escape(lab.s1));
+                sb_append(&s, "\");");
+                cg_emit(&g, sb_to_str(&s));
+            }
+            if (lab.kind != 52) {
+                if (lab.kind != 54) {
+                    StringBuilder s = sb_new();
+                    sb_append(&s, "fprintf(_out,\"%s\","); sb_append(&s, gen_expr(&g, el.c1));
+                    sb_append(&s, ");");
+                    cg_emit(&g, sb_to_str(&s));
+                }
+            }
+        }
+    }
+
+    NodeVec kids = nv_at(el.v2);
+    int nk = kids.len;
+    for (int i = 0; i < nk; i = i + 1) { gen_layout_node(&g, nv_get(&kids, i)); }
+
+    StringBuilder close = sb_new();
+    sb_append(&close, "</"); sb_append(&close, tag); sb_append(&close, ">");
+    emit_fprintf(&g, sb_to_str(&close));
+}
+
+def gen_for_in(Gen &g, Node node) {
+    str coll = gen_expr(&g, node.c1);
+    str ct = expr_ctype(&g, node.c1);
+    str elem = "void*";
+    if (ends_with_star(ct) == 1) { elem = str_slice(ct, 0, str_len(ct) - 1); }
+    g.var_types = bind_cons(node.s1, elem, g.var_types);
+
+    StringBuilder note = sb_new();
+    sb_append(&note, "/* for "); sb_append(&note, node.s1);
+    sb_append(&note, " in ... — queries return NULL until there is a database runtime, so this renders no rows */");
+    cg_emit(&g, sb_to_str(&note));
+
+    StringBuilder decl = sb_new();
+    sb_append(&decl, elem); sb_append(&decl, " "); sb_append(&decl, cname(node.s1));
+    sb_append(&decl, " = NULL;");
+    cg_emit(&g, sb_to_str(&decl));
+
+    StringBuilder guard = sb_new();
+    sb_append(&guard, "if ("); sb_append(&guard, coll); sb_append(&guard, " != NULL) {");
+    cg_emit(&g, sb_to_str(&guard));
+    g.indent = g.indent + 1;
+    NodeVec body = nv_at(node.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { gen_layout_node(&g, nv_get(&body, i)); }
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
 }
