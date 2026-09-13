@@ -120,7 +120,20 @@ static strata_int strata_len(void* rows) {
    training, no accelerator. It is enough for a linear model to run and for
    the E006 shape contract to mean something end to end, and nothing more is
    claimed. */
-typedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } StrataModel;
+#define STRATA_MAX_LAYERS 16
+
+/* A model is a stack of dense layers. `dims` holds nlayers+1 widths — the
+   input width, then each layer's output width — and `acts` the activation
+   applied after each layer: 'r' relu, 's' sigmoid, 'n' none. A model with no
+   hidden layers is one layer, so there is a single forward pass here rather
+   than a special case. */
+typedef struct {
+    int rows_in, cols_in, rows_out, cols_out;
+    double* weights;
+    int nlayers;
+    int dims[STRATA_MAX_LAYERS + 1];
+    char acts[STRATA_MAX_LAYERS];
+} StrataModel;
 
 static double* strata_tensor(strata_int n) {
     double* t = (double*)calloc((size_t)n, sizeof(double));
@@ -129,33 +142,65 @@ static double* strata_tensor(strata_int n) {
 static void strata_tensor_set(double* t, strata_int i, strata_float v) { t[i] = v; }
 static strata_float strata_tensor_get(double* t, strata_int i) { return t[i]; }
 
-static double* strata_predict(void* model, double* input) {
-    StrataModel* m = (StrataModel*)model;
-    int ci = m->cols_in, co = m->cols_out;
-    double* out = (double*)calloc((size_t)co, sizeof(double));
-    if (!m->weights) return out;            /* untrained: zeros, not garbage */
-    for (int j = 0; j < co; j++) {
-        double acc = m->weights[(size_t)ci * co + j];   /* bias */
-        for (int i = 0; i < ci; i++)
-            acc += input[i] * m->weights[(size_t)i * co + j];
-        out[j] = acc;
-    }
-    return out;
+static double strata_activate(double x, char a) {
+    if (a == 'r') return x > 0.0 ? x : 0.0;
+    if (a == 's') return 1.0 / (1.0 + exp(-x));
+    return x;
 }
 
-/* Weights are plain whitespace-separated numbers: cols_in*cols_out of them,
-   then cols_out biases. A text format keeps the runtime dependency-free and
-   the file inspectable. */
+/* Total weights a model needs: for each layer, in*out plus out biases. */
+static size_t strata_weight_count(StrataModel* m) {
+    size_t n = 0;
+    for (int l = 0; l < m->nlayers; l++)
+        n += (size_t)m->dims[l] * m->dims[l + 1] + m->dims[l + 1];
+    return n;
+}
+
+static double* strata_predict(void* model, double* input) {
+    StrataModel* m = (StrataModel*)model;
+    double* cur = input;
+    double* owned = NULL;
+    if (!m->weights) {
+        /* untrained: zeros, not garbage */
+        return (double*)calloc((size_t)m->cols_out, sizeof(double));
+    }
+    size_t off = 0;
+    for (int l = 0; l < m->nlayers; l++) {
+        int ci = m->dims[l], co = m->dims[l + 1];
+        double* out = (double*)calloc((size_t)co, sizeof(double));
+        for (int j = 0; j < co; j++) {
+            double acc = m->weights[off + (size_t)ci * co + j];   /* bias */
+            for (int i = 0; i < ci; i++)
+                acc += cur[i] * m->weights[off + (size_t)i * co + j];
+            out[j] = strata_activate(acc, m->acts[l]);
+        }
+        off += (size_t)ci * co + co;
+        if (owned) free(owned);
+        owned = out;
+        cur = out;
+    }
+    return cur;
+}
+
+/* Weights are plain whitespace-separated numbers, laid out layer by layer:
+   for each layer, cols_in*cols_out of them, then cols_out biases. A text
+   format keeps the runtime dependency-free and the file inspectable. */
 static strata_int strata_model_load(void* model, strata_str path) {
     StrataModel* m = (StrataModel*)model;
     FILE* f = fopen(path, "r");
     if (!f) return 0;
-    size_t n = (size_t)m->cols_in * m->cols_out + m->cols_out;
+    size_t n = strata_weight_count(m);
     double* w = (double*)calloc(n, sizeof(double));
     size_t got = 0;
     while (got < n && fscanf(f, "%lf", &w[got]) == 1) got++;
     fclose(f);
-    if (got < n) { free(w); return 0; }
+    if (got < n) {
+        fprintf(stderr, "[STRATA MODEL] '%s' holds %zu weights; this model "
+                        "needs %zu. Not loading a partial model.\n",
+                path, got, n);
+        free(w);
+        return 0;
+    }
     m->weights = w;
     return 1;
 }
@@ -214,6 +259,52 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
     if (c == EOF && n == 0) return -1;
     return c == '\n' ? 0 : 1;
 }
+/* ── Schema headers ───────────────────────────────────────────────────────
+   A saved table carries a header line naming its columns and their types:
+
+       #strata\tSales\tid:i\tregion:s\tamount:f
+
+   so a file written by one version of a schema can be read by another.
+   Columns are matched by name, not by position: one that has since been
+   dropped is skipped, one that is new is left at its zero value, and one
+   whose type changed is a refusal rather than a silent misread. Without the
+   header, adding a column to a `database` block silently corrupted every row
+   in every file already on disk. */
+#define STRATA_MAX_COLS 64
+#define STRATA_NAME_CAP 64
+
+/* Returns the number of columns in the header, -1 if the file has no header
+   (written before headers existed), or -2 if the file is empty. */
+static int strata_read_header(FILE* f, char names[][STRATA_NAME_CAP],
+                              char* types, int cap) {
+    char buf[256];
+    int n = 0, more;
+    more = strata_read_field(f, buf, 256);
+    if (more < 0) return -2;
+    if (strcmp(buf, "#strata") != 0) return -1;
+    if (more == 0) return 0;
+    more = strata_read_field(f, buf, 256);          /* table name */
+    while (more > 0 && n < cap) {
+        more = strata_read_field(f, buf, 256);
+        char* colon = strchr(buf, ':');
+        if (colon) {
+            *colon = '\0';
+            strncpy(names[n], buf, STRATA_NAME_CAP - 1);
+            names[n][STRATA_NAME_CAP - 1] = '\0';
+            types[n] = colon[1];
+            n++;
+        }
+        if (more == 0) break;
+    }
+    return n;
+}
+
+static void strata_load_refuse(const char* table, const char* path,
+                               const char* why) {
+    fprintf(stderr, "[STRATA LOAD] %s: refusing to read '%s' — %s\n",
+            table, path, why);
+}
+
 static strata_str strata_dup(const char* s) {
     size_t n = strlen(s); char* r = (char*)malloc(n + 1);
     memcpy(r, s, n + 1); return r;
@@ -232,4 +323,65 @@ static void __strata_assert(int cond, const char* expr, int line) {
         __strata_fail_count++;
         fprintf(stderr, "    FAIL  line %d: %s\n", line, expr);
     }
+}
+
+/* ── Stream dispatch ──────────────────────────────────────────────────────
+   A `stream` block is a handler for a named channel. Messages are queued with
+   strata_publish and delivered by strata_run, which drains the queue and
+   calls each handler registered for that channel.
+
+   This is a cooperative single-threaded loop, not a fiber scheduler. There
+   are no separate stacks, no preemption, no parallelism and no I/O
+   integration: a handler runs to completion before the next message is
+   delivered, and publishing from inside a handler appends to the same queue.
+   It gives `stream` and current_message() real semantics; it does not make
+   them concurrent. */
+#define STRATA_QUEUE_CAP 4096
+#define STRATA_HANDLER_CAP 256
+
+typedef void (*StrataHandler)(strata_str);
+
+static struct { strata_str channel; StrataHandler fn; }
+    __strata_handlers[STRATA_HANDLER_CAP];
+static int __strata_handler_count = 0;
+
+static struct { strata_str channel; strata_str message; }
+    __strata_queue[STRATA_QUEUE_CAP];
+static int __strata_q_head = 0, __strata_q_tail = 0;
+
+static void strata_on(strata_str channel, StrataHandler fn) {
+    if (__strata_handler_count < STRATA_HANDLER_CAP) {
+        __strata_handlers[__strata_handler_count].channel = channel;
+        __strata_handlers[__strata_handler_count].fn = fn;
+        __strata_handler_count++;
+    }
+}
+
+static strata_int strata_publish(strata_str channel, strata_str message) {
+    int next = (__strata_q_tail + 1) % STRATA_QUEUE_CAP;
+    if (next == __strata_q_head) return 0;      /* full: refuse, do not drop silently */
+    __strata_queue[__strata_q_tail].channel = channel;
+    __strata_queue[__strata_q_tail].message = message;
+    __strata_q_tail = next;
+    return 1;
+}
+
+/* Drains the queue, returning how many messages were delivered. A handler may
+   publish; those messages are delivered in the same run. */
+static strata_int strata_run(void) {
+    strata_int delivered = 0;
+    while (__strata_q_head != __strata_q_tail) {
+        strata_str ch = __strata_queue[__strata_q_head].channel;
+        strata_str msg = __strata_queue[__strata_q_head].message;
+        __strata_q_head = (__strata_q_head + 1) % STRATA_QUEUE_CAP;
+        for (int i = 0; i < __strata_handler_count; i++) {
+            if (strcmp(__strata_handlers[i].channel, ch) == 0) {
+                strata_set_message(msg);
+                __strata_handlers[i].fn(msg);
+                strata_set_message("");
+                delivered++;
+            }
+        }
+    }
+    return delivered;
 }

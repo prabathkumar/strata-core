@@ -1,0 +1,40 @@
+// A query is an expression, not a special right-hand side.
+//
+// `Source <- [cond]` used to parse only in the one position it was written
+// for: the right of a declaration. Anywhere else it was a parse error, so
+// counting the matching rows meant declaring a variable you did not want.
+// It is now an ordinary expression and composes like one.
+
+import io from std;
+
+database Orders {
+    int id;
+    str customer;
+    float amount;
+}
+
+int main() {
+    Orders <- [id = 1, customer = "acme",    amount = 120.50];
+    Orders <- [id = 2, customer = "globex",  amount =  75.00];
+    Orders <- [id = 3, customer = "initech", amount = 310.25];
+
+    // Counted in place — no intermediate declaration.
+    print(strata_concat("large orders: ",
+                        str(strata_len(Orders <- [amount > 100.00]))));
+
+    // A query still reads the same way on the right of a declaration.
+    list[Orders] all = Orders <- [id > 0];
+    print(strata_concat("total orders:  ", str(strata_len(all))));
+
+    // And it is a value, so it can be passed to a function.
+    print(strata_concat("named globex:  ", str(count_rows(Orders <- [customer == "globex"]))));
+
+    // Rename `amount` in the database block above and the build fails at the
+    // query line, not at runtime. That contract does not depend on where the
+    // query appears.
+    return 0;
+}
+
+int count_rows(list[Orders] rows) {
+    return strata_len(rows);
+}

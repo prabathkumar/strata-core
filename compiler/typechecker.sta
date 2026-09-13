@@ -441,8 +441,16 @@ int infer(TC &tc, int node_p, int scope_p) {
 
     if (k == 46) {                                   // QueryExpr
         int sch = schema_find(tc.schemas, e.s1);
-        if (sch != 0) { return ty_ptr(ty_list(ty_new(e.s1))); }
-        return 0;
+        if (sch == 0) {
+            StringBuilder qsb = sb_new();
+            sb_append(&qsb, "Database '");
+            sb_append(&qsb, e.s1);
+            sb_append(&qsb, "' not declared");
+            emit(&tc, "E004", sb_to_str(&qsb), e.line, e.col);
+            return 0;
+        }
+        validate_query(&tc, e.c1, e.s1, e.line, e.col);
+        return ty_ptr(ty_list(ty_new(e.s1)));
     }
 
     return 0;
@@ -613,6 +621,25 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
         scp_define(&s0, st.s1, declared);
         return;
     }
+    // A query on the right of a declaration is checked here and the
+    // declaration returns: a query into a record type yields the first match
+    // rather than a list, so the element type is what must be compatible.
+    Node qval = node_at(st.c2);
+    if (qval.kind == 46) {
+        int qsch = schema_find(tc.schemas, qval.s1);
+        if (qsch == 0) {
+            StringBuilder qsb = sb_new();
+            sb_append(&qsb, "Database '");
+            sb_append(&qsb, qval.s1);
+            sb_append(&qsb, "' not declared");
+            emit(&tc, "E004", sb_to_str(&qsb), st.line, st.col);
+        }
+        if (qsch != 0) { validate_query(&tc, qval.c1, qval.s1, st.line, st.col); }
+        Scp sq = scp_at(scope_p);
+        scp_define(&sq, st.s1, declared);
+        return;
+    }
+
     int actual = infer(&tc, st.c2, scope_p);
 
     Node val = node_at(st.c2);
@@ -642,18 +669,6 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
                 }
             }
         }
-    }
-
-    if (val.kind == 46) {                            // query
-        int sch = schema_find(tc.schemas, val.s1);
-        if (sch == 0) {
-            StringBuilder sb = sb_new();
-            sb_append(&sb, "Database '");
-            sb_append(&sb, val.s1);
-            sb_append(&sb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
-        }
-        if (sch != 0) { validate_query(&tc, val.c1, val.s1, st.line, st.col); }
     }
 
     if (val.kind != 47) {
@@ -835,6 +850,48 @@ def check_verify_in(TC &tc, Node decl, int parent) {
     for (int i = 0; i < n; i = i + 1) { check_stmt(&tc, nv_get(&body, i), sp); }
 }
 
+// A report's datasource is a query and gets the same E004 treatment, and its
+// metrics are expressions evaluated where `rows` is the datasource result.
+// Without either, a typo'd column or a mistyped metric compiled silently.
+def check_report(TC &tc, Node decl) {
+    if (decl.c1 == 0) { return; }
+    Node q = node_at(decl.c1);
+    if (q.kind != 46) { return; }
+    if (schema_find(tc.schemas, q.s1) == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Database '");
+        sb_append(&sb, q.s1);
+        sb_append(&sb, "' not declared");
+        emit(&tc, "E004", sb_to_str(&sb), decl.line, decl.col);
+        return;
+    }
+    validate_query(&tc, q.c1, q.s1, decl.line, decl.col);
+
+    Scp ms = scp_new(tc.globals);
+    scp_define(&ms, "rows", ty_ptr(ty_list(ty_new(q.s1))));
+    int mp = scp_ptr(ms);
+    NodeVec mets = nv_at(decl.v1);
+    int nm = mets.len;
+    for (int i = 0; i < nm; i = i + 1) {
+        Node m = nv_get(&mets, i);
+        int declared = resolve_type(m.c1);
+        int actual = infer(&tc, m.c2, mp);
+        if (actual != 0) {
+            if (ty_compatible(declared, actual) == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "Type mismatch: metric '");
+                sb_append(&sb, m.s1);
+                sb_append(&sb, "' declared as '");
+                sb_append(&sb, ty_str(declared));
+                sb_append(&sb, "' but assigned '");
+                sb_append(&sb, ty_str(actual));
+                sb_append(&sb, "'");
+                emit(&tc, "E001", sb_to_str(&sb), m.line, m.col);
+            }
+        }
+    }
+}
+
 def check_layout(TC &tc, Node decl) {
     // A layout is checked like any other body. This is the point of the
     // language: a field rendered on screen resolves against the database
@@ -913,6 +970,7 @@ int check_unit(Node unit) {
     int ndecl = all_decls.len;
     for (int d = 0; d < ndecl; d = d + 1) {
         Node dec = nv_get(&all_decls, d);
+        if (dec.kind == 6) { check_report(&tc, dec); }
         if (dec.kind == 70) { check_layout(&tc, dec); }
         if (dec.kind == 26) { check_verify(&tc, dec); }
     }

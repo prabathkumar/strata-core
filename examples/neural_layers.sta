@@ -1,0 +1,36 @@
+// A model is a stack of dense layers, not a single one.
+//
+// `model` used to declare an input shape and an output shape, and `predict`
+// ran exactly one dense layer: output = input x W + b. There was nowhere to
+// put a hidden layer and no activation function, so anything non-linear was
+// out of reach.
+//
+// A model now declares hidden layers between its input and its output, each
+// with an activation. `relu`, `sigmoid` and `none` are the three the runtime
+// has; the output layer is linear.
+
+import io from std;
+
+model Scorer {
+    input:  tensor[float, 1, 2];
+    hidden: 3 relu;
+    hidden: 2 relu;
+    output: tensor[float, 1, 1];
+}
+
+int main() {
+    tensor[float, 1, 2] features = strata_tensor(2);
+    strata_tensor_set(features, 0, 1.0);
+    strata_tensor_set(features, 1, 2.0);
+
+    // Weights are whitespace-separated and laid out layer by layer: for each
+    // layer, in x out of them, then out biases. A file with the wrong count is
+    // refused rather than loaded in part.
+    if (strata_model_load(Scorer, "examples/scorer_weights.txt") == 0) {
+        print("weights not loaded — predicting from zeros");
+    }
+
+    tensor[float, 1, 1] score = predict Scorer(features);
+    print(str(strata_tensor_get(score, 0)));
+    return 0;
+}

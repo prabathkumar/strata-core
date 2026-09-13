@@ -263,9 +263,19 @@ class ModelDecl(Node):
     name: str
     input_type: TensorType
     output_type: TensorType
+    # Zero or more `hidden: <width> <activation>;` layers between them.
+    hidden: List[Any] = field(default_factory=list)
     def to_dict(self): return {"node":"ModelDecl","name":self.name,
                                "input":self.input_type.to_dict(),
-                               "output":self.output_type.to_dict()}
+                               "output":self.output_type.to_dict(),
+                               "hidden":[h.to_dict() for h in self.hidden]}
+
+@dataclass
+class HiddenLayer(Node):
+    width: int
+    activation: str
+    def to_dict(self): return {"node":"HiddenLayer","width":self.width,
+                               "activation":self.activation}
 
 @dataclass
 class ReportMetric(Node):
@@ -520,11 +530,28 @@ class Parser:
         self._consume_word('input'); self._consume(TT.COLON)
         input_type = self._parse_tensor_type()
         self._consume(TT.SEMICOLON)
+        # Hidden layers sit between input and output. `hidden` and the
+        # activation names are contextual, so a variable may still be called
+        # `relu` outside a model block.
+        hidden = []
+        while self._at_word('hidden'):
+            h = self._advance()
+            self._consume(TT.COLON)
+            width = int(self._consume(TT.INT_LIT).value)
+            act = 'none'
+            if self._check(TT.IDENT):
+                act = self._advance().value
+                if act not in ("relu", "sigmoid", "none"):
+                    raise ParseError(
+                        f"Unknown activation '{act}'; Strata has relu, sigmoid and none",
+                        h.line, h.col)
+            self._consume(TT.SEMICOLON)
+            hidden.append(HiddenLayer(h.line, h.col, width, act))
         self._consume_word('output'); self._consume(TT.COLON)
         output_type = self._parse_tensor_type()
         self._consume(TT.SEMICOLON)
         self._consume(TT.R_BRACE)
-        return ModelDecl(t.line, t.col, name, input_type, output_type)
+        return ModelDecl(t.line, t.col, name, input_type, output_type, hidden)
 
     def _parse_tensor_type(self) -> TensorType:
         t = self._consume(TT.KW_TENSOR)
@@ -1057,6 +1084,14 @@ class Parser:
 
         if self._check(TT.IDENT):
             name = self._advance().value
+            # Query expression: `Source <- [cond]` anywhere a value is
+            # expected, not only on the right of a declaration.
+            if self._check(TT.ARROW_L):
+                self._advance()
+                self._consume(TT.L_BRACKET)
+                cond = self._parse_expr()
+                self._consume(TT.R_BRACKET)
+                return QueryExpr(t.line, t.col, name, cond)
             # Function call
             if self._check(TT.L_PAREN):
                 self._consume(TT.L_PAREN)

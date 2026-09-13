@@ -1,5 +1,131 @@
 # Changelog
 
+## Unreleased
+
+### The repair loop has tests
+
+`ai_self_repair.py` is the project's headline claim and it was the last major
+component with no executable check — nothing in `test_suite/` or the CI
+workflow referenced it. It worked, but every change to a diagnostic's shape
+was a chance to break it silently: the loop reads specific keys out of
+`--json`, and a renamed key sends it down its E999 fallback, where it repairs
+nothing and reports that nothing was possible. That failure looks exactly like
+success on a file that needed no repair.
+
+`test_suite/self_repair.py` adds 40 checks in three groups: the JSON payload
+contract (every key the loop reads, present and correctly typed, for a type
+error, a parse error and a clean file); the loop itself (converges on E001 and
+E004, handles two errors in sequence, stops on the first pass when a repair
+needs judgement, `--dry-run` restores the original byte for byte, a clean file
+is not rewritten, a missing file exits without a traceback); and the `llm`
+backend declining out loud when its key is absent rather than looking like a
+successful no-op. It runs in CI and its result is now a row in the generated
+release notes.
+
+Writing it surfaced a gap: a call to an undefined function type-checks clean
+and fails at the C linker, so it never reaches `--json` and the repair loop
+cannot see it. That is recorded in the README roadmap rather than fixed here.
+
+
+### Saved tables migrate
+
+`save` wrote bare tab-separated rows in declaration order and `load` read them
+back positionally. Adding a column to a `database` block silently corrupted
+every row in every file already on disk, and nothing could notice.
+
+A saved file now carries a header naming each column and its type. Columns are
+matched by name: one that has since been dropped is skipped, a new one keeps
+its zero value (`""` for a str, so a new column cannot crash a printf), field
+order is no longer the contract, and a column whose type changed is refused
+with a message rather than misread. A file written before headers existed is
+also refused, saying to re-save it.
+
+### A model is a stack of layers
+
+`model` declared an input shape and an output shape, and `predict` ran exactly
+one dense layer. There was nowhere to put a hidden layer and no activation, so
+nothing non-linear was expressible.
+
+    model Scorer {
+        input:  tensor[float, 1, 2];
+        hidden: 3 relu;
+        hidden: 2 relu;
+        output: tensor[float, 1, 1];
+    }
+
+`relu`, `sigmoid` and `none` are the activations the runtime has, and the
+output layer is linear. `hidden` and the activation names are contextual, so a
+variable may still be called `relu`. Weights are laid out layer by layer and a
+file with the wrong count is refused rather than loaded in part — it used to
+return 0 silently. A model with no hidden layers is one dense layer, exactly as
+before, so nothing that already ran changed.
+
+Freestanding WebAssembly has no libm, so `exp` is implemented in the wasm
+prelude by range reduction and a Taylor series; it agrees with libm to about
+1e-15 relative across the range it is used on.
+
+This is inference. There is no training, no autograd, no convolution or
+attention, and no accelerator.
+
+
+### `report` renders
+
+`report` parsed and type-checked its datasource and then generated a function
+body that printed one heading. Worse, the code generator emitted
+`Name_render` while the `render` statement called `Name_generate`, so a program
+using `render` did not link at all — there were two dead `RenderStmt` branches
+in the same if-chain and the unreachable one was the correct one.
+
+A report now runs its datasource, evaluates its metrics with `rows` bound to
+the result, and writes Markdown: the title, each metric, the matching rows as a
+table, and a row count. Metrics are type-checked for the first time — E001 on a
+mismatch — and the datasource carries the E004 column contract. The Strata type
+checker had no report checking whatsoever; it does now.
+
+Metrics see `rows`, not the columns of a row: there is no aggregation, so
+`sum(col)` cannot be evaluated and naming a bare column in a metric is an
+error. One conformance test had asserted that exactly such a report was clean;
+it was not, and nothing had been checking.
+
+
+### A query is an expression
+
+`Source <- [cond]` parsed in exactly one place: the right of a declaration.
+Anywhere else it was a parse error, so counting matching rows meant declaring a
+variable nobody wanted. It is now an ordinary primary expression and composes
+like one — as a call argument, passed to a function, compared. In expression
+position it yields `list[T]` and generates a scan that collects the matching
+rows, and the E004 column contract fires at the query's own line and column.
+
+Previously the code generator had a branch for a query in expression position
+that emitted `NULL`, which would have been a silently wrong answer had the
+parser ever produced one. It does now, and it generates the scan.
+
+Ported to both implementations — all four differentials agree on the new
+`examples/query_expression.sta`, and the fixpoint still holds. Six new
+conformance tests cover a query as a call argument, an empty result, a query
+passed to a function, agreement with the declaration form, a bad column and an
+unknown table.
+
+
+### `stream` blocks dispatch
+
+A `stream` block compiled its body and then never called it. It now has a
+runtime. Each handler registers under its own name as a channel;
+`strata_publish(channel, message)` enqueues, `strata_run()` drains the queue
+and returns how many messages were delivered, and a handler may publish while
+the drain is in progress. Messages to a channel with no handler are dropped.
+
+This is a cooperative single-threaded loop, not a fiber scheduler: no separate
+stacks, no preemption, no parallelism, no I/O integration. Virtual Event Fibers
+remain design only.
+
+Ported to both implementations — the code generator differential stayed
+byte-identical and the fixpoint still holds. Three new conformance tests
+(103/103) cover ordered delivery across channels, an unknown channel, and a
+handler publishing mid-drain.
+
+
 ## v0.4.0-alpha — 2026-09-13
 
 **Self-hosting reached for the front end.** The fixpoint holds.

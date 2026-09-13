@@ -45,8 +45,8 @@ layout OperationsConsole() {
 }
 
 int main() {
-    // No persistence layer yet: rows are seeded in memory so the contract is
-    // observable end to end.
+    // Seeded in memory so the contract is observable in one run; `save` and
+    // `load` would persist these rows across restarts.
     ServiceMetric <- [id = 1, service_name = "auth-gateway",
                       resource_utilization = 91.4, operational_status = "DEGRADED"];
     ServiceMetric <- [id = 2, service_name = "ledger-core",

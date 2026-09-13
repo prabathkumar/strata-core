@@ -239,6 +239,19 @@ class TypeChecker:
                 f"Declare 'database {q.source}' before reporting on it")
             return
         self._validate_query_cond(q.condition,q.source,decl.line,decl.col)
+        # Metrics are expressions evaluated where `rows` is the datasource
+        # result, so `strata_len(rows)` is what a count is written as. Without
+        # this a metric declared `int` and assigned a str compiled silently.
+        mscope=Scope(self.global_scope)
+        mscope.define("rows",SType("list",is_list=True,element_type=SType(q.source)))
+        for m in decl.metrics:
+            declared=self._resolve_type(m.metric_type)
+            actual=self._infer_type(m.expr,mscope)
+            if actual and not is_compatible(declared,actual):
+                self._error("E001",
+                    f"Type mismatch: metric '{m.name}' declared as '{declared}' "
+                    f"but assigned '{actual}'",
+                    m.line,m.col,f"Change value to type '{declared}' or update declaration")
 
     def _check_stmt(self,stmt,scope):
         if isinstance(stmt,VarDecl): self._check_var_decl(stmt,scope)
@@ -381,8 +394,13 @@ class TypeChecker:
             return None
         if isinstance(expr,QueryExpr):
             src=expr.source
-            if src in self.schemas:
-                return SType("list",is_list=True,element_type=SType(src))
+            if src not in self.schemas:
+                self._error("E004",f"Database '{src}' not declared",
+                    expr.line,expr.col,
+                    f"Declare 'database {src}' before querying it")
+                return None
+            self._validate_query_cond(expr.condition,src,expr.line,expr.col)
+            return SType("list",is_list=True,element_type=SType(src))
         return None
 
     def _infer_binary(self,expr,scope):

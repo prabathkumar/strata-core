@@ -1,0 +1,37 @@
+// A report renders. It used to emit its title and nothing else.
+//
+// `report` parsed, type-checked, and then generated a function body that
+// printed one heading — and named a function the code generator never emitted,
+// so `render` did not even link. A report now runs its datasource, evaluates
+// its metrics with `rows` bound to the result, and writes a Markdown document.
+
+import io from std;
+
+database Sales {
+    int   id;
+    str   region;
+    float amount;
+}
+
+report Quarterly {
+    title: "Q3 Regional Sales",
+    datasource: Sales <- [amount > 100.00],
+    metrics: {
+        int   large_deals = strata_len(rows);
+        float threshold   = 100.00;
+    }
+}
+
+int main() {
+    Sales <- [id = 1, region = "apac",  amount = 120.50];
+    Sales <- [id = 2, region = "emea",  amount =  75.00];
+    Sales <- [id = 3, region = "amer",  amount = 310.25];
+
+    render Quarterly to "quarterly.md";
+    print("wrote quarterly.md");
+
+    // Rename `amount` in the database block above and the build fails at the
+    // datasource line and at the metric that uses it — not at runtime, and not
+    // in a report that silently comes out empty.
+    return 0;
+}

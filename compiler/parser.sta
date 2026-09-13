@@ -135,7 +135,7 @@ str jlist(int p) {
 // 13 TensorType      20 VarDecl     21 ReturnStmt    22 IfStmt
 // 23 ExprStmt        24 AssertStmt  25 RenderStmt    26 VerifyBlock
 // 27 InsertStmt      28 AssignStmt  29 WhileStmt     30 ForStmt
-// 31 BreakStmt       32 ContinueStmt
+// 31 BreakStmt       32 ContinueStmt  33 HiddenLayer
 // 40 BinaryExpr      41 UnaryExpr   42 CallExpr      43 BorrowExpr
 // 44 CastExpr        45 PredictExpr 46 QueryExpr     47 ListLiteral
 // 48 MemberAccess    49 IndexExpr   50 IntLiteral    51 FloatLiteral
@@ -147,6 +147,7 @@ str node_name(int k) {
     if (k == 3)  { return "DatabaseDecl"; }
     if (k == 4)  { return "ProtocolDecl"; }
     if (k == 5)  { return "ModelDecl"; }
+    if (k == 33) { return "HiddenLayer"; }
     if (k == 6)  { return "ReportDecl"; }
     if (k == 7)  { return "ReportMetric"; }
     if (k == 8)  { return "FieldDecl"; }
@@ -210,6 +211,11 @@ str node_json(Node n) {
         jfield(&sb, "name", jstr(n.s1));
         jfield(&sb, "input", jchild(n.c1));
         jfield(&sb, "output", jchild(n.c2));
+        jfield(&sb, "hidden", jlist(n.v1));
+    }
+    if (k == 33) {
+        jfield(&sb, "width", str(n.i1));
+        jfield(&sb, "activation", jstr(n.s1));
     }
     if (k == 6) {
         jfield(&sb, "name", jstr(n.s1));
@@ -514,6 +520,36 @@ Node parse_model(P &p) {
     p_expect(&p, 57);                          // :
     Node in_t = parse_tensor_type(&p);
     p_expect(&p, 56);
+
+    // Hidden layers sit between input and output. `hidden` and the activation
+    // names are contextual, so a variable may still be called `relu` outside a
+    // model block.
+    NodeVec hidden = nv_new();
+    while (p_at_word(&p, "hidden") == 1) {
+        Token h = p_advance(&p);
+        p_expect(&p, 57);                      // :
+        Token w = p_expect(&p, 1);             // width
+        str act = "none";
+        if (p_check(&p, 4) == 1) {
+            Token a = p_advance(&p);
+            act = a.value;
+            if (activation_char(act) == "?") {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "Unknown activation '");
+                sb_append(&sb, act);
+                sb_append(&sb, "'; Strata has relu, sigmoid and none");
+                eprint("[STRATA PARSE ERROR] unknown activation");
+                eprint(act);
+            }
+        }
+        p_expect(&p, 56);
+        Node hl = node_new(33);
+        hl.i1 = str_to_int(w.value);
+        hl.s1 = act;
+        hl.line = h.line; hl.col = h.col;
+        nv_push(&hidden, hl);
+    }
+
     p_expect_word(&p, "output");
     p_expect(&p, 57);
     Node out_t = parse_tensor_type(&p);
@@ -523,8 +559,18 @@ Node parse_model(P &p) {
     n.s1 = name.value;
     n.c1 = node_ptr(in_t);
     n.c2 = node_ptr(out_t);
+    n.v1 = nv_ptr(hidden);
     n_pos(n, t);
     return n;
+}
+
+// The letter an activation carries in the generated model instance, or "?"
+// for one the language does not have.
+str activation_char(str a) {
+    if (str_eq(a, "relu") == 1) { return "r"; }
+    if (str_eq(a, "sigmoid") == 1) { return "s"; }
+    if (str_eq(a, "none") == 1) { return "n"; }
+    return "?";
 }
 
 Node parse_report(P &p) {
@@ -573,7 +619,9 @@ Node parse_report(P &p) {
                 m.c1 = node_ptr(mt);
                 m.s1 = mname.value;
                 m.c2 = node_ptr(mexpr);
-                n_pos(m, mname);
+                // The oracle positions a metric at its TYPE, not its name, and
+                // the E001 diagnostic quotes that column.
+                m.line = mt.line; m.col = mt.col;
                 nv_push(&mets, m);
             }
             p_expect(&p, 51);
@@ -1126,6 +1174,22 @@ Node parse_primary(P &p) {
     Node expr = node_new(54);
     expr.s1 = name.value;
     n_pos(expr, name);
+
+    // Query expression: `Source <- [cond]` anywhere a value is expected, not
+    // only on the right of a declaration.
+    if (name.kind == 4) {
+        if (p_check(&p, 76) == 1) {
+            p_advance(&p);                     // <-
+            p_expect(&p, 54);                  // [
+            Node qcond = parse_expr(&p);
+            p_expect(&p, 55);                  // ]
+            Node q = node_new(46);
+            q.s1 = name.value;
+            q.c1 = node_ptr(qcond);
+            n_pos(q, name);
+            return q;
+        }
+    }
 
     if (p_check(&p, 52) == 1) {                // call
         p_advance(&p);

@@ -1,0 +1,34 @@
+// A saved table survives a schema change.
+//
+// `save` used to write bare tab-separated rows in declaration order, and
+// `load` read them back positionally. Adding a column to a `database` block
+// silently corrupted every row in every file already on disk, and there was no
+// way to notice.
+//
+// A saved file now carries a header naming each column and its type. Columns
+// are matched by name: a column that has since been dropped is skipped, a new
+// one keeps its zero value, and a column whose type changed is refused rather
+// than misread. Run this twice — the second run reads what the first wrote.
+
+import io from std;
+
+database Sales {
+    int   id;
+    str   region;
+    float amount;
+}
+
+int main() {
+    load Sales from "sales.tsv";
+
+    if (strata_len(Sales <- [id > 0]) == 0) {
+        Sales <- [id = 1, region = "apac", amount = 120.50];
+        Sales <- [id = 2, region = "emea", amount =  75.00];
+        save Sales to "sales.tsv";
+        print("seeded and saved");
+        return 0;
+    }
+
+    print(strata_concat("loaded rows: ", str(strata_len(Sales <- [id > 0]))));
+    return 0;
+}

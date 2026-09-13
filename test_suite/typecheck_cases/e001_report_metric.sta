@@ -1,0 +1,11 @@
+// A report metric declared int and assigned a str. This compiled silently
+// until reports were type-checked at all.
+database Sales { int id; float amount; }
+
+report Bad {
+    title: "x",
+    datasource: Sales <- [amount > 0.00],
+    metrics: {
+        int  deals = "three";
+    }
+}

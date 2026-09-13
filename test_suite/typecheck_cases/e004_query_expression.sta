@@ -1,0 +1,8 @@
+// A query used as an expression, not on the right of a declaration. The
+// column contract holds in both positions.
+database Orders { int id; str name; }
+
+int main() {
+    print(str(strata_len(Orders <- [nope > 1])));
+    return 0;
+}

@@ -146,7 +146,18 @@ static strata_int strata_len(void* rows) {
    The same dense layer as the native prelude. Weight loading is absent: a
    freestanding module has no file system, so weights must be written into the
    model by the host through memory. */
-typedef struct { int rows_in,cols_in,rows_out,cols_out; double* weights; } StrataModel;
+#define STRATA_MAX_LAYERS 16
+
+/* A model is a stack of dense layers; see the native prelude for the layout.
+   Kept identical here so the same generated instance initialiser is valid for
+   both targets. */
+typedef struct {
+    int rows_in, cols_in, rows_out, cols_out;
+    double* weights;
+    int nlayers;
+    int dims[STRATA_MAX_LAYERS + 1];
+    char acts[STRATA_MAX_LAYERS];
+} StrataModel;
 
 static double* strata_tensor(strata_int n) {
     return (double*)calloc((size_t)n, sizeof(double));
@@ -154,18 +165,50 @@ static double* strata_tensor(strata_int n) {
 static void strata_tensor_set(double* t, strata_int i, strata_float v) { t[i] = v; }
 static strata_float strata_tensor_get(double* t, strata_int i) { return t[i]; }
 
+/* Freestanding WebAssembly has no libm, so exp is written here rather than
+   linked. Range reduction x = k*ln2 + r with |r| <= ln2/2, a Taylor series on
+   r, then the power of two applied by constructing its exponent bits. */
+static double strata_exp(double x) {
+    if (x > 709.0)  return 1.0 / 0.0;
+    if (x < -745.0) return 0.0;
+    const double LN2 = 0.69314718055994530942;
+    int k = (int)(x / LN2 + (x < 0 ? -0.5 : 0.5));
+    double r = x - k * LN2;
+    double term = 1.0, sum = 1.0;
+    for (int i = 1; i <= 14; i++) { term *= r / i; sum += term; }
+    /* 2^k as a double, built from its exponent field. */
+    union { double d; unsigned long long u; } p2;
+    int e = k + 1023;
+    if (e <= 0)    return 0.0;
+    if (e >= 2047) return 1.0 / 0.0;
+    p2.u = (unsigned long long)e << 52;
+    return sum * p2.d;
+}
+
+static double strata_activate(double x, char a) {
+    if (a == 'r') return x > 0.0 ? x : 0.0;
+    if (a == 's') return 1.0 / (1.0 + strata_exp(-x));
+    return x;
+}
+
 static double* strata_predict(void* model, double* input) {
     StrataModel* m = (StrataModel*)model;
-    int ci = m->cols_in, co = m->cols_out;
-    double* out = (double*)calloc((size_t)co, sizeof(double));
-    if (!m->weights) return out;
-    for (int j = 0; j < co; j++) {
-        double acc = m->weights[(size_t)ci * co + j];
-        for (int i = 0; i < ci; i++)
-            acc += input[i] * m->weights[(size_t)i * co + j];
-        out[j] = acc;
+    double* cur = input;
+    if (!m->weights) return (double*)calloc((size_t)m->cols_out, sizeof(double));
+    size_t off = 0;
+    for (int l = 0; l < m->nlayers; l++) {
+        int ci = m->dims[l], co = m->dims[l + 1];
+        double* out = (double*)calloc((size_t)co, sizeof(double));
+        for (int j = 0; j < co; j++) {
+            double acc = m->weights[off + (size_t)ci * co + j];
+            for (int i = 0; i < ci; i++)
+                acc += cur[i] * m->weights[off + (size_t)i * co + j];
+            out[j] = strata_activate(acc, m->acts[l]);
+        }
+        off += (size_t)ci * co + co;
+        cur = out;
     }
-    return out;
+    return cur;
 }
 
 /* Element-wise tensor addition. Plain scalar loops — the C compiler may

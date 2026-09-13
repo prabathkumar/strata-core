@@ -1,0 +1,9 @@
+// A typo'd column in a report's datasource, which is the exact failure
+// `database` blocks exist to prevent.
+database Sales { int id; float amount; }
+
+report Typo {
+    title: "x",
+    datasource: Sales <- [amonut > 0.00],
+    metrics: { int deals = strata_len(rows); }
+}

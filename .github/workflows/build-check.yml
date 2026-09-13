@@ -89,6 +89,12 @@ jobs:
     - name: Verify Standard Library Parses
       run: python3 test_suite/stdlib_parses.py
 
+    # The repair loop reads the compiler's JSON diagnostics. Every change to a
+    # diagnostic's shape is a chance to break it silently, so the contract is
+    # checked here rather than discovered in a demo.
+    - name: Autonomous Repair Loop
+      run: python3 test_suite/self_repair.py
+
     - name: Reject Unimplemented Tools On PATH
       run: |
         allowed="strata strata-lexer strata-parser unimplemented"

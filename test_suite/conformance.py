@@ -35,6 +35,69 @@ def test(name, source, expect_error=None):
         else:
             print(f"  FAIL  {name} — parse error: {e}"); FAIL += 1
 
+def compile_run_in(name, source, expected, files=None, runs=1):
+    """Compile and run in a scratch directory, optionally seeding files first.
+
+    Persistence and migration can only be checked by writing a file with one
+    schema and reading it with another, which needs two programs and a shared
+    directory.
+    """
+    global PASS, FAIL
+    d = tempfile.mkdtemp()
+    try:
+        for fn, content in (files or {}).items():
+            open(os.path.join(d, fn), "w").write(content)
+        outs = []
+        for i, src in enumerate(source if isinstance(source, list) else [source]):
+            sta = os.path.join(d, f"p{i}.sta"); exe = os.path.join(d, f"p{i}")
+            open(sta, "w").write(src)
+            r = subprocess.run(["python3", "bootstrap/stage0.py", sta, "-o", exe],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"  FAIL  {name} — compile: {r.stderr[-200:]}"); FAIL += 1; return
+            r2 = subprocess.run([exe], capture_output=True, text=True, timeout=5, cwd=d)
+            outs.append((r2.stdout + r2.stderr).strip())
+        got = "\n".join(o for o in outs if o)
+        if got == expected.strip():
+            print(f"  PASS  {name} — {got.splitlines()[-1] if got else '(no output)'!r}"); PASS += 1
+        else:
+            print(f"  FAIL  {name} — expected {expected!r} got {got!r}"); FAIL += 1
+    except Exception as e:
+        print(f"  FAIL  {name} — {e}"); FAIL += 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def compile_render(name, source, expected):
+    """Compile, run, and compare the file the program rendered.
+
+    A report that emits only its title still runs and still exits 0. The only
+    check that fails when rendering stops working is reading what was written.
+    """
+    global PASS, FAIL
+    d = tempfile.mkdtemp()
+    sta = os.path.join(d, "r.sta"); out = os.path.join(d, "r")
+    open(sta, "w").write(source)
+    try:
+        r = subprocess.run(["python3", "bootstrap/stage0.py", sta, "-o", out],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  FAIL  {name} — compile: {r.stderr[-200:]}"); FAIL += 1; return
+        subprocess.run([out], capture_output=True, text=True, timeout=5, cwd=d)
+        rendered = os.path.join(d, "out.md")
+        if not os.path.exists(rendered):
+            print(f"  FAIL  {name} — nothing was rendered"); FAIL += 1; return
+        got = open(rendered).read().strip()
+        if got == expected.strip():
+            print(f"  PASS  {name} — {len(got.splitlines())} lines rendered"); PASS += 1
+        else:
+            print(f"  FAIL  {name} — rendered:\n{got}\n  expected:\n{expected}"); FAIL += 1
+    except Exception as e:
+        print(f"  FAIL  {name} — {e}"); FAIL += 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def compile_run(name, source, expected):
     global PASS, FAIL
     with tempfile.NamedTemporaryFile(suffix=".sta", mode="w", delete=False) as f:
@@ -161,7 +224,15 @@ compile_run("ctx_to_and_input_as_names",
 test("ctx_model_block_still_parses",
     'model M { input: tensor[float, 1, 64]; output: tensor[float, 1, 2]; }')
 test("ctx_report_block_still_parses",
-    'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { float t = sum(id); } }')
+    'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { int t = strata_len(rows); } }')
+
+# This case used to read `float t = sum(id);` and was asserted to be clean.
+# It was not clean: `sum` does not exist and a metric does not see the columns
+# of a row — it sees `rows`, because there is no aggregation to evaluate a
+# column across a result set. Nothing checked metrics, so it passed.
+test("report_metric_cannot_name_a_column",
+    'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { int t = id; } }',
+    "E001")
 
 print("\n── Database runtime ──────────────────────────────────────────────")
 compile_run("db_insert_and_query",
@@ -248,6 +319,7 @@ test("persist_unknown_table_is_e004",
      'int main() { save Ghost to "/tmp/x"; return 0; }', "E004")
 
 print("\n── Test runner ───────────────────────────────────────────────────")
+import shutil
 import subprocess as _sp, tempfile as _tf, os as _os
 def run_test_build(name, source, want_exit, want_in_output):
     global PASS, FAIL
@@ -348,6 +420,142 @@ compile_run("e2e_borrowed_scalar_write",
 compile_run("e2e_bubble_sort",
     'import io from std;\nint main() { list[int] d = [3,1,2]; int n = 3; for (int i = 0; i < n-1; i = i+1) { for (int j = 0; j < n-i-1; j = j+1) { if (d[j] > d[j+1]) { int t = d[j]; d[j] = d[j+1]; d[j+1] = t; } } } for (int k = 0; k < n; k = k+1) { print(str(d[k])); } return 0; }',
     "1\n2\n3")
+
+
+print("\n── Stream dispatch ──────────────────────────────────────────────")
+
+compile_run("e2e_stream_dispatch_in_order",
+    'import io from std;\nstream Ingest(str message) { print(strata_concat("handled: ", current_message())); }\nstream Audit(str message) { print(strata_concat("audited: ", message)); }\nint main() { strata_publish("Ingest", "order-1"); strata_publish("Audit", "order-1"); strata_publish("Ingest", "order-2"); int delivered = strata_run(); print(strata_concat("delivered: ", str(delivered))); return 0; }',
+    "handled: order-1\naudited: order-1\nhandled: order-2\ndelivered: 3")
+
+compile_run("e2e_stream_publish_unknown_channel_is_dropped",
+    'import io from std;\nstream Ingest(str message) { print(current_message()); }\nint main() { strata_publish("Nobody", "x"); int delivered = strata_run(); print(strata_concat("delivered: ", str(delivered))); return 0; }',
+    "delivered: 0")
+
+compile_run("e2e_stream_handler_may_publish",
+    'import io from std;\nstream A(str message) { print(strata_concat("a: ", message)); strata_publish("B", message); }\nstream B(str message) { print(strata_concat("b: ", message)); }\nint main() { strata_publish("A", "go"); int n = strata_run(); print(str(n)); return 0; }',
+    "a: go\nb: go\n2")
+
+
+print("\n── Query expressions ────────────────────────────────────────────")
+
+_DB = 'import io from std;\ndatabase Orders { int id; str name; }\n'
+
+compile_run("e2e_query_in_call_argument",
+    _DB + 'int main() { Orders <- [id = 1, name = "a"]; Orders <- [id = 2, name = "b"]; Orders <- [id = 3, name = "c"]; print(str(strata_len(Orders <- [id > 1]))); return 0; }',
+    "2")
+
+compile_run("e2e_query_matching_nothing_is_empty",
+    _DB + 'int main() { Orders <- [id = 1, name = "a"]; print(str(strata_len(Orders <- [id > 99]))); return 0; }',
+    "0")
+
+compile_run("e2e_query_passed_to_a_function",
+    _DB + 'int count(list[Orders] rows) { return strata_len(rows); }\nint main() { Orders <- [id = 1, name = "a"]; Orders <- [id = 2, name = "b"]; print(str(count(Orders <- [id > 0]))); return 0; }',
+    "2")
+
+compile_run("e2e_query_expression_and_declaration_agree",
+    _DB + 'int main() { Orders <- [id = 1, name = "a"]; Orders <- [id = 2, name = "b"]; list[Orders] d = Orders <- [id > 0]; print(str(strata_len(d) == strata_len(Orders <- [id > 0]))); return 0; }',
+    "1")
+
+test("query_expression_bad_column_is_E004",
+    _DB + 'int main() { print(str(strata_len(Orders <- [nope > 1]))); return 0; }',
+    "E004")
+
+test("query_expression_unknown_table_is_E004",
+    _DB + 'int main() { print(str(strata_len(Nothing <- [id > 1]))); return 0; }',
+    "E004")
+
+
+print("\n── Reports ──────────────────────────────────────────────────────")
+
+_RDB = 'import io from std;\ndatabase Sales { int id; str region; float amount; }\n'
+
+compile_render("e2e_report_renders_rows_and_metrics",
+    _RDB + 'report R { title: "Sales", datasource: Sales <- [amount > 100.00], metrics: { int hits = strata_len(rows); } }\nint main() { Sales <- [id = 1, region = "apac", amount = 120.50]; Sales <- [id = 2, region = "emea", amount = 75.00]; render R to "out.md"; return 0; }',
+    '# Sales\n\n- hits: 1\n\n| id | region | amount |\n| --- | --- | --- |\n| 1 | apac | 120.5 |\n\n1 row(s).')
+
+compile_render("e2e_report_with_no_matching_rows",
+    _RDB + 'report R { title: "Empty", datasource: Sales <- [amount > 999.00], metrics: { int hits = strata_len(rows); } }\nint main() { Sales <- [id = 1, region = "apac", amount = 1.00]; render R to "out.md"; return 0; }',
+    '# Empty\n\n- hits: 0\n\n| id | region | amount |\n| --- | --- | --- |\n\n0 row(s).')
+
+test("report_metric_type_mismatch_is_E001",
+    _RDB + 'report R { title: "x", datasource: Sales <- [amount > 0.00], metrics: { int hits = "many"; } }\nint main() { render R to "out.md"; return 0; }',
+    "E001")
+
+test("report_datasource_bad_column_is_E004",
+    _RDB + 'report R { title: "x", datasource: Sales <- [amonut > 0.00], metrics: { int hits = strata_len(rows); } }\nint main() { render R to "out.md"; return 0; }',
+    "E004")
+
+
+print("\n── Schema migration ─────────────────────────────────────────────")
+
+_W = 'import io from std;\ndatabase T { int id; str name; float amt; }\nint main() { T <- [id = 1, name = "a", amt = 1.50]; T <- [id = 2, name = "b", amt = 2.50]; save T to "t.tsv"; print("saved"); return 0; }'
+
+compile_run_in("migrate_round_trip",
+    [_W, 'import io from std;\ndatabase T { int id; str name; float amt; }\nint main() { load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
+    "saved\n2")
+
+compile_run_in("migrate_column_dropped_and_added",
+    [_W, 'import io from std;\ndatabase T { int id; str currency; }\nint main() { load T from "t.tsv"; list[T] r = T <- [id > 0]; T first = r[0]; print(strata_concat(str(first.id), strata_concat(" cur=[", strata_concat(first.currency, "]")))); return 0; }'],
+    "saved\n1 cur=[]")
+
+compile_run_in("migrate_columns_reordered_match_by_name",
+    [_W, 'import io from std;\ndatabase T { float amt; str name; int id; }\nint main() { load T from "t.tsv"; list[T] r = T <- [id == 2]; T x = r[0]; print(strata_concat(x.name, strata_concat(" ", str(x.amt)))); return 0; }'],
+    "saved\nb 2.5")
+
+compile_run_in("migrate_type_change_is_refused",
+    [_W, 'import io from std;\ndatabase T { int id; str name; str amt; }\nint main() { int ok = 0; load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
+    "saved\n0\n[STRATA LOAD] T: refusing to read 't.tsv' — column 'amt' changed type since it was saved")
+
+compile_run_in("migrate_headerless_file_is_refused",
+    ['import io from std;\ndatabase T { int id; str name; }\nint main() { load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
+    "0\n[STRATA LOAD] T: refusing to read 't.tsv' — no schema header; it was written before headers existed. Re-save it.",
+    files={"t.tsv": "1\ta\n2\tb\n"})
+
+print("\n── Model layers ─────────────────────────────────────────────────")
+
+_NN = ('import io from std;\nmodel M {\n    input:  tensor[float, 1, 2];\n'
+       '    hidden: 3 relu;\n    hidden: 2 relu;\n    output: tensor[float, 1, 1];\n}\n'
+       'int main() { tensor[float, 1, 2] x = strata_tensor(2); strata_tensor_set(x, 0, 1.0); '
+       'strata_tensor_set(x, 1, 2.0); if (strata_model_load(M, "w.txt") == 0) { print("refused"); } '
+       'tensor[float, 1, 1] y = predict M(x); print(str(strata_tensor_get(y, 0))); return 0; }')
+
+# Every weight and bias 0.5: layer 1 gives 0.5*1+0.5*2+0.5 = 2.0 (x3), layer 2
+# gives 0.5*2*3+0.5 = 3.5 (x2), the linear output gives 0.5*3.5*2+0.5 = 4.0.
+compile_run_in("nn_two_hidden_relu_layers", [_NN], "4.0",
+    files={"w.txt": " ".join(["0.5"] * 20)})
+
+# relu clamps: with negative weights every hidden unit is zero, so only the
+# output bias survives.
+compile_run_in("nn_relu_clamps_at_zero", [_NN], "0.5",
+    files={"w.txt": " ".join(["-1.0"] * 17 + ["0.0", "0.0", "0.5"])})
+
+compile_run_in("nn_short_weight_file_is_refused", [_NN],
+    'refused\n0.0\n[STRATA MODEL] \'w.txt\' holds 3 weights; this model needs 20. Not loading a partial model.',
+    files={"w.txt": "0.5 0.5 0.5"})
+
+# A model with no hidden layers is one dense layer, exactly as before.
+compile_run_in("nn_no_hidden_layers_is_one_dense_layer",
+    ['import io from std;\nmodel M { input: tensor[float, 1, 2]; output: tensor[float, 1, 1]; }\n'
+     'int main() { tensor[float, 1, 2] x = strata_tensor(2); strata_tensor_set(x, 0, 1.0); '
+     'strata_tensor_set(x, 1, 2.0); strata_model_load(M, "w.txt"); '
+     'tensor[float, 1, 1] y = predict M(x); print(str(strata_tensor_get(y, 0))); return 0; }'],
+    "4.0", files={"w.txt": "1.0 1.0 1.0"})
+
+# sigmoid: every weight and bias zero, so each hidden pre-activation is 0 and
+# sigmoid(0) = 0.5. The output layer is linear: 0.5*2*0 + 0 = 0, plus bias 1.
+compile_run_in("nn_sigmoid_activation",
+    ['import io from std;\nmodel M { input: tensor[float, 1, 2]; hidden: 2 sigmoid; output: tensor[float, 1, 1]; }\n'
+     'int main() { tensor[float, 1, 2] x = strata_tensor(2); strata_model_load(M, "w.txt"); '
+     'tensor[float, 1, 1] y = predict M(x); print(str(strata_tensor_get(y, 0))); return 0; }'],
+    "2.0", files={"w.txt": " ".join(["0.0"] * 6 + ["1.0", "1.0", "1.0"])})
+
+test("nn_unknown_activation_is_rejected",
+    'model M { input: tensor[float, 1, 2]; hidden: 3 tanh; output: tensor[float, 1, 1]; }',
+    "PARSE")
+
+test("nn_hidden_is_contextual_not_reserved",
+    'import io from std;\nint main() { int hidden = 1; int relu = 2; print(str(hidden + relu)); return 0; }')
 
 total = PASS + FAIL
 print(f"\n{'='*60}")

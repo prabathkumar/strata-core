@@ -52,6 +52,8 @@ database Gen {
     int verifies;     // NodeVec* of verify blocks, for the runner
     str target;       // "native" or "wasm"
     str query_row;    // table whose condition is being generated, else ""
+    int query_depth;  // nesting of query expressions, for unique C names
+    int schema_decls; // Bind list: table -> its declaration node, for field types
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
@@ -158,6 +160,46 @@ int is_c_reserved(str w) {
     return 0;
 }
 
+// A query used where a value is expected, not on the right of a declaration.
+// It becomes a statement expression that collects the matching rows into a
+// NULL-terminated array and yields it, so `len(Orders <- [id > 0])` means what
+// it reads as.
+str gen_query_expr(Gen &g, Node e) {
+    str src = e.s1;
+    // The checker has already reported an unknown table; keep going so it can
+    // report the rest of the file.
+    if (bind_has(g.schemas, src) == 0) { return "NULL"; }
+
+    g.query_depth = g.query_depth + 1;
+    StringBuilder tagb = sb_new();
+    sb_append(&tagb, "_q");
+    sb_append(&tagb, str(g.query_depth));
+    str tag = sb_to_str(&tagb);
+
+    str prev = g.query_row;
+    g.query_row = src;
+    str cond = gen_expr(&g, e.c1);
+    g.query_row = prev;
+    g.query_depth = g.query_depth - 1;
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "({ "); sb_append(&sb, src); sb_append(&sb, "** ");
+    sb_append(&sb, tag); sb_append(&sb, " = ("); sb_append(&sb, src);
+    sb_append(&sb, "**)malloc(sizeof(void*) * ("); sb_append(&sb, src);
+    sb_append(&sb, "__count + 1)); strata_int "); sb_append(&sb, tag);
+    sb_append(&sb, "n = 0; for (strata_int "); sb_append(&sb, tag);
+    sb_append(&sb, "i = 0; "); sb_append(&sb, tag); sb_append(&sb, "i < ");
+    sb_append(&sb, src); sb_append(&sb, "__count; "); sb_append(&sb, tag);
+    sb_append(&sb, "i++) { "); sb_append(&sb, src); sb_append(&sb, "* _row = ");
+    sb_append(&sb, src); sb_append(&sb, "__rows["); sb_append(&sb, tag);
+    sb_append(&sb, "i]; if ("); sb_append(&sb, cond); sb_append(&sb, ") { ");
+    sb_append(&sb, tag); sb_append(&sb, "["); sb_append(&sb, tag);
+    sb_append(&sb, "n++] = _row; } } "); sb_append(&sb, tag);
+    sb_append(&sb, "["); sb_append(&sb, tag); sb_append(&sb, "n] = NULL; ");
+    sb_append(&sb, tag); sb_append(&sb, "; })");
+    return sb_to_str(&sb);
+}
+
 str cname(str w) {
     if (is_c_reserved(w) == 1) {
         StringBuilder sb = sb_new();
@@ -216,7 +258,7 @@ str expr_ctype(Gen &g, int p) {
         if (bind_has(g.records, e.s1) == 1) {
             StringBuilder sb = sb_new();
             sb_append(&sb, e.s1);
-            sb_append(&sb, "*");
+            sb_append(&sb, "**");
             return sb_to_str(&sb);
         }
         return "";
@@ -252,6 +294,8 @@ str builtin_return(str name) {
     if (str_eq(name, "file_write")) { return "strata_int"; }
     if (str_eq(name, "file_exists")) { return "strata_int"; }
     if (str_eq(name, "strata_len")) { return "strata_int"; }
+    if (str_eq(name, "strata_publish")) { return "strata_int"; }
+    if (str_eq(name, "strata_run")) { return "strata_int"; }
     if (str_eq(name, "strata_model_load")) { return "strata_int"; }
     if (str_eq(name, "current_message")) { return "strata_str"; }
     if (str_eq(name, "strata_tensor")) { return "double*"; }
@@ -452,11 +496,7 @@ str gen_expr(Gen &g, int p) {
         return sb_to_str(&sb);
     }
 
-    if (k == 46) {
-        StringBuilder sb = sb_new();
-        sb_append(&sb, "NULL/*query "); sb_append(&sb, e.s1); sb_append(&sb, "*/");
-        return sb_to_str(&sb);
-    }
+    if (k == 46) { return gen_query_expr(&g, e); }
 
     return "0";
 }
@@ -862,6 +902,20 @@ def fwd_struct(Gen &g, str name) {
 // Serialisers generated from the schema. Field order is the declaration
 // order, which is also the contract: a file written by one schema is not
 // readable by another.
+// The type letter a column carries in the schema header.
+str col_tchar(Gen &g, Node fd) {
+    str ct = c_type(&g, fd.c1);
+    if (str_eq(ct, "strata_str") == 1) { return "s"; }
+    if (str_eq(ct, "strata_float") == 1) { return "f"; }
+    return "i";
+}
+
+// Serialisers generated from the schema.
+//
+// The file carries a header naming each column and its type, so a table saved
+// by one version of a schema loads under another: a dropped column is skipped,
+// a new one keeps its zero value, and a column whose type changed is refused
+// rather than misread. Field order is no longer the contract — the names are.
 def gen_table_io(Gen &g, str name, int fields_vec) {
     NodeVec fs = nv_at(fields_vec);
     int n = fs.len;
@@ -871,6 +925,17 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&a, "__save(strata_str path) {");
     emit_raw(&g, sb_to_str(&a));
     emit_raw(&g, "    FILE* f = fopen(path, \"w\"); if (!f) return 0;");
+
+    StringBuilder hd = sb_new();
+    sb_append(&hd, "    fprintf(f, \"#strata\\t"); sb_append(&hd, name);
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        sb_append(&hd, "\\t"); sb_append(&hd, fd.s1); sb_append(&hd, ":");
+        sb_append(&hd, col_tchar(&g, fd));
+    }
+    sb_append(&hd, "\\n\");");
+    emit_raw(&g, sb_to_str(&hd));
+
     StringBuilder lp = sb_new();
     sb_append(&lp, "    for (strata_int i = 0; i < "); sb_append(&lp, name);
     sb_append(&lp, "__count; i++) {");
@@ -908,7 +973,47 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&b, "__load(strata_str path) {");
     emit_raw(&g, sb_to_str(&b));
     emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
-    emit_raw(&g, "    char buf[4096]; int more;");
+    emit_raw(&g, "    char buf[4096];");
+    emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
+    emit_raw(&g, "    char _types[STRATA_MAX_COLS];");
+    emit_raw(&g, "    int _map[STRATA_MAX_COLS];");
+    emit_raw(&g, "    int _ncol = strata_read_header(f, _names, _types, STRATA_MAX_COLS);");
+    StringBuilder e0 = sb_new();
+    sb_append(&e0, "    if (_ncol == -2) { fclose(f); "); sb_append(&e0, name);
+    sb_append(&e0, "__count = 0; return 1; }");
+    emit_raw(&g, sb_to_str(&e0));
+    emit_raw(&g, "    if (_ncol == -1) {");
+    StringBuilder e1 = sb_new();
+    sb_append(&e1, "        strata_load_refuse(\""); sb_append(&e1, name);
+    sb_append(&e1, "\", path, \"no schema header; it was written before headers existed. Re-save it.\");");
+    emit_raw(&g, sb_to_str(&e1));
+    emit_raw(&g, "        fclose(f); return 0;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    for (int _c = 0; _c < _ncol; _c++) {");
+    emit_raw(&g, "        _map[_c] = -1;");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        StringBuilder m0 = sb_new();
+        sb_append(&m0, "        if (strcmp(_names[_c], \""); sb_append(&m0, fd.s1);
+        sb_append(&m0, "\") == 0) {");
+        emit_raw(&g, sb_to_str(&m0));
+        StringBuilder m1 = sb_new();
+        sb_append(&m1, "            if (_types[_c] != '"); sb_append(&m1, col_tchar(&g, fd));
+        sb_append(&m1, "') {");
+        emit_raw(&g, sb_to_str(&m1));
+        StringBuilder m2 = sb_new();
+        sb_append(&m2, "                strata_load_refuse(\""); sb_append(&m2, name);
+        sb_append(&m2, "\", path, \"column '"); sb_append(&m2, fd.s1);
+        sb_append(&m2, "' changed type since it was saved\");");
+        emit_raw(&g, sb_to_str(&m2));
+        emit_raw(&g, "                fclose(f); return 0;");
+        emit_raw(&g, "            }");
+        StringBuilder m3 = sb_new();
+        sb_append(&m3, "            _map[_c] = "); sb_append(&m3, str(i)); sb_append(&m3, ";");
+        emit_raw(&g, sb_to_str(&m3));
+        emit_raw(&g, "        }");
+    }
+    emit_raw(&g, "    }");
     StringBuilder z = sb_new();
     sb_append(&z, "    "); sb_append(&z, name); sb_append(&z, "__count = 0;");
     emit_raw(&g, sb_to_str(&z));
@@ -918,21 +1023,39 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&al, name); sb_append(&al, "*)calloc(1, sizeof("); sb_append(&al, name);
     sb_append(&al, "));");
     emit_raw(&g, sb_to_str(&al));
-    emit_raw(&g, "        more = strata_read_field(f, buf, 4096);");
-    emit_raw(&g, "        if (more < 0) { free(r); break; }");
+    // A column the file does not carry keeps its zero value; for a str that is
+    // "" rather than NULL, so a new column cannot crash a printf.
     for (int i = 0; i < n; i = i + 1) {
         Node fd = nv_get(&fs, i);
-        if (i > 0) { emit_raw(&g, "        strata_read_field(f, buf, 4096);"); }
-        str ct = c_type(&g, fd.c1);
-        StringBuilder rd = sb_new();
-        sb_append(&rd, "        r->"); sb_append(&rd, fd.s1); sb_append(&rd, " = ");
-        if (str_eq(ct, "strata_str") == 1) { sb_append(&rd, "strata_dup(buf);"); }
-        if (str_eq(ct, "strata_float") == 1) { sb_append(&rd, "strtod(buf, NULL);"); }
-        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
-            sb_append(&rd, "(strata_int)atoll(buf);");
-        } }
-        emit_raw(&g, sb_to_str(&rd));
+        if (str_eq(c_type(&g, fd.c1), "strata_str") == 1) {
+            StringBuilder zs = sb_new();
+            sb_append(&zs, "        r->"); sb_append(&zs, fd.s1); sb_append(&zs, " = \"\";");
+            emit_raw(&g, sb_to_str(&zs));
+        }
     }
+    emit_raw(&g, "        int _more = 0, _eof = 0;");
+    emit_raw(&g, "        for (int _c = 0; _c < _ncol; _c++) {");
+    emit_raw(&g, "            _more = strata_read_field(f, buf, 4096);");
+    emit_raw(&g, "            if (_more < 0) { _eof = 1; break; }");
+    emit_raw(&g, "            switch (_map[_c]) {");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        str ct = c_type(&g, fd.c1);
+        StringBuilder cs = sb_new();
+        sb_append(&cs, "                case "); sb_append(&cs, str(i));
+        sb_append(&cs, ": r->"); sb_append(&cs, fd.s1); sb_append(&cs, " = ");
+        if (str_eq(ct, "strata_str") == 1) { sb_append(&cs, "strata_dup(buf);"); }
+        if (str_eq(ct, "strata_float") == 1) { sb_append(&cs, "strtod(buf, NULL);"); }
+        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
+            sb_append(&cs, "(strata_int)atoll(buf);");
+        } }
+        sb_append(&cs, " break;");
+        emit_raw(&g, sb_to_str(&cs));
+    }
+    emit_raw(&g, "                default: break;   /* a column this schema no longer has */");
+    emit_raw(&g, "            }");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "        if (_eof) { free(r); break; }");
     StringBuilder ps = sb_new();
     sb_append(&ps, "        if ("); sb_append(&ps, name);
     sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
@@ -1006,24 +1129,145 @@ def gen_model(Gen &g, Node d) {
     emit_raw(&g, sb_to_str(&a));
     Node in_t = node_at(d.c1);
     Node out_t = node_at(d.c2);
+    // `dims` is the input width, then each layer's output width; `acts` the
+    // activation after each layer. A model with no hidden layers is one layer,
+    // so the forward pass has no special case for it.
+    NodeVec hidden = nv_at(d.v1);
+    int nh = hidden.len;
+    StringBuilder dims = sb_new();
+    StringBuilder acts = sb_new();
+    sb_append(&dims, str(in_t.i2));
+    for (int i = 0; i < nh; i = i + 1) {
+        Node h = nv_get(&hidden, i);
+        sb_append(&dims, ","); sb_append(&dims, str(h.i1));
+        sb_append(&acts, "'"); sb_append(&acts, activation_char(h.s1));
+        sb_append(&acts, "',");
+    }
+    sb_append(&dims, ","); sb_append(&dims, str(out_t.i2));
+    sb_append(&acts, "'n'");                  // the output layer is linear
+
     StringBuilder b = sb_new();
     sb_append(&b, "static "); sb_append(&b, d.s1); sb_append(&b, " ");
     sb_append(&b, d.s1); sb_append(&b, "_instance = {");
     sb_append(&b, str(in_t.i1)); sb_append(&b, ",");
     sb_append(&b, str(in_t.i2)); sb_append(&b, ",");
     sb_append(&b, str(out_t.i1)); sb_append(&b, ",");
-    sb_append(&b, str(out_t.i2)); sb_append(&b, ",NULL};");
+    sb_append(&b, str(out_t.i2)); sb_append(&b, ",NULL,");
+    sb_append(&b, str(nh + 1)); sb_append(&b, ",{");
+    sb_append(&b, sb_to_str(&dims)); sb_append(&b, "},{");
+    sb_append(&b, sb_to_str(&acts)); sb_append(&b, "}};");
     emit_raw(&g, sb_to_str(&b));
 }
 
+// A report renders its datasource and its metrics as Markdown. It used to
+// emit the title and nothing else, so `render` produced a one-line file that
+// looked like it had worked — and it named a function that was never emitted,
+// so it did not even link. The metrics are evaluated with `rows` bound to the
+// datasource result, which is what makes `int deals = strata_len(rows);` mean
+// something.
 def gen_report(Gen &g, Node d) {
-    StringBuilder a = sb_new();
-    sb_append(&a, "\nvoid "); sb_append(&a, d.s1); sb_append(&a, "_generate(FILE* _out) {");
-    emit_raw(&g, sb_to_str(&a));
-    StringBuilder b = sb_new();
-    sb_append(&b, "    fprintf(_out,\"# "); sb_append(&b, d.s2); sb_append(&b, "\\n\");");
-    emit_raw(&g, sb_to_str(&b));
+    str title = escape_quotes(d.s2);
+    StringBuilder head = sb_new();
+    sb_append(&head, "\nvoid "); sb_append(&head, d.s1);
+    sb_append(&head, "_render(FILE* _out) {");
+    emit_raw(&g, sb_to_str(&head));
+
+    str src = "";
+    if (d.c1 != 0) {
+        Node q0 = node_at(d.c1);
+        if (q0.kind == 46) { src = q0.s1; }
+    }
+    if (bind_has(g.schemas, src) == 0) {
+        // The checker has already reported an unknown or missing table.
+        StringBuilder t0 = sb_new();
+        sb_append(&t0, "    fprintf(_out, \"# "); sb_append(&t0, title);
+        sb_append(&t0, "\\n\");");
+        emit_raw(&g, sb_to_str(&t0));
+        emit_raw(&g, "}");
+        return;
+    }
+
+    int prev_vars = g.var_types;
+    StringBuilder rt = sb_new();
+    sb_append(&rt, src); sb_append(&rt, "**");
+    g.var_types = bind_cons("rows", sb_to_str(&rt), 0);
+
+    Node q = node_at(d.c1);
+    str rows = gen_query_expr(&g, q);
+    StringBuilder r0 = sb_new();
+    sb_append(&r0, "    "); sb_append(&r0, src); sb_append(&r0, "** rows = ");
+    sb_append(&r0, rows); sb_append(&r0, ";");
+    emit_raw(&g, sb_to_str(&r0));
+    emit_raw(&g, "    strata_int _rn = strata_len(rows);");
+    StringBuilder t1 = sb_new();
+    sb_append(&t1, "    fprintf(_out, \"# "); sb_append(&t1, title);
+    sb_append(&t1, "\\n\\n\");");
+    emit_raw(&g, sb_to_str(&t1));
+
+    NodeVec mets = nv_at(d.v1);
+    int nm = mets.len;
+    for (int i = 0; i < nm; i = i + 1) {
+        Node m = nv_get(&mets, i);
+        str ct = c_type(&g, m.c1);
+        str val = gen_expr(&g, m.c2);
+        StringBuilder ln = sb_new();
+        sb_append(&ln, "    fprintf(_out, \"- ");
+        sb_append(&ln, escape_quotes(m.s1));
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&ln, ": %s\\n\", (strata_str)(");
+        }
+        if (str_eq(ct, "strata_float") == 1) {
+            sb_append(&ln, ": %.17g\\n\", (double)(");
+        }
+        if (str_eq(ct, "strata_str") + str_eq(ct, "strata_float") == 0) {
+            sb_append(&ln, ": %lld\\n\", (long long)(");
+        }
+        sb_append(&ln, val); sb_append(&ln, "));");
+        emit_raw(&g, sb_to_str(&ln));
+    }
+    if (nm > 0) { emit_raw(&g, "    fprintf(_out, \"\\n\");"); }
+
+    Node db = node_at(str_to_int(bind_get(g.schema_decls, src)));
+    NodeVec fields = nv_at(db.v1);
+    int nf = fields.len;
+    StringBuilder hdr = sb_new();
+    sb_append(&hdr, "    fprintf(_out, \"|");
+    StringBuilder rule = sb_new();
+    sb_append(&rule, "\\n|");
+    StringBuilder fmt = sb_new();
+    sb_append(&fmt, "        fprintf(_out, \"|");
+    StringBuilder args = sb_new();
+    for (int i = 0; i < nf; i = i + 1) {
+        Node f = nv_get(&fields, i);
+        sb_append(&hdr, " "); sb_append(&hdr, f.s1); sb_append(&hdr, " |");
+        sb_append(&rule, " --- |");
+        str ct = c_type(&g, f.c1);
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&fmt, " %s |");
+            sb_append(&args, ", _row->"); sb_append(&args, f.s1);
+        }
+        if (str_eq(ct, "strata_float") == 1) {
+            sb_append(&fmt, " %.17g |");
+            sb_append(&args, ", (double)_row->"); sb_append(&args, f.s1);
+        }
+        if (str_eq(ct, "strata_str") + str_eq(ct, "strata_float") == 0) {
+            sb_append(&fmt, " %lld |");
+            sb_append(&args, ", (long long)_row->"); sb_append(&args, f.s1);
+        }
+    }
+    sb_append(&hdr, sb_to_str(&rule));
+    sb_append(&hdr, "\\n\");");
+    emit_raw(&g, sb_to_str(&hdr));
+    emit_raw(&g, "    for (strata_int _i = 0; _i < _rn; _i++) {");
+    StringBuilder rw = sb_new();
+    sb_append(&rw, "        "); sb_append(&rw, src); sb_append(&rw, "* _row = rows[_i];");
+    emit_raw(&g, sb_to_str(&rw));
+    sb_append(&fmt, "\\n\""); sb_append(&fmt, sb_to_str(&args)); sb_append(&fmt, ");");
+    emit_raw(&g, sb_to_str(&fmt));
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    fprintf(_out, \"\\n%lld row(s).\\n\", (long long)_rn);");
     emit_raw(&g, "}");
+    g.var_types = prev_vars;
 }
 
 str fn_signature(Gen &g, Node fn) {
@@ -1130,6 +1374,11 @@ def collect_modules(str root, Node unit, NodeVec &out, int &seen_head) {
     }
 }
 
+// A title or a metric name goes inside a C string literal.
+str escape_quotes(str s) {
+    return replace_all(s, "\"", "\\\"");
+}
+
 // Strata has no string-replace builtin; the driver needs one for the final
 // rename pass, so it is written here in terms of index-of and slice.
 str replace_all(str hay, str needle, str rep) {
@@ -1206,12 +1455,16 @@ str generate_mode(str root, str source_path, str target, int test_mode) {
     for (int v = 0; v < nm; v = v + 1) { gen_verifies(&g, nv_get(&mods, v)); }
     gen_verifies(&g, unit);
 
+    // A module with no main() is a library unit; the registry is emitted
+    // either way so both entry points can call it.
+    gen_stream_registry(&g, unit, &mods);
+
     if (g.test_mode == 1) { gen_test_main(&g); }
     int emit_entry = has_main(unit);
     if (g.test_mode == 1) { emit_entry = 0; }
     if (str_eq(g.target, "wasm") == 1) { emit_entry = 0; }
     if (emit_entry == 1) {
-        emit_raw(&g, "\nint main(int argc, char** argv) {\n    __strata_argc = argc;\n    __strata_argv = argv;\n    return (int)strata_main();\n}\n");
+        emit_raw(&g, "\nint main(int argc, char** argv) {\n    __strata_argc = argc;\n    __strata_argv = argv;\n    __strata_register_streams();\n    return (int)strata_main();\n}\n");
     }
 
     // The Strata entry point is renamed so the C entry point can wrap it.
@@ -1288,6 +1541,7 @@ str verify_symbol(str label) {
 def gen_test_main(Gen &g) {
     emit_raw(&g, "\nint main(int argc, char** argv) {");
     emit_raw(&g, "    __strata_argc = argc; __strata_argv = argv;");
+    emit_raw(&g, "    __strata_register_streams();");
     emit_raw(&g, "    int blocks = 0, failed_blocks = 0;");
     NodeVec vs = nv_at(g.verifies);
     int n = vs.len;
@@ -1357,6 +1611,52 @@ def note_record(Gen &g, Node d) {
         g.field_types = bind_cons(sb_to_str(&key), c_type(&g, f.c1), g.field_types);
     }
     g.schemas = bind_cons(d.s1, sb_to_str(&cols), g.schemas);
+    g.schema_decls = bind_cons(d.s1, str(node_ptr(d)), g.schema_decls);
+}
+
+// Register every stream handler against its channel. The channel is the
+// handler's name: `stream Ingest(str m)` receives messages published to
+// "Ingest".
+def gen_stream_registry(Gen &g, Node unit, NodeVec &mods) {
+    emit_raw(&g, "\nstatic void __strata_register_streams(void) {");
+    int found = 0;
+    NodeVec rfns = nv_at(unit.v3);
+    int rn = rfns.len;
+    for (int i = 0; i < rn; i = i + 1) {
+        Node f = nv_get(&rfns, i);
+        if (str_eq(f.s1, "stream") == 1) { found = found + 1; }
+    }
+    int nm = mods.len;
+    for (int m = 0; m < nm; m = m + 1) {
+        Node mu = nv_get(&mods, m);
+        NodeVec mfns = nv_at(mu.v3);
+        int mn = mfns.len;
+        for (int j = 0; j < mn; j = j + 1) {
+            Node f = nv_get(&mfns, j);
+            if (str_eq(f.s1, "stream") == 1) { found = found + 1; }
+        }
+    }
+    if (found == 0) { emit_raw(&g, "    /* no stream handlers */"); }
+    emit_stream_regs(&g, unit);
+    for (int m = 0; m < nm; m = m + 1) { emit_stream_regs(&g, nv_get(&mods, m)); }
+    emit_raw(&g, "}");
+}
+
+def emit_stream_regs(Gen &g, Node unit) {
+    NodeVec fns = nv_at(unit.v3);
+    int n = fns.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fns, i);
+        if (str_eq(f.s1, "stream") == 1) {
+            StringBuilder line = sb_new();
+            sb_append(&line, "    strata_on(\"");
+            sb_append(&line, f.s2);
+            sb_append(&line, "\", (StrataHandler)");
+            sb_append(&line, cname(f.s2));
+            sb_append(&line, ");");
+            emit_raw(&g, sb_to_str(&line));
+        }
+    }
 }
 
 int has_main(Node unit) {

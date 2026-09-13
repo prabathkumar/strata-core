@@ -1,7 +1,12 @@
-# Strata — Audit and Next Steps
+# Strata — Where the project stands, and what comes next
 
-Full read of the repository. Every claim below was verified by running code, not
-by reading comments.
+Every claim below was verified by running code. The figures come from the
+suites in `test_suite/`, which run on every commit; where a number appears here
+it is because something printed it.
+
+The previous version of this file described a repo with no loops, no assignment
+statement, twelve stub tools in `bin/`, and self-hosting that "cannot begin".
+All of that is done. It was understating the project by roughly three months.
 
 ---
 
@@ -9,140 +14,171 @@ by reading comments.
 
 | Component | State |
 |---|---|
-| `compiler/lexer.py`, `parser.py`, `typechecker.py` | Real. 1,442 lines. The type checker genuinely implements E001–E006. |
-| `bootstrap/stage0.py` | Real. Parses, type-checks, generates C, invokes the C compiler. The only working compile path. |
-| `std/*.sta` | 13 modules, all parse. Written in Strata. |
-| `test_suite/conformance.py` | Real. 43 tests, all passing. |
-| `test_suite/doc_examples.py` | Real. Compiles every documentation example on every commit. |
-| `ai_self_repair.py` | Real. Compiles, reads JSON diagnostics, patches, recompiles. |
-| `bin/strata`, `bin/strata-lexer`, `bin/strata-parser` | Real wrappers over the above. |
+| Language core | Loops, assignment, indexing, module-level state. A bubble sort compiles and runs. |
+| Self-hosted front end | `compiler/*.sta` — lexer, parser, type checker, code generator, ~5,000 lines of Strata, 2% `native` C. |
+| The fixpoint | `stage0 → gen1.c → strata1 → gen2.c → strata2 → gen3.c`, and `gen1 == gen2 == gen3`. The Python bootstrap can be retired without changing a byte of output. |
+| Differential testing | Four suites compare the Strata implementation against the Python oracle: tokens, syntax trees, diagnostics, and generated C byte for byte. 47 files, 0 divergent. |
+| Error taxonomy | E001–E006, with `--json` diagnostics carrying a classification and a remediation strategy. |
+| Cross-tier contract | A column renamed in a `database` block fails the build at the line of UI that used it. Tested: `layout_renamed_column_breaks_ui`. |
+| `layout` / UI tier | Compiles to a function that writes HTML. Server-rendered. |
+| WebAssembly target | `--target wasm` emits freestanding C; clang builds a module exporting every top-level function. No libc. |
+| Database | In-memory tables, typed queries as expressions, `save`/`load` to tab-separated text **with schema migration** — columns match by name, a type change is refused. |
+| `report` / `render` | Runs its datasource, evaluates metrics against `rows`, writes Markdown. |
+| `model` / `predict` | A stack of dense layers with relu/sigmoid activations. Inference only. |
+| `stream` | Cooperative dispatch: publish to a channel, drain the queue, handlers may publish mid-drain. Not fibers. |
+| `verify` blocks | `strata test` builds and runs them, reporting each failed assertion with its line. |
+| FFI | `foreign` blocks: include a header, name the library, declare signatures checked at call sites. |
+| Repair loop | `ai_self_repair.py` compiles, reads the JSON diagnostics, patches, recompiles. 40 checks in CI, including the payload contract it depends on. |
+| CI | Eleven suites, plus both gcc and clang, plus a clean-checkout export so nothing passes only because of an untracked file. |
 
 ## Part 2 — What is not
 
-**12 of the 15 tools in `bin/` are stubs that print success without doing work.**
-
-| Tool | Finding |
+| Gap | State |
 |---|---|
-| `strata-checker` | Does not call the type checker. Two `grep -q` matches fake E001/E004; everything else prints "Semantic evaluation cleared safely" and exits 0 — **including for files that do not exist**. |
-| `strata-codegen` | A single `echo` of a fixed 5-line WAT module. Ignores its input entirely. |
-| `strata-compiler` | Prints "COMPILATION SUCCESSFUL — dist/production_bundle.wasm (14.8 KB)" and "settled in 42.15 ms". Writes zero bytes. No `dist/` is ever created. |
-| `strata-test` | "Validates" codegen by checking the stub's own hardcoded output. Contains `echo -p`, an invalid flag. Currently exits 1. |
-| `strata-debug` | Pure echo. Hardcoded breakpoint line, fake hex addresses, identical output for any input. |
-| `strata-bench` | 100% hardcoded numbers. No timing code exists. |
-| `strata-lsp` | No JSON-RPC framing, no stdout responses. Cannot function as an LSP. |
-| `strata-bindgen` | Ignores the header file. Writes a fixed heredoc regardless of input. |
-| `strata-deploy` | Reports three healthy liveness probes on production IP `104.22.41.82`. Nothing is deployed. |
-| `strata-sync` | Writes `sha256:e3b0c442...b855` into `Strata.lock` — the SHA-256 of the **empty string** — alongside a fake "upload SUCCESS". |
-| `strata-stage1` | A prebuilt macOS Mach-O binary committed to the repo. Cannot run on Linux/CI. |
-| `strata-errors` | A formatter only. Its sole caller is the grep-based checker. |
-
-**Two of these are actively dangerous in an evaluation:**
-
-1. `strata-deploy` tells a viewer that production pods are healthy. They do not exist.
-2. `strata-sync` forges a checksum into a tracked file. `Strata.lock` contains that
-   empty-string hash **twice**, plus a second value that is not even valid hex length.
-   Nothing in the lockfile can be trusted.
-
-**Language gaps blocking everything else:**
-
-- No `while`, no `for`, no loops of any kind.
-- No assignment statement — `int i = 0;` is legal, `i = 5;` is not.
-- No array indexing — `a[0]` does not parse.
-- No module-level variables.
-
-These are why `compiler/lexer.sta` is 92 lines of constants containing no lexer:
-scanning characters requires iteration, mutation and indexing. **Self-hosting
-cannot begin until these land.**
-
-Other findings: `strata-core/` is a nested git repository inside the repo.
-`ARCHITECTURAL_MANUAL.md` still carries the unmeasured performance figures that
-were removed from the README.
+| **Calls to undefined functions** | Not caught. `undefined_thing(1)` type-checks clean and fails at the C linker, naming a C symbol. It never reaches `--json`, so the repair loop is blind to it. The cause is structural: the type checker runs per-file without the resolved import graph, so an undefined call is indistinguishable from an imported one. |
+| Virtual Event Fibers | Design only. See Part 4. |
+| Concurrency of any kind | The runtime is single-threaded by construction. Seven mutable globals in the prelude, plus a `__rows` array and an `__count` per `database` block. |
+| Database durability | No locking, no index, no transactions, no SQL backend. Two writers corrupt the file. |
+| Aggregation | No `sum`, `avg`, `count` over a query result. A report metric sees `rows`, not columns. |
+| Training | `predict` is inference. No autograd, no optimiser, no accelerator. |
+| Client-side interactivity | Layouts are server-rendered HTML. WebAssembly has no DOM access without a JS shim, as with every WASM framework. |
+| Tooling | Three real tools in `bin/`. Twelve stubs are quarantined in `bin/unimplemented/` and CI rejects them on PATH. No formatter, no LSP, no debugger. |
+| Migration tooling (Java/C# → Strata) | Direction, not a project. |
 
 ---
 
-## Part 3 — Next steps
+## Part 3 — Next, in order
 
-### Phase 0 — Stop the bleeding (1 day)
+### 1. Undefined function calls (2–3 days)
 
-The stub tools are the single biggest risk to your evaluation, because a
-developer will run one, believe it, and then discover it was theatre.
+The highest-value correctness gap, because it is the one place the compiler
+currently defers to the C linker, and the repair loop cannot see linker output.
 
-1. Delete or move to `bin/experimental/` every stub tool, or rewrite each to print
-   `not implemented` and exit non-zero. **Do this before any developer sees the repo.**
-2. Purge the forged checksums from `Strata.lock`. Regenerate or empty it.
-3. Remove `bin/strata-stage1` — a committed macOS binary cannot be verified or run in CI.
-4. Remove the nested `strata-core/.git`.
-5. Strip the unmeasured figures from `ARCHITECTURAL_MANUAL.md`.
+The fix is not a new rule; it is plumbing. `stage0.py` already calls
+`resolve_imports()` before the type checker runs — the resolved units simply are
+not handed to it. Give `TypeChecker` the imported modules' signatures, then
+`fn is None` becomes E002 rather than a shrug.
 
-### Phase 1 — The language core (1–2 weeks) ← **the floor**
+Guard rail: the last time a call-site rule was added it false-positived on the
+project's own standard library. The single-file path must stay lenient, so the
+check fires only when imports were actually resolved. `stdlib_parses.py` and the
+type-checker differential are the tests that catch a regression here.
 
-Nothing else can start. Implement across lexer → parser → typechecker → codegen:
+### 2. A formatter, `strata fmt` (3–5 days)
 
-1. Assignment statement (`i = 5;`), with E001 on type mismatch.
-2. `while` loops.
-3. `for` loops.
-4. Array indexing (`a[i]`), read and write, with bounds semantics decided.
-5. Module-level variables.
+The premise is that AI writes the code and developers review it. Reviewers need
+canonical formatting or every diff is noise. This matters more than the LSP:
+if humans are not typing, autocomplete is not the bottleneck.
 
-Each lands with conformance tests. Exit criterion: a bubble sort compiles and runs.
+Written in Strata, over the existing parser. The test is idempotence — format
+twice, get the same bytes — plus formatting every file in the repo and
+requiring the AST to be unchanged.
 
-### Phase 2 — Freeze the seed subset (3–5 days)
+### 3. Aggregation over query results (1 week)
 
-Write down the minimum feature set required to express a compiler. Make
-`stage0.py` correct for exactly that. Get `std/str.sta` and `std/mem.sta`
-genuinely compiling and linking — a lexer depends on them.
+`sum`, `avg`, `min`, `max`, `count` over a `list[T]` and a column. The parser
+and type checker already reserve these names and return `float` for them; there
+is no evaluation behind it. Report metrics are the obvious consumer, and today
+a metric can only count rows.
 
-### Phase 3 — `lexer.sta` (1–2 weeks)
-
-**Differential testing is the method.** The Python lexer is the oracle: run both
-over the same input and require byte-identical token streams. Not "looks right."
-
-### Phase 4 — `parser.sta` (2–4 weeks)
-
-Same discipline. Both parsers emit AST JSON via the existing `--ast` flag; the
-JSON must match exactly.
-
-### Phase 5 — typechecker and codegen in Strata (3–6 weeks)
-
-Generated C compared against the Python compiler's output.
-
-### Phase 6 — The fixpoint
-
-`stage0` compiles `compiler.sta` → `strata1`. `strata1` compiles `compiler.sta`
-→ `strata2`. If `strata1` and `strata2` are byte-identical, self-hosting is
-proven. This is the milestone to announce, and it is objective.
-
-### Then, in order
-
-FFI. WASM via clang from the existing C output. `layout` blocks and the vertical
-slice demo. An inference runtime for `predict`. Fibers.
+### 4. Single-threaded coroutines (1–2 weeks) — see Part 4
 
 ---
 
-## Part 4 — The single most valuable demo
+## Part 4 — Fibers: the honest scope
 
-Not a feature. A thirty-second sequence:
+The README promises **Virtual Event Fibers**. What that phrase implies — M:N
+scheduling across OS threads with async I/O — is four projects, and the one
+everyone expects to be hard is the cheap one.
 
-1. A `database` block, a typed query, a rendered field.
-2. Rename the column.
-3. The **build fails**, pointing at the line of UI that used it.
+**Stack switching is days.** `ucontext` works in an afternoon; hand-written
+assembly for x86-64 SysV and ARM64 is about a week done properly, with FP and
+SIMD register save and stack alignment. If that were the job, it would be two
+weeks.
 
-No other stack does this. Blazor shares a language but the schema contract still
-breaks at runtime. `sqlx` checks SQL at compile time but nothing reaches the
-screen. This demo is the argument for Strata existing as a language, and
-everything in Phases 1–6 is in service of being able to run it honestly.
+**What it actually costs:**
+
+1. **Without I/O integration you have coroutines, not fibers.** A fiber earns
+   its name by suspending when it blocks, which means an event loop — epoll,
+   kqueue, IOCP — and non-blocking versions of every blocking call. The
+   runtime's blocking calls are file I/O, and regular files do not work with
+   epoll at all, so async file I/O means a thread pool or `io_uring`. That
+   lands in problem 2 regardless.
+
+2. **The runtime is single-threaded by construction, and this is the dominant
+   cost.** `Orders <- [id > 0]` scans a `static Orders* Orders__rows[]` against
+   a plain `strata_int Orders__count`. Under M:N that is a data race on every
+   query. `__strata_current_message` becomes per-fiber state. The wasm bump
+   allocator has no locking. Making this safe is either a lock per table —
+   which removes the reason for wanting M:N — or genuine concurrent structures.
+   This is a runtime-wide rewrite that fibers force rather than perform.
+
+3. **There is no oracle.** Every feature so far was verified by running two
+   implementations over the same input and demanding identical output. A
+   scheduler has no oracle: correctness is about interleavings, which are
+   nondeterministic. Deterministic seeded scheduling, stress tests and
+   ThreadSanitizer are a new testing methodology, and this project's rule is
+   that a claim without a failing test is a hope. The methodology has to exist
+   before the feature can land.
+
+4. **Colored functions.** If suspension is compiled rather than stack-switched,
+   any function that can suspend infects its callers, and that surfaces in the
+   type system.
+
+**So the estimate splits:**
+
+- Full M:N with async I/O and a thread-safe runtime: **months**, and most of it
+  is problem 2, which is owed whether or not fibers are the reason.
+- **Single-threaded stackless coroutines: 1–2 weeks.** This is the increment
+  worth taking.
+
+### The 1–2 week version, concretely
+
+Strata owns its own code generator, so suspension can be compiled rather than
+switched. A function marked `async` is transformed into a state machine:
+
+- **Parser.** `async` on a function; `await <expr>` as an expression.
+- **Type checker.** `await` is only legal inside an `async` function; a new
+  diagnostic for calling one without awaiting. This is the colored-function
+  rule, stated explicitly rather than discovered.
+- **Code generator.** Each `async` function becomes a struct holding its locals
+  and a resume point, plus a `step()` function with a `switch` on that point.
+  Locals that live across an `await` move into the struct; the rest stay on the
+  C stack. Each `await` is a `case` label.
+- **Runtime.** The stream dispatch queue already exists and already drains
+  cooperatively. A suspended coroutine parks on a channel and is resumed when a
+  message arrives on it. `strata_run()` is already the loop.
+- **Tests.** Because the schedule is deterministic — single thread, explicit
+  resume points — the output is reproducible and the existing conformance
+  harness works unchanged. That is the reason this version is tractable and the
+  M:N version is not.
+
+What it would **not** be: parallel, preemptive, or integrated with I/O. A
+`stream` handler could await a query without blocking the drain. That is worth
+having and it is worth saying plainly, the same way the `stream` row does.
+The Virtual Event Fibers row stays "design only" until the runtime is
+thread-safe.
 
 ---
 
 ## Part 5 — The pattern worth naming
 
-Three times now this project has produced something that looked finished and was
-not: a commit claiming "32/32 passing" while the suite was 30/31 and segfaulting;
-"Stage 2 self-hosting complete" with a compiler that does not compile; a
-self-repair loop that grepped source text instead of running the compiler. The
-`bin/` audit is the same pattern at scale.
+This project has repeatedly produced things that looked finished and were not:
+a commit claiming "32/32 passing" over a suite that was 30/31 and segfaulting;
+"Stage 2 self-hosting complete" with a compiler that did not compile; a
+self-repair loop that grepped source text instead of running the compiler;
+twelve `bin/` tools that printed success and did no work.
 
-The countermeasure is mechanical, not motivational: **every claim needs an
-executable check.** The conformance suite, the documentation harness and the
-differential testing above all exist for that reason. A claim without a test that
-fails when it stops being true is not a status — it is a hope.
+It kept happening after those were fixed. A `report` block generated one
+`fprintf` of its title and called a function that was never emitted. A query in
+expression position had a code-generator branch that emitted `NULL`, unreachable
+only because the parser refused to produce one. `save` wrote rows positionally
+so that adding a column silently corrupted every file on disk. The repair loop —
+the headline claim — had no test at all, and a renamed JSON key would have made
+it repair nothing while reporting that nothing was possible.
+
+The countermeasure is mechanical, not motivational: **every claim needs a check
+that fails when the claim stops being true, and the check must exercise the path
+the way it actually runs.** Not "does it compile" but "read back the file it
+rendered" — because a report that emits only its title still runs and still
+exits 0.

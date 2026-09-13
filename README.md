@@ -320,6 +320,14 @@ until the file is clean or no further progress is possible:
 [Strata Repair] clean after 2 repair(s).
 ```
 
+`test_suite/self_repair.py` runs on every commit. It checks the loop — that it
+converges, that it stops rather than spinning when a repair needs judgement,
+that `--dry-run` restores the file byte for byte — and, more importantly, the
+JSON contract the loop depends on. Every key the loop reads is asserted
+present and correctly typed, because renaming one would not break the loop
+loudly; it would make it repair nothing and report that nothing was possible.
+
+
 Repair backends are pluggable. `rules` is deterministic and offline. `llm` sends
 the diagnostic and source to a language model and needs no prior knowledge of
 Strata, because the classification and remediation strategy travel with the
@@ -485,11 +493,14 @@ what runs and what is planned is unambiguous.
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
 | `verify` blocks | **Done.** `strata test` builds and runs them, reporting each failed assertion with its line and source. Nested `assert "label" { ... }` groups are supported. No fixtures, no setup/teardown, no parallelism. |
-| Database persistence | **`save` / `load` to tab-separated text.** Serialisers are generated from the schema, so a table survives a restart and the file is readable by anything. No schema versioning, no migrations, no locking, no index, no transactions, no SQL backend. A file written by one schema will mis-parse under another, and two writers will corrupt it. |
-| `model` / `predict` execution | **One dense layer.** `predict` computes output = input x W + b with weights loaded from a text file. No hidden layers, no activations, no training, no accelerator, and no framework interop. Enough for a linear model and for the E006 contract to hold end to end. |
-| `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
-| Virtual Event Fibers | Design only. No scheduler exists. |
+| Queries (`Source <- [cond]`) | **An expression.** A query parses anywhere a value is expected — an argument, a function call, a comparison — not only on the right of a declaration, where it used to be the only place it parsed. It yields `list[T]` of the matching rows, and the E004 column contract holds at the query line wherever it appears. Conditions compare a column against a value; there are no joins, no ordering, no aggregation and no index — a query is a scan. |
+| Database persistence | **`save` / `load` to tab-separated text, with schema migration.** The file carries a header naming each column and its type, so a table saved by one version of a schema loads under another: a dropped column is skipped, a new one keeps its zero value, columns match by name rather than position, and a column whose type changed is refused rather than misread. A file written before headers existed is refused with a message saying to re-save it. Still no locking, no index, no transactions and no SQL backend — two writers will corrupt it. |
+| `model` / `predict` execution | **A stack of dense layers.** A model declares hidden layers between its input and output, each with an activation — `relu`, `sigmoid` or `none`; the output layer is linear. `predict` runs the forward pass with weights loaded from a text file, laid out layer by layer, and a file with the wrong weight count is refused rather than loaded in part. Inference only: no training, no autograd, no convolution or attention, no accelerator, no framework interop. The WebAssembly target has no libm, so `exp` is implemented in the prelude; it agrees with libm to about 1e-15 relative. |
+| `report` / `render` | **Renders.** A report runs its datasource, evaluates its metrics with `rows` bound to the result, and writes Markdown: the title, each metric, the matching rows as a table, and a row count. Metrics are type-checked (E001) and the datasource gets the E004 column contract. Metrics see `rows`, not the columns of a row — there is no aggregation, so `sum(col)` does not exist. Markdown only; no other output format, no charts, no templates. |
+| `stream` blocks | **Dispatching.** Each `stream` handler registers under its own name as a channel; `strata_publish(channel, message)` enqueues and `strata_run()` drains the queue, returning the number delivered. Handlers may publish while the queue drains. This is a cooperative single-threaded loop: no separate stacks, no preemption, no parallelism, no I/O integration. Messages to an unknown channel are dropped. |
+| Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
+| Calls to undefined functions | **Not caught by the type checker.** `undefined_thing(1)` type-checks clean and fails at the C linker, with a message naming a C symbol rather than a Strata diagnostic. It is therefore invisible to `--json` and to the repair loop. Known gap, found by writing the repair-loop tests. |
 | Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
 
 No performance numbers are published, because none have been measured. Figures

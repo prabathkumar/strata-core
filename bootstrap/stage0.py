@@ -72,6 +72,7 @@ BUILTIN_RETURNS = {
     "file_write": "strata_int", "file_exists": "strata_int",
     "strata_len": "strata_int", "strata_model_load": "strata_int",
     "current_message": "strata_str",
+    "strata_publish": "strata_int", "strata_run": "strata_int",
     "strata_tensor": "double*", "strata_predict": "double*",
     "strata_tensor_add": "double*",
     "strata_tensor_get": "strata_float", "strata_tensor_set": "void",
@@ -141,6 +142,9 @@ class CodeGen:
         # Set while generating a query condition: a bare identifier naming a
         # column of this table resolves to the row under test.
         self.query_row_type = None
+        self.query_depth = 0
+        # Database fields by table name, for report rendering.
+        self.schema_fields = {}
         # Libraries named by foreign blocks, passed to the linker.
         self.link_libs = []
 
@@ -163,6 +167,9 @@ class CodeGen:
             for d in unit.declarations:
                 if isinstance(d, (DatabaseDecl, ProtocolDecl)):
                     self.record_types.add(d.name)
+                if isinstance(d, DatabaseDecl):
+                    self.schemas[d.name] = [f.name for f in d.fields]
+                    self.schema_fields[d.name] = d.fields
                 elif isinstance(d, ModelDecl):
                     self.model_names.add(d.name)
 
@@ -205,6 +212,8 @@ class CodeGen:
 
         # A module with no main() is a library unit: emitting the C entry point
         # would force an undefined reference to strata_main.
+        self._gen_stream_registry()
+
         if self.test_mode:
             self._gen_test_main()
         elif self.target != "wasm" and any(fn.name == "main" for fn in self.ast.functions):
@@ -212,6 +221,7 @@ class CodeGen:
 int main(int argc, char** argv) {
     __strata_argc = argc;
     __strata_argv = argv;
+    __strata_register_streams();
     return (int)strata_main();
 }
 """)
@@ -267,15 +277,23 @@ int main(int argc, char** argv) {
     def _gen_table_io(self, name, fields):
         """Serialisers generated from the schema.
 
-        Field order is the declaration order, which is also the contract: a
-        file written by one schema is not readable by another.
+        The file carries a header naming each column and its type, so a table
+        saved by one version of a schema loads under another: a dropped column
+        is skipped, a new one keeps its zero value, and a column whose type
+        changed is refused rather than misread. Field order is no longer the
+        contract — the names are.
         """
+        def tchar(fd):
+            ct = self._c_type(fd.field_type)
+            return "s" if ct == "strata_str" else ("f" if ct == "strata_float" else "i")
+
+        header = "\\t".join([f"{fd.name}:{tchar(fd)}" for fd in fields])
         self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
         self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
+        self.emit_raw(f'    fprintf(f, "#strata\\t{name}\\t{header}\\n");')
         self.emit_raw(f"    for (strata_int i = 0; i < {name}__count; i++) {{")
         self.emit_raw(f"        {name}* r = {name}__rows[i];")
         for i, fd in enumerate(fields):
-            sep = "" if i == 0 else '        fputc(0x09, f);\n'
             ct = self._c_type(fd.field_type)
             if i:
                 self.emit_raw("        fputc(0x09, f);")
@@ -292,22 +310,57 @@ int main(int argc, char** argv) {
 
         self.emit_raw(f"static strata_int {name}__load(strata_str path) {{")
         self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
-        self.emit_raw("    char buf[4096]; int more;")
+        self.emit_raw("    char buf[4096];")
+        self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
+        self.emit_raw("    char _types[STRATA_MAX_COLS];")
+        self.emit_raw("    int _map[STRATA_MAX_COLS];")
+        self.emit_raw("    int _ncol = strata_read_header(f, _names, _types, "
+                      "STRATA_MAX_COLS);")
+        self.emit_raw(f"    if (_ncol == -2) {{ fclose(f); {name}__count = 0; return 1; }}")
+        self.emit_raw("    if (_ncol == -1) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "no schema header; '
+                      f'it was written before headers existed. Re-save it.");')
+        self.emit_raw("        fclose(f); return 0;")
+        self.emit_raw("    }")
+        self.emit_raw("    for (int _c = 0; _c < _ncol; _c++) {")
+        self.emit_raw("        _map[_c] = -1;")
+        for idx, fd in enumerate(fields):
+            self.emit_raw(f'        if (strcmp(_names[_c], "{fd.name}") == 0) {{')
+            self.emit_raw(f"            if (_types[_c] != '{tchar(fd)}') {{")
+            self.emit_raw(f'                strata_load_refuse("{name}", path, '
+                          f'"column \'{fd.name}\' changed type since it was saved");')
+            self.emit_raw("                fclose(f); return 0;")
+            self.emit_raw("            }")
+            self.emit_raw(f"            _map[_c] = {idx};")
+            self.emit_raw("        }")
+        self.emit_raw("    }")
         self.emit_raw(f"    {name}__count = 0;")
         self.emit_raw("    while (1) {")
         self.emit_raw(f"        {name}* r = ({name}*)calloc(1, sizeof({name}));")
-        self.emit_raw("        more = strata_read_field(f, buf, 4096);")
-        self.emit_raw("        if (more < 0) { free(r); break; }")
-        for i, fd in enumerate(fields):
-            if i:
-                self.emit_raw("        strata_read_field(f, buf, 4096);")
+        # A column the file does not carry keeps its zero value; for a str that
+        # is "" rather than NULL, so a new column cannot crash a printf.
+        for fd in fields:
+            if self._c_type(fd.field_type) == "strata_str":
+                self.emit_raw(f'        r->{fd.name} = "";')
+        self.emit_raw("        int _more = 0, _eof = 0;")
+        self.emit_raw("        for (int _c = 0; _c < _ncol; _c++) {")
+        self.emit_raw("            _more = strata_read_field(f, buf, 4096);")
+        self.emit_raw("            if (_more < 0) { _eof = 1; break; }")
+        self.emit_raw("            switch (_map[_c]) {")
+        for idx, fd in enumerate(fields):
             ct = self._c_type(fd.field_type)
             if ct == "strata_str":
-                self.emit_raw(f"        r->{fd.name} = strata_dup(buf);")
+                conv = f"r->{fd.name} = strata_dup(buf);"
             elif ct == "strata_float":
-                self.emit_raw(f"        r->{fd.name} = strtod(buf, NULL);")
+                conv = f"r->{fd.name} = strtod(buf, NULL);"
             else:
-                self.emit_raw(f"        r->{fd.name} = (strata_int)atoll(buf);")
+                conv = f"r->{fd.name} = (strata_int)atoll(buf);"
+            self.emit_raw(f"                case {idx}: {conv} break;")
+        self.emit_raw("                default: break;   /* a column this "
+                      "schema no longer has */")
+        self.emit_raw("            }")
+        self.emit_raw("        }")
+        self.emit_raw("        if (_eof) { free(r); break; }")
         self.emit_raw(f"        if ({name}__count < STRATA_TABLE_CAP) "
                       f"{name}__rows[{name}__count++] = r;")
         self.emit_raw("    }")
@@ -323,8 +376,24 @@ int main(int argc, char** argv) {
     def _gen_model(self, decl):
         # Same layout as StrataModel in the prelude, so strata_predict can
         # read it without a cast that depends on field order.
+        #
+        # `dims` is the input width, then each layer's output width; `acts` the
+        # activation after each layer. A model with no hidden layers is one
+        # layer, so the forward pass has no special case for it.
+        hidden = getattr(decl, "hidden", []) or []
+        dims = ([decl.input_type.cols]
+                + [h.width for h in hidden]
+                + [decl.output_type.cols])
+        acts = [{"relu": "r", "sigmoid": "s"}.get(h.activation, "n") for h in hidden]
+        acts.append("n")                      # the output layer is linear
         self.emit_raw(f"\ntypedef StrataModel {decl.name};")
-        self.emit_raw(f"static {decl.name} {decl.name}_instance = {{{decl.input_type.rows},{decl.input_type.cols},{decl.output_type.rows},{decl.output_type.cols},NULL}};")
+        dim_list = ",".join(str(d) for d in dims)
+        act_list = ",".join(f"'{a}'" for a in acts)
+        self.emit_raw(
+            f"static {decl.name} {decl.name}_instance = "
+            f"{{{decl.input_type.rows},{decl.input_type.cols},"
+            f"{decl.output_type.rows},{decl.output_type.cols},NULL,"
+            f"{len(dims) - 1},{{{dim_list}}},{{{act_list}}}}};")
 
     # Layout properties are declarative and map onto CSS. Anything not listed
     # is emitted as a data- attribute rather than dropped, so an unrecognised
@@ -363,10 +432,26 @@ int main(int argc, char** argv) {
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
         return ";".join(parts)
 
+    def _gen_stream_registry(self):
+        """Register every stream handler against its channel.
+
+        The channel is the handler's name: `stream Ingest(str m)` receives
+        messages published to "Ingest".
+        """
+        streams = [fn for _, u in ([(None, self.ast)] + list(self.modules))
+                   for fn in u.functions if fn.kind == "stream"]
+        self.emit_raw("\nstatic void __strata_register_streams(void) {")
+        if not streams:
+            self.emit_raw("    /* no stream handlers */")
+        for fn in streams:
+            self.emit_raw(f'    strata_on("{fn.name}", (StrataHandler){cname(fn.name)});')
+        self.emit_raw("}")
+
     def _gen_test_main(self):
         """An entry point that runs every verify block and reports."""
         self.emit_raw("\nint main(int argc, char** argv) {")
         self.emit_raw("    __strata_argc = argc; __strata_argv = argv;")
+        self.emit_raw("    __strata_register_streams();")
         self.emit_raw("    int blocks = 0, failed_blocks = 0;")
         for d in self.verify_blocks:
             safe = _verify_symbol(d.label)
@@ -476,9 +561,65 @@ int main(int argc, char** argv) {
         return t.replace("\\", "").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _gen_report(self, decl):
-        self.emit_raw(f"\nvoid {decl.name}_generate(FILE* _out) {{")
-        self.emit_raw(f'    fprintf(_out,"# {decl.title}\\n");')
-        self.emit_raw(f"}}")
+        """A report renders its datasource and its metrics as Markdown.
+
+        It used to emit the title and nothing else, so `render` produced a
+        one-line file that looked like it had worked. The metrics are
+        evaluated with `rows` bound to the datasource result, which is what
+        makes `int deals = strata_len(rows);` mean something.
+        """
+        title = decl.title.replace('"', '\\"')
+        src = decl.datasource.source if decl.datasource else None
+        self.emit_raw(f"\nvoid {decl.name}_render(FILE* _out) {{")
+
+        if src is None or src not in self.schemas:
+            # The checker has already reported an unknown or missing table.
+            self.emit_raw(f'    fprintf(_out, "# {title}\\n");')
+            self.emit_raw("}")
+            return
+
+        prev_vars = self.var_types
+        self.var_types = {"rows": f"{src}**"}
+        rows = self._gen_query_expr(decl.datasource, [])
+        self.emit_raw(f"    {src}** rows = {rows};")
+        self.emit_raw(f"    strata_int _rn = strata_len(rows);")
+        self.emit_raw(f'    fprintf(_out, "# {title}\\n\\n");')
+
+        for m in decl.metrics:
+            ct = self._c_type(m.metric_type)
+            val = self._gen_expr(m.expr, [])
+            label = m.name.replace('"', '\\"')
+            if ct == "strata_str":
+                self.emit_raw(f'    fprintf(_out, "- {label}: %s\\n", (strata_str)({val}));')
+            elif ct == "strata_float":
+                self.emit_raw(f'    fprintf(_out, "- {label}: %.17g\\n", (double)({val}));')
+            else:
+                self.emit_raw(f'    fprintf(_out, "- {label}: %lld\\n", (long long)({val}));')
+        if decl.metrics:
+            self.emit_raw('    fprintf(_out, "\\n");')
+
+        fields = self.schema_fields.get(src, [])
+        header = " | ".join(f.name for f in fields)
+        rule = " | ".join("---" for _ in fields)
+        self.emit_raw(f'    fprintf(_out, "| {header} |\\n| {rule} |\\n");')
+        self.emit_raw("    for (strata_int _i = 0; _i < _rn; _i++) {")
+        self.emit_raw(f"        {src}* _row = rows[_i];")
+        parts, args = [], []
+        for f in fields:
+            ct = self._c_type(f.field_type)
+            if ct == "strata_str":
+                parts.append("%s"); args.append(f"_row->{f.name}")
+            elif ct == "strata_float":
+                parts.append("%.17g"); args.append(f"(double)_row->{f.name}")
+            else:
+                parts.append("%lld"); args.append(f"(long long)_row->{f.name}")
+        fmt = " | ".join(parts)
+        arglist = ("".join(", " + a for a in args))
+        self.emit_raw(f'        fprintf(_out, "| {fmt} |\\n"{arglist});')
+        self.emit_raw("    }")
+        self.emit_raw(f'    fprintf(_out, "\\n%lld row(s).\\n", (long long)_rn);')
+        self.emit_raw("}")
+        self.var_types = prev_vars
 
     def _gen_function(self, fn):
         rt = self._c_type(fn.return_type) if fn.return_type else "void"
@@ -569,8 +710,6 @@ int main(int argc, char** argv) {
                 self.emit(f'__strata_assert(({cond}), "{src}", {stmt.line});')
             else:
                 self.emit(f'if(!({cond})){{fprintf(stderr,"[STRATA ASSERT FAILED] line {stmt.line}\\n");exit(1);}}')
-        elif isinstance(stmt, RenderStmt):
-            self.emit(f'{{FILE* _rf=fopen("{stmt.path}","w");{stmt.report}_generate(_rf);fclose(_rf);}}')
         elif isinstance(stmt, VerifyBlock):
             self.emit(f'/* verify: {stmt.label} */')
             for a in stmt.assertions:
@@ -755,7 +894,8 @@ int main(int argc, char** argv) {
             # list[T] is T* in C, so an element is the pointee.
             return base[:-1] if base and base.endswith("*") else None
         if isinstance(expr, QueryExpr):
-            return f"{expr.source}*" if expr.source in self.record_types else None
+            # A query is a list of matching rows, and list[T] is T* in C.
+            return f"{expr.source}**" if expr.source in self.record_types else None
         if isinstance(expr, BorrowExpr):
             return self._expr_ctype(expr.target, param_names)
         if isinstance(expr, CallExpr):
@@ -836,8 +976,35 @@ int main(int argc, char** argv) {
             ct = self._expr_ctype(expr.obj, param_names) or ""
             arrow = "->" if ct.endswith("*") else "."
             return f"{obj}{arrow}{expr.member}"
-        if isinstance(expr, QueryExpr): return f"NULL/*query {expr.source}*/"
+        if isinstance(expr, QueryExpr):
+            return self._gen_query_expr(expr, param_names)
         return "0"
+
+    def _gen_query_expr(self, expr, param_names):
+        """A query used where a value is expected, not on the right of a
+        declaration. It becomes a statement expression that collects the
+        matching rows into a NULL-terminated array and yields it, so
+        `len(Orders <- [id > 0])` means what it reads as.
+        """
+        src = expr.source
+        if src not in self.schemas:
+            # The checker has already reported E004; keep going so it can
+            # report the rest of the file.
+            return "NULL"
+        self._validate_query_columns(expr.condition, src, expr.line)
+        self.query_depth += 1
+        tag = f"_q{self.query_depth}"
+        prev = self.query_row_type
+        self.query_row_type = src
+        cond = self._gen_expr(expr.condition, param_names)
+        self.query_row_type = prev
+        self.query_depth -= 1
+        return (f"({{ {src}** {tag} = ({src}**)malloc(sizeof(void*) * "
+                f"({src}__count + 1)); strata_int {tag}n = 0; "
+                f"for (strata_int {tag}i = 0; {tag}i < {src}__count; {tag}i++) {{ "
+                f"{src}* _row = {src}__rows[{tag}i]; "
+                f"if ({cond}) {{ {tag}[{tag}n++] = _row; }} }} "
+                f"{tag}[{tag}n] = NULL; {tag}; }})")
 
     def _gen_call(self, expr, param_names):
         if expr.callee == "str":

@@ -141,6 +141,13 @@ def measure():
                                           if ok else "FAILING")
         ok_all = ok_all and bool(ok)
 
+    ok, text = run_suite("self_repair.py")
+    if ok is not None:
+        m = re.search(r"(\d+)/(\d+) checks passed", text)
+        facts["Repair loop"] = (f"{m.group(1)}/{m.group(2)} checks passing"
+                                if m and ok else "FAILING")
+        ok_all = ok_all and bool(ok)
+
     ok, text = run_suite("stdlib_parses.py")
     if ok is not None:
         m = re.search(r"(\d+) parse, (\d+) fail", text)
