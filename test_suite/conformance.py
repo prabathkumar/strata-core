@@ -180,6 +180,20 @@ compile_run("float_shortest_roundtrip",
     'import io from std;\nint main() { float a = 91.4; float b = 3.0; print(str(a)); print(str(b)); return 0; }',
     "91.4\n3.0")
 
+print("\n── Foreign function interface ────────────────────────────────────")
+compile_run("ffi_calls_libm",
+    'import io from std;\nforeign "math.h" link "m" { float sqrt(float x); }\nint main() { print(str(sqrt(144.0))); return 0; }',
+    "12.0")
+compile_run("ffi_two_args",
+    'import io from std;\nforeign "math.h" link "m" { float pow(float a, float b); }\nint main() { print(str(pow(2.0, 10.0))); return 0; }',
+    "1024.0")
+test("ffi_arg_type_checked",
+    'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { float r = sqrt("nope"); return 0; }', "E005")
+test("ffi_arg_count_checked",
+    'foreign "math.h" link "m" { float pow(float a, float b); }\nint main() { float r = pow(2.0); return 0; }', "E002")
+test("ffi_return_type_flows",
+    'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { str s = sqrt(4.0); return 0; }', "E001")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

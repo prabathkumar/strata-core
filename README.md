@@ -133,6 +133,31 @@ make a patch unambiguous to apply and unambiguous to verify. Readability here
 comes from explicit structure, not from resembling English — English is
 ambiguous, and ambiguity is the thing being engineered out.
 
+### Calling existing C libraries
+
+A `foreign` block declares what a library provides. The signatures are
+registered like any other function, so the boundary is checked rather than
+trusted.
+
+```text
+import io from std;
+
+foreign "math.h" link "m" {
+    float sqrt(float x);
+    float pow(float base, float exponent);
+}
+
+int main() {
+    print(str(sqrt(144.0)));
+    print(str(pow(2.0, 10.0)));
+    return 0;
+}
+```
+
+Pass a `str` where the library expects a `float` and the build stops with
+`E005` — Boundary Perimeter Contamination — rather than producing undefined
+behaviour at runtime.
+
 ### Machine-readable diagnostics
 
 ```
@@ -345,7 +370,7 @@ what runs and what is planned is unambiguous.
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
 | Virtual Event Fibers | Design only. No scheduler exists. |
-| FFI | Not started. Required for adoption. |
+| FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
 | Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
 
 No performance numbers are published, because none have been measured. Figures

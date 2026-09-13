@@ -17,7 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
-    LayoutDecl, Element, Prop, ForInStmt,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -83,6 +83,7 @@ class TypeChecker:
 
     def check(self):
         self._register_declarations()
+        self._register_foreign()
         self._register_functions()
         # Reports and layouts are checked after functions are registered:
         # either may be declared before the database it draws from, and a
@@ -112,6 +113,20 @@ class TypeChecker:
                 # A layout is renderable in the same way a report is.
                 self.global_scope.define(d.name, SType(d.name))
 
+
+    def _register_foreign(self):
+        """Foreign signatures are registered like any other function.
+
+        The point of declaring them is that a call across the boundary is
+        checked: passing a str where the C function takes an int is E005, not a
+        crash at runtime.
+        """
+        for d in self.ast.declarations:
+            if isinstance(d, ForeignDecl):
+                for fn in d.functions:
+                    rt = self._resolve_type(fn.return_type)
+                    pts = [self._resolve_type(p.param_type) for p in fn.params]
+                    self.functions[fn.name] = (rt, pts)
 
     def _register_functions(self):
         for fn in self.ast.functions:

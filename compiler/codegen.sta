@@ -773,6 +773,22 @@ def gen_decl(Gen &g, Node d) {
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
     if (d.kind == 70) { gen_layout(&g, d); return; }
+    if (d.kind == 74) {
+        // The header declares the functions; re-declaring them risks
+        // conflicting with the real signature.
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "#include <"); sb_append(&sb, d.s1); sb_append(&sb, ">");
+        emit_raw(&g, sb_to_str(&sb));
+        // Return types are recorded so conversions dispatch correctly:
+        // without this str(sqrt(x)) routes a float through the int converter.
+        NodeVec ffns = nv_at(d.v1);
+        int nf = ffns.len;
+        for (int i = 0; i < nf; i = i + 1) {
+            Node ff = nv_get(&ffns, i);
+            g.func_returns = bind_cons(ff.s2, c_type(&g, ff.c1), g.func_returns);
+        }
+        return;
+    }
 }
 
 def gen_model(Gen &g, Node d) {

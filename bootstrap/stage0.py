@@ -11,7 +11,7 @@ from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
-    LayoutDecl, Element, Prop, ForInStmt,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
@@ -89,6 +89,8 @@ class CodeGen:
         # Set while generating a query condition: a bare identifier naming a
         # column of this table resolves to the row under test.
         self.query_row_type = None
+        # Libraries named by foreign blocks, passed to the linker.
+        self.link_libs = []
 
     def emit(self, line=""):
         self.out.append("    " * self.indent + line)
@@ -185,6 +187,8 @@ int main(int argc, char** argv) {
             self._gen_report(decl)
         elif isinstance(decl, LayoutDecl):
             self._gen_layout(decl)
+        elif isinstance(decl, ForeignDecl):
+            self._gen_foreign(decl)
 
     def _gen_table_storage(self, name):
         """Backing store for a database block.
@@ -239,6 +243,20 @@ int main(int argc, char** argv) {
                 continue
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
         return ";".join(parts)
+
+    def _gen_foreign(self, decl):
+        """Include the header and record the library to link.
+
+        No prototypes are emitted: the header already declares them, and
+        re-declaring risks conflicting with the real signature.
+        """
+        self.emit_raw(f"#include <{decl.header}>")
+        if decl.link:
+            self.link_libs.append(decl.link)
+        # Record return types so conversions dispatch correctly: without this
+        # str(sqrt(x)) routes a float through the integer converter.
+        for fn in decl.functions:
+            self.func_returns[fn.name] = self._c_type(fn.return_type)
 
     def _gen_layout(self, decl):
         """A layout becomes a function that writes HTML to a stream."""
@@ -823,6 +841,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
               f"checkout; its symbols must be provided at link time.", file=sys.stderr)
     gen = CodeGen(ast, source_path, modules)
     c_source = gen.generate()
+    link_flags = [f"-l{l}" for l in dict.fromkeys(gen.link_libs)]
     base = os.path.splitext(source_path)[0]
     c_path = base + ".c"
     with open(c_path, "w") as f: f.write(c_source)
@@ -852,7 +871,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
             output_path += ".o"
         flags = [cc,"-O2","-c"] + portability + ["-o",output_path,c_path]
     else:
-        flags = [cc,"-O2"] + portability + ["-o",output_path,c_path,"-lm"]
+        flags = [cc,"-O2"] + portability + ["-o",output_path,c_path,"-lm"] + link_flags
     if verbose: print(f"  CC: {' '.join(flags)}")
     r = subprocess.run(flags, capture_output=True, text=True)
     if r.returncode != 0:

@@ -1,0 +1,25 @@
+// STRATA — Foreign Function Interface
+//
+// Calling an existing C library, with the boundary type-checked.
+//
+// A `foreign` block includes the header, names the library to link, and
+// declares the signatures. Those signatures are registered like any other
+// function, so passing a str where the library expects a float is E005 at
+// build time rather than undefined behaviour at runtime.
+//
+// This is what E005 — Boundary Perimeter Contamination — has always described.
+
+import io from std;
+
+foreign "math.h" link "m" {
+    float sqrt(float x);
+    float pow(float base, float exponent);
+    float fabs(float x);
+}
+
+int main() {
+    print(str(sqrt(144.0)));
+    print(str(pow(2.0, 10.0)));
+    print(str(fabs(0.0 - 7.5)));
+    return 0;
+}

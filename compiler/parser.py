@@ -284,6 +284,21 @@ class ReportDecl(Node):
                                "metrics":[m.to_dict() for m in self.metrics]}
 
 @dataclass
+class ForeignDecl(Node):
+    """`foreign "header.h" link "name" { signatures }` — external C functions.
+
+    The header is included in the generated C and the signatures are registered
+    like any other function, so a call into a foreign library is checked
+    against its declared types rather than trusted.
+    """
+    header: str
+    link: str
+    functions: List[Any]
+    def to_dict(self): return {"node":"ForeignDecl","header":self.header,
+                               "link":self.link,
+                               "functions":[f.to_dict() for f in self.functions]}
+
+@dataclass
 class LayoutDecl(Node):
     name: str
     body: List[Any]
@@ -389,6 +404,8 @@ class Parser:
                 declarations.append(self._parse_report())
             elif self._check(TT.KW_LAYOUT):
                 declarations.append(self._parse_layout())
+            elif self._at_word("foreign"):
+                declarations.append(self._parse_foreign())
             elif self._check(TT.KW_DEF):
                 functions.append(self._parse_function(kind="def"))
             elif self._check(TT.KW_STREAM):
@@ -515,6 +532,26 @@ class Parser:
     # statement position is an element unless it is being assigned, accessed,
     # called or queried.
     NOT_AN_ELEMENT = (TT.ASSIGN, TT.DOT, TT.L_PAREN, TT.ARROW_L)
+
+    def _parse_foreign(self) -> ForeignDecl:
+        t = self._consume_word("foreign")
+        header = self._consume(TT.STR_LIT).value
+        link = ""
+        if self._at_word("link"):
+            self._advance()
+            link = self._consume(TT.STR_LIT).value
+        self._consume(TT.L_BRACE)
+        fns = []
+        while not self._check(TT.R_BRACE) and not self._at_end():
+            rt = self._parse_type()
+            name = self._consume(TT.IDENT).value
+            self._consume(TT.L_PAREN)
+            params = self._parse_params()
+            self._consume(TT.R_PAREN)
+            self._consume(TT.SEMICOLON)
+            fns.append(FunctionDecl(rt.line, rt.col, rt, name, params, [], "foreign"))
+        self._consume(TT.R_BRACE)
+        return ForeignDecl(t.line, t.col, header, link, fns)
 
     def _parse_layout(self) -> LayoutDecl:
         t = self._consume(TT.KW_LAYOUT)

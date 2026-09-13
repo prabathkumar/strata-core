@@ -284,6 +284,29 @@ def register_decls(TC &tc, Node unit) {
         }
     }
 
+    // Foreign signatures are registered like any other function, so a call
+    // across the boundary is checked rather than trusted.
+    for (int f = 0; f < nd; f = f + 1) {
+        Node d2 = nv_get(&decls, f);
+        if (d2.kind == 74) {
+            NodeVec ffns = nv_at(d2.v1);
+            int nff = ffns.len;
+            for (int q = 0; q < nff; q = q + 1) {
+                Node ff = nv_get(&ffns, q);
+                int frt = ty_ptr(ty_new("void"));
+                if (ff.c1 != 0) { frt = resolve_type(ff.c1); }
+                NodeVec fps = nv_at(ff.v1);
+                int fplist = 0;
+                int fnp = fps.len;
+                for (int r = fnp - 1; r >= 0; r = r - 1) {
+                    Node fprm = nv_get(&fps, r);
+                    fplist = sym_cons(fprm.s1, resolve_type(fprm.c1), fplist);
+                }
+                tc.fns = fn_cons(ff.s2, frt, fplist, fnp, tc.fns);
+            }
+        }
+    }
+
     NodeVec fns = nv_at(unit.v3);
     int nf = fns.len;
     for (int j = 0; j < nf; j = j + 1) {

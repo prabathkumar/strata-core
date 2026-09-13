@@ -187,6 +187,7 @@ str node_name(int k) {
     if (k == 71) { return "Element"; }
     if (k == 72) { return "Prop"; }
     if (k == 73) { return "ForInStmt"; }
+    if (k == 74) { return "ForeignDecl"; }
     return "Unknown";
 }
 
@@ -295,6 +296,11 @@ str node_json(Node n) {
         jfield(&sb, "children", jlist(n.v2));
     }
     if (k == 72) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "value", jchild(n.c1)); }
+    if (k == 74) {
+        jfield(&sb, "header", jstr(n.s1));
+        jfield(&sb, "link", jstr(n.s2));
+        jfield(&sb, "functions", jlist(n.v1));
+    }
     if (k == 73) {
         jfield(&sb, "var", jstr(n.s1));
         jfield(&sb, "collection", jchild(n.c1));
@@ -1127,17 +1133,21 @@ Node parse_unit(P &p) {
         if (k == 27) { nv_push(&decls, parse_model(&p)); }
         if (k == 29) { nv_push(&decls, parse_report(&p)); }
         if (k == 31) { nv_push(&decls, parse_layout(&p)); }
+        int is_foreign = p_at_word(&p, "foreign");
+        if (is_foreign == 1) { nv_push(&decls, parse_foreign(&p)); }
         if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
         if (k == 25) { nv_push(&funcs, parse_function(&p, 2)); }
-        if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
-        if (is_type_kind(k) == 0) {
+        if (is_foreign == 0) {
+            if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
+        }
+        if (is_foreign == 0) { if (is_type_kind(k) == 0) {
             if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
                 if (k != 31) { if (k != 23) { if (k != 25) {
                     eprint("[STRATA PARSE ERROR] unexpected top-level token");
                     p_advance(&p);
                 } } }
             } } } } }
-        }
+        } }
     }
 
     Node unit = node_new(1);
@@ -1165,6 +1175,42 @@ int not_an_element(int k) {
     if (k == 52) { return 1; }   // (
     if (k == 76) { return 1; }   // <-
     return 0;
+}
+
+Node parse_foreign(P &p) {
+    Token t = p_advance(&p);                   // contextual `foreign`
+    Token header = p_advance(&p);
+    Node n = node_new(74);
+    n.s1 = header.value;
+    n.s2 = "";
+    n_pos(n, t);
+    if (p_at_word(&p, "link") == 1) {
+        p_advance(&p);
+        Token lib = p_advance(&p);
+        n.s2 = lib.value;
+    }
+    p_expect(&p, 50);
+    NodeVec fns = nv_new();
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        Node rt = parse_type(&p);
+        Token name = p_expect(&p, 4);
+        p_expect(&p, 52);
+        NodeVec params = parse_params(&p);
+        p_expect(&p, 53);
+        p_expect(&p, 56);
+        Node f = node_new(9);
+        f.s1 = "foreign";
+        f.c1 = node_ptr(rt);
+        f.s2 = name.value;
+        f.v1 = nv_ptr(params);
+        f.v2 = nv_ptr(nv_new());
+        n_pos(f, name);
+        nv_push(&fns, f);
+    }
+    p_expect(&p, 51);
+    n.v1 = nv_ptr(fns);
+    return n;
 }
 
 Node parse_layout(P &p) {
