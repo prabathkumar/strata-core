@@ -1,146 +1,246 @@
-# Strata Full-Stack Enterprise Systems Language
-**Version 1.0.0** · *AI-Engineered Core Specification for General-Purpose Enterprise Infrastructure*
+# Strata
+
+**A systems language whose compiler is built to verify AI-generated code.**
+
+> **Status: pre-release, under active development.** The compiler works and is
+> covered by a conformance suite. Several components described under
+> [Roadmap](#roadmap) are designed but not yet built, and are marked as such.
+> Nothing in this document is claimed to work unless it is in
+> [What works today](#what-works-today). Every code example below is compiled
+> on every commit by `test_suite/doc_examples.py`.
 
 ---
 
-## 1. Executive Summary: The Ideation Approach
+## 1. Why another language
 
-Strata was engineered to resolve the **Fragmented Stack Paradox**—the operational friction, cognitive split, and maintenance burden of balancing static server tiers (Java/C#), dynamic intelligence layers (Python), and volatile presentation frameworks (JavaScript/TypeScript). 
+Most code will soon be written by machines and reviewed by people. That inverts
+what a compiler is for.
 
-By unifying these separate environments into a **single, brace-enclosed, semicolon-terminated grammar**, Strata allows enterprise teams to build database models, streaming data pipelines, hardware-accelerated neural networks, and web interfaces within a single codebase.
-┌─────────────────────────────────────────────────────────────────────────┐│                      THE FRAGMENTED ENTERPRISE STACK                    ││   Backend (Java/C#)  ──►  Data Science (Python)  ──►  Frontend (React/JS) │└─────────────────────────────────────────────────────────────────────────┘│▼  [ Strata Unified Compiler ]┌─────────────────────────────────────────────────────────────────────────┐│                        THE STRATA UNIFIED ECOSYSTEM                     ││   Single Codebase (.sta) ──► Bare-Metal Binary + Tiny 15KB Browser Wasm │└─────────────────────────────────────────────────────────────────────────┘
+When a human writes code, the compiler is a safety net for mistakes the author
+already half-knows they might make. When a model writes code, the failure mode
+is different: the output is *fluent and plausible and wrong*. It compiles, it
+reads well, and the schema it queries has a column that does not exist. A
+reviewer skims it, sees idiomatic code, and approves.
+
+The languages we have were designed for the first case. Strata is designed for
+the second. The premise is that **the compiler, not the reviewer, should be the
+thing that catches it** — and that the compiler's output should be structured
+well enough for a machine to act on without a human in the middle.
+
+That leads to two design commitments:
+
+**Contracts across tier boundaries are checked at build time.** A database
+column, a network packet layout, a tensor shape — these are places where one
+part of a system makes an assumption about another. In most stacks those
+assumptions are strings, ORMs, or conventions, and they fail at runtime. In
+Strata they are declarations the compiler checks.
+
+**Diagnostics are data, not prose.** Every error carries a taxonomy code, a
+location, a hint, and a remediation strategy, emitted as JSON. A repair agent
+reads the diagnostic and patches the source without parsing human-readable
+compiler text.
+
+Strata is intended to be written by AI, read by AI, and reviewed by developers —
+with the compiler as the arbiter that makes that division of labour safe.
 
 ---
 
-## 2. Eliminating Python's Web & Scale Weaknesses
+## 2. What works today
 
-While Python offers high developer velocity and excels at data science, it presents massive structural flaws when pushed into high-scale corporate web architectures. Strata retains Python's readability but replaces its core liabilities:
+### Compile-time database contracts
 
-*   **Native Browser Execution vs. The Wasm Interpreter Tax:** Existing browser-based Python solutions (like PyScript or Pyodide) function by compiling the *entire CPython C-runtime interpreter* into WebAssembly, resulting in heavy **10MB to 15MB+ initial page loads**. Strata bypasses interpreters entirely. Passing `--target=wasm` instructs the compiler to strip away all virtual machine bytecodes and emit optimized **WebAssembly Text (WAT)**, yielding ultra-lean **15 KB browser bundles** with zero JavaScript runtime overhead.
-*   **True Full-Stack Cohesion vs. The Wrapper Illusion:** Frameworks like Streamlit or Dash offer pure Python development but are backends that auto-generate heavy React code. When deep UI customization is required, these abstractions leak, forcing teams to split the stack and write custom JavaScript plugins. Strata builds visual components directly into the grammar, allowing type definitions to check out cleanly from the database index all the way onto a client's screen.
-*   **Token-Based Boundaries vs. Whitespace Hallucinations:** In an engineering ecosystem increasingly driven by autonomous AI code generation, Python's invisible whitespace sensitivities lead to severe generation bugs (tab-vs-space syntax alignment failures). Strata’s strict, explicit syntax boundaries (`{}`, `;`) allow LLM agents and code synthesis loops to generate and self-correct source files with near-100% precision.
-
----
-
-## 3. Structural Grammar & Language Primitives
-
-Strata strictly outlaws implicit type inference or dynamic type coercion. Every variable collection, method layout, or subsystem pipe requires an explicit type keyword prefix.
+A `database` block is a schema the compiler knows about. Queries against it are
+checked when you build, not when you deploy.
 
 ```text
-// 3.1 Primitive Memory Allocation & Generic Lists
-int infrastructure_node_id = 9402115;
-str session_auth_protocol  = "TLS_SECURE_EXT";
-float global_latency_target = 0.45;
+import io from std;
 
-list[str] operational_zones = ["US-EAST-CORE", "EMEA-WEST-VAULT"];
-
-// 3.2 Native Database Block & Type-Safe Query Operator (<-)
 database TransactionLedger {
-    int    transaction_id;
-    str    client_uuid;
-    float  capital_delta;
-    str    compliance_status;
+    int   transaction_id;
+    str   client_uuid;
+    float capital_delta;
+    str   compliance_status;
 }
 
-list[TransactionLedger] audit_compliance_bounds() {
-    // Verified at compile-time. Column typos halt compilation instantly.
+list[TransactionLedger] rejected_transactions() {
     list[TransactionLedger] violations = TransactionLedger <- [compliance_status == "REJECTED"];
     return violations;
 }
+
+int main() { print("audit ready"); return 0; }
 ```
 
----
-
-## 4. First-Class AI Topologies & Native Enterprise Reporting
-
-Strata builds artificial intelligence execution matrices and analytical data reporting pipelines directly into the core compiler engine, removing third-party dependencies completely.
-
-### 4.1 Native Machine Learning Topologies (`model`, `predict`)
-Instead of wrapping unmanaged JSON endpoints, neural network dimensions are enforced as strict compiler contracts. If input tensor spaces or layer configurations drift, **the Strata compiler halts the build pass**.
+Misspell `compliance_status` and the build stops with `E004`, naming the valid
+columns. The same check applies to the write form of the operator:
 
 ```text
-model FraudDetectionTopology {
-    input:  tensor[float, 1, 64];   // Enforces 64 exact enterprise metric dimensions
-    output: tensor[float, 1, 2];    // Outputs binary distribution probability matrix
-}
-
-int evaluate_system_risk(tensor[float, 1, 64] metrics) {
-    // Zero-Copy Inference: The 'predict' operator runs weights directly on hardware NPUs/GPUs
-    tensor[float, 1, 2] output_vector = predict FraudDetectionTopology(metrics);
-    float risk_score = output_vector;
-
-    if (risk_score > 0.85) {
-        return 1; // Critical risk state verified
-    }
-    return 0;
-}
+import io from std;
+database AuditTrail { int event_id; str actor; str action; }
+def record(str who, str what) { AuditTrail <- [actor = who, action = what]; }
+int main() { record("prabath", "deploy"); return 0; }
 ```
 
-### 4.2 Native Analytical Data Reporting (`report`, `render`)
-Enterprise ledger processing and transactional record streams require heavy formatting and computation summaries. Strata handles corporate business intelligence directly inside the grammar structure using declarative report sheets:
+### Zero-copy structural casts
+
+A `protocol` describes a byte layout. The `::` operator reinterprets a buffer as
+that layout with no copy and no parse, and the compiler rejects a cast to a type
+that was never declared.
 
 ```text
-report Q3ExecutiveAuditSummary {
-    title: "Global Compliance Ledger and Velocity Summary",
-    datasource: TransactionLedger <- [compliance_status == "SETTLED"],
-    
-    // Built-in compiler aggregating macros
-    metrics: {
-        float total_volume = sum(capital_delta);
-        float average_risk  = avg(capital_delta);
-    }
-}
-
-def export_audit_dashboard() {
-    // Compiles to high-efficiency PDF/Markdown engines natively embedded inside the compiler core
-    render Q3ExecutiveAuditSummary to "/var/reports/q3_compliance.md";
-}
-```
-
----
-
-## 5. High-Volume Packet Routing & Zero-Copy Serialization
-
-To stream millions of messages or metrics smoothly between backend microservices without wasting CPU cycles on heavy JSON parsing or array duplication, Strata provides raw byte memory alignment tools:
-
-```text
-// Low-level memory blueprint mimicking bare-metal hardware packet structures
-protocol NetworkPacketHeader {
-    int packet_id;
-    str target_routing_node;
-    int data_payload_bytes;
-}
-
-stream HandleCoreIngestionBus(str native_nic_socket) {
-    // The Zero-Copy Operator (::) casts incoming binary network arrays straight to structural blocks
+import io from std;
+protocol NetworkPacketHeader { int packet_id; str target_routing_node; int data_payload_bytes; }
+def handle(str socket) {
     NetworkPacketHeader header = current_raw_buffer() :: NetworkPacketHeader;
-    
-    if (header.data_payload_bytes > 32768) {
-        print("[Network Kernel]: Oversized packet dropped safely.");
-        return;
-    }
+    if (header.data_payload_bytes > 32768) { print("oversized packet dropped"); }
 }
 ```
 
+### Explicit types and structure
+
+Strata has no type inference and no dynamic coercion. Every declaration carries
+its type, every block is brace-delimited, every statement is semicolon-
+terminated.
+
+```text
+import io from std;
+int risk_band(int score) { if (score > 850) { return 2; } return 1; }
+int main() { int total = 400 + 500; print(str(risk_band(total))); return 0; }
+```
+
+This is a deliberate choice for machine authorship. Significant whitespace makes
+a generated edit's meaning depend on invisible characters; explicit delimiters
+make a patch unambiguous to apply and unambiguous to verify. Readability here
+comes from explicit structure, not from resembling English — English is
+ambiguous, and ambiguity is the thing being engineered out.
+
+### Machine-readable diagnostics
+
+```
+$ strata build ledger.sta --json
+```
+```json
+{
+  "file": "ledger.sta",
+  "stage": "typecheck",
+  "ok": false,
+  "error_count": 1,
+  "diagnostics": [
+    {
+      "code": "E004",
+      "classification": "Database Schema Selector Violation",
+      "severity": "CRITICAL_HALT",
+      "message": "Column 'sec_tier' does not exist in 'UserProfile'",
+      "line": 5,
+      "column": 5,
+      "hint": "Valid columns: ['user_id', 'security_tier']",
+      "remediation_strategy": "Audit database table block schemas, match column property name spellings inside query bracket filters."
+    }
+  ]
+}
+```
+
+### The repair loop
+
+`ai_self_repair.py` compiles, reads the diagnostics, patches, and recompiles
+until the file is clean or no further progress is possible:
+
+```
+[Strata Repair] target: ledger.sta   backend: rules
+
+  pass 1: 2 diagnostic(s) at stage 'typecheck'
+    E001 Variable Mutation Mismatch (line 4): Type mismatch: 'request_count' declared as 'int' but assigned 'str'
+    patch applied, recompiling
+
+  pass 2: 1 diagnostic(s) at stage 'typecheck'
+    E004 Database Schema Selector Violation (line 5): Column 'sec_tier' does not exist in 'UserProfile'
+    patch applied, recompiling
+
+[Strata Repair] clean after 2 repair(s).
+```
+
+Repair backends are pluggable. `rules` is deterministic and offline. `llm` sends
+the diagnostic and source to a language model and needs no prior knowledge of
+Strata, because the classification and remediation strategy travel with the
+error.
+
+### Error taxonomy
+
+| Code | Classification | Raised when |
+|------|----------------|-------------|
+| `E001` | Variable Mutation Mismatch | assigned value conflicts with the declared type |
+| `E002` | Function Return Contract Breach | a return path breaks the signature |
+| `E003` | Generic Collection Pollution | mixed types enter a homogeneous list |
+| `E004` | Database Schema Selector Violation | a query or insert names a column that does not exist |
+| `E005` | Boundary Perimeter Contamination | untyped data crosses a type boundary |
+| `E006` | Tensor Dimension Drift | a tensor does not match its declared shape |
+
+Defined in `ERROR_TAXONOMY.json`, which is the contract repair agents consume.
+
 ---
 
-## 6. The Strata Compiler Error Matrix (AI Self-Correction Map)
+## 3. Toolchain
 
-When a rule is broken, Strata triggers its **Simple Halt Strategy**. It terminates the build pipeline and outputs clean, machine-parseable data objects designed for real-time AI auto-patching scripts:
+```
+strata build <file.sta>          compile to a native binary
+strata build <file.sta> --json   compile, emitting diagnostics as JSON
+strata check <file.sta>          type-check without generating code
+strata test                      run the conformance suite
+```
 
-*   **`E001` (Variable Mutation Error):** A calculation right of the `=` operator attempts to assign a data type conflicting with the variable's keyword prefix.
-*   **`E002` (Function Return Mismatch Error):** An internal code path exits returning an object that breaks the explicit function signature contract.
-*   **`E003` (Collection Pollution Error):** Raised when heterogeneous types or loose structures leak into a homogeneous generic list array.
-*   **`E004` (Database Schema Violation Error):** An online database query (`<-`) targets invalid column elements or feeds mismatched data types into a native `database` definition block.
-*   **`E005` (Boundary Contamination Error):** An unmanaged external background computing module attempts to pass unstructured dynamic variables across Strata's type-safe perimeter.
-*   **`E006` (Tensor Dimension Drift Error):** An inline model `predict` operator is passed a tensor variable whose shape array mismatches the model's structural inputs.
+The bootstrap compiler is written in Python and generates C, which is then
+compiled to a native binary. This is how most languages begin — Rust's first
+compiler was written in OCaml, Go's in C, and C++ shipped for years as a
+preprocessor that emitted C. Self-hosting is on the roadmap below. Users write
+only `.sta` files; the implementation language is not part of the programming
+model.
 
 ---
 
-## 7. Cloud Scaling & Container Infrastructure
+## 4. Roadmap
 
-Strata completely eliminates heavy operating system threads and connection pool bottlenecks. All native `stream` operations and data query networks compile into lightweight **Virtual Event Fibers**.
+Designed, specified, and **not yet built**. Listed here so the boundary between
+what runs and what is planned is unambiguous.
 
-*   **Memory Efficiency:** Each fiber uses exactly **4 KB** of system memory space.
-*   **Throughput Benchmarks:** A single bare-metal cloud container can smoothly multiplex over **1,000,000 simultaneous data pipelines**.
-*   **Production Packaging:** The environment uses a multi-stage `Dockerfile` compilation pipeline, separating heavy build compilers from the final tree-shaken runtime image, resulting in minimal production footprint boundaries.
+| Area | Status |
+|------|--------|
+| Loops (`while`, `for`), assignment statements, array indexing | **Not implemented.** Required before self-hosting. |
+| Self-hosting compiler (`compiler/*.sta`) | Sketched. Blocked on the language core above. |
+| `layout` blocks and the UI tier | Specified in the grammar, not implemented. |
+| WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
+| `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
+| `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
+| Virtual Event Fibers | Design only. No scheduler exists. |
+| FFI | Not started. Required for adoption. |
+| Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
+
+No performance numbers are published, because none have been measured. Figures
+will appear here when there is a benchmark behind them.
+
+---
+
+## 5. Verification
+
+```
+python3 test_suite/conformance.py     # language conformance, E001-E006 + end-to-end
+python3 test_suite/doc_examples.py    # compiles every code block in this file
+```
+
+Both run in CI on every push, alongside a check that every standard library
+module parses. The documentation suite exists because this README previously
+described an example that did not compile, and the error had already propagated
+into the example programs before anyone noticed. Documentation that cannot be
+compiled is documentation that will drift.
+
+---
+
+## 6. Direction
+
+The long-term goal is that a requirement goes in, a working system comes out,
+and developers review rather than type. That is only responsible if the compiler
+can prove the parts fit together — which is why the verification work comes
+before the language surface grows.
+
+A second goal follows from the first: if contracts are explicit and checkable,
+translating an existing Java or C# service into Strata becomes a mechanical task
+a model can perform and a compiler can check, rather than a rewrite a team has
+to trust. That is a direction, not a shipped feature.

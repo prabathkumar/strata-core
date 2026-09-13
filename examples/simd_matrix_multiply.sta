@@ -1,6 +1,6 @@
 // ==============================================================================
 // STRATA LOW-LEVEL ADVANCED AI: simd_matrix_multiply.sta
-// Vectorized High-Velocity Matrix Math Execution Template (100% Python-Free)
+// Vectorized High-Velocity Matrix Math Execution Template
 // ==============================================================================
 
 import core.io from std;

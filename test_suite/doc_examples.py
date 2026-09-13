@@ -31,11 +31,8 @@ DOCS = ["README.md", "LANGUAGE_SPECIFICATION.md"]
 
 # block id -> why it does not compile today.
 KNOWN_BROKEN = {
-    "README.md#0": "module-level variable declarations. The grammar admits only "
-                   "imports, structure declarations and functions at top level, "
-                   "so the language has no globals. Needs a spec decision.",
-    "README.md#1": "tensor assigned to float (E001); 'metrics' is a reserved word. "
-                   "Needs a spec decision on implicit tensor reduction.",
+    # Empty: every documented example currently compiles. Add an entry
+    # here only with a reason, never to silence a genuine regression.
 }
 
 # A fenced block is Strata source only if it looks like code. Diagrams and
