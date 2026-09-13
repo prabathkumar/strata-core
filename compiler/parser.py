@@ -308,9 +308,9 @@ class Parser:
 
     def _parse_import(self) -> ImportDecl:
         t = self._consume(TT.KW_IMPORT)
-        name = self._consume(TT.IDENT).value
+        name = self._consume_name().value
         self._consume(TT.KW_FROM)
-        source = self._consume(TT.IDENT).value
+        source = self._consume_name().value
         self._consume(TT.SEMICOLON)
         return ImportDecl(t.line, t.col, name, source)
 
