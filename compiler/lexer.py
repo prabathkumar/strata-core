@@ -27,6 +27,11 @@ class TT(Enum):
     LT=auto(); GT=auto(); LTE=auto(); GTE=auto(); AND=auto()
     OR=auto(); NOT=auto(); EOF=auto(); UNKNOWN=auto()
 
+# `input`, `output`, `metrics`, `title`, `datasource` and `to` are NOT here on
+# purpose. They are field names inside model, report and render syntax, and
+# reserving them globally would stop a program using ordinary words as
+# identifiers — a variable called `title` or a function called `to_json`. The
+# parsers match them contextually, where they can only mean one thing.
 KEYWORDS = {
     "int":TT.KW_INT,"float":TT.KW_FLOAT,"str":TT.KW_STR,"void":TT.KW_VOID,
     "list":TT.KW_LIST,"tensor":TT.KW_TENSOR,"bool":TT.KW_BOOL,
@@ -37,8 +42,6 @@ KEYWORDS = {
     "database":TT.KW_DATABASE,"stream":TT.KW_STREAM,"protocol":TT.KW_PROTOCOL,
     "model":TT.KW_MODEL,"predict":TT.KW_PREDICT,"report":TT.KW_REPORT,
     "render":TT.KW_RENDER,"layout":TT.KW_LAYOUT,"verify":TT.KW_VERIFY,
-    "input":TT.KW_INPUT,"output":TT.KW_OUTPUT,"metrics":TT.KW_METRICS,
-    "title":TT.KW_TITLE,"datasource":TT.KW_DATASRC,"to":TT.KW_TO,
     "true":TT.KW_TRUE,"false":TT.KW_FALSE,
 }
 

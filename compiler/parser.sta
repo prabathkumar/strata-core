@@ -345,6 +345,23 @@ Token p_advance(P &p) {
 
 int p_check(P &p, int kind) { if (p_kind(&p, 0) == kind) { return 1; } return 0; }
 
+// A word that is meaningful only in one position is matched by spelling, so it
+// remains an ordinary identifier everywhere else.
+int p_at_word(P &p, str w) {
+    Token t = p_peek(&p, 0);
+    if (t.kind != 4) { return 0; }
+    if (str_eq(t.value, w) == 1) { return 1; }
+    return 0;
+}
+
+Token p_expect_word(P &p, str w) {
+    if (p_at_word(&p, w) == 0) {
+        eprint("[STRATA PARSE ERROR] expected keyword");
+        eprint(w);
+    }
+    return p_advance(&p);
+}
+
 Token p_expect(P &p, int kind) {
     if (p_check(&p, kind) == 0) {
         Token bad = p_peek(&p, 0);
@@ -481,11 +498,11 @@ Node parse_model(P &p) {
     Token t = p_expect(&p, 27);
     Token name = p_expect(&p, 4);
     p_expect(&p, 50);
-    p_expect(&p, 33);                          // input
+    p_expect_word(&p, "input");
     p_expect(&p, 57);                          // :
     Node in_t = parse_tensor_type(&p);
     p_expect(&p, 56);
-    p_expect(&p, 34);                          // output
+    p_expect_word(&p, "output");
     p_expect(&p, 57);
     Node out_t = parse_tensor_type(&p);
     p_expect(&p, 56);
@@ -510,13 +527,13 @@ Node parse_report(P &p) {
 
     while (p_check(&p, 51) == 0) {
         if (p_at_end(&p) == 1) { break; }
-        if (p_check(&p, 36) == 1) {            // title:
+        if (p_at_word(&p, "title") == 1) {
             p_advance(&p); p_expect(&p, 57);
             Token title_tok = p_advance(&p);
             n.s2 = title_tok.value;
             p_expect(&p, 58);
         }
-        if (p_check(&p, 37) == 1) {            // datasource:
+        if (p_at_word(&p, "datasource") == 1) {
             p_advance(&p); p_expect(&p, 57);
             Token src = p_expect(&p, 4);
             p_expect(&p, 76);
@@ -530,7 +547,7 @@ Node parse_report(P &p) {
             n_pos(q, t);
             n.c1 = node_ptr(q);
         }
-        if (p_check(&p, 35) == 1) {            // metrics:
+        if (p_at_word(&p, "metrics") == 1) {
             p_advance(&p); p_expect(&p, 57);
             p_expect(&p, 50);
             while (p_check(&p, 51) == 0) {
@@ -820,7 +837,7 @@ Node parse_statement(P &p) {
     if (k == 30) {                             // render X to "path";
         p_advance(&p);
         Token rep = p_expect(&p, 4);
-        p_expect(&p, 38);
+        p_expect_word(&p, "to");
         Token path = p_advance(&p);
         p_expect(&p, 56);
         Node n = node_new(25);

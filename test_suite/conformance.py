@@ -151,6 +151,18 @@ test("layout_element_id_not_undefined",
 test("layout_handler_reference",
      'int on_click() { return 0; }\nlayout C() { window "x" { button "Go" [action = on_click]; } }')
 
+print("\n── Contextual keywords ───────────────────────────────────────────")
+compile_run("ctx_title_and_metrics_as_variables",
+    'import io from std;\nint main() { str title = "T"; str metrics = "M"; print(title + metrics); return 0; }',
+    "TM")
+compile_run("ctx_to_and_input_as_names",
+    'import io from std;\nint to(int x) { return x * 2; }\nint main() { int input = 21; print(str(to(input))); return 0; }',
+    "42")
+test("ctx_model_block_still_parses",
+    'model M { input: tensor[float, 1, 64]; output: tensor[float, 1, 2]; }')
+test("ctx_report_block_still_parses",
+    'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { float t = sum(id); } }')
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

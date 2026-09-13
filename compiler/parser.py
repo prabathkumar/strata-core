@@ -467,14 +467,30 @@ class Parser:
 
     # ── Model ─────────────────────────────────────────────────────────────────
 
+    def _consume_word(self, word):
+        """Consume an identifier with this exact spelling.
+
+        Used where a word is meaningful only in one position — `title:` inside
+        a report, `to` inside a render — so it stays available as an ordinary
+        identifier everywhere else.
+        """
+        t = self._peek()
+        if t.value != word:
+            raise ParseError(f"Expected '{word}', got '{t.value}'", t.line, t.col)
+        return self._advance()
+
+    def _at_word(self, word):
+        t = self._peek()
+        return t.type == TT.IDENT and t.value == word
+
     def _parse_model(self) -> ModelDecl:
         t = self._consume(TT.KW_MODEL)
         name = self._consume(TT.IDENT).value
         self._consume(TT.L_BRACE)
-        self._consume(TT.KW_INPUT); self._consume(TT.COLON)
+        self._consume_word('input'); self._consume(TT.COLON)
         input_type = self._parse_tensor_type()
         self._consume(TT.SEMICOLON)
-        self._consume(TT.KW_OUTPUT); self._consume(TT.COLON)
+        self._consume_word('output'); self._consume(TT.COLON)
         output_type = self._parse_tensor_type()
         self._consume(TT.SEMICOLON)
         self._consume(TT.R_BRACE)
@@ -599,12 +615,12 @@ class Parser:
         datasource = None
         metrics = []
         while not self._check(TT.R_BRACE):
-            if self._check(TT.KW_TITLE):
+            if self._at_word('title'):
                 self._advance()
                 self._consume(TT.COLON)
                 title = self._consume(TT.STR_LIT).value
                 self._consume(TT.COMMA)
-            elif self._check(TT.KW_DATASRC):
+            elif self._at_word('datasource'):
                 self._advance()
                 self._consume(TT.COLON)
                 src_name = self._consume(TT.IDENT).value
@@ -614,7 +630,7 @@ class Parser:
                 self._consume(TT.R_BRACKET)
                 self._consume(TT.COMMA)
                 datasource = QueryExpr(t.line, t.col, src_name, cond)
-            elif self._check(TT.KW_METRICS):
+            elif self._at_word('metrics'):
                 self._advance()
                 self._consume(TT.COLON)
                 self._consume(TT.L_BRACE)
@@ -840,7 +856,7 @@ class Parser:
     def _parse_render(self) -> RenderStmt:
         t = self._consume(TT.KW_RENDER)
         report = self._consume(TT.IDENT).value
-        self._consume(TT.KW_TO)
+        self._consume_word('to')
         path = self._consume(TT.STR_LIT).value
         self._consume(TT.SEMICOLON)
         return RenderStmt(t.line, t.col, report, path)

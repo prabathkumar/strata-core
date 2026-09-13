@@ -1,27 +1,24 @@
-fix: track compiler/runtime_preamble.c; verify the committed tree builds
+feat(lang): title, metrics, datasource, input, output and to are contextual
 
-Every CI step failed on b7cc628 while every suite passed locally. The
-cause was not any of them: .gitignore carried `*.c` to exclude generated
-output, and compiler/runtime_preamble.c — extracted in the codegen work
-as the single source of the C runtime prelude — matched that pattern and
-was never committed. The compiler reads it on every run, so a clone had
-no prelude and nothing could build.
+Six words stop being reserved. They are field names inside model, report
+and render syntax, and reserving them globally meant a program could not
+call a variable `title` or a function `to_json`. This came up three times
+while writing the compiler in its own language — `model` in Phase 4,
+`metrics` and `title` again while building layout rendering — which is a
+reliable signal that users would hit it constantly.
 
-.gitignore now excludes generated C but keeps the prelude, which is
-source rather than output.
+The parsers now match them by spelling in the one position where they can
+only mean one thing: `input:`/`output:` inside a model, `title:`,
+`datasource:` and `metrics:` inside a report, `to` inside a render. A
+misspelling there is still a parse error naming the expected word.
 
-The real fix is the guard. test_suite/clean_checkout.py exports HEAD with
-`git archive` — exactly what a clone gets — and runs the conformance
-suite inside it. A file the build needs but does not track now fails one
-named step instead of turning every step red at once with no indication
-of why. It runs first in CI, before the suites it would otherwise
-invalidate.
+Done in both implementations at once, so the lexer differential — which
+compares token streams and would have caught exactly this kind of skew —
+stayed green throughout. `title` now lexes as IDENT in both.
 
-This is the third variant of the same failure in this project: a check
-that cannot be run the way it actually runs. The YAML-indented Python
-that made the stdlib appear unparseable, the gcc-versus-clang divergence
-on implicit declarations, and now a working tree that contains a file the
-repository does not.
+Four conformance tests cover it: the words used as variables and function
+names, and model and report blocks still parsing. Reserved words that
+genuinely need to be reserved are untouched.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

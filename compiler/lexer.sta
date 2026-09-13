@@ -107,6 +107,10 @@ int lex_advance(Lex &l) {
 // Kinds: 1 INT_LIT, 2 FLOAT_LIT, 3 STR_LIT, 4 IDENT, 5 EOF,
 //        10+ keywords, 50+ operators.
 
+// `input`, `output`, `metrics`, `title`, `datasource` and `to` are absent on
+// purpose: they are field names inside model, report and render syntax, and
+// reserving them globally would stop a program calling a variable `title` or a
+// function `to_json`. The parser matches them contextually instead.
 int kw_kind(str w) {
     if (str_eq(w, "int")) { return 10; }
     if (str_eq(w, "float")) { return 11; }
@@ -131,12 +135,6 @@ int kw_kind(str w) {
     if (str_eq(w, "render")) { return 30; }
     if (str_eq(w, "layout")) { return 31; }
     if (str_eq(w, "verify")) { return 32; }
-    if (str_eq(w, "input")) { return 33; }
-    if (str_eq(w, "output")) { return 34; }
-    if (str_eq(w, "metrics")) { return 35; }
-    if (str_eq(w, "title")) { return 36; }
-    if (str_eq(w, "datasource")) { return 37; }
-    if (str_eq(w, "to")) { return 38; }
     if (str_eq(w, "true")) { return 39; }
     if (str_eq(w, "false")) { return 40; }
     if (str_eq(w, "while")) { return 41; }
