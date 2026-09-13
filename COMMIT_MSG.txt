@@ -1,15 +1,33 @@
-release: v0.3.0-alpha — changelog, honest version, no fabricated dependencies
+build: generate release notes from git history and live verification
 
-CHANGELOG.md records what changed and, as importantly, what was found to
-be untrue. Three of four self-hosting stages are complete; the changelog
-says plainly that self-hosting is not, because codegen.sta and the
-fixpoint remain.
+tools/release_notes.py groups commits since the previous tag by
+conventional-commit prefix and fills a verification table by running each
+suite at generation time. No figure in a release is typed in by hand.
 
-Strata.toml claimed version 1.0.0 and listed dependencies on a `hub`
-registry that does not exist, one carrying the checksum
-"sha256:8f3c2b..." — a truncated placeholder presented as a hash. Version
-is now 0.3.0-alpha and the dependency sections are empty, with a note
-saying why.
+This project has twice published a claim that was false when written: a
+commit announcing "32/32 passing" against a suite that was failing 30/31
+with a segfault, and a "Stage 2 self-hosting complete" milestone for a
+compiler that did not compile. A release note stating a number no tool
+produced is the same failure in a more visible place.
+
+A failing suite reports FAILING in its row, adds a "this build is not
+green" banner, and exits non-zero, so notes for a broken build look
+broken. Verified by injecting a type error into a README example and
+confirming the Documentation row flipped and the exit code changed.
+
+Two bugs in the generator, both found by checking its output against
+measurements taken earlier by hand rather than trusting it:
+
+  - The native-C line counter closed a block only on a line ENDING with
+    the terminator, so a one-line `int f() { native "..."; }` never
+    closed and every subsequent line counted as native. It reported 17%
+    where the real figure is 4%.
+  - Defaulting --since to the most recent tag diffs a release against
+    itself at tag time and reports zero changes. It now skips the
+    version being released.
+
+RELEASE_PROCESS.md documents the command and the rule that a release
+whose notes exit non-zero is not tagged.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

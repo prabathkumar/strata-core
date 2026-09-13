@@ -50,3 +50,20 @@ This utility automatically detects the host architecture (e.g., `Darwin x86_64`,
 *   **First-Class Subsystem Frameworks:** Embedded native Machine Learning tensor topology primitives (`model`/`predict`), analytical reporting data macros (`report`/`render`), and low-overhead transport security cryptography (`std/tls.sta`).
 *   **Integrated Testing & Diagnostics:** Implemented high-fidelity machine-parseable error taxonomies (`bin/strata-errors`), a time-travel register debugger (`bin/strata-debug`), and language-level unit/integration test gates (`verify` keyword / `std/testing.sta`).
 *   **Decentralized Package Management:** Released Go-style decentralized Git repo distribution handlers backed by deterministic cryptographic lockfile configurations (`Strata.toml`/`Strata.lock`).
+
+## Release notes
+
+Generated, not written:
+
+```
+python3 tools/release_notes.py --version vX.Y.Z --out RELEASE_NOTES.md
+```
+
+The script groups commits since the previous tag by conventional-commit prefix
+and fills a verification table by **running each suite at generation time**.
+Every figure published in a release is therefore produced by the tool that
+measures it, rather than recalled by whoever is writing the notes.
+
+If a suite fails, its row reads FAILING, the notes carry a "this build is not
+green" banner, and the script exits non-zero. Notes for a broken build should
+look broken. Do not tag a release whose notes exit non-zero.
