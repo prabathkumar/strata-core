@@ -37,34 +37,11 @@ int compile_file(str src_path, str out_path, str target, int verbose) {
     int root        = parse(&ps, &pool);
     str c_source    = codegen(&pool.buf_ptr, root);
     str c_path      = "";
-    native "
-    char* _cp=(char*)malloc(strlen($src_path)+3);
-    strcpy(_cp,$src_path);
-    char* _dot=strrchr(_cp,'.');
-    if(_dot)strcpy(_dot,\".c\"); else strcat(_cp,\".c\");
-    $c_path=_cp;
-    ";
+    native "\n    char* _cp=(char*)malloc(strlen($src_path)+3);\n    strcpy(_cp,$src_path);\n    char* _dot=strrchr(_cp,'.');\n    if(_dot)strcpy(_dot,\".c\"); else strcat(_cp,\".c\");\n    $c_path=_cp;\n    ";
     int ok = file_write(c_path, c_source);
     if (ok == 0) { print(str_concat("[STRATA ERROR] Cannot write: ", c_path)); return 1; }
     if (verbose == 1) { print(str_concat("  C: ", c_path)); }
-    native "
-    char* _cc=NULL;
-    char* _cands[]={\"clang\",\"gcc\",\"cc\",NULL};
-    for(int _ci=0;_cands[_ci];_ci++){
-        char _t[64];sprintf(_t,\"which %s>/dev/null 2>&1\",_cands[_ci]);
-        if(system(_t)==0){_cc=_cands[_ci];break;}
-    }
-    if(!_cc){fprintf(stderr,\"[STRATA] No C compiler found.\n\");return 1;}
-    char* _cmd=(char*)malloc(strlen(_cc)+strlen($c_path)+strlen($out_path)+64);
-    if(strcmp($target,\"wasm\")==0)
-        sprintf(_cmd,\"%s -O2 --target=wasm32 --no-standard-libraries -Wl,--export-all -Wl,--no-entry -o %s %s\"
-                ,_cc,$out_path,$c_path);
-    else
-        sprintf(_cmd,\"%s -O2 -o %s %s -lm\",_cc,$out_path,$c_path);
-    if($verbose)printf(\"  CC: %s\n\",_cmd);
-    int _r=system(_cmd);
-    if(_r!=0){fprintf(stderr,\"[STRATA] C compile failed\n\");return 1;}
-    ";
+    native "\n    char* _cc=NULL;\n    char* _cands[]={\"clang\",\"gcc\",\"cc\",NULL};\n    for(int _ci=0;_cands[_ci];_ci++){\n        char _t[64];sprintf(_t,\"which %s>/dev/null 2>&1\",_cands[_ci]);\n        if(system(_t)==0){_cc=_cands[_ci];break;}\n    }\n    if(!_cc){fprintf(stderr,\"[STRATA] No C compiler found.\n\");return 1;}\n    char* _cmd=(char*)malloc(strlen(_cc)+strlen($c_path)+strlen($out_path)+64);\n    if(strcmp($target,\"wasm\")==0)\n        sprintf(_cmd,\"%s -O2 --target=wasm32 --no-standard-libraries -Wl,--export-all -Wl,--no-entry -o %s %s\"\n                ,_cc,$out_path,$c_path);\n    else\n        sprintf(_cmd,\"%s -O2 -o %s %s -lm\",_cc,$out_path,$c_path);\n    if($verbose)printf(\"  CC: %s\n\",_cmd);\n    int _r=system(_cmd);\n    if(_r!=0){fprintf(stderr,\"[STRATA] C compile failed\n\");return 1;}\n    ";
     if (verbose == 1) { print(str_concat("  Binary: ", out_path)); }
     print("[Strata] Done. OK");
     return 0;
@@ -76,15 +53,7 @@ int check_file(str src_path) {
     NodePool pool = pool_new();
     ParserState ps = ps_new(&ta, src_path);
     int root = parse(&ps, &pool);
-    native "
-    ASTNode* _r=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$root];
-    int64_t _ni=0,_nd=0,_nf=0;
-    int64_t _i=_r->left;while(_i){_ni++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}
-    _i=_r->cond;while(_i){_nd++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}
-    _i=_r->body;while(_i){_nf++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}
-    printf(\"[Strata Check] OK - %lld imports, %lld decls, %lld functions\n\",
-        (long long)_ni,(long long)_nd,(long long)_nf);
-    ";
+    native "\n    ASTNode* _r=&((ASTNode*)(uintptr_t)$pool.buf_ptr)[$root];\n    int64_t _ni=0,_nd=0,_nf=0;\n    int64_t _i=_r->left;while(_i){_ni++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}\n    _i=_r->cond;while(_i){_nd++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}\n    _i=_r->body;while(_i){_nf++;_i=((ASTNode*)(uintptr_t)$pool.buf_ptr)[_i].next;}\n    printf(\"[Strata Check] OK - %lld imports, %lld decls, %lld functions\n\",\n        (long long)_ni,(long long)_nd,(long long)_nf);\n    ";
     return 0;
 }
 
@@ -96,34 +65,5 @@ def print_usage() {
 }
 
 int main() {
-    native "
-    extern int __strata_argc; extern char** __strata_argv;
-    if(__strata_argc<2){print_usage();return 0;}
-    strata_str _cmd=__strata_argv[1];
-    if(strcmp(_cmd,\"version\")==0){puts(\"Strata v1.0.0 | Self-Hosted\");return 0;}
-    if(strcmp(_cmd,\"check\")==0){
-        if(__strata_argc<3){fprintf(stderr,\"Usage: strata check <file.sta>\n\");return 1;}
-        return(int)check_file(__strata_argv[2]);
-    }
-    if(strcmp(_cmd,\"build\")==0){
-        if(__strata_argc<3){fprintf(stderr,\"Usage: strata build <file.sta>\n\");return 1;}
-        strata_str _src=__strata_argv[2];
-        char* _out=(char*)malloc(strlen(_src)+1);strcpy(_out,_src);
-        char* _dot=strrchr(_out,'.');if(_dot)*_dot='\\0';
-        strata_str _target=\"native\"; int64_t _v=0;
-        for(int _i=3;_i<__strata_argc;_i++){
-            if(strcmp(__strata_argv[_i],\"-o\")==0&&_i+1<__strata_argc)_out=__strata_argv[++_i];
-            else if(strcmp(__strata_argv[_i],\"--target\")==0&&_i+1<__strata_argc)_target=__strata_argv[++_i];
-            else if(strcmp(__strata_argv[_i],\"-v\")==0)_v=1;
-        }
-        return(int)compile_file(_src,_out,_target,_v);
-    }
-    if(strstr(_cmd,\".sta\")){
-        char* _out=(char*)malloc(strlen(_cmd)+1);strcpy(_out,_cmd);
-        char* _dot=strrchr(_out,'.');if(_dot)*_dot='\\0';
-        return(int)compile_file(_cmd,_out,\"native\",1);
-    }
-    fprintf(stderr,\"Unknown command: %s\n\",_cmd);
-    print_usage(); return 1;
-    ";
+    native "\n    extern int __strata_argc; extern char** __strata_argv;\n    if(__strata_argc<2){print_usage();return 0;}\n    strata_str _cmd=__strata_argv[1];\n    if(strcmp(_cmd,\"version\")==0){puts(\"Strata v1.0.0 | Self-Hosted\");return 0;}\n    if(strcmp(_cmd,\"check\")==0){\n        if(__strata_argc<3){fprintf(stderr,\"Usage: strata check <file.sta>\n\");return 1;}\n        return(int)check_file(__strata_argv[2]);\n    }\n    if(strcmp(_cmd,\"build\")==0){\n        if(__strata_argc<3){fprintf(stderr,\"Usage: strata build <file.sta>\n\");return 1;}\n        strata_str _src=__strata_argv[2];\n        char* _out=(char*)malloc(strlen(_src)+1);strcpy(_out,_src);\n        char* _dot=strrchr(_out,'.');if(_dot)*_dot='\\0';\n        strata_str _target=\"native\"; int64_t _v=0;\n        for(int _i=3;_i<__strata_argc;_i++){\n            if(strcmp(__strata_argv[_i],\"-o\")==0&&_i+1<__strata_argc)_out=__strata_argv[++_i];\n            else if(strcmp(__strata_argv[_i],\"--target\")==0&&_i+1<__strata_argc)_target=__strata_argv[++_i];\n            else if(strcmp(__strata_argv[_i],\"-v\")==0)_v=1;\n        }\n        return(int)compile_file(_src,_out,_target,_v);\n    }\n    if(strstr(_cmd,\".sta\")){\n        char* _out=(char*)malloc(strlen(_cmd)+1);strcpy(_out,_cmd);\n        char* _dot=strrchr(_out,'.');if(_dot)*_dot='\\0';\n        return(int)compile_file(_cmd,_out,\"native\",1);\n    }\n    fprintf(stderr,\"Unknown command: %s\n\",_cmd);\n    print_usage(); return 1;\n    ";
 }
