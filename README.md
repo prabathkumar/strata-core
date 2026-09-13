@@ -1,6 +1,26 @@
 # Strata
 
-**A systems language whose compiler is built to verify AI-generated code.**
+**The compiler is the code reviewer.**
+
+Strata is a systems language for a world where most code is written by machines.
+Describe what you want, let a model write it, and let the compiler — not a tired
+human on a Friday afternoon — prove the pieces actually fit. When it doesn't fit,
+Strata hands the model a structured diagnostic and the model fixes it. Often
+before you look.
+
+```
+$ strata build ledger.sta
+  [E004] Column 'sec_tier' does not exist in 'UserProfile' (line 5, col 5)
+  Hint: Valid columns: ['user_id', 'security_tier']
+
+$ strata repair ledger.sta
+  pass 1: E004 Database Schema Selector Violation (line 5)
+    patch applied, recompiling
+  clean after 1 repair(s).
+```
+
+That loop is real and runs today. Most of what surrounds it does not yet — see
+[Roadmap](#roadmap), which is exhaustive and blunt.
 
 > **Status: pre-release, under active development.** The compiler works and is
 > covered by a conformance suite. Several components described under
@@ -196,7 +216,70 @@ model.
 
 ---
 
-## 4. Roadmap
+## 4. Adoption
+
+**One file, one command.** A Strata program is a `.sta` file. `strata build`
+turns it into a native binary. There is no project scaffold to generate, no
+build system to configure, no dependency manifest to satisfy before hello world.
+
+**Nothing to learn that you don't already know.** Braces, semicolons, explicit
+types, C-family control flow. A developer reading Strata for the first time is
+reading something familiar on purpose — the novelty is in what the compiler
+checks, not in the syntax you have to memorise.
+
+**The error tells you the fix.** Every diagnostic carries the valid alternatives,
+not just the complaint. `Column 'sec_tier' does not exist` is followed by
+`Valid columns: ['user_id', 'security_tier']`. That is what makes the repair loop
+possible, and it is also just a better developer experience.
+
+---
+
+## 5. Where this is going
+
+**Everything in this section is direction, not shipped behaviour.** It is here so
+the intent is legible. The [Roadmap](#roadmap) table states what actually exists.
+
+**Self-healing builds.** The repair loop exists today with a deterministic
+backend. The intended shape is a build that repairs itself: the compiler halts,
+an agent reads the structured diagnostic, patches, and rebuilds — with the
+developer reviewing a diff rather than hunting a stack trace. Because the
+taxonomy travels with every error, the agent needs no prior knowledge of Strata.
+
+**Types that reach the screen.** The goal is a contract checked from the database
+index all the way onto the client: rename a column in a `database` block, and the
+build fails on the line of UI that rendered it. Not a runtime 500 — a build
+error, before anything ships. This is the reason Strata exists as a language
+rather than a library.
+
+**Migration as a mechanical act.** If contracts are explicit and compiler-checked,
+translating an existing Java or C# service becomes something a model performs and
+a compiler verifies, instead of a rewrite a team has to take on faith. The
+compiler is what makes the translation trustworthy.
+
+**Models as declarations.** `model` blocks already declare tensor shapes and the
+compiler already enforces them (`E006`). What does not exist is an inference
+runtime. The intent is that a shape mismatch is a build error rather than a
+production exception — the same argument as the database contract, applied to ML.
+
+Illustrative of the language core still to land in Phase 1 — this **does not
+compile today**:
+
+```text
+int main() {
+    int i = 0;
+    while (i < 10) {
+        i = i + 1;
+    }
+    return 0;
+}
+```
+
+There are no loops, no assignment statements and no array indexing in Strata
+yet. That is the current floor, and it is why self-hosting has not started.
+
+---
+
+## 6. Roadmap
 
 Designed, specified, and **not yet built**. Listed here so the boundary between
 what runs and what is planned is unambiguous.
@@ -218,7 +301,7 @@ will appear here when there is a benchmark behind them.
 
 ---
 
-## 5. Verification
+## 7. Verification
 
 ```
 python3 test_suite/conformance.py     # language conformance, E001-E006 + end-to-end
@@ -233,7 +316,7 @@ compiled is documentation that will drift.
 
 ---
 
-## 6. Direction
+## 8. Direction
 
 The long-term goal is that a requirement goes in, a working system comes out,
 and developers review rather than type. That is only responsible if the compiler

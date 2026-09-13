@@ -22,6 +22,7 @@ compiler, so `sum(capital_delta)` referencing a column that no longer exists
 is NOT caught here. Closing that needs metric-expression checking in
 TypeChecker first; this harness will pick it up for free once it lands.
 """
+import hashlib
 import os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +34,14 @@ DOCS = ["README.md", "LANGUAGE_SPECIFICATION.md"]
 KNOWN_BROKEN = {
     # Empty: every documented example currently compiles. Add an entry
     # here only with a reason, never to silence a genuine regression.
+}
+
+# Blocks that illustrate syntax the language does not accept YET. These are
+# roadmap illustrations, not defects: the documentation must mark them as
+# unbuilt, and this suite reports the moment one starts compiling so it can be
+# promoted out of the roadmap and into the shipped feature set.
+ROADMAP_BLOCKS = {
+    "README.md#e11203d6": "while loop and assignment statement — Phase 1 language\n                            core, not yet implemented",
 }
 
 # A fenced block is Strata source only if it looks like code. Diagrams and
@@ -71,7 +80,11 @@ def extract(path):
     out = []
     for i, (_lang, body) in enumerate(re.findall(r"```(\w*)\n(.*?)```", text, re.S)):
         if any(m in body for m in CODE_MARKERS) and ";" in body:
-            out.append((f"{path}#{i}", body))
+            # Identify a block by its content, not its position: inserting a
+            # section above must not silently re-point an exemption at a
+            # different example.
+            digest = hashlib.sha1(re.sub(r"\s+", " ", body).strip().encode()).hexdigest()[:8]
+            out.append((f"{path}#{digest}", body))
     return out
 
 
@@ -141,6 +154,15 @@ def main():
     passed = regressions = fixed = expected = 0
     for bid, body, context in blocks:
         ok, diag = compile_block(body, context)
+        roadmap = ROADMAP_BLOCKS.get(bid)
+        if roadmap:
+            if ok:
+                print(f"  LANDED {bid} — roadmap syntax now compiles; promote it")
+                fixed += 1
+            else:
+                print(f"  ROADMAP {bid} — {roadmap}")
+                expected += 1
+            continue
         known = KNOWN_BROKEN.get(bid)
         if ok and not known:
             print(f"  PASS  {bid}"); passed += 1
@@ -154,7 +176,7 @@ def main():
             print(f"  FAIL  {bid} — {diag}"); regressions += 1
 
     print("\n" + "=" * 62)
-    print(f"  {passed} compiling, {expected} known-broken, "
+    print(f"  {passed} compiling, {expected} roadmap/known, "
           f"{regressions} regressions, {fixed} newly fixed")
     print("=" * 62)
     if regressions:
