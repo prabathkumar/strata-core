@@ -1,20 +1,17 @@
 [package]
 name = "strata-enterprise-core"
-version = "1.0.0"
+version = "0.3.0-alpha"
 authors = ["Prabath Kumar"]
 edition = "2026"
 license = "Apache-2.0"
 
 [compiler]
-target = "wasm"
+target = "native"
 opt_level = "aggressive"
 halt_on_error = true
-treat_warnings_as_errors = true
 
+# No external dependencies. The `hub` registry does not exist yet; entries
+# referencing it, and their checksums, were not real and have been removed.
 [dependencies]
-core = { version = "1.0.0", source = "std" }
-crypto = { version = "2.4.1", source = "hub", hash = "sha256:8f3c2b..." }
-telemetry = { version = "0.9.5", source = "hub" }
 
 [dev-dependencies]
-benchmarking = { version = "1.1.0", source = "std" }

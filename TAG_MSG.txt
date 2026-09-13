@@ -1,0 +1,22 @@
+v0.3.0-alpha — three of four self-hosting stages
+
+Strata's lexer, parser and type checker are written in Strata: 2,313
+lines, 4% native C. Each is proven against its Python counterpart by a
+differential test running in CI — byte-identical token streams,
+identical syntax trees, identical diagnostics — across the corpus and on
+their own source.
+
+Self-hosting is NOT complete. codegen.sta and the stage1/stage2 fixpoint
+remain.
+
+The language gained the floor it was missing: loops, assignment and
+indexing. It previously could not express a lexer.
+
+Verification replaced assertion. The conformance suite reported "32/32"
+while failing 30/31 with a segfault; it is now 63 tests and green. CI
+never ran the suite; it now runs six, under both gcc and clang.
+Documentation is compiled on every commit.
+
+Twelve of fifteen tools in bin/ printed success without doing the work
+they claimed and are quarantined. Unmeasured performance figures are
+removed. See CHANGELOG.md for the full list.

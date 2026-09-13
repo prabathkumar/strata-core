@@ -1,39 +1,15 @@
-feat(phase5): typechecker.sta — E001-E006 in Strata; fix an E005 false positive
+release: v0.3.0-alpha — changelog, honest version, no fabricated dependencies
 
-Stage 3 of self-hosting. compiler/typechecker.sta emits diagnostics
-identical to compiler/typechecker.py — same codes, locations, messages
-and order — across 43 files: the corpus, the compiler's own sources, and
-twelve deliberately broken programs, one per rule, now kept as fixtures
-in test_suite/typecheck_cases/. A checker compared only against code that
-passes has not been compared.
+CHANGELOG.md records what changed and, as importantly, what was found to
+be untrue. Three of four self-hosting stages are complete; the changelog
+says plainly that self-hosting is not, because codegen.sta and the
+fixpoint remain.
 
-Building the second implementation exposed a bug in the first. E005 read
-an uninferred right operand as a contaminated boundary, so
-`"id " + convert_int_to_str(n)` was reported as an error whenever the
-callee lived in another module — which is every multi-module program.
-It was firing on std/runtime.sta and examples/high_frequency_ledger.sta,
-i.e. on this project's own standard library. Only the root file is type
-checked, so an unknown type is the normal case for an imported call, not
-a fault. Fixed in the oracle first, with regression tests, rather than
-reproduced in Strata.
-
-The differential also caught a parser divergence that the syntax-tree
-comparison structurally could not: the oracle positions a VarDecl at its
-type token and this parser positioned it at its name, so diagnostics
-quoted a different column. to_dict() does not serialise line and col, so
-the AST diff is blind to position — it took a stage that consumes
-positions to see it. Each stage's oracle catches what the previous one
-cannot.
-
-C keyword collisions are now mangled in codegen. A Strata function named
-`register` emitted `void register(...)`, which is not valid C, and the
-error pointed at generated source the user never wrote. Strata is not
-required to know what C reserves.
-
-93 of 2,313 lines across lexer, parser and type checker are native
-blocks — 4%, all allocation primitives.
-
-Remaining for self-hosting: codegen.sta, then the stage1/stage2 fixpoint.
+Strata.toml claimed version 1.0.0 and listed dependencies on a `hub`
+registry that does not exist, one carrying the checksum
+"sha256:8f3c2b..." — a truncated placeholder presented as a hash. Version
+is now 0.3.0-alpha and the dependency sections are empty, with a note
+saying why.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C
