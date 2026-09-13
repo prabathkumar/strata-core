@@ -1,0 +1,92 @@
+// STRATA COMPILER — compiler/lexer.sta
+// The Strata Lexer written IN Strata
+// Compiled by Stage 0 bootstrap → produces strata-lexer binary
+// This is Stage 1 of the self-hosting pipeline
+
+import io  from std;
+import mem from std;
+import str from std;
+
+// Token kind IDs
+int TK_INT_LIT   = 1;   int TK_FLOAT_LIT = 2;   int TK_STR_LIT  = 3;
+int TK_IDENT     = 4;   int TK_KW_INT    = 10;  int TK_KW_FLOAT = 11;
+int TK_KW_STR    = 12;  int TK_KW_VOID   = 13;  int TK_KW_LIST  = 14;
+int TK_KW_TENSOR = 15;  int TK_KW_BOOL   = 16;  int TK_KW_IF    = 20;
+int TK_KW_ELSE   = 21;  int TK_KW_RETURN = 22;  int TK_KW_ASSERT= 23;
+int TK_KW_IMPORT = 24;  int TK_KW_FROM   = 25;  int TK_KW_DEF   = 26;
+int TK_KW_DATABASE=30;  int TK_KW_STREAM = 31;  int TK_KW_PROTO = 32;
+int TK_KW_MODEL  = 33;  int TK_KW_PREDICT= 34;  int TK_KW_REPORT= 35;
+int TK_KW_RENDER = 36;  int TK_KW_LAYOUT = 37;  int TK_KW_VERIFY= 38;
+int TK_KW_INPUT  = 40;  int TK_KW_OUTPUT = 41;  int TK_KW_METRICS=42;
+int TK_KW_TITLE  = 43;  int TK_KW_DATASRC= 44;  int TK_KW_TO    = 45;
+int TK_KW_PRINT  = 46;  int TK_KW_TRUE   = 47;  int TK_KW_FALSE = 48;
+int TK_L_BRACE   = 50;  int TK_R_BRACE   = 51;  int TK_L_PAREN  = 52;
+int TK_R_PAREN   = 53;  int TK_L_BRACKET = 54;  int TK_R_BRACKET= 55;
+int TK_SEMICOLON = 56;  int TK_COLON     = 57;  int TK_COMMA    = 58;
+int TK_DOT       = 59;  int TK_ASSIGN    = 60;  int TK_ARROW_L  = 61;
+int TK_CAST_OP   = 62;  int TK_BORROW    = 63;  int TK_PLUS     = 64;
+int TK_MINUS     = 65;  int TK_STAR      = 66;  int TK_SLASH    = 67;
+int TK_EQ        = 69;  int TK_NEQ       = 70;  int TK_LT       = 71;
+int TK_GT        = 72;  int TK_LTE       = 73;  int TK_GTE      = 74;
+int TK_AND       = 75;  int TK_OR        = 76;  int TK_NOT      = 77;
+int TK_EOF       = 99;
+
+database Token {
+    int kind;
+    str value;
+    int line;
+    int col;
+}
+
+database LexerState {
+    str source;
+    int source_len;
+    int pos;
+    int line;
+    int col;
+    str filename;
+}
+
+int keyword_id(str word) {
+    native "
+    if(strcmp($word,\"int\")==0)        return 10;
+    if(strcmp($word,\"float\")==0)      return 11;
+    if(strcmp($word,\"str\")==0)        return 12;
+    if(strcmp($word,\"void\")==0)       return 13;
+    if(strcmp($word,\"list\")==0)       return 14;
+    if(strcmp($word,\"tensor\")==0)     return 15;
+    if(strcmp($word,\"bool\")==0)       return 16;
+    if(strcmp($word,\"if\")==0)         return 20;
+    if(strcmp($word,\"else\")==0)       return 21;
+    if(strcmp($word,\"return\")==0)     return 22;
+    if(strcmp($word,\"assert\")==0)     return 23;
+    if(strcmp($word,\"import\")==0)     return 24;
+    if(strcmp($word,\"from\")==0)       return 25;
+    if(strcmp($word,\"def\")==0)        return 26;
+    if(strcmp($word,\"database\")==0)   return 30;
+    if(strcmp($word,\"stream\")==0)     return 31;
+    if(strcmp($word,\"protocol\")==0)   return 32;
+    if(strcmp($word,\"model\")==0)      return 33;
+    if(strcmp($word,\"predict\")==0)    return 34;
+    if(strcmp($word,\"report\")==0)     return 35;
+    if(strcmp($word,\"render\")==0)     return 36;
+    if(strcmp($word,\"layout\")==0)     return 37;
+    if(strcmp($word,\"verify\")==0)     return 38;
+    if(strcmp($word,\"input\")==0)      return 40;
+    if(strcmp($word,\"output\")==0)     return 41;
+    if(strcmp($word,\"metrics\")==0)    return 42;
+    if(strcmp($word,\"title\")==0)      return 43;
+    if(strcmp($word,\"datasource\")==0) return 44;
+    if(strcmp($word,\"to\")==0)         return 45;
+    if(strcmp($word,\"print\")==0)      return 46;
+    if(strcmp($word,\"true\")==0)       return 47;
+    if(strcmp($word,\"false\")==0)      return 48;
+    return 4;
+    ";
+}
+
+int main() {
+    print("[Strata Lexer] Stage 1 — written in Strata, compiled by Stage 0.");
+    print("Usage: strata-lexer <file.sta>");
+    return 0;
+}

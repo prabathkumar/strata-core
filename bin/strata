@@ -1,51 +1,121 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# STRATA DEVELOPER SDK: bin/strata
-# Unified Command-Line Interface Toolchain Master Driver (Full Testing Framework)
-# ==============================================================================
+# STRATA Master CLI — bin/strata
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="$ROOT:$PYTHONPATH"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+usage() {
+    echo "Strata Compiler Toolchain v1.0.0"
+    echo ""
+    echo "  strata build <file.sta> [-o output] [--target native|wasm|c]"
+    echo "  strata check <file.sta>"
+    echo "  strata lex   <file.sta> [--json|--count]"
+    echo "  strata ast   <file.sta>"
+    echo "  strata run   <file.sta>"
+    echo "  strata new   <project_name>"
+    echo "  strata test  [dir]"
+    echo "  strata version"
+}
 
-COMMAND=$1
-PARAM1=$2
-PARAM2=$3
+cmd_build() { python3 "$ROOT/bootstrap/stage0.py" "$@"; }
 
-case $COMMAND in
-    "version") echo -e "${CYAN}Strata SDK Suite v1.0.0 (Native Testing Framework Active)${NC}" ;;
-    "lex")     ./bin/strata-lexer "$PARAM1" ;;
-    "parse")   ./bin/strata-parser "$PARAM1" ;;
-    "check")   ./bin/strata-checker "$PARAM1" ;;
-    "codegen") ./bin/strata-codegen "$PARAM1" "$PARAM2" ;;
-    "build")   ./bin/strata-compiler "$PARAM1" "$PARAM2" ;;
-    "bench")   ./bin/strata-bench ;;
-    "deploy")  ./bin/strata-deploy ;;
-    "publish") ./bin/strata-sync ;;
-    "debug")   ./bin/strata-debug attach "$PARAM1" ;;
-    
-    "test")
-        echo -e "${CYAN}======================================================================${NC}"
-        echo -e "${CYAN}[Strata Test Runner]: Scanning Workspace for Native 'verify' Blocks...${NC}"
-        echo -e "${CYAN}======================================================================${NC}"
-        sleep 0.2
-        echo -e " [+] Located Suite: 'Corporate Ingestion Pipeline Integration Test Sweep'"
-        echo -e "     -> File: examples/pipeline_testing.sta | Parsing node mappings..."
-        sleep 0.3
-        
-        # Invoke your modular compiler check passes automatically behind the scenes
-        ./bin/strata-checker "examples/pipeline_testing.sta" > /dev/null
-        
-        echo -e "     -> Running Assertion 1: 'Operations Clear Flag Boundary Match'... ${GREEN}PASSED${NC}"
-        echo -e "\n${GREEN}======================================================================${NC}"
-        echo -e "${GREEN}[Test Regression Summary]: 100% PASS. All integrated units secure.${NC}"
-        echo -e "${GREEN}======================================================================${NC}"
-        ;;
-        
-    *)
-        echo "Strata Enterprise Toolchain (SDK v1.0.0)"
-        echo "Usage: strata <build|check|test|bench|deploy|publish|debug|version> [arguments]"
-        ;;
+cmd_check() {
+    local f="$1"
+    [ -z "$f" ] && echo "Usage: strata check <file.sta>" && exit 1
+    echo "[Strata Check] Analysing '$f'..."
+    python3 -c "
+import sys; sys.path.insert(0,'$ROOT')
+from compiler.lexer import tokenise_file, LexError
+from compiler.parser import Parser, ParseError
+try:
+    toks=tokenise_file('$f')
+    ast=Parser(toks).parse()
+    print(f'  OK — {len(ast.imports)} imports, {len(ast.declarations)} declarations, {len(ast.functions)} functions')
+    print('[Strata Check] No errors. ✓')
+except (LexError,ParseError) as e:
+    print(str(e),file=sys.stderr); sys.exit(1)
+"
+}
+
+cmd_lex() { python3 "$ROOT/compiler/lexer.py" "$@"; }
+
+cmd_ast() {
+    local f="$1"
+    python3 -c "
+import sys,json; sys.path.insert(0,'$ROOT')
+from compiler.lexer import tokenise_file
+from compiler.parser import Parser
+toks=tokenise_file('$f'); ast=Parser(toks).parse()
+print(json.dumps(ast.to_dict(),indent=2))
+"
+}
+
+cmd_run() {
+    local f="$1"
+    [ -z "$f" ] && echo "Usage: strata run <file.sta>" && exit 1
+    local tmp; tmp="$(mktemp /tmp/strata_XXXXXX)"
+    python3 "$ROOT/bootstrap/stage0.py" "$f" -o "$tmp" --target native
+    "$tmp"; rm -f "$tmp"
+}
+
+cmd_new() {
+    local name="$1"
+    [ -z "$name" ] && echo "Usage: strata new <project_name>" && exit 1
+    mkdir -p "$name/src" "$name/test_suite"
+    cat > "$name/Strata.toml" << TOML
+[package]
+name = "$name"
+version = "0.1.0"
+edition = "2026"
+
+[compiler]
+target = "native"
+opt_level = "aggressive"
+halt_on_error = true
+TOML
+    cat > "$name/src/main.sta" << STA
+import io from std;
+int main() {
+    print("Hello from $name!");
+    return 0;
+}
+STA
+    echo "[Strata] Project '$name' created. Build: strata build $name/src/main.sta"
+}
+
+cmd_test() {
+    local dir="${1:-test_suite}"
+    echo "[Strata Test] Scanning '$dir'..."
+    local p=0 f=0
+    for sta in "$dir"/*.sta; do
+        [ -f "$sta" ] || continue
+        if python3 -c "
+import sys; sys.path.insert(0,'$ROOT')
+from compiler.lexer import tokenise_file
+from compiler.parser import Parser
+Parser(tokenise_file('$sta')).parse()
+" 2>/dev/null; then echo "  PASS: $sta"; ((p++)) || true
+        else echo "  FAIL: $sta"; ((f++)) || true; fi
+    done
+    echo "[Strata Test] $p passed, $f failed."
+    [ "$f" -eq 0 ] || exit 1
+}
+
+cmd_version() {
+    echo "Strata v1.0.0 | Stage 0 Bootstrap | Targets: native, wasm, c"
+}
+
+CMD="${1:-}"; shift 2>/dev/null || true
+case "$CMD" in
+    build) cmd_build "$@" ;;
+    check) cmd_check "$@" ;;
+    lex)   cmd_lex   "$@" ;;
+    ast)   cmd_ast   "$@" ;;
+    run)   cmd_run   "$@" ;;
+    new)   cmd_new   "$@" ;;
+    test)  cmd_test  "$@" ;;
+    version) cmd_version ;;
+    ""|help) usage ;;
+    *) echo "Unknown: $CMD. Run 'strata help'"; exit 1 ;;
 esac

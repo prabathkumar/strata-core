@@ -1,0 +1,55 @@
+// STRATA STANDARD LIBRARY — std/str.sta
+// String builder for compiler code generation output
+
+import mem from std;
+import io from std;
+
+database StringBuilder {
+    int buf_ptr;
+    int length;
+    int capacity;
+}
+
+StringBuilder sb_new() {
+    native "
+    static StringBuilder _sb;
+    _sb.capacity=4096; _sb.length=0;
+    _sb.buf_ptr=(int64_t)(uintptr_t)malloc(4096);
+    ((char*)(uintptr_t)_sb.buf_ptr)[0]='\\0';
+    return _sb;
+    ";
+}
+
+def sb_append(StringBuilder &sb, str text) {
+    native "
+    size_t _tl=strlen($text);
+    while($sb.length+(int64_t)_tl+1>$sb.capacity){
+        $sb.capacity*=2;
+        $sb.buf_ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$sb.buf_ptr,(size_t)$sb.capacity);
+    }
+    memcpy((char*)(uintptr_t)$sb.buf_ptr+$sb.length,$text,_tl+1);
+    $sb.length+=(int64_t)_tl;
+    ";
+}
+
+def sb_append_line(StringBuilder &sb, str text) {
+    native "
+    size_t _tl=strlen($text);
+    while($sb.length+(int64_t)_tl+2>$sb.capacity){
+        $sb.capacity*=2;
+        $sb.buf_ptr=(int64_t)(uintptr_t)realloc((void*)(uintptr_t)$sb.buf_ptr,(size_t)$sb.capacity);
+    }
+    memcpy((char*)(uintptr_t)$sb.buf_ptr+$sb.length,$text,_tl);
+    ((char*)(uintptr_t)$sb.buf_ptr)[$sb.length+(int64_t)_tl]='\\n';
+    ((char*)(uintptr_t)$sb.buf_ptr)[$sb.length+(int64_t)_tl+1]='\\0';
+    $sb.length+=(int64_t)_tl+1;
+    ";
+}
+
+str sb_to_str(StringBuilder &sb) {
+    native "return (char*)(uintptr_t)$sb.buf_ptr;";
+}
+
+int sb_length(StringBuilder &sb) {
+    native "return $sb.length;";
+}

@@ -1,0 +1,61 @@
+// STRATA STANDARD LIBRARY — std/io.sta
+// File I/O, Console I/O primitives — compiles to POSIX C
+
+def print(str message) {
+    native "puts($message);";
+}
+
+def print_raw(str message) {
+    native "fputs($message, stdout);";
+}
+
+def print_int(int value) {
+    native "printf(\"%lld\\n\", (long long)$value);";
+}
+
+def eprint(str message) {
+    native "fprintf(stderr, \"%s\\n\", $message);";
+}
+
+str read_line() {
+    native "
+    static char _buf[4096];
+    if (fgets(_buf, sizeof(_buf), stdin) == NULL) _buf[0]='\\0';
+    size_t _l=strlen(_buf);
+    if (_l>0 && _buf[_l-1]=='\\n') _buf[_l-1]='\\0';
+    return _buf;
+    ";
+}
+
+str file_read(str path) {
+    native "
+    FILE* _f=fopen($path,\"r\");
+    if(!_f) return \"\";
+    fseek(_f,0,SEEK_END); long _sz=ftell(_f); rewind(_f);
+    char* _b=(char*)malloc(_sz+1);
+    fread(_b,1,_sz,_f); _b[_sz]='\\0'; fclose(_f); return _b;
+    ";
+}
+
+int file_write(str path, str content) {
+    native "
+    FILE* _f=fopen($path,\"w\");
+    if(!_f) return 0; fputs($content,_f); fclose(_f); return 1;
+    ";
+}
+
+int file_exists(str path) {
+    native "FILE* _f=fopen($path,\"r\"); if(_f){fclose(_f);return 1;} return 0;";
+}
+
+str int_to_str(int value) {
+    native "static char _b[32]; snprintf(_b,32,\"%lld\",(long long)$value); return _b;";
+}
+
+str float_to_str(float value) {
+    native "static char _b[64]; snprintf(_b,64,\"%.6f\",$value); return _b;";
+}
+
+int str_to_int(str value) {
+    native "return (int64_t)atoll($value);";
+}

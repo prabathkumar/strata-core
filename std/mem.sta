@@ -1,0 +1,46 @@
+// STRATA STANDARD LIBRARY — std/mem.sta
+// Memory management and string operations
+
+import io from std;
+
+int str_len(str s) {
+    native "return (int64_t)strlen($s);";
+}
+
+str str_concat(str a, str b) {
+    native "
+    size_t _la=strlen($a),_lb=strlen($b);
+    char* _r=(char*)malloc(_la+_lb+1);
+    memcpy(_r,$a,_la); memcpy(_r+_la,$b,_lb+1); return _r;
+    ";
+}
+
+str str_slice(str s, int start, int end) {
+    native "
+    int64_t _len=(int64_t)strlen($s);
+    if($start<0)$start=0; if($end>_len)$end=_len;
+    int64_t _sz=$end-$start; if(_sz<=0) return \"\";
+    char* _r=(char*)malloc(_sz+1);
+    memcpy(_r,$s+$start,_sz); _r[_sz]='\\0'; return _r;
+    ";
+}
+
+int str_eq(str a, str b) {
+    native "return strcmp($a,$b)==0?1:0;";
+}
+
+int str_index_of(str haystack, str needle) {
+    native "char* _p=strstr($haystack,$needle); return _p?(_p-$haystack):-1;";
+}
+
+int str_starts_with(str s, str prefix) {
+    native "return strncmp($s,$prefix,strlen($prefix))==0?1:0;";
+}
+
+int mem_alloc(int bytes) {
+    native "return (int64_t)(uintptr_t)malloc((size_t)$bytes);";
+}
+
+def mem_free(int ptr) {
+    native "free((void*)(uintptr_t)$ptr);";
+}
