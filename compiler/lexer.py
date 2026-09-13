@@ -129,7 +129,9 @@ class Lexer:
             elif ch=='"':
                 self._add(TT.STR_LIT,''.join(buf),sl,sc); return
             elif ch=='\n':
-                raise LexError("Unterminated string",sl,sc)
+                # Allow newlines inside strings (needed for native blocks)
+                self.line += 1; self.col = 1
+                buf.append('\n')
             else:
                 buf.append(ch)
         raise LexError("Unterminated string",sl,sc)
