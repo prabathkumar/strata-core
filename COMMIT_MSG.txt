@@ -1,24 +1,40 @@
-feat(lang): title, metrics, datasource, input, output and to are contextual
+feat(runtime): in-memory tables — the cross-tier demo renders real rows
 
-Six words stop being reserved. They are field names inside model, report
-and render syntax, and reserving them globally meant a program could not
-call a variable `title` or a function `to_json`. This came up three times
-while writing the compiler in its own language — `model` in Phase 4,
-`metrics` and `title` again while building layout rendering — which is a
-reliable signal that users would hit it constantly.
+Queries evaluated to NULL, so the layout rendered nothing and the
+generated C said so in a comment. Database blocks now have storage:
 
-The parsers now match them by spelling in the one position where they can
-only mean one thing: `input:`/`output:` inside a model, `title:`,
-`datasource:` and `metrics:` inside a report, `to` inside a render. A
-misspelling there is still a parse error naming the expected word.
+  database ServiceMetric { ... }   ->  static ServiceMetric* ServiceMetric__rows[...];
+  ServiceMetric <- [id = 1, ...]   ->  allocates a row and appends it
+  ServiceMetric <- [status == "X"] ->  filters into a NULL-terminated array
+  for Row in degraded { ... }      ->  iterates it
 
-Done in both implementations at once, so the lexer differential — which
-compares token streams and would have caught exactly this kind of skew —
-stayed green throughout. `title` now lexes as IDENT in both.
+examples/cross_tier_contract.sta now seeds three services, queries the
+two that are DEGRADED, and renders them:
 
-Four conformance tests cover it: the words used as variables and function
-names, and model and report blocks still parsing. Reserved words that
-genuinely need to be reserved are untouched.
+  <span style="color:#ffffff">auth-gateway</span>
+  <span style="color:#ff4a4a">91.4</span>
+
+Deliberately the simplest thing that makes the contract observable end to
+end: fixed capacity, no persistence, no index, no transactions. The
+roadmap says so rather than implying a database exists.
+
+Inside a query condition a bare identifier naming a column resolves to
+the row under test, which is what lets `[status == "DEGRADED"]` read the
+way it does.
+
+Two conversion bugs surfaced while making the demo render:
+
+  - str() always called the integer converter, so a float was silently
+    truncated: 91.4 rendered as 91. It now dispatches on the argument's
+    type, which needed member access to resolve its declared field type.
+  - strata_float_to_str used a fixed %.6f, so every float printed padded
+    (91.400000). It now uses the shortest representation that reads back
+    as the same double — %.17g always round-trips but shows binary noise
+    as 91.400000000000006 — and keeps a trailing .0 so a float still
+    looks like one.
+
+Ported to both implementations in the same change; all nine suites green
+and the fixpoint holds. Conformance 79.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

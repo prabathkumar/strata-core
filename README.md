@@ -262,8 +262,12 @@ Hint: Valid fields: ['id', 'svc_name', 'operational_status']
 
 Not a runtime 500 in front of a user — a build error, before anything ships.
 The loop variable carries the row type from the query to the screen, which is
-what a library cannot do and a compiler can. Layouts are checked today; they do
-not render yet (see [Roadmap](#roadmap)).
+what a library cannot do and a compiler can.
+
+`examples/cross_tier_contract.sta` runs this end to end: rows are inserted,
+the query filters them, and the layout renders HTML containing the two matching
+services. The table runtime is in memory only — no persistence, no index, no
+transactions (see [Roadmap](#roadmap)).
 
 ---
 
@@ -335,8 +339,9 @@ what runs and what is planned is unambiguous.
 |------|--------|
 | Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
 | Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
-| `layout` blocks and the UI tier | **Contract checking done.** A field rendered in a `layout` resolves against the database schema at build time, so renaming a column fails the build at the UI line. Rendering is not implemented — layouts type-check but emit no output yet. |
+| `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
+| Database persistence | In-memory tables only. `database` blocks get fixed-capacity storage, inserts append and queries filter — enough for the contract to be observable end to end. No disk, no index, no transactions, no SQL backend. |
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
 | Virtual Event Fibers | Design only. No scheduler exists. |

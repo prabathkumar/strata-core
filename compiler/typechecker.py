@@ -369,6 +369,9 @@ class TypeChecker:
         if expr.callee=="bool":
             for a in expr.args: self._infer_type(a,scope)
             return T_BOOL
+        if expr.callee=="len":
+            for a in expr.args: self._infer_type(a,scope)
+            return T_INT
         if expr.callee in ("sum","avg","min","max","count"):
             for a in expr.args: self._infer_type(a,scope)
             return T_FLOAT

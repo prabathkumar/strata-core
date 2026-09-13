@@ -86,6 +86,9 @@ class CodeGen:
         # is silently wrong.
         self.borrowed_scalars = set()
         self.symbol_owner = {}
+        # Set while generating a query condition: a bare identifier naming a
+        # column of this table resolves to the row under test.
+        self.query_row_type = None
 
     def emit(self, line=""):
         self.out.append("    " * self.indent + line)
@@ -173,6 +176,7 @@ int main(int argc, char** argv) {
         if isinstance(decl, DatabaseDecl):
             self._gen_struct(decl.name, decl.fields)
             self.schemas[decl.name] = [f.name for f in decl.fields]
+            self._gen_table_storage(decl.name)
         elif isinstance(decl, ProtocolDecl):
             self._gen_struct(decl.name, decl.fields)
         elif isinstance(decl, ModelDecl):
@@ -181,6 +185,13 @@ int main(int argc, char** argv) {
             self._gen_report(decl)
         elif isinstance(decl, LayoutDecl):
             self._gen_layout(decl)
+
+    def _gen_table_storage(self, name):
+        """Backing store for a database block.
+
+        Emitted after the struct so the row type is complete."""
+        self.emit_raw(f"static {name}* {name}__rows[STRATA_TABLE_CAP];")
+        self.emit_raw(f"static strata_int {name}__count = 0;")
 
     def _gen_struct(self, name, fields):
         self.emit_raw(f"\nstruct {name} {{")
@@ -283,11 +294,10 @@ int main(int argc, char** argv) {
         ct = self._expr_ctype(node.collection, []) or ""
         elem = ct[:-1] if ct.endswith("*") else "void*"
         self.var_types[node.var] = elem
-        self.emit(f"/* for {node.var} in ... — queries return NULL until there "
-                  f"is a database runtime, so this renders no rows */")
-        self.emit(f"{elem} {cname(node.var)} = NULL;")
-        self.emit(f"if ({coll} != NULL) {{")
+        it = f"_it_{cname(node.var)}"
+        self.emit(f"for ({elem}* {it} = {coll}; {it} && *{it}; {it}++) {{")
         self.indent += 1
+        self.emit(f"{elem} {cname(node.var)} = *{it};")
         for st in node.body:
             self._gen_layout_node(st)
         self.indent -= 1
@@ -401,7 +411,27 @@ int main(int argc, char** argv) {
             src = stmt.value.source
             if src in self.schemas:
                 self._validate_query_columns(stmt.value.condition, src, stmt.line)
-            self.emit(f"{ctype} {cname(name)} = NULL; /* query:{src} */")
+            if src not in self.schemas:
+                # No such table: the checker has already reported it.
+                self.emit(f"{ctype} {cname(name)} = NULL;")
+            else:
+                self.query_row_type = src
+                cond = self._gen_expr(stmt.value.condition, param_names)
+                self.query_row_type = None
+                self.emit(f"{ctype} {cname(name)} = ({ctype})malloc("
+                          f"sizeof(void*) * ({src}__count + 1));")
+                self.emit("{")
+                self.indent += 1
+                self.emit("strata_int _n = 0;")
+                self.emit(f"for (strata_int _i = 0; _i < {src}__count; _i++) {{")
+                self.indent += 1
+                self.emit(f"{src}* _row = {src}__rows[_i];")
+                self.emit(f"if ({cond}) {{ {cname(name)}[_n++] = _row; }}")
+                self.indent -= 1
+                self.emit("}")
+                self.emit(f"{cname(name)}[_n] = NULL;")
+                self.indent -= 1
+                self.emit("}")
         else:
             val = self._gen_expr(stmt.value, param_names)
             self.emit(f"{ctype} {cname(name)} = {val};")
@@ -418,9 +448,15 @@ int main(int argc, char** argv) {
                 print(f"[E004] Column '{col}' does not exist in '{stmt.target}' "
                       f"(line {stmt.line})\nHint: Valid columns: {cols}", file=sys.stderr)
                 sys.exit(1)
-        vals = ", ".join(f"{c}={self._gen_expr(v, param_names)}"
-                         for c, v in stmt.assignments)
-        self.emit(f"/* insert into {stmt.target}: {vals} */")
+        self.emit("{")
+        self.indent += 1
+        self.emit(f"{stmt.target}* _r = ({stmt.target}*)calloc(1, sizeof({stmt.target}));")
+        for col, v in stmt.assignments:
+            self.emit(f"_r->{col} = {self._gen_expr(v, param_names)};")
+        self.emit(f"if ({stmt.target}__count < STRATA_TABLE_CAP) "
+                  f"{stmt.target}__rows[{stmt.target}__count++] = _r;")
+        self.indent -= 1
+        self.emit("}")
 
     def _validate_query_columns(self, cond, schema, line):
         cols = self.schemas.get(schema, [])
@@ -487,6 +523,15 @@ int main(int argc, char** argv) {
             t = getattr(expr, "target_type", None)
             return f"{t}*" if t else None
         if isinstance(expr, MemberAccess):
+            # Resolve the field's declared type so that conversions such as
+            # str() can dispatch on it.
+            ot = self._expr_ctype(expr.obj, param_names) or ""
+            rec = ot[:-1] if ot.endswith("*") else ot
+            for d in list(self.ast.declarations) + [d for _, m in self.modules for d in m.declarations]:
+                if isinstance(d, (DatabaseDecl, ProtocolDecl)) and d.name == rec:
+                    for f in d.fields:
+                        if f.name == expr.member:
+                            return self._c_type(f.field_type)
             return None
         if isinstance(expr, IndexExpr):
             base = self._expr_ctype(expr.target, param_names)
@@ -514,6 +559,8 @@ int main(int argc, char** argv) {
             return f'"{esc}"'
         if isinstance(expr, BoolLiteral): return "1" if expr.value else "0"
         if isinstance(expr, Identifier):
+            if self.query_row_type and expr.name in self.schemas.get(self.query_row_type, []):
+                return f"_row->{expr.name}"
             if expr.name in self.borrowed_scalars:
                 return f"(*{cname(expr.name)})"
             return cname(expr.name)
@@ -576,9 +623,16 @@ int main(int argc, char** argv) {
         return "0"
 
     def _gen_call(self, expr, param_names):
-        if expr.callee == "str":   return f"strata_int_to_str({self._gen_expr(expr.args[0], param_names)})"
+        if expr.callee == "str":
+            # str() must dispatch on the argument: routing a float through the
+            # integer converter silently truncates it, so 91.4 printed as 91.
+            at = self._expr_ctype(expr.args[0], param_names)
+            conv = "strata_float_to_str" if at == "strata_float" else "strata_int_to_str"
+            return f"{conv}({self._gen_expr(expr.args[0], param_names)})"
         if expr.callee == "int":   return f"((strata_int)({self._gen_expr(expr.args[0], param_names)}))"
         if expr.callee == "float": return f"((strata_float)({self._gen_expr(expr.args[0], param_names)}))"
+        if expr.callee == "len":
+            return f"strata_len({self._gen_expr(expr.args[0], param_names)})"
         args = ", ".join(self._gen_expr(a, param_names) for a in expr.args)
         return f"{cname(expr.callee)}({args})"
 

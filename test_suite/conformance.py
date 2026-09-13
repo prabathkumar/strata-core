@@ -163,6 +163,23 @@ test("ctx_model_block_still_parses",
 test("ctx_report_block_still_parses",
     'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { float t = sum(id); } }')
 
+print("\n── Database runtime ──────────────────────────────────────────────")
+compile_run("db_insert_and_query",
+    'import io from std;\ndatabase M { int id; str name; }\nint main() { M <- [id = 1, name = "a"]; M <- [id = 2, name = "b"]; list[M] h = M <- [id == 2]; print(str(len(h))); return 0; }',
+    "1")
+compile_run("db_query_by_string",
+    'import io from std;\ndatabase M { int id; str status; }\nint main() { M <- [id = 1, status = "UP"]; M <- [id = 2, status = "DOWN"]; M <- [id = 3, status = "DOWN"]; list[M] d = M <- [status == "DOWN"]; print(str(len(d))); return 0; }',
+    "2")
+compile_run("db_for_in_renders_rows",
+    'import io from std;\ndatabase M { int id; str name; }\nlayout L() { window "w" { list[M] all = M <- [id > 0]; for R in all { text R.name; } } }\nint main() { M <- [id = 1, name = "alpha"]; M <- [id = 2, name = "beta"]; render L to "/tmp/_t.html"; print("rendered"); return 0; }',
+    "rendered")
+compile_run("db_empty_query",
+    'import io from std;\ndatabase M { int id; }\nint main() { list[M] none = M <- [id == 99]; print(str(len(none))); return 0; }',
+    "0")
+compile_run("float_shortest_roundtrip",
+    'import io from std;\nint main() { float a = 91.4; float b = 3.0; print(str(a)); print(str(b)); return 0; }',
+    "91.4\n3.0")
+
 print("\n── End-to-End Compilation & Execution ────────────────────────────")
 compile_run("e2e_hello_world",
     'import io from std;\nint main() { print("Hello, Strata!"); return 0; }',

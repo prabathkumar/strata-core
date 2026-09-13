@@ -48,16 +48,18 @@ int bind_has(int head, str name) {
 
 database Gen {
     int out;          // StringBuilder*
+    str query_row;    // table whose condition is being generated, else ""
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
     int func_returns; // Bind list: function -> C return type
     int records;      // Bind list: record type name -> "1"
-    int schemas;      // Bind list: schema name -> comma-joined columns
+    int schemas;      // Bind list: table -> ",col,col,"
+    int field_types;  // Bind list: "Table.col" -> C type
 }
 
 Gen gen_new() {
-    native "Gen* _g=(Gen*)calloc(1,sizeof(Gen)); return _g;";
+    native "Gen* _g=(Gen*)calloc(1,sizeof(Gen)); _g->query_row=\"\"; return _g;";
 }
 
 def emit_raw(Gen &g, str line) {
@@ -192,7 +194,14 @@ str expr_ctype(Gen &g, int p) {
         sb_append(&sb, "*");
         return sb_to_str(&sb);
     }
-    if (k == 48) { return ""; }
+    if (k == 48) {
+        str ot = expr_ctype(&g, e.c1);
+        str rec = ot;
+        if (ends_with_star(ot) == 1) { rec = str_slice(ot, 0, str_len(ot) - 1); }
+        StringBuilder key = sb_new();
+        sb_append(&key, rec); sb_append(&key, "."); sb_append(&key, e.s1);
+        return bind_get(g.field_types, sb_to_str(&key));
+    }
     if (k == 49) {
         str base = expr_ctype(&g, e.c1);
         if (str_eq(base, "strata_str")) { return "strata_int"; }
@@ -263,6 +272,17 @@ str norm_float(str t) {
     return str_slice(t, 0, last + 1);
 }
 
+int schema_has_column(Gen &g, str table, str col) {
+    str cols = bind_get(g.schemas, table);
+    if (str_len(cols) == 0) { return 0; }
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ",");
+    sb_append(&needle, col);
+    sb_append(&needle, ",");
+    if (str_index_of(cols, sb_to_str(&needle)) >= 0) { return 1; }
+    return 0;
+}
+
 str gen_expr(Gen &g, int p) {
     if (p == 0) { return "0"; }
     Node e = node_at(p);
@@ -279,6 +299,15 @@ str gen_expr(Gen &g, int p) {
     }
     if (k == 53) { if (e.i1 == 1) { return "1"; } return "0"; }
     if (k == 54) {
+        // Inside a query condition a bare identifier naming a column of the
+        // table under test refers to the candidate row.
+        if (str_len(g.query_row) > 0) {
+            if (schema_has_column(&g, g.query_row, e.s1) == 1) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "_row->"); sb_append(&sb, e.s1);
+                return sb_to_str(&sb);
+            }
+        }
         // A `T &x` parameter arrives as T* and must be dereferenced at use.
         if (bind_has(g.borrowed, e.s1) == 1) {
             StringBuilder sb = sb_new();
@@ -393,9 +422,19 @@ str gen_call(Gen &g, Node e) {
     NodeVec args = nv_at(e.v1);
     int n = args.len;
 
-    if (str_eq(e.s1, "str") == 1) {
+    if (str_eq(e.s1, "len") == 1) {
         StringBuilder sb = sb_new();
-        sb_append(&sb, "strata_int_to_str(");
+        sb_append(&sb, "strata_len(");
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
+        sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+    if (str_eq(e.s1, "str") == 1) {
+        // Routing a float through the integer converter truncates it.
+        str at = expr_ctype(&g, node_ptr(nv_get(&args, 0)));
+        StringBuilder sb = sb_new();
+        if (str_eq(at, "strata_float") == 1) { sb_append(&sb, "strata_float_to_str("); }
+        if (str_eq(at, "strata_float") == 0) { sb_append(&sb, "strata_int_to_str("); }
         sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
         sb_append(&sb, ")");
         return sb_to_str(&sb);
@@ -547,20 +586,29 @@ def gen_stmt(Gen &g, Node st) {
 
     if (k == 27) {                                    // insert
         NodeVec pairs = nv_at(st.v1);
-        StringBuilder sb = sb_new();
-        sb_append(&sb, "/* insert into ");
-        sb_append(&sb, st.s1);
-        sb_append(&sb, ": ");
+        cg_emit(&g, "{");
+        g.indent = g.indent + 1;
+        StringBuilder alloc = sb_new();
+        sb_append(&alloc, st.s1); sb_append(&alloc, "* _r = (");
+        sb_append(&alloc, st.s1); sb_append(&alloc, "*)calloc(1, sizeof(");
+        sb_append(&alloc, st.s1); sb_append(&alloc, "));");
+        cg_emit(&g, sb_to_str(&alloc));
         int n = pairs.len;
         for (int i = 0; i < n; i = i + 1) {
-            if (i > 0) { sb_append(&sb, ", "); }
             Node pair = nv_get(&pairs, i);
-            sb_append(&sb, pair.s1);
-            sb_append(&sb, "=");
-            sb_append(&sb, gen_expr(&g, pair.c1));
+            StringBuilder set = sb_new();
+            sb_append(&set, "_r->"); sb_append(&set, pair.s1);
+            sb_append(&set, " = "); sb_append(&set, gen_expr(&g, pair.c1));
+            sb_append(&set, ";");
+            cg_emit(&g, sb_to_str(&set));
         }
-        sb_append(&sb, " */");
-        cg_emit(&g, sb_to_str(&sb));
+        StringBuilder push = sb_new();
+        sb_append(&push, "if ("); sb_append(&push, st.s1);
+        sb_append(&push, "__count < STRATA_TABLE_CAP) "); sb_append(&push, st.s1);
+        sb_append(&push, "__rows["); sb_append(&push, st.s1); sb_append(&push, "__count++] = _r;");
+        cg_emit(&g, sb_to_str(&push));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
         return;
     }
 }
@@ -626,12 +674,47 @@ def gen_var_decl(Gen &g, Node st) {
     }
 
     if (val.kind == 46) {
-        StringBuilder sb = sb_new();
-        sb_append(&sb, ctype); sb_append(&sb, " "); sb_append(&sb, cname(st.s1));
-        sb_append(&sb, " = NULL; /* query:"); sb_append(&sb, val.s1);
-        sb_append(&sb, " */");
-        cg_emit(&g, sb_to_str(&sb));
         g.var_types = bind_cons(st.s1, ctype, g.var_types);
+        if (bind_has(g.schemas, val.s1) == 0) {
+            // No such table; the checker has already reported it.
+            StringBuilder sb = sb_new();
+            sb_append(&sb, ctype); sb_append(&sb, " "); sb_append(&sb, cname(st.s1));
+            sb_append(&sb, " = NULL;");
+            cg_emit(&g, sb_to_str(&sb));
+            return;
+        }
+        g.query_row = val.s1;
+        str cond = gen_expr(&g, val.c1);
+        g.query_row = "";
+
+        StringBuilder d = sb_new();
+        sb_append(&d, ctype); sb_append(&d, " "); sb_append(&d, cname(st.s1));
+        sb_append(&d, " = ("); sb_append(&d, ctype); sb_append(&d, ")malloc(sizeof(void*) * (");
+        sb_append(&d, val.s1); sb_append(&d, "__count + 1));");
+        cg_emit(&g, sb_to_str(&d));
+        cg_emit(&g, "{");
+        g.indent = g.indent + 1;
+        cg_emit(&g, "strata_int _n = 0;");
+        StringBuilder loop = sb_new();
+        sb_append(&loop, "for (strata_int _i = 0; _i < "); sb_append(&loop, val.s1);
+        sb_append(&loop, "__count; _i++) {");
+        cg_emit(&g, sb_to_str(&loop));
+        g.indent = g.indent + 1;
+        StringBuilder row = sb_new();
+        sb_append(&row, val.s1); sb_append(&row, "* _row = "); sb_append(&row, val.s1);
+        sb_append(&row, "__rows[_i];");
+        cg_emit(&g, sb_to_str(&row));
+        StringBuilder test = sb_new();
+        sb_append(&test, "if ("); sb_append(&test, cond); sb_append(&test, ") { ");
+        sb_append(&test, cname(st.s1)); sb_append(&test, "[_n++] = _row; }");
+        cg_emit(&g, sb_to_str(&test));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
+        StringBuilder term = sb_new();
+        sb_append(&term, cname(st.s1)); sb_append(&term, "[_n] = NULL;");
+        cg_emit(&g, sb_to_str(&term));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
         return;
     }
 
@@ -656,6 +739,18 @@ def fwd_struct(Gen &g, str name) {
     emit_raw(&g, sb_to_str(&sb));
 }
 
+def gen_table_storage(Gen &g, str name) {
+    // Backing store for a database block, emitted after the struct so the row
+    // type is complete.
+    StringBuilder a = sb_new();
+    sb_append(&a, "static "); sb_append(&a, name); sb_append(&a, "* ");
+    sb_append(&a, name); sb_append(&a, "__rows[STRATA_TABLE_CAP];");
+    emit_raw(&g, sb_to_str(&a));
+    StringBuilder b = sb_new();
+    sb_append(&b, "static strata_int "); sb_append(&b, name); sb_append(&b, "__count = 0;");
+    emit_raw(&g, sb_to_str(&b));
+}
+
 def gen_struct(Gen &g, str name, int fields_vec) {
     StringBuilder open = sb_new();
     sb_append(&open, "\nstruct "); sb_append(&open, name); sb_append(&open, " {");
@@ -673,7 +768,7 @@ def gen_struct(Gen &g, str name, int fields_vec) {
 }
 
 def gen_decl(Gen &g, Node d) {
-    if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); return; }
+    if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
@@ -875,9 +970,26 @@ def note_records(Gen &g, Node unit) {
     int n = decls.len;
     for (int i = 0; i < n; i = i + 1) {
         Node d = nv_get(&decls, i);
-        if (d.kind == 3) { g.records = bind_cons(d.s1, "1", g.records); }
-        if (d.kind == 4) { g.records = bind_cons(d.s1, "1", g.records); }
+        if (d.kind == 3) { note_record(&g, d); }
+        if (d.kind == 4) { note_record(&g, d); }
     }
+}
+
+def note_record(Gen &g, Node d) {
+    g.records = bind_cons(d.s1, "1", g.records);
+    NodeVec fs = nv_at(d.v1);
+    int n = fs.len;
+    StringBuilder cols = sb_new();
+    sb_append(&cols, ",");
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fs, i);
+        sb_append(&cols, f.s1);
+        sb_append(&cols, ",");
+        StringBuilder key = sb_new();
+        sb_append(&key, d.s1); sb_append(&key, "."); sb_append(&key, f.s1);
+        g.field_types = bind_cons(sb_to_str(&key), c_type(&g, f.c1), g.field_types);
+    }
+    g.schemas = bind_cons(d.s1, sb_to_str(&cols), g.schemas);
 }
 
 int has_main(Node unit) {
@@ -1148,20 +1260,22 @@ def gen_for_in(Gen &g, Node node) {
     if (ends_with_star(ct) == 1) { elem = str_slice(ct, 0, str_len(ct) - 1); }
     g.var_types = bind_cons(node.s1, elem, g.var_types);
 
-    StringBuilder note = sb_new();
-    sb_append(&note, "/* for "); sb_append(&note, node.s1);
-    sb_append(&note, " in ... — queries return NULL until there is a database runtime, so this renders no rows */");
-    cg_emit(&g, sb_to_str(&note));
+    StringBuilder it = sb_new();
+    sb_append(&it, "_it_"); sb_append(&it, cname(node.s1));
+    str iter = sb_to_str(&it);
 
-    StringBuilder decl = sb_new();
-    sb_append(&decl, elem); sb_append(&decl, " "); sb_append(&decl, cname(node.s1));
-    sb_append(&decl, " = NULL;");
-    cg_emit(&g, sb_to_str(&decl));
-
-    StringBuilder guard = sb_new();
-    sb_append(&guard, "if ("); sb_append(&guard, coll); sb_append(&guard, " != NULL) {");
-    cg_emit(&g, sb_to_str(&guard));
+    StringBuilder head = sb_new();
+    sb_append(&head, "for ("); sb_append(&head, elem); sb_append(&head, "* ");
+    sb_append(&head, iter); sb_append(&head, " = "); sb_append(&head, coll);
+    sb_append(&head, "; "); sb_append(&head, iter); sb_append(&head, " && *");
+    sb_append(&head, iter); sb_append(&head, "; "); sb_append(&head, iter);
+    sb_append(&head, "++) {");
+    cg_emit(&g, sb_to_str(&head));
     g.indent = g.indent + 1;
+    StringBuilder bind = sb_new();
+    sb_append(&bind, elem); sb_append(&bind, " "); sb_append(&bind, cname(node.s1));
+    sb_append(&bind, " = *"); sb_append(&bind, iter); sb_append(&bind, ";");
+    cg_emit(&g, sb_to_str(&bind));
     NodeVec body = nv_at(node.v1);
     int n = body.len;
     for (int i = 0; i < n; i = i + 1) { gen_layout_node(&g, nv_get(&body, i)); }

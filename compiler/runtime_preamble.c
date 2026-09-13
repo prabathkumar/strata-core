@@ -28,8 +28,30 @@ static strata_str strata_int_to_str(strata_int v) {
     snprintf(b,32,"%lld",(long long)v); return b;
 }
 static strata_str strata_float_to_str(strata_float v) {
+    /* %.17g round-trips, then trailing zeros are trimmed so 91.4 prints as
+       "91.4" rather than "91.400000". A fixed 6-decimal format made every
+       rendered float look padded. */
     strata_str b=(strata_str)malloc(64);
-    snprintf(b,64,"%.6f",v); return b;
+    /* Shortest representation that reads back as the same double: %.17g always
+       round-trips but shows binary noise (91.400000000000006), so try shorter
+       precisions first. */
+    int p;
+    for (p = 15; p <= 17; p++) {
+        snprintf(b,64,"%.*g",p,v);
+        if (strtod(b,NULL) == v) break;
+    }
+    if (!strchr(b,'e') && !strchr(b,'E')) {
+        char* dot=strchr(b,'.');
+        if (dot) {
+            char* end=b+strlen(b)-1;
+            while (end>dot && *end=='0') { *end='\0'; end--; }
+            if (end==dot) { *(end+1)='0'; *(end+2)='\0'; }
+        } else {
+            /* A float is shown as a float: 3.0, not 3. */
+            strcat(b,".0");
+        }
+    }
+    return b;
 }
 static strata_int str_len(strata_str s) { return (strata_int)strlen(s); }
 static strata_str str_concat(strata_str a, strata_str b) { return strata_concat(a,b); }
@@ -73,4 +95,20 @@ static void sb_append_f(SB* s, const char* t) {
 }
 static void sb_append_line_f(SB* s, const char* t) {
     sb_append_f(s,t); sb_append_f(s,"\n");
+}
+
+/* ── In-memory table runtime ──────────────────────────────────────────────
+   Each `database` block gets a fixed-capacity table of row pointers. A query
+   allocates a NULL-terminated array of matching rows; `len` counts it. This is
+   deliberately the simplest thing that makes the cross-tier contract
+   observable end to end — there is no persistence, no index and no
+   transaction. */
+#define STRATA_TABLE_CAP 4096
+
+static strata_int strata_len(void* rows) {
+    void** r = (void**)rows;
+    strata_int n = 0;
+    if (!r) return 0;
+    while (r[n]) n++;
+    return n;
 }
