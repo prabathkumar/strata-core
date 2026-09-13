@@ -77,6 +77,11 @@ jobs:
     - name: Documentation Under clang
       run: STRATA_CC=clang python3 test_suite/doc_examples.py
 
+    # The wasm backend needs clang with a wasm32 target, which the runner has
+    # and a gcc-only machine does not. The suite skips there and runs here.
+    - name: WebAssembly Target
+      run: python3 test_suite/wasm_target.py
+
     - name: Verify Standard Library Parses
       run: python3 test_suite/stdlib_parses.py
 

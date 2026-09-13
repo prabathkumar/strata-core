@@ -34,8 +34,12 @@ def main():
         subprocess.run(["tar", "-xf", tar, "-C", work], check=True)
 
         print("\n── Clean checkout ───────────────────────────────────────────────")
-        missing = [f for f in ("compiler/runtime_preamble.c", "bootstrap/stage0.py",
-                               "compiler/parser.py", "compiler/typechecker.py")
+        # Anything the build reads at run time. A prelude added later must be
+        # added here too, which is the point: the list is the contract.
+        required = ("compiler/runtime_preamble.c", "compiler/runtime_preamble_wasm.c",
+                    "bootstrap/stage0.py", "compiler/parser.py",
+                    "compiler/typechecker.py", "compiler/lexer.py")
+        missing = [f for f in required
                    if not os.path.exists(os.path.join(work, f))]
         for f in missing:
             print(f"  MISSING  {f} — required by the build, not tracked")

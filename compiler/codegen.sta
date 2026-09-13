@@ -48,6 +48,7 @@ int bind_has(int head, str name) {
 
 database Gen {
     int out;          // StringBuilder*
+    str target;       // "native" or "wasm"
     str query_row;    // table whose condition is being generated, else ""
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
@@ -59,7 +60,7 @@ database Gen {
 }
 
 Gen gen_new() {
-    native "Gen* _g=(Gen*)calloc(1,sizeof(Gen)); _g->query_row=\"\"; return _g;";
+    native "Gen* _g=(Gen*)calloc(1,sizeof(Gen)); _g->query_row=\"\"; _g->target=\"native\"; return _g;";
 }
 
 def emit_raw(Gen &g, str line) {
@@ -861,6 +862,16 @@ def gen_function(Gen &g, Node fn) {
         g.var_types = bind_cons(prm.s1, ct, g.var_types);
     }
 
+    if (str_eq(g.target, "wasm") == 1) {
+        if (str_eq(fn.s1, "foreign") == 0) {
+            // Every top-level function is part of the module's interface; a
+            // wasm module has no main() to start from.
+            StringBuilder ex = sb_new();
+            sb_append(&ex, "\n__attribute__((export_name(\"");
+            sb_append(&ex, fn.s2); sb_append(&ex, "\")))");
+            emit_raw(&g, sb_to_str(&ex));
+        }
+    }
     StringBuilder head = sb_new();
     sb_append(&head, "\n"); sb_append(&head, fn_signature(&g, fn)); sb_append(&head, " {");
     emit_raw(&g, sb_to_str(&head));
@@ -940,7 +951,12 @@ str replace_all(str hay, str needle, str rep) {
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 str generate(str root, str source_path) {
+    return generate_for(root, source_path, "native");
+}
+
+str generate_for(str root, str source_path, str target) {
     Gen g = gen_new();
+    g.target = target;
     StringBuilder out = sb_new();
     g.out = sb_ptr(out);
 
@@ -950,9 +966,12 @@ str generate(str root, str source_path) {
     int seen = 0;
     collect_modules(root, unit, &mods, &seen);
 
+    // A freestanding WebAssembly build has no libc and uses its own prelude.
     StringBuilder preamble_path = sb_new();
     sb_append(&preamble_path, root);
-    sb_append(&preamble_path, "/compiler/runtime_preamble.c");
+    sb_append(&preamble_path, "/compiler/runtime_preamble");
+    if (str_eq(g.target, "wasm") == 1) { sb_append(&preamble_path, "_wasm"); }
+    sb_append(&preamble_path, ".c");
     emit_raw(&g, file_read(sb_to_str(&preamble_path)));
 
     // Record type names are needed before any type is rendered.
@@ -969,7 +988,9 @@ str generate(str root, str source_path) {
     }
     emit_unit(&g, unit, 1, &emitted_decls, &emitted_fns, "");
 
-    if (has_main(unit) == 1) {
+    int emit_entry = has_main(unit);
+    if (str_eq(g.target, "wasm") == 1) { emit_entry = 0; }
+    if (emit_entry == 1) {
         emit_raw(&g, "\nint main(int argc, char** argv) {\n    __strata_argc = argc;\n    __strata_argv = argv;\n    return (int)strata_main();\n}\n");
     }
 

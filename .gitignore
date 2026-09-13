@@ -5,4 +5,6 @@ __pycache__/
 *.o
 build/
 *.c
-!compiler/runtime_preamble.c
+# Every runtime prelude, not just the native one. Naming a single file
+# here let the wasm prelude be silently excluded the moment it was added.
+!compiler/runtime_preamble*.c

@@ -21,7 +21,7 @@ from compiler.parser import (
     PrimitiveType, ListType, TensorType,
 )
 
-def _load_preamble():
+def _load_preamble(name="runtime_preamble.c"):
     """The C runtime prelude, shared with the Strata-written code generator.
 
     Kept in compiler/runtime_preamble.c rather than inline so that both
@@ -30,12 +30,17 @@ def _load_preamble():
     reason that has nothing to do with code generation.
     """
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "compiler", "runtime_preamble.c")
+                        "compiler", name)
     with open(path) as f:
         return f.read()
 
 
 C_PREAMBLE = _load_preamble()
+
+# A freestanding WebAssembly build has no libc, so it uses its own prelude.
+# Both are read from disk rather than inlined, for the same reason: one source
+# of truth, shared with the Strata-written generator.
+WASM_PREAMBLE = _load_preamble("runtime_preamble_wasm.c")
 
 # Functions already defined by C_PREAMBLE; an imported module redefining one
 # of these would be a duplicate symbol, so they are never re-emitted.
@@ -67,7 +72,8 @@ def subst_native(code: str, param_names: list) -> str:
     return result
 
 class CodeGen:
-    def __init__(self, ast, source_path, modules=None):
+    def __init__(self, ast, source_path, modules=None, target="native"):
+        self.target = target
         self.ast = ast
         self.source_path = source_path
         self.modules = modules or []
@@ -99,7 +105,7 @@ class CodeGen:
         self.out.append(line)
 
     def generate(self):
-        self.emit_raw(C_PREAMBLE)
+        self.emit_raw(WASM_PREAMBLE if self.target == "wasm" else C_PREAMBLE)
 
         # Imported modules first, in dependency order. Names already provided by
         # the C preamble or by an earlier module are skipped so that a symbol
@@ -142,7 +148,7 @@ class CodeGen:
 
         # A module with no main() is a library unit: emitting the C entry point
         # would force an undefined reference to strata_main.
-        if any(fn.name == "main" for fn in self.ast.functions):
+        if self.target != "wasm" and any(fn.name == "main" for fn in self.ast.functions):
             self.emit_raw("""
 int main(int argc, char** argv) {
     __strata_argc = argc;
@@ -343,7 +349,12 @@ int main(int argc, char** argv) {
             self.var_types[p.name] = ct
         # Collect param names for native substitution
         param_names = [p.name for p in fn.params]
-        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{")
+        if self.target == "wasm" and fn.kind != "foreign":
+            # Every top-level function is part of the module's interface; a
+            # wasm module has no main() to start from.
+            self.emit_raw(f'\n__attribute__((export_name("{fn.name}")))')
+        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{}}"
+                      if False else f"\n{rt} {cname(fn.name)}({params}) {{")
         self.indent = 1
         for stmt in fn.body:
             self._gen_stmt(stmt, param_names)
@@ -839,7 +850,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     for u in unresolved:
         print(f"[STRATA IMPORT] '{u}' is an external module with no local "
               f"checkout; its symbols must be provided at link time.", file=sys.stderr)
-    gen = CodeGen(ast, source_path, modules)
+    gen = CodeGen(ast, source_path, modules, target=target)
     c_source = gen.generate()
     link_flags = [f"-l{l}" for l in dict.fromkeys(gen.link_libs)]
     base = os.path.splitext(source_path)[0]
@@ -863,8 +874,9 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # to build on clang while succeeding on gcc.
     portability = ["-Wno-implicit-function-declaration"]
     if target == "wasm":
-        flags = ([cc,"-O2","--target=wasm32","--no-standard-libraries",
-                  "-Wl,--export-all","-Wl,--no-entry"] + portability +
+        flags = ([cc,"-Oz","--target=wasm32","-nostdlib",
+                  "-Wl,--no-entry","-Wl,--strip-all",
+                  "-Wl,--export-dynamic","-Wl,--allow-undefined"] + portability +
                  ["-o",output_path,c_path])
     elif is_library:
         if not output_path.endswith(".o"):
@@ -906,7 +918,7 @@ def main():
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
         modules,_ = resolve_imports(ast, args.file, args.verbose)
-        print(CodeGen(ast,args.file,modules).generate()); return
+        print(CodeGen(ast,args.file,modules,target=args.target).generate()); return
     compile_sta(args.file, out, target=args.target, verbose=args.verbose,
                 json_diagnostics=args.json)
 

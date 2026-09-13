@@ -1,36 +1,41 @@
-feat(ffi): foreign blocks — call C libraries with the boundary type-checked
+feat(wasm): freestanding WebAssembly target, with measured sizes
 
-The adoption blocker. A `foreign` block includes a header, names the
-library to link, and declares signatures:
+`--target wasm` now produces a real module. Verified by building and
+running one: exports ['memory','classify','label','checksum','score_of'],
+classify(900) returns "PRIME", label(900) returns "tier: PRIME", and
+fib(25) returns 75025. Strings and allocation work inside the module —
+label concatenates through the prelude's bump allocator.
 
-  foreign "math.h" link "m" {
-      float sqrt(float x);
-      float pow(float base, float exponent);
-  }
+A freestanding wasm build has no libc, so compiler/runtime_preamble_wasm.c
+supplies the subset the language needs: a bump allocator, strlen/strcmp/
+memcpy, integer and float formatting, and the string helpers. `print` goes
+through one imported host function, so a module that never prints imports
+nothing. Every top-level function carries an export_name attribute,
+because a wasm module has no main() to start from.
 
-The signatures are registered like any other function, so a call across
-the boundary is checked rather than trusted. Passing a str where the
-library takes a float is E005 at build time; the wrong number of
-arguments is E002; the return type flows into the assignment and a
-mismatch is E001. That is precisely what E005 — Boundary Perimeter
-Contamination — has described since the taxonomy was written, and it now
-does it.
+The trade-offs are in the README rather than omitted: no free, so a
+long-running module exhausts its heap; no file I/O; floats format to six
+decimals because shortest-round-trip needs snprintf and strtod. This
+suits computation, not a server, and WebAssembly still cannot touch the
+DOM — the layout tier stays server-rendered.
 
-No prototypes are emitted. The header already declares the functions and
-re-declaring them risks conflicting with the real signature. Linked
-libraries are collected and passed to the C compiler as -l flags.
+Measured, not estimated:
 
-`foreign` and `link` are contextual, not reserved, so neither word is
-taken from user code.
+  two integer functions            136 bytes
+  four string functions            595 bytes  (436 gzipped)
 
-One bug caught by testing the output rather than the checker: foreign
-return types were not recorded for code generation, so str(sqrt(x))
-routed a float through the integer converter and printed 12 instead of
-12.0. Direct calls were affected while assignments through a typed
-variable were not, which is the kind of gap a checker-only test misses.
+This replaces the "15 KB browser bundle" the README claimed before any of
+it was built. The real figure is smaller, but the point is that it is now
+a measurement rather than a number someone wrote down.
 
-examples/ffi_math.sta calls libm; five conformance tests cover the
-checks. All nine suites green, fixpoint holds, conformance 84.
+test_suite/wasm_target.py builds a module and checks its magic number and
+exports. It needs clang with a wasm32 target, which gcc cannot provide, so
+it reports a skip on machines without one and runs in CI, which has it.
+Sizes are printed rather than asserted: an assertion would be either
+meaningless or brittle, and this project has already published one bundle
+size that nothing measured.
+
+Ported to both implementations; all suites green and the fixpoint holds.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

@@ -133,6 +133,35 @@ make a patch unambiguous to apply and unambiguous to verify. Readability here
 comes from explicit structure, not from resembling English — English is
 ambiguous, and ambiguity is the thing being engineered out.
 
+### WebAssembly
+
+`--target wasm` builds a freestanding module — no libc, no runtime to ship —
+exporting every top-level function:
+
+```
+$ strata build scoring.sta --target wasm -o scoring.wasm
+```
+
+Running it from a host:
+
+```
+exports: ['memory', 'classify', 'label', 'checksum', 'score_of']
+classify(900) -> PRIME      label -> tier: PRIME
+classify(100) -> SUBPRIME   label -> tier: SUBPRIME
+```
+
+Measured sizes, from the modules above rather than from an estimate: a module
+of four string-handling functions is **595 bytes** (436 gzipped); two integer
+functions are **136 bytes**. Strings and allocation work — `label` concatenates
+through a bump allocator built into the prelude.
+
+The trade-offs are real and worth stating. There is no `free`, so a
+long-running module exhausts its heap; there is no file I/O; floats format to
+six decimals rather than shortest-round-trip, because that needs `snprintf`.
+This suits computation, not a server. And WebAssembly cannot touch the DOM, so
+a UI still needs a JavaScript shim — the `layout` tier is server-rendered
+instead.
+
 ### Calling existing C libraries
 
 A `foreign` block declares what a library provides. The signatures are
@@ -365,7 +394,7 @@ what runs and what is planned is unambiguous.
 | Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. |
 | Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
-| WebAssembly target | Planned via clang from the existing C output. Note that WebAssembly has no direct DOM access; a JavaScript interop shim is required for any UI, as it is for every WASM UI framework. |
+| WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
 | Database persistence | In-memory tables only. `database` blocks get fixed-capacity storage, inserts append and queries filter — enough for the contract to be observable end to end. No disk, no index, no transactions, no SQL backend. |
 | `model` / `predict` execution | Declarations and shape checking work. There is no inference runtime — `strata_predict` is not yet implemented. |
 | `report` / `render` | Parsed; emits a title only. No aggregation or document generation. |
