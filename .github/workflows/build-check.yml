@@ -101,6 +101,10 @@ jobs:
     - name: Formatting Preserves Meaning
       run: python3 test_suite/fmt.py
 
+    # A project builds as a project, and the service it produces serves.
+    - name: Project Builds And The Service Serves
+      run: python3 test_suite/project_build.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

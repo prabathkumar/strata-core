@@ -25,6 +25,12 @@ apps/orders/
     orders            one binary
 ```
 
+`strata build` with no arguments builds the project the current directory
+belongs to, walking up to find `Strata.toml` and reading `main` and `output`
+from it. `strata run` builds and runs it; `strata new` scaffolds one that
+builds unedited. A single file still compiles with `strata build <file.sta>`,
+for a script or an example.
+
 `import schema from app;` resolves to `src/schema.sta`. `app` is a module
 source alongside `std` and `compiler`, which is what lets an application be
 more than one file without putting its modules in the standard library.
@@ -62,8 +68,6 @@ the language.
 - **The HTTP server is one connection at a time.** No TLS, no keep-alive, no
   concurrency, no streaming, no timeouts, and a request body larger than one
   `read()` is truncated. A second client waits. Not for the public internet.
-- **`strata build` still takes a file, not a project.** `Strata.toml` is read
-  by a human, not by the toolchain.
 - **Imported modules are not type-checked.** Only the file being compiled has
   its bodies checked, so a break inside `views.sta` is caught by the C
   compiler rather than by Strata — which is how the column-rename demo above

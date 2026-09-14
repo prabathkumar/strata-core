@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### A project is the unit of building
+
+`Strata.toml` existed and nothing read it. `strata build` took a file path, so
+there was no such thing as a Strata application — only a set of files someone
+compiled by hand, which is why the one directory shaped like a service held a
+six-line hello world.
+
+`strata build` with no arguments now builds the project the current directory
+belongs to: it walks up for `Strata.toml` and reads `main` and `output`.
+`strata run` builds and runs it. `strata new` scaffolds a project with a
+schema and an entry point that builds unedited. A single file still compiles
+with `strata build <file.sta>`.
+
+The reader is deliberately small — it takes two keys and ignores the rest. It
+is not a TOML parser, and a key it does not understand is not silently
+honoured.
+
+`cmd_build` also ran its own type check in an inline Python block that did not
+resolve imports, so it printed "TypeCheck OK" for files the compiler then
+rejected. Removed; `stage0` is the only thing that decides.
+
+`test_suite/project_build.py` covers it, ending with the real service: build
+`apps/orders` as a project, start it, and read `/summary` back over HTTP —
+including that the numbers are right after a load from disk, which is the case
+that caught the string-comparison bug.
+
+
 ### String equality was comparing pointers
 
     str a = "OPEN";

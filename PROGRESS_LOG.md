@@ -175,3 +175,17 @@ Two bugs found by the integration, neither by a test:
     never saw it.
 
 All twelve suites green, conformance 165/165, fixpoint reached.
+
+## 2026-09-14 — step 1 of PLAN.md
+
+`strata build` reads Strata.toml. A project is the unit: build with no
+arguments from anywhere inside it, `strata run` to run it, `strata new` to
+scaffold one that builds unedited.
+
+Removed the duplicate type check inside cmd_build — it skipped import
+resolution and printed "TypeCheck OK" for files stage0 then rejected.
+
+test_suite/project_build.py, 14 checks, ending by starting the real service
+and reading /summary over HTTP.
+
+All thirteen suites green.

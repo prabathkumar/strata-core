@@ -7,7 +7,8 @@ export PYTHONPATH="$ROOT:$PYTHONPATH"
 
 usage() {
     echo "Strata Compiler Toolchain v1.0.0"
-    echo "  strata build <file.sta> [-o output] [--target native|wasm] [-v]"
+    echo "  strata build [file.sta]        no file: builds the project here"
+    echo "  strata run   [file.sta]        no file: builds and runs the project"
     echo "  strata check <file.sta>"
     echo "  strata lex   <file.sta> [--json|--count]"
     echo "  strata ast   <file.sta>"
@@ -44,28 +45,57 @@ except (LexError, ParseError) as e:
 PYEOF
 }
 
+# ── Projects ──────────────────────────────────────────────────────────────────
+#
+# A Strata application is a directory with a Strata.toml, sources in src/ and
+# a binary in build/. `strata build` with no arguments builds the project the
+# current directory belongs to.
+#
+# The reader below is deliberately small: it takes `main` and `output` and
+# ignores everything else. It is not a TOML parser, and a key it does not
+# understand is not silently honoured — it is simply not read.
+
+find_project() {
+    local d="$PWD"
+    for _ in 1 2 3 4 5 6; do
+        if [ -f "$d/Strata.toml" ]; then echo "$d"; return 0; fi
+        [ "$d" = "/" ] && break
+        d="$(dirname "$d")"
+    done
+    return 1
+}
+
+toml_value() {
+    # toml_value <file> <key> — first `key = "value"`, quotes stripped.
+    sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*$/\1/p" "$1" | head -1
+}
+
 cmd_build() {
     local file="$1"
-    if [ -z "$file" ]; then echo "Usage: strata build <file.sta>"; exit 1; fi
-    echo "[Strata] Type checking '$file'..."
-    python3 << PYEOF
-import sys, os
-sys.path.insert(0, '$ROOT')
-from compiler.lexer import tokenise_file, LexError
-from compiler.parser import Parser, ParseError
-from compiler.typechecker import TypeChecker
-try:
-    toks = tokenise_file('$file')
-    ast  = Parser(toks).parse()
-    tc   = TypeChecker(ast, filename='$file')
-    errs = tc.check()
-    if errs:
-        for e in errs: print(str(e), file=sys.stderr)
-        sys.exit(1)
-    print(f"  TypeCheck OK — {len(ast.declarations)} decls, {len(ast.functions)} functions")
-except (LexError, ParseError) as e:
-    print(str(e), file=sys.stderr); sys.exit(1)
-PYEOF
+
+    if [ -z "$file" ]; then
+        local proj; proj="$(find_project)" || {
+            echo "no Strata.toml here or above; run 'strata build <file.sta>'" >&2
+            return 1
+        }
+        local main out
+        main="$(toml_value "$proj/Strata.toml" main)"
+        out="$(toml_value "$proj/Strata.toml" output)"
+        [ -z "$main" ] && main="src/main.sta"
+        [ -z "$out" ]  && out="build/$(basename "$proj")"
+        if [ ! -f "$proj/$main" ]; then
+            echo "$proj/Strata.toml names main = \"$main\", which does not exist" >&2
+            return 1
+        fi
+        mkdir -p "$proj/$(dirname "$out")"
+        echo "[Strata] building $(basename "$proj") — $main -> $out"
+        ( cd "$proj" && python3 "$ROOT/bootstrap/stage0.py" "$main" -o "$out" ) || return 1
+        return 0
+    fi
+
+    # A single file, for a script or an example. stage0 does the type checking:
+    # doing it again here, without resolving imports, printed "TypeCheck OK"
+    # for files it then rejected.
     python3 "$ROOT/bootstrap/stage0.py" "$@"
 }
 
@@ -112,35 +142,64 @@ PYEOF
 
 cmd_run() {
     local f="$1"
-    if [ -z "$f" ]; then echo "Usage: strata run <file.sta>"; exit 1; fi
+    if [ -z "$f" ]; then
+        local proj; proj="$(find_project)" || {
+            echo "no Strata.toml here or above; run 'strata run <file.sta>'" >&2
+            return 1
+        }
+        cmd_build || return 1
+        local out; out="$(toml_value "$proj/Strata.toml" output)"
+        [ -z "$out" ] && out="build/$(basename "$proj")"
+        ( cd "$proj" && exec "./$out" )
+        return $?
+    fi
     local tmp; tmp="$(mktemp /tmp/strata_XXXXXX)"
     python3 "$ROOT/bootstrap/stage0.py" "$f" -o "$tmp"
     "$tmp"
     rm -f "$tmp"
 }
 
+
 cmd_new() {
     local name="$1"
     if [ -z "$name" ]; then echo "Usage: strata new <project_name>"; exit 1; fi
-    mkdir -p "$name/src" "$name/test_suite"
+    if [ -e "$name" ]; then echo "'$name' already exists" >&2; return 1; fi
+    mkdir -p "$name/src" "$name/data" "$name/build"
     cat > "$name/Strata.toml" << TOML
 [package]
 name = "$name"
 version = "0.1.0"
-edition = "2026"
-[compiler]
-target = "native"
-opt_level = "aggressive"
-halt_on_error = true
+
+[build]
+# strata build with no arguments reads these two keys.
+main = "src/main.sta"
+output = "build/$name"
 TOML
+    cat > "$name/src/schema.sta" << 'STA'
+// The data tier. Every other tier is checked against this declaration:
+// rename a column and the query, the aggregate and the page fail to build.
+
+database Item {
+    int   id;
+    str   name;
+    float price;
+}
+STA
     cat > "$name/src/main.sta" << STA
-import io from std;
+import io     from std;
+import str    from std;
+import mem    from std;
+import schema from app;
+
 int main() {
-    print("Hello from $name!");
+    Item <- [id = 1, name = "first", price = 9.99];
+    list[Item] all = Item <- [id > 0];
+    print(strata_concat("items: ", str(count(all))));
+    print(strata_concat("value: ", str(sum(all.price))));
     return 0;
 }
 STA
-    echo "[Strata] Project '$name' created."
+    echo "created $name — 'cd $name && strata run'"
 }
 
 cmd_test() {

@@ -11,8 +11,8 @@ them as estimates with the usual asymmetry: they go long, not short.
 
 | # | Activity | Done means | Days |
 |---|---|---|---|
-| 0 | **Finish the self-hosted port** *(in flight)* | `strata-self` compiles `apps/orders`; the differentials cover `render` as an expression, `app` imports and imported declarations | 0.5 |
-| 1 | **`strata build` reads `Strata.toml`** | `cd apps/orders && strata build` produces `build/orders` with no paths on the command line | 0.5 |
+| 0 | ~~Finish the self-hosted port~~ **done** | `strata-self` compiles `apps/orders` byte-identically; all four differentials walk into `apps/` | 0.5 |
+| 1 | ~~`strata build` reads `Strata.toml`~~ **done** | `cd apps/orders && strata build` produces `build/orders`; `strata new` scaffolds a project that builds unedited | 0.5 |
 | 2 | **Type-check imported modules** | a column break inside `views.sta` is reported by Strata with a line, not by the C compiler | 1.0 |
 | 3 | **Forms and POST** | an order is created from the page: request body parsed, handler runs, redirect, row persisted | 1.5 |
 | 4 | **Routing, static assets, error pages** | a route table rather than an if-chain; CSS served; real 404 and 500 pages | 1.0 |

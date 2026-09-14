@@ -148,6 +148,14 @@ def measure():
                                 if m and ok else "FAILING")
         ok_all = ok_all and bool(ok)
 
+    ok, text = run_suite("project_build.py")
+    if ok is not None:
+        m = re.search(r"(\d+)/(\d+) checks passed", text)
+        facts["Projects"] = (f"{m.group(1)}/{m.group(2)} checks — a project "
+                             f"builds and the service serves"
+                             if m and ok else "FAILING")
+        ok_all = ok_all and bool(ok)
+
     ok, text = run_suite("fmt.py")
     if ok is not None:
         m = re.search(r"(\d+)/(\d+) checks passed over (\d+) files", text)
