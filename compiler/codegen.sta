@@ -958,9 +958,9 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
             sb_append(&w, ");");
         }
         if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
-            sb_append(&w, "        fprintf(f, \"%lld\", (long long)r->"); sb_append(&w, fd.s1);
-            sb_append(&w, ");");
-        } }
+                sb_append(&w, "        fprintf(f, \"%lld\", (long long)r->"); sb_append(&w, fd.s1);
+                sb_append(&w, ");");
+            } }
         emit_raw(&g, sb_to_str(&w));
     }
     emit_raw(&g, "        fputc(0x0a, f);");
@@ -1047,8 +1047,8 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         if (str_eq(ct, "strata_str") == 1) { sb_append(&cs, "strata_dup(buf);"); }
         if (str_eq(ct, "strata_float") == 1) { sb_append(&cs, "strtod(buf, NULL);"); }
         if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
-            sb_append(&cs, "(strata_int)atoll(buf);");
-        } }
+                sb_append(&cs, "(strata_int)atoll(buf);");
+            } }
         sb_append(&cs, " break;");
         emit_raw(&g, sb_to_str(&cs));
     }
@@ -1096,7 +1096,7 @@ def gen_struct(Gen &g, str name, int fields_vec) {
 
 def gen_decl(Gen &g, Node d) {
     if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
-                       gen_table_io(&g, d.s1, d.v1); return; }
+        gen_table_io(&g, d.s1, d.v1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
@@ -1784,8 +1784,8 @@ str html_escape(str t) {
         if (c == 62) { sb_append(&sb, "&gt;"); }
         if (c == 92) { }
         if (c != 34) { if (c != 60) { if (c != 62) { if (c != 92) {
-            sb_append(&sb, char_str(c));
-        } } } }
+                        sb_append(&sb, char_str(c));
+                    } } } }
     }
     return sb_to_str(&sb);
 }

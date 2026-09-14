@@ -86,8 +86,8 @@ str json_escape(str v) {
         if (c == 9)  { sb_append(&sb, "\\t"); }
         if (c == 13) { sb_append(&sb, "\\r"); }
         if (c != 34) { if (c != 92) { if (c != 10) { if (c != 9) { if (c != 13) {
-            sb_append(&sb, char_str(c));
-        } } } } }
+                            sb_append(&sb, char_str(c));
+                        } } } } }
     }
     return sb_to_str(&sb);
 }
@@ -1262,13 +1262,13 @@ Node parse_unit(P &p) {
             if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
         }
         if (is_foreign == 0) { if (is_type_kind(k) == 0) {
-            if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
-                if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
-                    eprint("[STRATA PARSE ERROR] unexpected top-level token");
-                    p_advance(&p);
-                } } } }
-            } } } } }
-        } }
+                if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
+                                    if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
+                                                    eprint("[STRATA PARSE ERROR] unexpected top-level token");
+                                                    p_advance(&p);
+                                                } } } }
+                                } } } } }
+            } }
     }
 
     Node unit = node_new(1);

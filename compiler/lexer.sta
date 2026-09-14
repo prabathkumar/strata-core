@@ -283,8 +283,8 @@ str scan_string_body(Lex &l) {
             if (e == 34)  { sb_append(&sb, char_str(34)); }
             if (e == 92)  { sb_append(&sb, char_str(92)); }
             if (e != 110) { if (e != 116) { if (e != 114) { if (e != 34) { if (e != 92) {
-                sb_append(&sb, char_str(e));
-            } } } } }
+                                sb_append(&sb, char_str(e));
+                            } } } } }
         }
         if (c == 34) { return sb_to_str(&sb); }
         if (c == 10) {
@@ -351,21 +351,21 @@ def scan_token(Lex &l, TokVec &out) {
 
     // Two-character operators, in the oracle's order.
     if (c == 60) { if (lex_peek(&l, 0) == 45) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(76, "<-", sl, sc)); return; } }
+            vec_push(&out, tok_new(76, "<-", sl, sc)); return; } }
     if (c == 58) { if (lex_peek(&l, 0) == 58) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(77, "::", sl, sc)); return; } }
+            vec_push(&out, tok_new(77, "::", sl, sc)); return; } }
     if (c == 61) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(70, "==", sl, sc)); return; } }
+            vec_push(&out, tok_new(70, "==", sl, sc)); return; } }
     if (c == 33) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(71, "!=", sl, sc)); return; } }
+            vec_push(&out, tok_new(71, "!=", sl, sc)); return; } }
     if (c == 60) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(72, "<=", sl, sc)); return; } }
+            vec_push(&out, tok_new(72, "<=", sl, sc)); return; } }
     if (c == 62) { if (lex_peek(&l, 0) == 61) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(73, ">=", sl, sc)); return; } }
+            vec_push(&out, tok_new(73, ">=", sl, sc)); return; } }
     if (c == 38) { if (lex_peek(&l, 0) == 38) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(74, "&&", sl, sc)); return; } }
+            vec_push(&out, tok_new(74, "&&", sl, sc)); return; } }
     if (c == 124) { if (lex_peek(&l, 0) == 124) { int a = lex_advance(&l);
-        vec_push(&out, tok_new(75, "||", sl, sc)); return; } }
+            vec_push(&out, tok_new(75, "||", sl, sc)); return; } }
 
     int sk = single_kind(c);
     if (sk > 0) { vec_push(&out, tok_new(sk, char_str(c), sl, sc)); return; }
@@ -393,8 +393,8 @@ str escape_value(str v) {
         if (c == 9)  { sb_append(&sb, "\\t"); }
         if (c == 13) { sb_append(&sb, "\\r"); }
         if (c != 92) { if (c != 10) { if (c != 9) { if (c != 13) {
-            sb_append(&sb, char_str(c));
-        } } } }
+                        sb_append(&sb, char_str(c));
+                    } } } }
     }
     return sb_to_str(&sb);
 }

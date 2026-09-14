@@ -48,11 +48,11 @@ int main() {
     // Seeded in memory so the contract is observable in one run; `save` and
     // `load` would persist these rows across restarts.
     ServiceMetric <- [id = 1, service_name = "auth-gateway",
-                      resource_utilization = 91.4, operational_status = "DEGRADED"];
+    resource_utilization = 91.4, operational_status = "DEGRADED"];
     ServiceMetric <- [id = 2, service_name = "ledger-core",
-                      resource_utilization = 42.0, operational_status = "HEALTHY"];
+    resource_utilization = 42.0, operational_status = "HEALTHY"];
     ServiceMetric <- [id = 3, service_name = "telemetry-bus",
-                      resource_utilization = 88.7, operational_status = "DEGRADED"];
+    resource_utilization = 88.7, operational_status = "DEGRADED"];
 
     render OperationsConsole to "console.html";
     return 0;

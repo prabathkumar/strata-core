@@ -22,20 +22,20 @@ database GlobalRoutingTable {
 
 // 2. HIGH-THROUGHPUT ASYNCHRONOUS FIBER STREAM
 stream HandleCoreIngestionBus(str native_nic_socket) {
-    
+
     // Zero-Copy Casting: Map incoming raw network bytes straight to our layout definition.
     // The '::' operator translates directly to a zero-copy pointer cast in machine code.
     IPV6PacketHeader header = current_raw_buffer() :: IPV6PacketHeader;
-    
+
     // Strict compile-time guard validation boundary check
     if (header.data_payload_bytes > 32768) {
         print_line("[Network Kernel]: Oversized packet rejected for security constraints.");
         return;
     }
-    
+
     // Type-safe lookup inside the routing table matrix
     list[GlobalRoutingTable] active_routes = GlobalRoutingTable <- [zone_pattern == header.target_routing_node];
-    
+
     if (len(active_routes) > 0) {
         // Forward raw byte chunks instantly without unpacking, allocating memory, or copying arrays
         forward_raw_payload(active_routes[0].cluster_gateway_id, current_raw_buffer());

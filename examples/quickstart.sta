@@ -26,16 +26,16 @@ int main() {
 
     // Homogeneous generic lists with compile-time element constraints
     list[str] active_clusters = ["auth_tier", "ledger_tier", "gateway_tier"];
-    
+
     print("Runtime Environment Active. Cluster Count: " + str(system_nodes));
-    
+
     // Triggering a background task operation
     initialize_security_handshake(deployment_zone);
 
     // Secure database lookup using the native, compile-checked query selector (<-)
     // If you type "sec_tier" instead of "security_tier", the compiler halts the build instantly.
     list[UserProfile] compromised_accounts = UserProfile <- [security_tier == "FLAGGED"];
-    
+
     return 0; // Clean exit contract matching the function's int prefix
 }
 

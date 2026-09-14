@@ -32,6 +32,7 @@ All of that is done. It was understating the project by roughly three months.
 | Undefined function calls | **E002.** Imports resolve before the type check in both implementations, so a typo names the typo instead of failing at the C linker. Name existence only — signatures across a module boundary are still unchecked. |
 | Standard library | Eight modules that compile, link and run. A suite builds a program against each one and executes it. Five modules and six examples that stand on a runtime that was never built are quarantined in `unimplemented/` directories. |
 | Unresolved imports | Reported as E007, an advisory: the build continues, but the import is no longer silent. It is a `--json` diagnostic, so the repair loop sees it. |
+| Formatter | `strata fmt`, written in Strata. Canonical indentation, with comments and `native` blocks preserved. AST-preservation and idempotence tested over every file; CI gates the repo on it. |
 | CI | Eleven suites, plus both gcc and clang, plus a clean-checkout export so nothing passes only because of an untracked file. |
 
 ## Part 2 — What is not
@@ -42,6 +43,8 @@ All of that is done. It was understating the project by roughly three months.
 | Concurrency of any kind | The runtime is single-threaded by construction. Seven mutable globals in the prelude, plus a `__rows` array and an `__count` per `database` block. |
 | Database durability | No locking, no index, no transactions, no SQL backend. Two writers corrupt the file. |
 | Calls into an unresolved import | Still unchecked — knowing the module is missing (E007) is not the same as knowing what it declares. A file with an external import gets the advisory and no call checking. |
+| No `else if` | `if`/`else` exist; a chain does not. Code ends up as sequential `if` statements, which read state an earlier branch has already changed. This produced three separate bugs while writing the formatter, each of which looked correct: the quote closing a string immediately opened a new one, so every line after the first string literal was treated as inside it. The workaround is to snapshot state before the chain, which is easy to forget and invisible when forgotten. Worth fixing in the parser — it is sugar, not semantics. |
+| Formatting beyond indentation | `strata fmt` rewrites leading whitespace only. It does not re-wrap long lines, normalise spacing around operators or inside argument lists, or align anything. That needs comment-aware tokens, which the lexer does not produce. |
 | Aggregation | No `sum`, `avg`, `count` over a query result. A report metric sees `rows`, not columns. |
 | Training | `predict` is inference. No autograd, no optimiser, no accelerator. |
 | Client-side interactivity | Layouts are server-rendered HTML. WebAssembly has no DOM access without a JS shim, as with every WASM framework. |
@@ -52,24 +55,14 @@ All of that is done. It was understating the project by roughly three months.
 
 ## Part 3 — Next, in order
 
-### 1. A formatter, `strata fmt` (3–5 days)
-
-The premise is that AI writes the code and developers review it. Reviewers need
-canonical formatting or every diff is noise. This matters more than the LSP:
-if humans are not typing, autocomplete is not the bottleneck.
-
-Written in Strata, over the existing parser. The test is idempotence — format
-twice, get the same bytes — plus formatting every file in the repo and
-requiring the AST to be unchanged.
-
-### 2. Aggregation over query results (1 week)
+### 1. Aggregation over query results (1 week)
 
 `sum`, `avg`, `min`, `max`, `count` over a `list[T]` and a column. The parser
 and type checker already reserve these names and return `float` for them; there
 is no evaluation behind it. Report metrics are the obvious consumer, and today
 a metric can only count rows.
 
-### 3. Single-threaded coroutines (1–2 weeks) — see Part 4
+### 2. Single-threaded coroutines (1–2 weeks) — see Part 4
 
 ---
 

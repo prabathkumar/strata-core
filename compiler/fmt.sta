@@ -1,0 +1,208 @@
+// STRATA COMPILER — compiler/fmt.sta
+// The canonical source formatter, written in Strata.
+//
+// AI writes the code and developers review it, so a diff has to be about what
+// changed rather than about whitespace. That is the whole job here.
+//
+// Why this is not a pretty-printer over the AST: the lexer discards comments,
+// so reprinting from tokens would delete every comment in the file. Rather
+// than teach the lexer to carry trivia — which would mean changing the most
+// heavily verified part of the compiler and its byte-identical differential —
+// the formatter rewrites LINES, and only their leading whitespace.
+//
+// What it does:
+//   - indents each line by brace depth, four spaces per level
+//   - strips trailing whitespace
+//   - collapses runs of blank lines to one
+//   - ends the file with exactly one newline
+//
+// What it deliberately does NOT do: re-wrap lines, normalise spacing around
+// operators, sort anything, or touch the inside of a string or comment. A
+// `native "..."` block holds C that the code generator emits verbatim, so
+// every line of it is passed through byte for byte.
+//
+// The two properties that make it safe are tested rather than asserted:
+// formatting twice changes nothing more than formatting once, and the syntax
+// tree of the formatted file is identical to the original's.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+// Scanner state carried across lines, because a string literal or a block
+// comment can span them.
+database FmtState {
+    int depth;        // brace nesting
+    int in_block;     // inside /* ... */
+    int in_string;    // inside "..."
+}
+
+FmtState fmt_state_new() {
+    native "FmtState* _s=(FmtState*)calloc(1,sizeof(FmtState)); return _s;";
+}
+
+str spaces(int n) {
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < n; i = i + 1) { sb_append(&sb, "    "); }
+    return sb_to_str(&sb);
+}
+
+int is_space(int c) {
+    if (c == 32) { return 1; }
+    if (c == 9)  { return 1; }
+    if (c == 13) { return 1; }
+    return 0;
+}
+
+str trim(str line) {
+    int n = str_len(line);
+    int start = 0;
+    while (start < n) {
+        if (is_space(line[start]) == 0) { break; }
+        start = start + 1;
+    }
+    int end = n;
+    while (end > start) {
+        if (is_space(line[end - 1]) == 0) { break; }
+        end = end - 1;
+    }
+    return str_slice(line, start, end);
+}
+
+// Walk one line, updating depth and the in-string / in-block flags. Returns
+// the depth the NEXT line should be indented at; the caller has already used
+// the depth this line was indented at.
+//
+// A closing brace that starts the line dedents that line itself, which is what
+// `close_first` reports.
+// Walk one line, updating depth and the in-string / in-block flags.
+//
+// The branches below test `was_block` and `was_string`, snapshotted at the top
+// of each character rather than read live. Reading live is wrong in a way that
+// looks right: the closing quote clears in_string, and the next branch then
+// sees a quote outside a string and opens a new one, so everything after the
+// first string literal in a file is treated as being inside it.
+def scan_line(FmtState &st, str line, int &close_first) {
+    int n = str_len(line);
+    int i = 0;
+    int seen_code = 0;
+    close_first = 0;
+    while (i < n) {
+        int c = line[i];
+        int step = 1;
+        int was_block = st.in_block;
+        int was_string = st.in_string;
+
+        if (was_block == 1) {
+            // Only the terminator matters inside a block comment.
+            if (c == 42) {
+                if (i + 1 < n) {
+                    if (line[i + 1] == 47) { st.in_block = 0; step = 2; }
+                }
+            }
+        }
+        if (was_block == 0) {
+            if (was_string == 1) {
+                // A backslash escapes the next character, quote included, so a
+                // native block full of escaped quotes does not end early.
+                if (c == 92) { step = 2; }
+                if (c != 92) { if (c == 34) { st.in_string = 0; } }
+            }
+            if (was_string == 0) {
+                if (c == 34) { st.in_string = 1; }
+                if (c != 34) {
+                    // A line comment or a #region directive ends the line.
+                    if (c == 35) { return; }
+                    int is_comment = 0;
+                    if (c == 47) {
+                        if (i + 1 < n) {
+                            if (line[i + 1] == 47) { return; }
+                            if (line[i + 1] == 42) {
+                                st.in_block = 1; step = 2; is_comment = 1;
+                            }
+                        }
+                    }
+                    if (is_comment == 0) {
+                        if (c == 123) { st.depth = st.depth + 1; seen_code = 1; }
+                        if (c == 125) {
+                            st.depth = st.depth - 1;
+                            if (st.depth < 0) { st.depth = 0; }
+                            if (seen_code == 0) { close_first = 1; }
+                            seen_code = 1;
+                        }
+                        if (c != 123) {
+                            if (c != 125) {
+                                if (is_space(c) == 0) { seen_code = 1; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + step;
+    }
+}
+
+str format_source(str source) {
+    FmtState st = fmt_state_new();
+    StringBuilder out = sb_new();
+
+    int n = str_len(source);
+    int start = 0;
+    int blank_run = 0;
+    int wrote_any = 0;
+
+    while (start <= n) {
+        int end = start;
+        while (end < n) {
+            if (source[end] == 10) { break; }
+            end = end + 1;
+        }
+        str raw = str_slice(source, start, end);
+
+        // Snapshotted for the same reason scan_line snapshots: the scan
+        // below clears in_string on the line that closes a native block, and
+        // a live read would then run the second branch on the same line and
+        // emit it twice.
+        int was_in_string = st.in_string;
+
+        // Inside a multi-line string the line is part of a literal — most
+        // often C inside a `native` block — so it is emitted untouched.
+        if (was_in_string == 1) {
+            int ignored = 0;
+            scan_line(&st, raw, &ignored);
+            sb_append_line(&out, raw);
+            wrote_any = 1;
+            blank_run = 0;
+        }
+        if (was_in_string == 0) {
+            str body = trim(raw);
+            if (str_len(body) == 0) {
+                blank_run = blank_run + 1;
+            }
+            if (str_len(body) > 0) {
+                // One blank line between things, never a run of them, and
+                // never a blank line at the top of the file.
+                if (blank_run > 0) { if (wrote_any == 1) { sb_append_line(&out, ""); } }
+                blank_run = 0;
+
+                int close_first = 0;
+                int before = st.depth;
+                scan_line(&st, body, &close_first);
+                int indent = before;
+                if (close_first == 1) { indent = before - 1; }
+                if (indent < 0) { indent = 0; }
+
+                StringBuilder line = sb_new();
+                sb_append(&line, spaces(indent));
+                sb_append(&line, body);
+                sb_append_line(&out, sb_to_str(&line));
+                wrote_any = 1;
+            }
+        }
+
+        if (end >= n) { return sb_to_str(&out); }
+        start = end + 1;
+    }
+    return sb_to_str(&out);
+}

@@ -11,6 +11,6 @@ database CorporateAccount {
 stream ProcessIncomingTransactions(str message_broker_uri) {
     str raw_event_payload = current_message();
     int target_account_id = extract_json_int(raw_event_payload, "account_id");
-    
+
     list[CorporateAccount] matching_accounts = CorporateAccount <- [account_id == target_account_id];
 }

@@ -15,7 +15,7 @@ protocol DenseLayerBiasVector {
 // 2. VECTORIZED MATRIX ARITHMETIC FLOW
 // Maps operations directly to low-level hardware parallel lanes
 int execute_parallel_layer_bias(tensor[float, 1, 4] network_weights, tensor[float, 1, 4] layer_biases) {
-    
+
     // Check hardware byte alignments before passing to the execution grid
     int alignment_clear = verify_vector_alignment(4);
     if (alignment_clear == 0) {
@@ -26,6 +26,6 @@ int execute_parallel_layer_bias(tensor[float, 1, 4] network_weights, tensor[floa
     // loop; the C backend may vectorise it, but Strata emits no SIMD
     // intrinsics of its own and does not claim to.
     tensor[float, 1, 4] activation_output = strata_tensor_add(network_weights, layer_biases, 4);
-    
+
     return 1; // Parallel compute loop pipeline cleared safely
 }

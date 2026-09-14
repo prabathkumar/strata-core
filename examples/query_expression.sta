@@ -20,7 +20,7 @@ int main() {
 
     // Counted in place — no intermediate declaration.
     print(strata_concat("large orders: ",
-                        str(strata_len(Orders <- [amount > 100.00]))));
+    str(strata_len(Orders <- [amount > 100.00]))));
 
     // A query still reads the same way on the right of a declaration.
     list[Orders] all = Orders <- [id > 0];

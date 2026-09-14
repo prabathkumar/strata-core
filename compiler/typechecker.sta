@@ -1120,7 +1120,7 @@ int check_unit_mode(Node unit, int strict, str imported) {
 }
 
 int check_unit_mode_imports(Node unit, int strict, str imported,
-                            str root, int report_imports) {
+str root, int report_imports) {
     TC tc = tc_new();
     tc.strict_calls = strict;
     tc.imported = imported;

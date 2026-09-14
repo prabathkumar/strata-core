@@ -26,7 +26,7 @@ stream ProcessTransactionRisk(str event_broker_url) {
 
     // Pull transaction details securely via the native '<-' operator
     list[CustomerTransaction] tx_data = CustomerTransaction <- [transaction_id == target_id];
-    
+
     if (len(tx_data) == 0) {
         return;
     }

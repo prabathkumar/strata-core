@@ -20,10 +20,10 @@ database RealTimeMetric {
 // 2. DECLARATIVE CORE PRESENTATION STRUCTURE
 // The compiler maps this layout definition directly to a tree-shaken WebAssembly DOM loop
 layout CoreOperationalConsole() {
-    
+
     // Application Master Display View Container
     window "Strata Enterprise Operations Engine" [width = 1920, height = 1080] {
-        
+
         // Master Navigation Row Element
         row [background = "#0c0c12", padding_y = 12, padding_x = 24] {
             text "SYSTEM CONSOLE: OPERATIONAL" [color = "#39ff14", weight = "bold", size = 16];
@@ -33,14 +33,14 @@ layout CoreOperationalConsole() {
 
         // Secondary Telemetry Metrics Panel Grid
         grid [columns = 3, spacing = 20, padding = 25] {
-            
+
             // Component Column 1: Live Memory Topology Map
             column [background = "#121218", border_radius = 8, border_color = "#232330", padding = 16] {
                 text "Hardware Linear Matrix Map" [color = "#ffffff", size = 14];
-                
+
                 // Hardware accelerated virtual graphics drawing node
                 canvas hardware_topology_view [width = 500, height = 300];
-                
+
                 row [padding_top = 10] {
                     text "Memory Status: Isolated" [color = "#8b8b9a", size = 12];
                 }
@@ -49,11 +49,11 @@ layout CoreOperationalConsole() {
             // Component Column 2: Data Store Pipeline Activity Monitor
             column [background = "#121218", border_radius = 8, border_color = "#232330", padding = 16] {
                 text "High-Scale Relational Queries" [color = "#ffffff", size = 14];
-                
+
                 // Natively fetch structural rows securely directly within the front-end layout loop
                 // If a developer types 'opt_status' instead of 'operational_status', the build halts here.
                 list[RealTimeMetric] critical_nodes = RealTimeMetric <- [operational_status == "DEGRADED"];
-                
+
                 if (len(critical_nodes) == 0) {
                     row [padding_y = 20] {
                         text "All cluster clusters operating inside normal bounds." [color = "#4af626"];
@@ -72,7 +72,7 @@ layout CoreOperationalConsole() {
             // Component Column 3: Live Input Event Log
             column [background = "#121218", border_radius = 8, border_color = "#232330", padding = 16] {
                 text "Asynchronous Stream Feed" [color = "#ffffff", size = 14];
-                
+
                 row [padding_top = 12] {
                     // Type-safe dynamic interaction click hook
                     button "Execute Core Optimization Sweep" [background = "#00bcff", color = "#ffffff", action = on_trigger_optimize];
@@ -86,7 +86,7 @@ layout CoreOperationalConsole() {
 // Standard compiled execution loop running at native speed inside the browser thread
 int on_trigger_optimize() {
     print("[UI Action Loop]: Initiating asynchronous memory compaction sweep...");
-    
+
     // Explicit return tracking matching the integer function prefix contract
     return 1;
 }

@@ -14,6 +14,7 @@ usage() {
     echo "  strata run   <file.sta>"
     echo "  strata new   <project_name>"
     echo "  strata test  [dir]"
+    echo "  strata fmt   <file.sta>... [--check]   canonical formatting"
     echo "  strata version"
 }
 
@@ -176,6 +177,55 @@ cmd_version() {
     echo "  Targets: native, wasm, c"
 }
 
+cmd_fmt() {
+    local check=0 files=()
+    for a in "$@"; do
+        if [ "$a" = "--check" ]; then check=1; else files+=("$a"); fi
+    done
+    if [ "${#files[@]}" -eq 0 ]; then
+        echo "usage: strata fmt <file.sta>... [--check]" >&2; return 2
+    fi
+
+    local bin="$ROOT/build/strata-fmt"
+    if [ ! -x "$bin" ] || [ "$ROOT/compiler/fmt.sta" -nt "$bin" ] \
+       || [ "$ROOT/compiler/fmt_cli.sta" -nt "$bin" ]; then
+        mkdir -p "$ROOT/build"
+        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/fmt_cli.sta" \
+            -o "$bin" >/dev/null || { echo "could not build the formatter" >&2; return 1; }
+    fi
+
+    local rc=0
+    for f in "${files[@]}"; do
+        local tmp
+        tmp="$(mktemp)"
+        if ! "$bin" "$f" > "$tmp"; then
+            echo "$f: formatter failed" >&2; rm -f "$tmp"; rc=1; continue
+        fi
+        if cmp -s "$tmp" "$f"; then
+            rm -f "$tmp"; continue
+        fi
+        if [ "$check" -eq 1 ]; then
+            echo "$f"
+            rc=1
+        else
+            # Formatted into a temporary file first, so a formatter that fails
+            # or produces nothing never reaches the source file. The copy is a
+            # truncating redirect rather than `mv` because some mounts refuse
+            # unlink(2), and replacing a file requires removing it.
+            if [ ! -s "$tmp" ]; then
+                echo "$f: formatter produced nothing, leaving it alone" >&2
+                rm -f "$tmp"; rc=1; continue
+            fi
+            cat "$tmp" > "$f"
+            rm -f "$tmp"
+            echo "formatted $f"
+            continue
+        fi
+        rm -f "$tmp"
+    done
+    return $rc
+}
+
 CMD="${1:-}"; shift 2>/dev/null || true
 case "$CMD" in
     build)   cmd_build "$@" ;;
@@ -185,6 +235,7 @@ case "$CMD" in
     run)     cmd_run   "$@" ;;
     new)     cmd_new   "$@" ;;
     test)    cmd_test  "$@" ;;
+    fmt)     cmd_fmt   "$@" ;;
     version) cmd_version ;;
     ""|help) usage ;;
     *) echo "Unknown: $CMD"; usage; exit 1 ;;

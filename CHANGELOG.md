@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### `strata fmt`
+
+The premise is that AI writes the code and developers review it. A reviewer
+cannot do that if half of every diff is whitespace, so the formatter is not a
+nicety here — it is what makes review possible at all.
+
+Written in Strata, in `compiler/fmt.sta`. It rewrites lines, not tokens, and
+that is deliberate: the lexer discards comments, so a pretty-printer over the
+token stream would silently delete every comment in the repository. Only
+leading whitespace changes. The contents of a `native "..."` block — C the code
+generator emits verbatim — pass through byte for byte.
+
+It indents by brace depth at four spaces, strips trailing whitespace,
+collapses runs of blank lines to one, and ends the file with exactly one
+newline. It does not re-wrap lines, normalise spacing around operators, or
+sort anything.
+
+Two properties are checked over all 59 source files rather than a few samples:
+the formatted file parses to an identical syntax tree, and formatting twice
+changes nothing more than formatting once. Without the first a formatter is
+worse than none, because it alters meaning silently and at scale; without the
+second a repository never converges. Comment counts and native-block contents
+are checked too.
+
+Sixteen files were not in canonical form; they are now. CI fails if any
+tracked source drifts out of it.
+
+Worth recording, because it bit three times while writing this: Strata has no
+`else if`, so a chain of `if` statements reads state an earlier branch already
+changed. The scanner snapshots `in_string` and `in_block` per character for
+exactly that reason — reading them live means the quote that closes a string
+immediately opens a new one, and every line after the first string literal in
+a file is treated as being inside it.
+
+
 ### E007: unresolved imports are reported, and the taxonomy has advisories
 
 An import naming a module with no local checkout printed a line on stderr and

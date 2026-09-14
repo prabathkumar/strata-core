@@ -88,3 +88,24 @@ identical, fixpoint reached.
 
 Not done: a call INTO an unresolved import is still unchecked. Knowing the
 module is missing is not knowing what it declares. Recorded in Part 2.
+
+## 2026-09-14 — session (attended), fourth item
+
+`strata fmt`, written in Strata (`compiler/fmt.sta`, `compiler/fmt_cli.sta`).
+
+Rewrites lines, not tokens: the lexer discards comments, so a pretty-printer
+over the token stream would delete every comment in the repo. Only leading
+whitespace changes, so `native "..."` blocks pass through byte for byte.
+
+`test_suite/fmt.py`: 15/15 checks over 59 files. The two that matter are AST
+preservation and idempotence. Sixteen files were not canonical; all are now,
+including the compiler's own sources — fixpoint re-verified afterwards.
+CI gates the repo on `strata fmt --check`.
+
+All twelve suites green. Conformance 140/140, fixpoint reached, generated C
+byte-identical.
+
+Found while writing it: Strata has no `else if`, so a chain of `if` statements
+reads state an earlier branch already changed. Caused three bugs in one file,
+each of which looked right. Recorded in NEXT_STEPS Part 2 — it is sugar, not
+semantics, and worth fixing in the parser.

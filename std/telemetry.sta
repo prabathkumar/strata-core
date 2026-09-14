@@ -18,18 +18,18 @@ database TelemetrySnapshot {
 int record_telemetry_metric(str scope_tag, float execution_ms, float memory_kb) {
     // Inject metrics directly into Strata's lightning-fast data store operator (<-)
     TelemetrySnapshot <- [
-        subsystem_scope = scope_tag,
-        processing_duration = execution_ms,
-        allocated_bytes = memory_kb
+    subsystem_scope = scope_tag,
+    processing_duration = execution_ms,
+    allocated_bytes = memory_kb
     ];
-    
+
     return 1;
 }
 
 def dispatch_performance_audit() {
     // Filter and pull active telemetry traces instantly at compile-time or runtime
     list[TelemetrySnapshot] critical_traces = TelemetrySnapshot <- [processing_duration > 50.00];
-    
+
     if (len(critical_traces) > 0) {
         print_line("[Telemetry Warning]: Detected high-latency processing pipeline bottlenecks.");
     }

@@ -91,6 +91,16 @@ jobs:
     - name: Standard Library Compiles, Links And Runs
       run: python3 test_suite/stdlib_compiles.py
 
+    # A formatter nobody runs is a formatter that drifts. This fails the build
+    # if any tracked source is not in canonical form.
+    - name: Source Is Canonically Formatted
+      run: |
+        ./bin/strata fmt --check $(find std compiler examples test_suite \
+          -name '*.sta' -not -path '*unimplemented*')
+
+    - name: Formatting Preserves Meaning
+      run: python3 test_suite/fmt.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

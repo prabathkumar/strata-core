@@ -1,0 +1,15 @@
+// STRATA COMPILER — compiler/fmt_cli.sta
+// `strata fmt`. Prints the formatted source; writing files back is the shell
+// wrapper's job, so a formatter bug cannot destroy a file mid-write.
+
+import io  from std;
+import str from std;
+import mem from std;
+import lexer from compiler;
+import fmt   from compiler;
+
+int main() {
+    str path = arg_at(1);
+    print_raw(format_source(file_read(path)));
+    return 0;
+}

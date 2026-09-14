@@ -148,6 +148,13 @@ def measure():
                                 if m and ok else "FAILING")
         ok_all = ok_all and bool(ok)
 
+    ok, text = run_suite("fmt.py")
+    if ok is not None:
+        m = re.search(r"(\d+)/(\d+) checks passed over (\d+) files", text)
+        facts["Formatter"] = (f"meaning preserved and idempotent over "
+                              f"{m.group(3)} files" if m and ok else "FAILING")
+        ok_all = ok_all and bool(ok)
+
     ok, text = run_suite("stdlib_compiles.py")
     if ok is not None:
         m = re.search(r"(\d+)/(\d+) checks passed over (\d+) modules "
