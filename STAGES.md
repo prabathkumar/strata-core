@@ -5,7 +5,11 @@ line to a service running in production. This file is the record; the same map
 is published as the "Strata End to End" artifact.
 
 **A stage is closed when a suite that runs on every commit proves it, and that
-suite exits non-zero when it does not.** Not when the code exists, not when it
+suite exits non-zero when it does not** — and green must mean the same thing
+locally and on the runner. It did not once: the development machine has gcc 11
+and no clang, the runner has clang, and an integer assigned to a pointer is a
+warning on one and an error on the other. The C flags now carry
+`-Werror=int-conversion` and its neighbours so both reject it. Not when the code exists, not when it
 worked once by hand. Anything that has never been run is marked as not run,
 never counted as closed.
 

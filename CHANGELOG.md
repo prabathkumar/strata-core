@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### The serialisers generated invalid C, and only some compilers said so
+
+CI failed at the parser differential on a commit whose suites were all green
+locally. The cause: `save` and `load` are generated for **every** table, and
+they assumed every column is a scalar. `database P { TokVec toks; ... }` — the
+parser's own state — produced
+
+    case 0: r->toks = (strata_int)atoll(buf); break;
+
+an integer assigned to a pointer. gcc 11 warns. clang 16+ and gcc 14 reject
+it, so the compiler built on the development machine and failed on the runner.
+
+Two fixes, and the second matters more:
+
+- **Only scalar columns are written and read.** A record-typed column is a
+  pointer into this process and means nothing in a file, so it is not in the
+  header and not in the loader.
+- **The C flags now make the strict compilers' errors errors everywhere**:
+  `-Werror=int-conversion`, `-Werror=incompatible-pointer-types`,
+  `-Werror=return-type`. The backend C compiler is part of the toolchain, and
+  the toolchain must not depend on which one happens to be installed. The
+  development machine has gcc 11 and no clang; the runner has clang. That is
+  the whole reason this reached CI, and it is why "all suites green" needs to
+  mean the same thing in both places.
+
 ### Stage 10 closed: the service can be operated
 
 Four things it could not do, and now can.

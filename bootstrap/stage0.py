@@ -328,6 +328,17 @@ int main(int argc, char** argv) {
             ct = self._c_type(fd.field_type)
             return "s" if ct == "strata_str" else ("f" if ct == "strata_float" else "i")
 
+        # Only scalar columns are written and read. A column whose type is a
+        # record is a pointer into this process, and a pointer means nothing in
+        # a file — the loader used to emit `r->field = (strata_int)atoll(buf);`
+        # for one, which is an int assigned to a pointer. gcc 11 warns; clang
+        # and gcc 14 reject it, so the compiler built on one machine and not on
+        # another. `database P { TokVec toks; ... }` in the parser is such a
+        # table, and it is never saved — the invalid C was generated anyway,
+        # because save and load are emitted for every table.
+        SCALARS = ("strata_int", "strata_float", "strata_str")
+        fields = [fd for fd in fields if self._c_type(fd.field_type) in SCALARS]
+
         header = "\\t".join([f"{fd.name}:{tchar(fd)}" for fd in fields])
         self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
         self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
@@ -1523,7 +1534,14 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # linker. C99 removed implicit declarations and clang 16+ makes them a hard
     # error, so without this every program calling an unresolved symbol fails
     # to build on clang while succeeding on gcc.
-    portability = ["-Wno-implicit-function-declaration"]
+    # The backend C compiler is part of the toolchain, and the toolchain must
+    # not depend on which one is installed. gcc 11 only warns where clang 16+
+    # and gcc 14 make an error, so a bug that failed CI built fine on a machine
+    # with an older gcc. These make the strict ones' errors errors everywhere.
+    portability = ["-Wno-implicit-function-declaration",
+                   "-Werror=int-conversion",
+                   "-Werror=incompatible-pointer-types",
+                   "-Werror=return-type"]
     if target == "wasm":
         flags = ([cc,"-Oz","--target=wasm32","-nostdlib",
                   "-Wl,--no-entry","-Wl,--strip-all",

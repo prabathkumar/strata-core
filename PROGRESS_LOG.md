@@ -397,3 +397,18 @@ clear and fails only if it does not.
 Not done: no metrics; nothing prunes an expired session; the lockout is per
 account rather than per source, so it also lets someone lock an operator out
 on purpose.
+
+## 2026-09-14 — CI red, and why it could not have been caught here
+
+The parser differential failed on the runner with every suite green locally.
+`save`/`load` are generated for every table and assumed every column is a
+scalar, so `database P { TokVec toks; ... }` produced an int assigned to a
+pointer. gcc 11 warns; clang and gcc 14 reject.
+
+Fixed by skipping non-scalar columns in both code generators, and — the part
+worth keeping — by adding `-Werror=int-conversion`,
+`-Werror=incompatible-pointer-types` and `-Werror=return-type` to the C flags,
+so the lax compiler now fails the same way the strict one does.
+
+Verified in an Ubuntu 24.04 container with clang 18 and gcc 13, which is what
+the runner is: every suite green there, not only on this machine.

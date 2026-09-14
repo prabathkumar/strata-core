@@ -1099,8 +1099,26 @@ str col_tchar(Gen &g, Node fd) {
 // by one version of a schema loads under another: a dropped column is skipped,
 // a new one keeps its zero value, and a column whose type changed is refused
 // rather than misread. Field order is no longer the contract — the names are.
+// A column is written and read only if it is a scalar. A record-typed column
+// is a pointer into this process, and a pointer means nothing in a file — see
+// bootstrap/stage0.py for the C this used to generate and the compilers that
+// rejected it.
+int is_scalar_col(Gen &g, Node fd) {
+    str ct = c_type(&g, fd.c1);
+    if (str_eq(ct, "strata_int") == 1) { return 1; }
+    if (str_eq(ct, "strata_float") == 1) { return 1; }
+    if (str_eq(ct, "strata_str") == 1) { return 1; }
+    return 0;
+}
+
 def gen_table_io(Gen &g, str name, int fields_vec) {
-    NodeVec fs = nv_at(fields_vec);
+    NodeVec all_cols = nv_at(fields_vec);
+    NodeVec fs = nv_new();
+    int all_n = all_cols.len;
+    for (int ci = 0; ci < all_n; ci = ci + 1) {
+        Node col = nv_get(&all_cols, ci);
+        if (is_scalar_col(&g, col) == 1) { nv_push(&fs, col); }
+    }
     int n = fs.len;
 
     StringBuilder a = sb_new();

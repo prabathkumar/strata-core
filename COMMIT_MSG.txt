@@ -1,37 +1,30 @@
-feat(operate): stage 10 — the service can be run by someone
+fix(codegen): a table's serialisers only handle scalar columns
 
-Four things it could not do.
+CI failed at the parser differential on a commit whose suites were all green
+locally. save and load are generated for every table and assumed every column
+is a scalar, so `database P { TokVec toks; int pos; int no_index; }` — the
+parser's own state, never saved — produced
 
-It says what it is doing: one line per request on stdout, as it happens —
-GET /login 200 3ms. Every response helper returns its status code instead of
-1, because a log line needs the status the handler chose.
+    case 0: r->toks = (strata_int)atoll(buf); break;
 
-A form from somewhere else is refused. Each session carries a second random
-token, never sent as a cookie; every form renders it and every write checks
-it. A signed-in operator's browser could be made to post to this service by
-any page on the web. journey_orders now reads the token off the page the way
-a browser does — a test that could still post without one would have meant
-the protection was not real.
+an integer assigned to a pointer. gcc 11 warns, clang 16+ and gcc 14 reject,
+so the compiler built on this machine and failed on the runner.
 
-Guessing a password stops working. Five failures lock an account for five
-minutes; the lockout is checked before the password and answers identically
-whatever was typed, so it does not tell an attacker which usernames exist. It
-lives on the user row rather than in a table of attempts, because the language
-has no delete and a table of attempts would grow for as long as someone was
-attacking it.
+A record-typed column is a pointer into this process and means nothing in a
+file: it is now left out of the header and out of the loader, in both code
+generators, with the emitted C still byte-identical between them.
 
-A flood is refused rather than forked: 64 connections at once, the 65th
-answered 503. That meant counting children, which meant taking SIGCHLD back
-from SIG_IGN — and that brought zombies back, because a parent that reaps only
-when the next connection arrives never reaps while idle. The listening socket
-now has a one-second timeout and the loop reaps at the top of each pass.
+The second fix is the one that matters. The C flags now carry
+-Werror=int-conversion, -Werror=incompatible-pointer-types and
+-Werror=return-type. The backend C compiler is part of the toolchain and the
+toolchain must not depend on which one is installed — this machine has gcc 11
+and no clang, the runner has clang, and that difference is the only reason
+this reached CI.
 
-test_suite/journey_operate.py walks 21 steps. STAGES.md: all ten closed, with
-what is still not true listed rather than implied.
-
-All suites green: conformance 182/182, four differentials identical, fixpoint
-reached, stdlib 23/23, project 14/14, journeys 26/26, 19/19, 19/19, 19/19 and
-21/21, repair loop 48/48.
+Verified in an Ubuntu 24.04 container with clang 18 and gcc 13 — the runner's
+environment — rather than only here: conformance, all four differentials,
+fixpoint, wasm, stdlib, fmt, repair loop, project build and the orders,
+ledger, operate and survive journeys all green there.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C
