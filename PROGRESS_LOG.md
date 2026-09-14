@@ -109,3 +109,24 @@ Found while writing it: Strata has no `else if`, so a chain of `if` statements
 reads state an earlier branch already changed. Caused three bugs in one file,
 each of which looked right. Recorded in NEXT_STEPS Part 2 — it is sugar, not
 semantics, and worth fixing in the parser.
+
+## 2026-09-14 — session (attended), fifth item
+
+Aggregation — and the `len()` bug underneath it.
+
+`len()` returned garbage for every list of scalars: `list[T]` was a bare C
+array with no length and `strata_len` walked to the first zero, so
+`len([1,2,3])` was 5 and `len([5,7])` was 7. Nothing caught it because the
+bubble-sort test passes its own `n`. A list now carries its count in the word
+before its data; list literals and query results both allocate through
+`strata_list_new`, and `for R in rows` iterates by length.
+
+Then `sum`/`avg`/`min`/`max`/`count`, over a list or a `rows.column`
+projection. The projection is checked against the schema, so a renamed column
+fails at the aggregate. sum/min/max keep the column's type, avg is float,
+count takes the rows. Empty aggregates to zero.
+
+All twelve suites green. Conformance 160/160 (twenty new tests), fixpoint
+reached, generated C byte-identical, repo still canonically formatted.
+
+Not done: no GROUP BY, no HAVING, no aggregate inside a query condition.

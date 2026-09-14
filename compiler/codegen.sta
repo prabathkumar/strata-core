@@ -185,8 +185,8 @@ str gen_query_expr(Gen &g, Node e) {
     StringBuilder sb = sb_new();
     sb_append(&sb, "({ "); sb_append(&sb, src); sb_append(&sb, "** ");
     sb_append(&sb, tag); sb_append(&sb, " = ("); sb_append(&sb, src);
-    sb_append(&sb, "**)malloc(sizeof(void*) * ("); sb_append(&sb, src);
-    sb_append(&sb, "__count + 1)); strata_int "); sb_append(&sb, tag);
+    sb_append(&sb, "**)strata_list_new("); sb_append(&sb, src);
+    sb_append(&sb, "__count, sizeof(void*)); strata_int "); sb_append(&sb, tag);
     sb_append(&sb, "n = 0; for (strata_int "); sb_append(&sb, tag);
     sb_append(&sb, "i = 0; "); sb_append(&sb, tag); sb_append(&sb, "i < ");
     sb_append(&sb, src); sb_append(&sb, "__count; "); sb_append(&sb, tag);
@@ -194,10 +194,90 @@ str gen_query_expr(Gen &g, Node e) {
     sb_append(&sb, src); sb_append(&sb, "__rows["); sb_append(&sb, tag);
     sb_append(&sb, "i]; if ("); sb_append(&sb, cond); sb_append(&sb, ") { ");
     sb_append(&sb, tag); sb_append(&sb, "["); sb_append(&sb, tag);
-    sb_append(&sb, "n++] = _row; } } "); sb_append(&sb, tag);
-    sb_append(&sb, "["); sb_append(&sb, tag); sb_append(&sb, "n] = NULL; ");
-    sb_append(&sb, tag); sb_append(&sb, "; })");
+    sb_append(&sb, "n++] = _row; } } strata_list_set_len(");
+    sb_append(&sb, tag); sb_append(&sb, ", "); sb_append(&sb, tag);
+    sb_append(&sb, "n); "); sb_append(&sb, tag); sb_append(&sb, "; })");
     return sb_to_str(&sb);
+}
+
+// sum/avg/min/max over a list of numbers, or over one column projected out
+// of a list of rows. One runtime function serves every schema: for a
+// projection it is handed the byte offset of the column inside the row, so it
+// reads the field without knowing the type it came from.
+str gen_aggregate(Gen &g, Node e, int kind) {
+    NodeVec args = nv_at(e.v1);
+    if (args.len == 0) { return "0"; }
+    Node arg = nv_get(&args, 0);
+
+    str elem = "i";
+    str target = "";
+    str offset = "-1";
+    str row = "";
+    if (arg.kind == 48) {
+        str col = projection_ctype(&g, arg);
+        if (str_len(col) > 0) {
+            str base = expr_ctype(&g, arg.c1);
+            row = str_slice(base, 0, str_len(base) - 2);
+            if (str_eq(col, "strata_float") == 1) { elem = "f"; }
+            target = gen_expr(&g, arg.c1);
+            StringBuilder off = sb_new();
+            sb_append(&off, "(long)offsetof("); sb_append(&off, row);
+            sb_append(&off, ", "); sb_append(&off, arg.s1); sb_append(&off, ")");
+            offset = sb_to_str(&off);
+        }
+    }
+    if (str_len(target) == 0) {
+        // A plain list of numbers: the elements are the values.
+        target = gen_expr(&g, node_ptr(arg));
+        str ct = expr_ctype(&g, node_ptr(arg));
+        if (str_eq(ct, "strata_float*") == 1) { elem = "f"; }
+    }
+
+    StringBuilder call = sb_new();
+    sb_append(&call, "strata_agg("); sb_append(&call, target);
+    sb_append(&call, ", "); sb_append(&call, str(kind));
+    sb_append(&call, ", '"); sb_append(&call, elem);
+    sb_append(&call, "', "); sb_append(&call, offset); sb_append(&call, ")");
+
+    if (kind == 1) { return sb_to_str(&call); }
+    if (str_eq(elem, "f") == 1) { return sb_to_str(&call); }
+    StringBuilder cast = sb_new();
+    sb_append(&cast, "((strata_int)("); sb_append(&cast, sb_to_str(&call));
+    sb_append(&cast, "))");
+    return sb_to_str(&cast);
+}
+
+// The column type behind a projection like `rows.amount`, or "" when the
+// argument is not a projection of a known record.
+str projection_ctype(Gen &g, Node arg) {
+    Node obj = node_at(arg.c1);
+    str base = expr_ctype(&g, arg.c1);
+    if (ends_with_star(base) == 0) { return ""; }
+    str row = str_slice(base, 0, str_len(base) - 2);
+    if (bind_has(g.schema_decls, row) == 0) { return ""; }
+    Node db = node_at(str_to_int(bind_get(g.schema_decls, row)));
+    NodeVec fs = nv_at(db.v1);
+    int n = fs.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fs, i);
+        if (str_eq(f.s1, arg.s1) == 1) { return c_type(&g, f.c1); }
+    }
+    return "";
+}
+
+// The C type sum/min/max yields: that of the values being aggregated.
+str agg_ctype(Gen &g, Node e) {
+    NodeVec args = nv_at(e.v1);
+    if (args.len == 0) { return "strata_float"; }
+    Node arg = nv_get(&args, 0);
+    if (arg.kind == 48) {
+        str col = projection_ctype(&g, arg);
+        if (str_len(col) > 0) { return col; }
+        return "strata_float";
+    }
+    str ct = expr_ctype(&g, node_ptr(arg));
+    if (str_eq(ct, "strata_float*") == 1) { return "strata_float"; }
+    return "strata_int";
 }
 
 str cname(str w) {
@@ -267,6 +347,18 @@ str expr_ctype(Gen &g, int p) {
         if (str_eq(e.s1, "str"))   { return "strata_str"; }
         if (str_eq(e.s1, "int"))   { return "strata_int"; }
         if (str_eq(e.s1, "float")) { return "strata_float"; }
+        // An aggregate keeps its element's type, except avg which is always
+        // float and count which is always int. Without this,
+        // str(sum(rows.amount)) routes a double through the int converter and
+        // 60.75 prints as 60.
+        if (str_eq(e.s1, "count")) { return "strata_int"; }
+        if (str_eq(e.s1, "len"))   { return "strata_int"; }
+        if (str_eq(e.s1, "avg"))   { return "strata_float"; }
+        int agg = 0;
+        if (str_eq(e.s1, "sum") == 1) { agg = 1; }
+        if (str_eq(e.s1, "min") == 1) { agg = 1; }
+        if (str_eq(e.s1, "max") == 1) { agg = 1; }
+        if (agg == 1) { return agg_ctype(&g, e); }
         str declared = bind_get(g.func_returns, e.s1);
         if (str_len(declared) > 0) { return declared; }
         return builtin_return(e.s1);
@@ -465,16 +557,31 @@ str gen_expr(Gen &g, int p) {
     if (k == 47) {
         NodeVec els = nv_at(e.v1);
         if (els.len == 0) { return "NULL"; }
+        // Allocated with a length header rather than written as a C99
+        // compound literal: a bare array carries no count, and len() then has
+        // nothing to read.
         StringBuilder sb = sb_new();
         str et = expr_ctype(&g, node_ptr(nv_get(&els, 0)));
         if (str_len(et) == 0) { et = "strata_int"; }
-        sb_append(&sb, "("); sb_append(&sb, et); sb_append(&sb, "[]){");
         int n = els.len;
+        g.query_depth = g.query_depth + 1;
+        StringBuilder tagb = sb_new();
+        sb_append(&tagb, "_lit");
+        sb_append(&tagb, str(g.query_depth));
+        str tag = sb_to_str(&tagb);
+        g.query_depth = g.query_depth - 1;
+
+        sb_append(&sb, "({ "); sb_append(&sb, et); sb_append(&sb, "* ");
+        sb_append(&sb, tag); sb_append(&sb, " = ("); sb_append(&sb, et);
+        sb_append(&sb, "*)strata_list_new("); sb_append(&sb, str(n));
+        sb_append(&sb, ", sizeof("); sb_append(&sb, et); sb_append(&sb, "));");
         for (int i = 0; i < n; i = i + 1) {
-            if (i > 0) { sb_append(&sb, ", "); }
+            sb_append(&sb, " "); sb_append(&sb, tag);
+            sb_append(&sb, "["); sb_append(&sb, str(i)); sb_append(&sb, "] = ");
             sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&els, i))));
+            sb_append(&sb, ";");
         }
-        sb_append(&sb, "}");
+        sb_append(&sb, " "); sb_append(&sb, tag); sb_append(&sb, "; })");
         return sb_to_str(&sb);
     }
 
@@ -512,6 +619,19 @@ str gen_call(Gen &g, Node e) {
         sb_append(&sb, ")");
         return sb_to_str(&sb);
     }
+    if (str_eq(e.s1, "count") == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "strata_len(");
+        sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&args, 0))));
+        sb_append(&sb, ")");
+        return sb_to_str(&sb);
+    }
+    int aggk = -1;
+    if (str_eq(e.s1, "sum") == 1) { aggk = 0; }
+    if (str_eq(e.s1, "avg") == 1) { aggk = 1; }
+    if (str_eq(e.s1, "min") == 1) { aggk = 2; }
+    if (str_eq(e.s1, "max") == 1) { aggk = 3; }
+    if (aggk >= 0) { return gen_aggregate(&g, e, aggk); }
     if (str_eq(e.s1, "str") == 1) {
         // Routing a float through the integer converter truncates it.
         str at = expr_ctype(&g, node_ptr(nv_get(&args, 0)));
@@ -849,8 +969,8 @@ def gen_var_decl(Gen &g, Node st) {
 
         StringBuilder d = sb_new();
         sb_append(&d, ctype); sb_append(&d, " "); sb_append(&d, cname(st.s1));
-        sb_append(&d, " = ("); sb_append(&d, ctype); sb_append(&d, ")malloc(sizeof(void*) * (");
-        sb_append(&d, val.s1); sb_append(&d, "__count + 1));");
+        sb_append(&d, " = ("); sb_append(&d, ctype); sb_append(&d, ")strata_list_new(");
+        sb_append(&d, val.s1); sb_append(&d, "__count, sizeof(void*));");
         cg_emit(&g, sb_to_str(&d));
         cg_emit(&g, "{");
         g.indent = g.indent + 1;
@@ -871,7 +991,8 @@ def gen_var_decl(Gen &g, Node st) {
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
         StringBuilder term = sb_new();
-        sb_append(&term, cname(st.s1)); sb_append(&term, "[_n] = NULL;");
+        sb_append(&term, "strata_list_set_len("); sb_append(&term, cname(st.s1));
+        sb_append(&term, ", _n);");
         cg_emit(&g, sb_to_str(&term));
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
@@ -1894,21 +2015,36 @@ def gen_for_in(Gen &g, Node node) {
     sb_append(&it, "_it_"); sb_append(&it, cname(node.s1));
     str iter = sb_to_str(&it);
 
+    // Iterated by length. This used to walk to the first NULL, which was
+    // wrong for any list of scalars — 0 is a valid int — and became wrong for
+    // query results too once lists started carrying a length header.
+    cg_emit(&g, "{");
+    g.indent = g.indent + 1;
+    StringBuilder decl = sb_new();
+    sb_append(&decl, elem); sb_append(&decl, "* "); sb_append(&decl, iter);
+    sb_append(&decl, " = "); sb_append(&decl, coll); sb_append(&decl, ";");
+    cg_emit(&g, sb_to_str(&decl));
+    StringBuilder cnt = sb_new();
+    sb_append(&cnt, "strata_int "); sb_append(&cnt, iter);
+    sb_append(&cnt, "_n = strata_len("); sb_append(&cnt, iter); sb_append(&cnt, ");");
+    cg_emit(&g, sb_to_str(&cnt));
     StringBuilder head = sb_new();
-    sb_append(&head, "for ("); sb_append(&head, elem); sb_append(&head, "* ");
-    sb_append(&head, iter); sb_append(&head, " = "); sb_append(&head, coll);
-    sb_append(&head, "; "); sb_append(&head, iter); sb_append(&head, " && *");
-    sb_append(&head, iter); sb_append(&head, "; "); sb_append(&head, iter);
-    sb_append(&head, "++) {");
+    sb_append(&head, "for (strata_int "); sb_append(&head, iter);
+    sb_append(&head, "_i = 0; "); sb_append(&head, iter); sb_append(&head, "_i < ");
+    sb_append(&head, iter); sb_append(&head, "_n; "); sb_append(&head, iter);
+    sb_append(&head, "_i++) {");
     cg_emit(&g, sb_to_str(&head));
     g.indent = g.indent + 1;
     StringBuilder bind = sb_new();
     sb_append(&bind, elem); sb_append(&bind, " "); sb_append(&bind, cname(node.s1));
-    sb_append(&bind, " = *"); sb_append(&bind, iter); sb_append(&bind, ";");
+    sb_append(&bind, " = "); sb_append(&bind, iter); sb_append(&bind, "[");
+    sb_append(&bind, iter); sb_append(&bind, "_i];");
     cg_emit(&g, sb_to_str(&bind));
     NodeVec body = nv_at(node.v1);
     int n = body.len;
     for (int i = 0; i < n; i = i + 1) { gen_layout_node(&g, nv_get(&body, i)); }
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
 }

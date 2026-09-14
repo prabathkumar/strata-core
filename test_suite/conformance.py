@@ -691,6 +691,80 @@ check_codes("an_unresolved_import_is_reported_even_though_calls_are_not",
     'import pricing from vendor_sdk;\nint main() { return vendor_only(1); }',
     expect="E007", reject="Undefined function")
 
+
+print("\n── Lists carry their length ─────────────────────────────────────")
+
+# len() walked to the first zero, so it returned whatever followed the array
+# in memory: len([1,2,3]) was 5 and len([5,7]) was 7. A list carries its count
+# in the word before its data now.
+compile_run("len_of_an_int_list",
+    'import io from std;\nint main() { list[int] a = [1,2,3]; print(str(len(a))); return 0; }',
+    "3")
+compile_run("len_of_a_two_element_list",
+    'import io from std;\nint main() { list[int] a = [5,7]; print(str(len(a))); return 0; }',
+    "2")
+compile_run("len_of_a_str_list",
+    'import io from std;\nint main() { list[str] a = ["a","b","c"]; print(str(len(a))); return 0; }',
+    "3")
+compile_run("len_of_a_float_list",
+    'import io from std;\nint main() { list[float] a = [1.5,2.5]; print(str(len(a))); return 0; }',
+    "2")
+compile_run("a_list_containing_zero_still_has_its_length",
+    'import io from std;\nint main() { list[int] a = [0,0,0]; print(str(len(a))); return 0; }',
+    "3")
+compile_run("len_of_an_empty_query_is_zero",
+    'import io from std;\ndatabase T { int id; }\nint main() { print(str(len(T <- [id > 0]))); return 0; }',
+    "0")
+
+print("\n── Aggregates ───────────────────────────────────────────────────")
+
+_ADB = ('import io from std;\ndatabase O { int id; float amount; }\n'
+        'int main() { O <- [id = 3, amount = 10.50]; O <- [id = 1, amount = 30.25]; '
+        'O <- [id = 2, amount = 20.00]; list[O] r = O <- [id > 0]; ')
+
+compile_run("agg_count", _ADB + 'print(str(count(r))); return 0; }', "3")
+compile_run("agg_sum_float", _ADB + 'print(str(sum(r.amount))); return 0; }', "60.75")
+compile_run("agg_avg", _ADB + 'print(str(avg(r.amount))); return 0; }', "20.25")
+compile_run("agg_min", _ADB + 'print(str(min(r.amount))); return 0; }', "10.5")
+compile_run("agg_max", _ADB + 'print(str(max(r.amount))); return 0; }', "30.25")
+
+# The column's type is kept, so an int column sums to an int rather than
+# arriving through the float converter.
+compile_run("agg_sum_of_an_int_column_is_an_int",
+    _ADB + 'print(str(sum(r.id))); return 0; }', "6")
+compile_run("agg_min_of_an_int_column_is_an_int",
+    _ADB + 'print(str(min(r.id))); return 0; }', "1")
+
+compile_run("agg_over_a_plain_list",
+    'import io from std;\nint main() { list[int] xs = [4,1,7]; print(strata_concat(str(sum(xs)), strata_concat(" ", strata_concat(str(min(xs)), strata_concat(" ", str(max(xs))))))); return 0; }',
+    "12 1 7")
+
+# An empty result aggregates to zero rather than failing or producing a NaN:
+# a report over a filter that matched nothing should render zeroes.
+compile_run("agg_of_an_empty_result_is_zero",
+    'import io from std;\ndatabase O { int id; float amount; }\nint main() { list[O] r = O <- [id > 0]; print(strata_concat(str(count(r)), strata_concat(" ", str(sum(r.amount))))); return 0; }',
+    "0 0.0")
+
+test("agg_unknown_column_is_E004",
+    'database O { int id; float amount; }\nint main() { list[O] r = O <- [id > 0]; float t = sum(r.nope); return 0; }',
+    "E004")
+
+test("agg_over_a_str_column_is_E003",
+    'database O { int id; str name; }\nint main() { list[O] r = O <- [id > 0]; float t = sum(r.name); return 0; }',
+    "E003")
+
+test("agg_over_a_non_list_is_E003",
+    'import io from std;\nint main() { int n = 5; float t = sum(n); return 0; }',
+    "E003")
+
+test("agg_with_two_arguments_is_E002",
+    'import io from std;\nint main() { list[int] xs = [1]; float t = sum(xs, xs); return 0; }',
+    "E002")
+
+test("count_of_a_non_list_is_E003",
+    'import io from std;\nint main() { int n = 5; int c = count(n); return 0; }',
+    "E003")
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")

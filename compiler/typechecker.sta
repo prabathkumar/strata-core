@@ -565,6 +565,114 @@ int infer_binary(TC &tc, Node e, int scope_p) {
     return right;
 }
 
+// `count(rows)`, and `sum(xs)` / `sum(rows.column)` for the rest.
+//
+// A column projection is written `rows.amount` and is checked against the row
+// type's schema, so a renamed column fails the build here the same way it
+// fails at a query or in a layout. That contract is why aggregation belongs in
+// the language rather than in a library.
+//
+// sum, min and max keep the element's own type; avg is always float and count
+// always int.
+int infer_aggregate(TC &tc, Node e, int scope_p) {
+    NodeVec args = nv_at(e.v1);
+    int na = args.len;
+    int is_count = str_eq(e.s1, "count");
+
+    if (na != 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'"); sb_append(&sb, e.s1);
+        sb_append(&sb, "' takes one argument, got "); sb_append(&sb, str(na));
+        emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+        if (is_count == 1) { return ty_ptr(ty_new("int")); }
+        return ty_ptr(ty_new("float"));
+    }
+
+    Node arg = nv_get(&args, 0);
+    if (is_count == 1) {
+        int at = infer(&tc, node_ptr(arg), scope_p);
+        if (at != 0) {
+            Ty t = ty_at(at);
+            if (t.is_list == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'count' expects a list, got '");
+                sb_append(&sb, ty_str(at)); sb_append(&sb, "'");
+                emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+            }
+        }
+        return ty_ptr(ty_new("int"));
+    }
+
+    int elem = 0;
+    if (arg.kind == 48) {
+        int bt = infer(&tc, arg.c1, scope_p);
+        int handled = 0;
+        if (bt != 0) {
+            Ty b = ty_at(bt);
+            if (b.is_list == 1) {
+                handled = 1;
+                str rowname = ty_str(b.elem);
+                int sch = schema_find(tc.schemas, rowname);
+                if (sch == 0) {
+                    StringBuilder sb = sb_new();
+                    sb_append(&sb, "'"); sb_append(&sb, e.s1);
+                    sb_append(&sb, "' cannot project '"); sb_append(&sb, arg.s1);
+                    sb_append(&sb, "' out of '"); sb_append(&sb, ty_str(bt));
+                    sb_append(&sb, "' — its element is not a record");
+                    emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+                    return ty_ptr(ty_new("float"));
+                }
+                Schema sc = schema_at(sch);
+                int fp = sym_find(sc.fields, arg.s1);
+                if (fp == 0) {
+                    StringBuilder sb = sb_new();
+                    sb_append(&sb, "Column '"); sb_append(&sb, arg.s1);
+                    sb_append(&sb, "' does not exist in '"); sb_append(&sb, rowname);
+                    sb_append(&sb, "'");
+                    emit(&tc, "E004", sb_to_str(&sb), e.line, e.col);
+                    return ty_ptr(ty_new("float"));
+                }
+                Sym col = sym_at(fp);
+                elem = col.ty;
+            }
+        }
+        if (handled == 0) { elem = infer(&tc, node_ptr(arg), scope_p); }
+    }
+    if (arg.kind != 48) {
+        int at = infer(&tc, node_ptr(arg), scope_p);
+        if (at != 0) {
+            Ty t = ty_at(at);
+            if (t.is_list == 1) { elem = t.elem; }
+            if (t.is_list == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'"); sb_append(&sb, e.s1);
+                sb_append(&sb, "' expects a list, got '"); sb_append(&sb, ty_str(at));
+                sb_append(&sb, "'");
+                emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+                return ty_ptr(ty_new("float"));
+            }
+        }
+    }
+
+    if (elem != 0) {
+        str en = ty_str(elem);
+        int numeric = 0;
+        if (str_eq(en, "int") == 1)   { numeric = 1; }
+        if (str_eq(en, "float") == 1) { numeric = 1; }
+        if (numeric == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "'"); sb_append(&sb, e.s1);
+            sb_append(&sb, "' expects numbers, got '"); sb_append(&sb, en);
+            sb_append(&sb, "'");
+            emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+            return ty_ptr(ty_new("float"));
+        }
+    }
+    if (str_eq(e.s1, "avg") == 1) { return ty_ptr(ty_new("float")); }
+    if (elem != 0) { return elem; }
+    return ty_ptr(ty_new("float"));
+}
+
 int infer_call(TC &tc, Node e, int scope_p) {
     NodeVec args = nv_at(e.v1);
     int na = args.len;
@@ -599,10 +707,7 @@ int infer_call(TC &tc, Node e, int scope_p) {
     if (str_eq(e.s1, "min") == 1)   { agg = 1; }
     if (str_eq(e.s1, "max") == 1)   { agg = 1; }
     if (str_eq(e.s1, "count") == 1) { agg = 1; }
-    if (agg == 1) {
-        for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
-        return ty_ptr(ty_new("float"));
-    }
+    if (agg == 1) { return infer_aggregate(&tc, e, scope_p); }
 
     int fp = fn_find(tc.fns, e.s1);
     if (fp == 0) {

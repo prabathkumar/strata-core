@@ -514,8 +514,7 @@ class TypeChecker:
             for a in expr.args: self._infer_type(a,scope)
             return T_INT
         if expr.callee in ("sum","avg","min","max","count"):
-            for a in expr.args: self._infer_type(a,scope)
-            return T_FLOAT
+            return self._infer_aggregate(expr,scope)
         fn=self.functions.get(expr.callee)
         if fn is None:
             # Whether or not the callee resolves, its arguments are ordinary
@@ -543,6 +542,73 @@ class TypeChecker:
                 self._error("E005",f"Arg {i+1} of '{expr.callee}': expected '{pt}', got '{at}'",
                     expr.line,expr.col,f"Cast argument to '{pt}'")
         return rt
+
+    def _infer_aggregate(self,expr,scope):
+        """`count(rows)`, and `sum(xs)` / `sum(rows.column)` for the rest.
+
+        A column projection is written `rows.amount` and is checked against
+        the row type's schema, so a renamed column fails the build here in the
+        same way it fails at a query or in a layout. That contract is the
+        reason this is in the language rather than in a library.
+
+        `sum`, `min` and `max` keep the element's own type — summing ints
+        gives an int. `avg` is always float, and `count` always int.
+        """
+        name=expr.callee
+        if len(expr.args)!=1:
+            self._error("E002",f"'{name}' takes one argument, got {len(expr.args)}",
+                expr.line,expr.col,f"Write {name}(rows) or {name}(rows.column)")
+            return T_INT if name=="count" else T_FLOAT
+
+        arg=expr.args[0]
+        # count() does not need a column: it is about the rows themselves.
+        if name=="count":
+            at=self._infer_type(arg,scope)
+            if at and not at.is_list:
+                self._error("E003",f"'count' expects a list, got '{at}'",
+                    expr.line,expr.col,"Pass a list or a query result")
+            return T_INT
+
+        elem=None
+        if isinstance(arg,MemberAccess):
+            base=self._infer_type(arg.obj,scope)
+            if base is not None and base.is_list:
+                row=base.element_type
+                cols=self.schemas.get(row.name if row else "")
+                if cols is None:
+                    self._error("E003",
+                        f"'{name}' cannot project '{arg.member}' out of "
+                        f"'{base}' — its element is not a record",
+                        expr.line,expr.col,
+                        f"Project a column of a database or protocol type")
+                    return T_FLOAT
+                if arg.member not in cols:
+                    self._error("E004",
+                        f"Column '{arg.member}' does not exist in '{row.name}'",
+                        expr.line,expr.col,
+                        f"Valid columns: {sorted(cols)}")
+                    return T_FLOAT
+                elem=cols[arg.member]
+            else:
+                # Not a projection at all — an ordinary member access.
+                elem=self._infer_type(arg,scope)
+        else:
+            at=self._infer_type(arg,scope)
+            if at is not None and at.is_list:
+                elem=at.element_type
+            elif at is not None:
+                self._error("E003",f"'{name}' expects a list, got '{at}'",
+                    expr.line,expr.col,
+                    f"Write {name}(rows.column) to aggregate a column")
+                return T_FLOAT
+
+        if elem is not None and elem.name not in ("int","float"):
+            self._error("E003",f"'{name}' expects numbers, got '{elem}'",
+                expr.line,expr.col,"Aggregates apply to int and float")
+            return T_FLOAT
+        if name=="avg":
+            return T_FLOAT
+        return elem if elem is not None else T_FLOAT
 
     def _infer_predict(self,expr,scope):
         model=self.models.get(expr.model)

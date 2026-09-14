@@ -537,23 +537,28 @@ int main(int argc, char** argv) {
         self.emit('fprintf(_out,"</' + tag + '>");')
 
     def _gen_for_in(self, node):
-        """Iterate query results.
+        """Iterate a list, by its length.
 
-        Queries currently evaluate to NULL — there is no database runtime — so
-        this loop renders zero rows. The structure is emitted rather than
-        faked, so what appears in the page is what the program actually
-        produced.
+        This used to walk to the first NULL, which was wrong for any list of
+        scalars — 0 is a valid int — and became wrong for query results too
+        once lists started carrying a length header instead of a terminator.
         """
         coll = self._gen_expr(node.collection, [])
         ct = self._expr_ctype(node.collection, []) or ""
         elem = ct[:-1] if ct.endswith("*") else "void*"
         self.var_types[node.var] = elem
         it = f"_it_{cname(node.var)}"
-        self.emit(f"for ({elem}* {it} = {coll}; {it} && *{it}; {it}++) {{")
+        self.emit("{")
         self.indent += 1
-        self.emit(f"{elem} {cname(node.var)} = *{it};")
+        self.emit(f"{elem}* {it} = {coll};")
+        self.emit(f"strata_int {it}_n = strata_len({it});")
+        self.emit(f"for (strata_int {it}_i = 0; {it}_i < {it}_n; {it}_i++) {{")
+        self.indent += 1
+        self.emit(f"{elem} {cname(node.var)} = {it}[{it}_i];")
         for st in node.body:
             self._gen_layout_node(st)
+        self.indent -= 1
+        self.emit("}")
         self.indent -= 1
         self.emit("}")
 
@@ -772,8 +777,8 @@ int main(int argc, char** argv) {
                     self.var_types[name] = ctype
                     return
 
-                self.emit(f"{ctype} {cname(name)} = ({ctype})malloc("
-                          f"sizeof(void*) * ({src}__count + 1));")
+                self.emit(f"{ctype} {cname(name)} = ({ctype})strata_list_new("
+                          f"{src}__count, sizeof(void*));")
                 self.emit("{")
                 self.indent += 1
                 self.emit("strata_int _n = 0;")
@@ -783,7 +788,7 @@ int main(int argc, char** argv) {
                 self.emit(f"if ({cond}) {{ {cname(name)}[_n++] = _row; }}")
                 self.indent -= 1
                 self.emit("}")
-                self.emit(f"{cname(name)}[_n] = NULL;")
+                self.emit(f"strata_list_set_len({cname(name)}, _n);")
                 self.indent -= 1
                 self.emit("}")
         else:
@@ -902,6 +907,15 @@ int main(int argc, char** argv) {
             if expr.callee == "str":   return "strata_str"
             if expr.callee == "int":   return "strata_int"
             if expr.callee == "float": return "strata_float"
+            # An aggregate keeps its element's type, except avg which is
+            # always float and count which is always int. Without this,
+            # str(sum(rows.amount)) routes a double through the int converter
+            # and 60.75 prints as 60.
+            if expr.callee == "count": return "strata_int"
+            if expr.callee == "len":   return "strata_int"
+            if expr.callee == "avg":   return "strata_float"
+            if expr.callee in ("sum", "min", "max"):
+                return self._agg_ctype(expr, param_names)
             return self.func_returns.get(expr.callee) or BUILTIN_RETURNS.get(expr.callee)
         return None
 
@@ -963,11 +977,17 @@ int main(int argc, char** argv) {
         if isinstance(expr, ListLiteral):
             if not expr.elements:
                 return "NULL"
-            # C99 compound literal: gives the list backing storage so that
-            # indexing reads real memory instead of dereferencing NULL.
-            elems = ", ".join(self._gen_expr(e, param_names) for e in expr.elements)
+            # Allocated with a length header rather than written as a C99
+            # compound literal, because a bare array carries no count and
+            # len() then has nothing to read.
+            elems = [self._gen_expr(e, param_names) for e in expr.elements]
             et = self._expr_ctype(expr.elements[0], param_names) or "strata_int"
-            return f"({et}[]){{{elems}}}"
+            self.query_depth += 1
+            tag = f"_lit{self.query_depth}"
+            self.query_depth -= 1
+            sets = " ".join(f"{tag}[{i}] = {v};" for i, v in enumerate(elems))
+            return (f"({{ {et}* {tag} = ({et}*)strata_list_new({len(elems)}, "
+                    f"sizeof({et})); {sets} {tag}; }})")
         if isinstance(expr, IndexExpr):
             return (f"{self._gen_expr(expr.target, param_names)}"
                     f"[{self._gen_expr(expr.index, param_names)}]")
@@ -979,6 +999,61 @@ int main(int argc, char** argv) {
         if isinstance(expr, QueryExpr):
             return self._gen_query_expr(expr, param_names)
         return "0"
+
+    def _agg_ctype(self, expr, param_names):
+        """The C type sum/min/max yields: that of the values being aggregated."""
+        if not expr.args:
+            return "strata_float"
+        arg = expr.args[0]
+        if isinstance(arg, MemberAccess):
+            base_ct = self._expr_ctype(arg.obj, param_names) or ""
+            row = base_ct[:-2] if base_ct.endswith("**") else ""
+            for f in self.schema_fields.get(row, []):
+                if f.name == arg.member:
+                    return self._c_type(f.field_type)
+            return "strata_float"
+        ct = self._expr_ctype(arg, param_names) or ""
+        return "strata_float" if ct == "strata_float*" else "strata_int"
+
+    AGG_KIND = {"sum": 0, "avg": 1, "min": 2, "max": 3}
+
+    def _gen_aggregate(self, expr, param_names):
+        """count(), and sum/avg/min/max over a list or a column projection.
+
+        One runtime function serves every schema: for a projection it is given
+        the byte offset of the column inside the row, so it can read the field
+        without knowing the type it came from.
+        """
+        name = expr.callee
+        if not expr.args:
+            return "0"
+        arg = expr.args[0]
+        if name == "count":
+            return f"strata_len({self._gen_expr(arg, param_names)})"
+
+        kind = self.AGG_KIND[name]
+        if isinstance(arg, MemberAccess):
+            base_ct = self._expr_ctype(arg.obj, param_names) or ""
+            row = base_ct[:-2] if base_ct.endswith("**") else ""
+            fields = {f.name: f for f in self.schema_fields.get(row, [])}
+            fd = fields.get(arg.member)
+            if fd is not None:
+                elem = "f" if self._c_type(fd.field_type) == "strata_float" else "i"
+                target = self._gen_expr(arg.obj, param_names)
+                call = (f"strata_agg({target}, {kind}, '{elem}', "
+                        f"(long)offsetof({row}, {arg.member}))")
+                if name == "avg" or elem == "f":
+                    return call
+                return f"((strata_int)({call}))"
+
+        # A plain list of numbers: the elements are the values.
+        target = self._gen_expr(arg, param_names)
+        ct = self._expr_ctype(arg, param_names) or ""
+        elem = "f" if ct == "strata_float*" else "i"
+        call = f"strata_agg({target}, {kind}, '{elem}', -1)"
+        if name == "avg" or elem == "f":
+            return call
+        return f"((strata_int)({call}))"
 
     def _gen_query_expr(self, expr, param_names):
         """A query used where a value is expected, not on the right of a
@@ -999,12 +1074,12 @@ int main(int argc, char** argv) {
         cond = self._gen_expr(expr.condition, param_names)
         self.query_row_type = prev
         self.query_depth -= 1
-        return (f"({{ {src}** {tag} = ({src}**)malloc(sizeof(void*) * "
-                f"({src}__count + 1)); strata_int {tag}n = 0; "
+        return (f"({{ {src}** {tag} = ({src}**)strata_list_new("
+                f"{src}__count, sizeof(void*)); strata_int {tag}n = 0; "
                 f"for (strata_int {tag}i = 0; {tag}i < {src}__count; {tag}i++) {{ "
                 f"{src}* _row = {src}__rows[{tag}i]; "
                 f"if ({cond}) {{ {tag}[{tag}n++] = _row; }} }} "
-                f"{tag}[{tag}n] = NULL; {tag}; }})")
+                f"strata_list_set_len({tag}, {tag}n); {tag}; }})")
 
     def _gen_call(self, expr, param_names):
         if expr.callee == "str":
@@ -1017,6 +1092,8 @@ int main(int argc, char** argv) {
         if expr.callee == "float": return f"((strata_float)({self._gen_expr(expr.args[0], param_names)}))"
         if expr.callee == "len":
             return f"strata_len({self._gen_expr(expr.args[0], param_names)})"
+        if expr.callee in ("sum", "avg", "min", "max", "count"):
+            return self._gen_aggregate(expr, param_names)
         args = ", ".join(self._gen_expr(a, param_names) for a in expr.args)
         return f"{cname(expr.callee)}({args})"
 

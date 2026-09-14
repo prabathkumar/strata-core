@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 #include <ctype.h>
 
@@ -105,12 +106,77 @@ static void sb_append_line_f(SB* s, const char* t) {
    transaction. */
 #define STRATA_TABLE_CAP 4096
 
-static strata_int strata_len(void* rows) {
-    void** r = (void**)rows;
-    strata_int n = 0;
-    if (!r) return 0;
-    while (r[n]) n++;
-    return n;
+/* ── Lists ────────────────────────────────────────────────────────────────
+   A list value is a pointer to its first element, with its element COUNT in
+   the machine word immediately before it.
+
+   The obvious alternative, NULL-termination, cannot work: 0 is a valid int
+   and "" a valid str, so there is no element value free to act as a
+   terminator. It was what strata_len assumed, which is why len([1,2,3])
+   returned whatever happened to follow the array on the stack.
+
+   strata_int is 8 bytes, so the data pointer stays 8-byte aligned and a
+   double or a pointer can sit there. */
+static void* strata_list_new(strata_int count, size_t elem_size) {
+    strata_int* base = (strata_int*)calloc(1, sizeof(strata_int)
+                                              + (size_t)count * elem_size);
+    if (!base) return NULL;
+    base[0] = count;
+    return (void*)(base + 1);
+}
+
+/* A query allocates for every row in the table and then reports how many
+   actually matched. */
+static void strata_list_set_len(void* list, strata_int count) {
+    if (list) ((strata_int*)list)[-1] = count;
+}
+
+static strata_int strata_len(void* list) {
+    if (!list) return 0;
+    return ((strata_int*)list)[-1];
+}
+
+/* ── Aggregates ───────────────────────────────────────────────────────────
+   sum, avg, min and max over a list of numbers, or over one column projected
+   out of a list of rows. The column case walks an array of row pointers and
+   reads a field at a known byte offset, which is what lets a single runtime
+   function serve every schema.
+
+   Empty input: sum is 0, and avg, min and max are 0 too rather than an error
+   or a NaN. A report over a filter that matched nothing should render zeroes,
+   not fail. */
+#define STRATA_AGG_SUM 0
+#define STRATA_AGG_AVG 1
+#define STRATA_AGG_MIN 2
+#define STRATA_AGG_MAX 3
+
+/* kind: 0 sum, 1 avg, 2 min, 3 max.  elem: 'i' int, 'f' float.
+   offset < 0 means the list holds the numbers directly; otherwise it holds
+   row pointers and the number is at that byte offset inside each row. */
+static double strata_agg(void* list, int kind, char elem, long offset) {
+    strata_int n = strata_len(list);
+    if (n <= 0 || !list) return 0.0;
+    double acc = 0.0, best = 0.0;
+    for (strata_int i = 0; i < n; i++) {
+        const void* cell;
+        if (offset < 0) {
+            cell = (const char*)list + (size_t)i * (elem == 'f' ? sizeof(double)
+                                                                : sizeof(strata_int));
+        } else {
+            void* row = ((void**)list)[i];
+            if (!row) continue;
+            cell = (const char*)row + offset;
+        }
+        double v = (elem == 'f') ? *(const double*)cell
+                                 : (double)*(const strata_int*)cell;
+        acc += v;
+        if (i == 0) { best = v; }
+        if (kind == STRATA_AGG_MIN) { if (v < best) best = v; }
+        if (kind == STRATA_AGG_MAX) { if (v > best) best = v; }
+    }
+    if (kind == STRATA_AGG_SUM) return acc;
+    if (kind == STRATA_AGG_AVG) return acc / (double)n;
+    return best;
 }
 
 /* ── Inference runtime ────────────────────────────────────────────────────

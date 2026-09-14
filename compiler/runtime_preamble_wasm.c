@@ -135,11 +135,21 @@ static strata_int str_index_of(strata_str h, strata_str n) {
 static strata_int str_starts_with(strata_str s, strata_str p) {
     return str_index_of(s,p)==0 ? 1 : 0;
 }
-static strata_int strata_len(void* rows) {
-    void** r=(void**)rows; strata_int n=0;
-    if (!r) return 0;
-    while (r[n]) n++;
-    return n;
+/* A list carries its element count in the word before its data; see the
+   native prelude for why NULL-termination cannot work. */
+static void* strata_list_new(strata_int count, size_t elem_size) {
+    strata_int* base = (strata_int*)calloc(1, sizeof(strata_int)
+                                              + (size_t)count * elem_size);
+    if (!base) return NULL;
+    base[0] = count;
+    return (void*)(base + 1);
+}
+static void strata_list_set_len(void* list, strata_int count) {
+    if (list) ((strata_int*)list)[-1] = count;
+}
+static strata_int strata_len(void* list) {
+    if (!list) return 0;
+    return ((strata_int*)list)[-1];
 }
 
 /* ── Inference runtime ────────────────────────────────────────────────────

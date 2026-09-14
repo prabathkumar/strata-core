@@ -1,0 +1,57 @@
+// Aggregates over a query result.
+//
+// `sum`, `avg`, `min`, `max` and `count` were reserved names that type-checked
+// and then emitted a call to a C function that did not exist, so any program
+// using one failed at the linker. They evaluate now.
+//
+// A column is projected with `rows.column`, and that projection is checked
+// against the schema — rename `amount` in the database block below and the
+// build fails at the aggregate, the same way it already fails at a query or
+// in a layout. That is the reason aggregation belongs in the language rather
+// than in a library: the contract reaches the column.
+//
+// `sum`, `min` and `max` keep the column's own type, so summing ints gives an
+// int. `avg` is always float. `count` takes the rows, not a column.
+//
+// There is no GROUP BY, no HAVING, and no aggregate inside a query condition.
+// An aggregate reads a list that already exists.
+
+import io from std;
+
+database Order {
+    int   id;
+    str   region;
+    float amount;
+}
+
+int main() {
+    Order <- [id = 3, region = "apac", amount =  10.50];
+    Order <- [id = 1, region = "emea", amount =  30.25];
+    Order <- [id = 2, region = "apac", amount =  20.00];
+
+    list[Order] all = Order <- [id > 0];
+
+    print(strata_concat("orders:   ", str(count(all))));
+    print(strata_concat("revenue:  ", str(sum(all.amount))));
+    print(strata_concat("average:  ", str(avg(all.amount))));
+    print(strata_concat("smallest: ", str(min(all.amount))));
+    print(strata_concat("largest:  ", str(max(all.amount))));
+
+    // The column's type is kept: these are ints, not floats.
+    print(strata_concat("id range: ", strata_concat(str(min(all.id)),
+    strata_concat("-", str(max(all.id))))));
+
+    // A filtered list aggregates just as well — the filter is the query.
+    list[Order] apac = Order <- [region == "apac"];
+    print(strata_concat("apac:     ", str(sum(apac.amount))));
+
+    // And a plain list of numbers needs no projection.
+    list[int] weights = [4, 1, 7];
+    print(strata_concat("weights:  ", str(sum(weights))));
+
+    // An empty result aggregates to zero rather than failing.
+    list[Order] none = Order <- [id > 999];
+    print(strata_concat("empty:    ", str(sum(none.amount))));
+
+    return 0;
+}

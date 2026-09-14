@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### `len()` was returning garbage
+
+    len([1, 2, 3])       -> 5
+    len([5, 7])          -> 7
+    len(["a", "b", "c"]) -> 5
+
+`list[T]` compiled to a bare C array with no length stored anywhere, and
+`strata_len` walked memory until it found a zero — so it returned whatever
+happened to follow the array on the stack. This was wrong for every list of
+scalars, for as long as lists have existed.
+
+Nothing caught it. The bubble-sort conformance test passes its own `n = 3`,
+and the aggregates test only asserted that `len` was not *undefined*, never
+what it returned.
+
+A list now carries its element count in the machine word before its data.
+NULL-termination cannot work here: 0 is a valid int and `""` a valid str, so
+no element value is free to act as a terminator. List literals and query
+results both allocate through `strata_list_new`, and `for R in rows` iterates
+by length rather than walking to the first NULL — which was wrong for scalars
+and became wrong for query results too.
+
+### Aggregation
+
+`sum`, `avg`, `min`, `max` and `count` were reserved names that type-checked
+and then emitted a call to a C function that did not exist, so any program
+using one failed at the linker.
+
+A column is projected with `rows.column`, and the projection is checked against
+the schema: rename a column and the build fails at the aggregate, the same way
+it already failed at a query or in a layout. That contract is the reason
+aggregation belongs in the language rather than in a library.
+
+`sum`, `min` and `max` keep the column's own type — summing ints gives an int.
+`avg` is always float, `count` always int and takes the rows rather than a
+column. A plain `list[int]` needs no projection. An empty result aggregates to
+zero rather than failing or producing a NaN, because a report over a filter
+that matched nothing should render zeroes.
+
+One runtime function serves every schema: for a projection it is handed the
+byte offset of the column inside the row, so it reads the field without
+knowing which record type it came from.
+
+No `GROUP BY`, no `HAVING`, no aggregate inside a query condition.
+
+
 ### `strata fmt`
 
 The premise is that AI writes the code and developers review it. A reviewer
