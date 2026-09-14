@@ -203,3 +203,19 @@ differential, so a misattributed error is a divergence.
 std and compiler modules are deliberately not checked on every app build.
 
 All thirteen suites green. Conformance 168/168.
+
+## 2026-09-14 — step 3 of PLAN.md
+
+Forms and POST. layout gains form/field and HTML attribute properties;
+std/http.sta gains body, form value, redirect; std/io.sta gains str_to_float.
+apps/orders creates an order from the page: validated, persisted, 303.
+
+Two bugs found by the test, not by hand:
+  - http_read_request did ONE read(). True of curl, false of urllib, which
+    writes headers and body separately — every form post was a 400.
+  - strcasestr without _GNU_SOURCE truncates its pointer, so Content-Length
+    parsed as zero. The warning that would have said so is suppressed by
+    -Wno-implicit-function-declaration.
+  - and separately: "\r\n" in a string literal did not compile at all.
+
+All thirteen suites green. Conformance 175/175, project_build 21/21.

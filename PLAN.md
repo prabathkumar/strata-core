@@ -14,7 +14,7 @@ them as estimates with the usual asymmetry: they go long, not short.
 | 0 | ~~Finish the self-hosted port~~ **done** | `strata-self` compiles `apps/orders` byte-identically; all four differentials walk into `apps/` | 0.5 |
 | 1 | ~~`strata build` reads `Strata.toml`~~ **done** | `cd apps/orders && strata build` produces `build/orders`; `strata new` scaffolds a project that builds unedited | 0.5 |
 | 2 | ~~Type-check imported modules~~ **done** | a column break inside `views.sta` is reported by Strata, naming that file and line | 1.0 |
-| 3 | **Forms and POST** | an order is created from the page: request body parsed, handler runs, redirect, row persisted | 1.5 |
+| 3 | ~~Forms and POST~~ **done** | an order is created from the page: body read in full, parsed, validated, inserted, persisted, 303 | 1.5 |
 | 4 | **Routing, static assets, error pages** | a route table rather than an if-chain; CSS served; real 404 and 500 pages | 1.0 |
 | 5 | **Sessions and login** | a cookie, a protected route, a logout. Minimal and honest — no password reset, no OAuth | 2.0 |
 | 6 | **Concurrency** | a slow client cannot block every other client. Process or thread per connection; measured, not assumed | 1.5 |

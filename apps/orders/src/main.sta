@@ -34,8 +34,45 @@ str summary_page() {
     return sb_to_str(&sb);
 }
 
+// The next free id. There is no sequence in the database tier yet, so the
+// service computes one — which is honest about what the language provides.
+int next_id() {
+    list[Order] all = Order <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// Creating an order from the form. Every field is validated before a row is
+// inserted: a browser can post anything, and "amount" arrives as text.
+int create_order(int conn, str body) {
+    str customer = http_form_value(body, "customer");
+    str region   = http_form_value(body, "region");
+    str amount   = http_form_value(body, "amount");
+
+    if (str_len(customer) == 0) {
+        return http_bad_request(conn, "<h1>400</h1><p>customer is required</p>");
+    }
+    if (str_len(amount) == 0) {
+        return http_bad_request(conn, "<h1>400</h1><p>amount is required</p>");
+    }
+    if (str_len(region) == 0) { region = "unknown"; }
+
+    Order <- [id = next_id(), customer = customer, region = region,
+    amount = str_to_float(amount), status = "OPEN"];
+    save Order to "data/orders.tsv";
+
+    // 303, so a refresh does not post the form again.
+    return http_redirect(conn, "/");
+}
+
 int handle(int conn, str request) {
     str path = http_path(request);
+    if (str_eq(http_method(request), "POST") == 1) {
+        if (str_eq(path, "/orders") == 1) {
+            return create_order(conn, http_body(request));
+        }
+        return http_not_found(conn);
+    }
     if (str_eq(path, "/") == 1)        { return http_ok(conn, render Dashboard); }
     if (str_eq(path, "/summary") == 1) { return http_ok(conn, summary_page()); }
     if (str_eq(path, "/health") == 1)  {

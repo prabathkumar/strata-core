@@ -849,6 +849,47 @@ def _ui_break_names_the_ui_file():
 
 _ui_break_names_the_ui_file()
 
+
+print("\n── String literals survive code generation ──────────────────────")
+
+# The lexer decodes escapes, so by code generation a `\r` is a real carriage
+# return. Only backslash, quote and newline were re-escaped, so a tab went
+# through raw (legal in a C literal, by luck) and a carriage return ended the
+# line: "\r\n" failed to compile with "missing terminating \" character",
+# pointing at generated code the author never wrote.
+compile_run("a_carriage_return_in_a_literal_compiles",
+    'import io from std;\nimport mem from std;\nint main() { str s = "a\\r\\nb"; print(str(str_len(s))); return 0; }',
+    "4")
+compile_run("a_tab_in_a_literal_survives",
+    'import io from std;\nimport mem from std;\nint main() { str s = "a\\tb"; print(str(str_len(s))); return 0; }',
+    "3")
+
+print("\n── Forms ────────────────────────────────────────────────────────")
+
+_F = 'import io from std;\nimport str from std;\nimport mem from std;\nimport http from std;\n'
+
+compile_run("form_value_is_decoded",
+    _F + 'int main() { str b = "customer=acme+corp&amount=12.50&note=a%2Fb%20c"; print(http_form_value(b, "customer")); print(http_form_value(b, "note")); return 0; }',
+    "acme corp\na/b c")
+
+compile_run("a_missing_form_field_is_empty",
+    _F + 'int main() { str b = "a=1"; print(strata_concat("[", strata_concat(http_form_value(b, "nope"), "]"))); return 0; }',
+    "[]")
+
+# A field whose name is a prefix of another must not match it.
+compile_run("form_value_matches_the_whole_name",
+    _F + 'int main() { str b = "amount_total=9&amount=4"; print(http_form_value(b, "amount")); return 0; }',
+    "4")
+
+compile_run("a_body_is_what_follows_the_headers",
+    _F + 'int main() { str r = strata_concat("POST /x HTTP/1.1\\r\\nHost: h\\r\\n\\r\\n", "a=1&b=2"); print(http_body(r)); return 0; }',
+    "a=1&b=2")
+
+# The UI tier collects input, not just renders it.
+compile_run("a_layout_renders_a_form",
+    'import io from std;\nlayout F() { window "w" { form [action = "/x", method = "post"] { field "who" [placeholder = "name"]; button "Go" [type = "submit"]; } } }\nint main() { print(render F); return 0; }',
+    '<!doctype html><meta charset="utf-8"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")

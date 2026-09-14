@@ -24,10 +24,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STRATA = os.path.join(ROOT, "bin", "strata")
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 303 is the result being tested, not something to follow."""
+    def redirect_request(self, *a, **kw):
+        return None
+
 
 PASS = FAIL = 0
 
@@ -142,6 +149,52 @@ else:
             ok("it serves the summary", "open orders:" in body, body[:160])
             ok("the aggregates are right, after a load from disk",
                "open orders: 2" in body and "1590.5" in body, body[:200])
+
+            # Data flowing inward: the UI tier renders the form, the post is
+            # parsed, validated, inserted, persisted and redirected.
+            page = urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+            ok("the page carries a form", '<form action="/orders"' in page)
+            ok("with named fields",
+               'name="customer"' in page and 'name="amount"' in page)
+
+            data = os.path.join(orders, "data", "orders.tsv")
+            before = open(data).read()
+            try:
+                # A 303 is the success case, so redirects must not be followed:
+                # following one would make a 200 on `/` look like proof.
+                opener = urllib.request.build_opener(NoRedirect)
+                code = 0
+                try:
+                    opener.open(urllib.request.Request(
+                        f"http://127.0.0.1:{port}/orders",
+                        data=b"customer=wayne+ent&region=apac&amount=450.25",
+                        method="POST"), timeout=5)
+                except urllib.error.HTTPError as e:
+                    code = e.code
+                ok("a post redirects with 303", code == 303, f"got {code}")
+
+                after = urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/summary", timeout=5).read().decode()
+                ok("the new order is counted", "open orders: 3" in after,
+                   after[:160])
+                ok("and its amount is in the total", "2040.75" in after,
+                   after[:160])
+                # `wayne+ent` is `wayne ent`: the body is percent-encoded.
+                ok("the row reached disk, decoded",
+                   "wayne ent" in open(data).read(), open(data).read()[-120:])
+
+                code = 0
+                try:
+                    opener.open(urllib.request.Request(
+                        f"http://127.0.0.1:{port}/orders",
+                        data=b"amount=1.00", method="POST"), timeout=5)
+                except urllib.error.HTTPError as e:
+                    code = e.code
+                ok("a post missing a required field is 400", code == 400,
+                   f"got {code}")
+            finally:
+                open(data, "w").write(before)
     finally:
         if proc:
             proc.terminate()

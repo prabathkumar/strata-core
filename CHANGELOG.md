@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Forms: data flows inward
+
+The UI tier could render data and not collect any, so an application could
+show a list and never add to it. `layout` gains `form` and `field`, and
+element properties can now be HTML attributes rather than only CSS — an
+unrecognised one is still emitted as a `data-` attribute rather than dropped.
+
+`std/http.sta` gains `http_body`, `http_form_value` (percent-decoded),
+`http_redirect` (303, so a refresh does not resubmit) and `http_bad_request`.
+`str_to_float` was missing from `std/io.sta` — a form field arrives as text,
+so a service that takes input needs it.
+
+`apps/orders` has a form. A post is validated, assigned an id, inserted,
+persisted and redirected; a missing required field is a 400.
+
+Two bugs this turned up, neither of which a unit test would have found:
+
+**The server only ever read once.** `http_read_request` did a single `read()`
+and assumed the whole request arrived. That is true of curl, which puts a small
+request in one packet, and false of any client that writes headers and body
+separately — the body arrived after the read returned, every posted field
+looked absent, and every form submission was a 400. It now reads until the
+headers are complete and then reads exactly `Content-Length` bytes.
+
+**`strcasestr` needs `_GNU_SOURCE`.** Without it the implicit declaration
+truncates the returned pointer, `Content-Length` parsed as zero, and the body
+was never read — the same 400, one layer down. Replaced with an explicit scan.
+The implicit-declaration warning that would have said so is suppressed by the
+`-Wno-implicit-function-declaration` the build passes to gcc.
+
+### String literals survive code generation
+
+The lexer decodes escapes, so by code generation `\r` is a real carriage
+return. Only backslash, quote and newline were re-escaped: a tab went through
+raw — legal inside a C literal, by luck — and a carriage return ended the
+line. `"\r\n"` failed to compile with *missing terminating " character*,
+pointing at generated code the author never wrote.
+
+
 ### The cross-tier contract reaches every file
 
 Only the file being compiled had its bodies checked. So renaming a column in

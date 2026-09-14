@@ -59,3 +59,10 @@ str float_to_str(float value) {
 int str_to_int(str value) {
     native "return (int64_t)atoll($value);";
 }
+
+// Text to a number. A form field arrives as text, so a service that takes
+// input needs this; unparseable text is 0 rather than an error, which a
+// caller that cares must check for itself.
+float str_to_float(str value) {
+    native "return strtod($value, NULL);";
+}

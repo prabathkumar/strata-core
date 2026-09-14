@@ -409,15 +409,26 @@ int is_cmp_op(str op) {
 
 // ── Expressions ──────────────────────────────────────────────────────────────
 
+// A Strata string literal as a C string literal.
+//
+// The lexer decodes escapes, so by here a `\r` is a real carriage return.
+// Re-escaping only backslash, quote and newline left tabs and carriage
+// returns raw in the emitted C: a raw tab happens to be legal inside a C
+// literal, and a raw CR ends the line, so "\r\n" failed to compile with
+// "missing terminating \" character" pointing at generated code the author
+// never wrote.
 str c_escape(str v) {
     StringBuilder sb = sb_new();
     int n = str_len(v);
     for (int i = 0; i < n; i = i + 1) {
         int c = v[i];
-        if (c == 92) { sb_append(&sb, "\\\\"); }
-        if (c == 34) { sb_append(&sb, "\\\""); }
-        if (c == 10) { sb_append(&sb, "\\n"); }
-        if (c != 92) { if (c != 34) { if (c != 10) { sb_append(&sb, char_str(c)); } } }
+        int special = 0;
+        if (c == 92) { sb_append(&sb, "\\\\");  special = 1; }
+        if (c == 34) { sb_append(&sb, "\\\"");  special = 1; }
+        if (c == 10) { sb_append(&sb, "\\n");  special = 1; }
+        if (c == 13) { sb_append(&sb, "\\r");  special = 1; }
+        if (c == 9)  { sb_append(&sb, "\\t");  special = 1; }
+        if (special == 0) { sb_append(&sb, char_str(c)); }
     }
     return sb_to_str(&sb);
 }
@@ -1867,7 +1878,46 @@ str html_tag(str tag) {
     if (str_eq(tag, "canvas")) { return "canvas"; }
     if (str_eq(tag, "button")) { return "button"; }
     if (str_eq(tag, "image"))  { return "img"; }
+    // The UI tier could render data but not collect any, so an application
+    // could show a list and never add to it.
+    if (str_eq(tag, "form"))   { return "form"; }
+    if (str_eq(tag, "field"))  { return "input"; }
     return "div";
+}
+
+int is_void_tag(str tag) {
+    if (str_eq(tag, "input") == 1) { return 1; }
+    if (str_eq(tag, "img") == 1)   { return 1; }
+    return 0;
+}
+
+// Properties that are HTML attributes rather than style. Anything not here and
+// not a CSS property is still emitted as a data- attribute, so an unrecognised
+// one is visible rather than silently dropped.
+int is_attr_prop(str name) {
+    str known = ",action,method,name,type,placeholder,value,required,href,src,alt,step,min,max,";
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ","); sb_append(&needle, name); sb_append(&needle, ",");
+    if (str_index_of(known, sb_to_str(&needle)) >= 0) { return 1; }
+    return 0;
+}
+
+str attrs_for(Gen &g, Node el) {
+    StringBuilder sb = sb_new();
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node p = nv_get(&props, i);
+        if (is_attr_prop(p.s1) == 1) {
+            str raw = raw_literal(p.c1);
+            if (str_len(raw) > 0) {
+                sb_append(&sb, " "); sb_append(&sb, p.s1);
+                sb_append(&sb, "=\\\""); sb_append(&sb, html_escape(raw));
+                sb_append(&sb, "\\\"");
+            }
+        }
+    }
+    return sb_to_str(&sb);
 }
 
 str css_for_prop(str name, str raw) {
@@ -1992,6 +2042,22 @@ str style_attr(Gen &g, Node el) {
 def gen_element(Gen &g, Node el) {
     str tag = html_tag(el.s1);
     str style = style_attr(&g, el);
+    str attrs = attrs_for(&g, el);
+    // `field "customer"` names the form field it submits; the label is the
+    // name rather than text, because an input has no text content.
+    if (str_eq(el.s1, "field") == 1) {
+        if (el.c1 != 0) {
+            Node lab = node_at(el.c1);
+            if (lab.kind == 52) {
+                if (str_index_of(attrs, " name=") < 0) {
+                    StringBuilder nm = sb_new();
+                    sb_append(&nm, " name=\\\""); sb_append(&nm, html_escape(lab.s1));
+                    sb_append(&nm, "\\\""); sb_append(&nm, attrs);
+                    attrs = sb_to_str(&nm);
+                }
+            }
+        }
+    }
 
     if (str_eq(el.s1, "window") == 1) {
         str win_title = "window";
@@ -2003,7 +2069,8 @@ def gen_element(Gen &g, Node el) {
         sb_append(&t, "<title>"); sb_append(&t, html_escape(win_title)); sb_append(&t, "</title>");
         emit_fprintf(&g, sb_to_str(&t));
         StringBuilder b = sb_new();
-        sb_append(&b, "<body"); sb_append(&b, style); sb_append(&b, ">");
+        sb_append(&b, "<body"); sb_append(&b, attrs); sb_append(&b, style);
+        sb_append(&b, ">");
         emit_fprintf(&g, sb_to_str(&b));
         NodeVec kids = nv_at(el.v2);
         int nk = kids.len;
@@ -2013,8 +2080,11 @@ def gen_element(Gen &g, Node el) {
     }
 
     StringBuilder open = sb_new();
-    sb_append(&open, "<"); sb_append(&open, tag); sb_append(&open, style); sb_append(&open, ">");
+    sb_append(&open, "<"); sb_append(&open, tag); sb_append(&open, attrs);
+    sb_append(&open, style); sb_append(&open, ">");
     emit_fprintf(&g, sb_to_str(&open));
+    // A void element has no closing tag and no children.
+    if (is_void_tag(tag) == 1) { return; }
 
     if (el.c1 != 0) {
         if (str_eq(el.s1, "canvas") == 0) {

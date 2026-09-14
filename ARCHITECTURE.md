@@ -43,7 +43,8 @@ more than one file without putting its modules in the standard library.
 | Query | `Order <- [status == "OPEN"]` | the schema: a wrong column is E004 |
 | Aggregate | `sum(open_orders.amount)` | the schema, through the projection |
 | UI | `layout Dashboard() { ... }` | the schema: a field rendered from a row is checked |
-| Transport | `http_listen`, `http_path`, `http_ok` | ordinary Strata, in `std/http.sta` |
+| Transport | `http_listen`, `http_path`, `http_body`, `http_form_value`, `http_redirect` | ordinary Strata, in `std/http.sta` |
+| Input | `form { field "customer"; }` in a layout | the handler that reads it — and the schema, when the row is inserted |
 
 Rename `amount` in `schema.sta` and the build fails at the insert, at the
 aggregate and at the page — before anything runs, and each diagnostic names
@@ -81,6 +82,8 @@ the language.
 - **No client-side interactivity.** Pages are server-rendered HTML. The
   WebAssembly target cannot reach the DOM without a JavaScript shim, as with
   every WASM framework.
-- **No forms, no POST handling, no sessions, no auth.**
+- **No sessions, no auth.** Forms and POST work; nothing identifies who posted.
+- **No CSRF protection.** A form post is accepted from anywhere.
+- **No request timeout.** A client that announces a Content-Length and then sends less will hold the connection, and there is only one.
 - **`_to_delete/` under `apps/orders`** holds two scratch files the mount
   would not let me remove. Delete them when convenient.

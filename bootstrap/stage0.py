@@ -101,6 +101,27 @@ def _assert_text(node):
     return "<expr>"
 
 
+def _c_string(value):
+    """A Strata string literal as a C string literal.
+
+    The lexer decodes escapes, so by here `\\r` is a real carriage return.
+    Re-escaping only backslash, quote and newline left tabs and carriage
+    returns raw in the emitted C: a raw tab happens to be legal inside a C
+    literal, and a raw CR ends the line, so `"\\r\\n"` failed to compile with
+    "missing terminating \" character" pointing at generated code the author
+    never wrote.
+    """
+    out = []
+    for ch in value:
+        if ch == "\\":  out.append("\\\\")
+        elif ch == '"':  out.append('\\"')
+        elif ch == "\n": out.append("\\n")
+        elif ch == "\r": out.append("\\r")
+        elif ch == "\t": out.append("\\t")
+        else:            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
 def cname(name):
     """A C-safe spelling of a Strata identifier."""
     return name + "_" if name in C_RESERVED else name
@@ -413,7 +434,19 @@ int main(int argc, char** argv) {
         "window": "div", "row": "div", "column": "div", "grid": "div",
         "text": "span", "spacer": "div", "canvas": "canvas",
         "button": "button", "image": "img",
+        # The UI tier could render data but not collect any, so an
+        # application could show a list and never add to it.
+        "form": "form", "field": "input",
     }
+
+    # Elements with no closing tag.
+    VOID_TAGS = {"input", "img"}
+
+    # Properties that are HTML attributes rather than style. Anything not here
+    # and not a CSS property is still emitted as a data- attribute, so an
+    # unrecognised one is visible rather than silently dropped.
+    ATTR_PROPS = {"action", "method", "name", "type", "placeholder", "value",
+                  "required", "href", "src", "alt", "step", "min", "max"}
 
     def _css_for(self, el):
         """Inline style string for an element's properties."""
@@ -513,19 +546,41 @@ int main(int argc, char** argv) {
             self._gen_if(node, []); return
         self._gen_stmt(node, [])
 
+    def _attrs_for(self, el):
+        """HTML attributes from an element's properties."""
+        out = []
+        for p in el.props:
+            if p.name not in self.ATTR_PROPS:
+                continue
+            v = p.value
+            raw = v.value if isinstance(v, (StrLiteral, IntLiteral, FloatLiteral)) else None
+            if raw is None:
+                continue
+            out.append(f' {p.name}=\\"{self._html_escape(str(raw))}\\"')
+        return "".join(out)
+
     def _gen_element(self, el):
         tag = self.HTML_TAG.get(el.tag, "div")
         css = self._css_for(el)
         style = (' style=\\"' + css + '\\"') if css else ""
+        attrs = self._attrs_for(el)
+        # `field "customer"` names the form field it submits; the label is the
+        # name rather than text, because an input has no text content.
+        if el.tag == "field" and isinstance(el.label, StrLiteral) \
+           and " name=" not in attrs:
+            attrs = f' name=\\"{self._html_escape(el.label.value)}\\"' + attrs
+        if tag in self.VOID_TAGS:
+            self.emit('fprintf(_out,"<' + tag + attrs + style + '>");')
+            return
         if el.tag == "window":
             title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
             self.emit('fprintf(_out,"<title>' + self._html_escape(title) + '</title>");')
-            self.emit('fprintf(_out,"<body' + style + '>");')
+            self.emit('fprintf(_out,"<body' + attrs + style + '>");')
             for c in el.children:
                 self._gen_layout_node(c)
             self.emit('fprintf(_out,"</body>");')
             return
-        self.emit('fprintf(_out,"<' + tag + style + '>");')
+        self.emit('fprintf(_out,"<' + tag + attrs + style + '>");')
         if el.label is not None and el.tag != "canvas":
             if isinstance(el.label, StrLiteral):
                 self.emit('fprintf(_out,"%s","' + self._html_escape(el.label.value) + '");')
@@ -925,8 +980,7 @@ int main(int argc, char** argv) {
         if isinstance(expr, IntLiteral): return str(expr.value)
         if isinstance(expr, FloatLiteral): return str(expr.value)
         if isinstance(expr, StrLiteral):
-            esc = expr.value.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n')
-            return f'"{esc}"'
+            return _c_string(expr.value)
         if isinstance(expr, BoolLiteral): return "1" if expr.value else "0"
         if isinstance(expr, Identifier):
             if expr.name in self.model_names:

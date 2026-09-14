@@ -42,14 +42,59 @@ int http_listen(int port) {
 
 int http_accept(int server_fd) { native "return accept($server_fd, NULL, NULL);"; }
 
-// The whole request as one read. Enough for a GET; a large POST body would be
-// truncated, which is a limit rather than a design.
+// Read a whole request: headers first, then exactly Content-Length bytes of
+// body.
+//
+// This used to be a single read(). It worked with curl, which puts a small
+// request in one packet, and failed with any client that writes the headers
+// and the body separately — the body arrived after the read returned, so
+// every posted field looked absent and every form submission was a 400.
+// Nothing about the code said "one packet"; it just happened to be true of
+// the client it was tried with.
 str http_read_request(int conn) {
     native "
-    static char buf[16384];
-    ssize_t n = read($conn, buf, sizeof(buf) - 1);
-    if (n <= 0) { buf[0] = 0; return buf; }
-    buf[n] = 0;
+    static char buf[65536];
+    size_t have = 0;
+    const char* sep = NULL;
+
+    /* Headers, however many reads that takes. */
+    while (have + 1 < sizeof(buf)) {
+        buf[have] = 0;
+        sep = strstr(buf, \"\\r\\n\\r\\n\");
+        if (sep) break;
+        ssize_t n = read($conn, buf + have, sizeof(buf) - 1 - have);
+        if (n <= 0) break;
+        have += (size_t)n;
+    }
+    buf[have] = 0;
+    sep = strstr(buf, \"\\r\\n\\r\\n\");
+    if (!sep) return buf;
+
+    /* Then the body the headers said was coming. A client that sends fewer
+       bytes than it promised would hang here; a real server needs a timeout,
+       and this one does not have one. */
+    size_t head_len = (size_t)(sep - buf) + 4;
+    /* Header names are case-insensitive, and strcasestr needs _GNU_SOURCE —
+       without it the implicit declaration truncates the returned pointer and
+       the length reads as zero, so the body is never read and every posted
+       field looks absent. Scanned explicitly instead. */
+    long want = 0;
+    for (const char* p = buf; p + 15 <= sep; p++) {
+        int match = 1;
+        const char* name = \"content-length:\";
+        for (int k = 0; k < 15; k++) {
+            if (tolower((unsigned char)p[k]) != name[k]) { match = 0; break; }
+        }
+        if (match) { want = strtol(p + 15, NULL, 10); break; }
+    }
+    if (want < 0) want = 0;
+
+    while ((long)(have - head_len) < want && have + 1 < sizeof(buf)) {
+        ssize_t n = read($conn, buf + have, sizeof(buf) - 1 - have);
+        if (n <= 0) break;
+        have += (size_t)n;
+    }
+    buf[have] = 0;
     return buf;
     ";
 }
@@ -94,6 +139,103 @@ int http_respond(int conn, int status, str content_type, str body) {
     if (write($conn, $body, strlen($body)) < 0) return 0;
     return 1;
     ";
+}
+
+// The request body: everything after the blank line that ends the headers.
+// Whatever one read() returned, so a body larger than the buffer is truncated
+// — a limit, not a design.
+str http_body(str request) {
+    int sep = str_index_of(request, "\r\n\r\n");
+    if (sep >= 0) { return str_slice(request, sep + 4, str_len(request)); }
+    sep = str_index_of(request, "\n\n");
+    if (sep >= 0) { return str_slice(request, sep + 2, str_len(request)); }
+    return "";
+}
+
+// One field out of an application/x-www-form-urlencoded body. Returns "" when
+// the field is absent, which a caller must tell apart from a field that was
+// submitted empty if it cares.
+str http_form_value(str body, str key) {
+    StringBuilder needle = sb_new();
+    sb_append(&needle, key);
+    sb_append(&needle, "=");
+    str probe = sb_to_str(&needle);
+
+    int n = str_len(body);
+    int start = 0;
+    while (start <= n) {
+        int end = start;
+        while (end < n) {
+            if (body[end] == 38) { break; }        // &
+            end = end + 1;
+        }
+        str pair = str_slice(body, start, end);
+        if (str_starts_with(pair, probe) == 1) {
+            return url_decode(str_slice(pair, str_len(probe), str_len(pair)));
+        }
+        if (end >= n) { return ""; }
+        start = end + 1;
+    }
+    return "";
+}
+
+// `+` is a space and `%41` is an `A`. A stray `%` with nothing usable after it
+// is kept as a literal `%` rather than dropped, so a malformed body does not
+// silently lose characters.
+str url_decode(str raw) {
+    StringBuilder out = sb_new();
+    int n = str_len(raw);
+    int i = 0;
+    while (i < n) {
+        int c = raw[i];
+        int step = 1;
+        if (c == 43) { sb_append(&out, " "); }
+        if (c == 37) {
+            if (i + 2 < n) {
+                int hi = hex_digit(raw[i + 1]);
+                int lo = hex_digit(raw[i + 2]);
+                if (hi >= 0) {
+                    if (lo >= 0) {
+                        sb_append(&out, char_from_code(hi * 16 + lo));
+                        step = 3;
+                    }
+                }
+            }
+            if (step == 1) { sb_append(&out, "%"); }
+        }
+        if (c != 43) {
+            if (c != 37) { sb_append(&out, char_from_code(c)); }
+        }
+        i = i + step;
+    }
+    return sb_to_str(&out);
+}
+
+int hex_digit(int c) {
+    if (c >= 48) { if (c <= 57)  { return c - 48; } }      // 0-9
+    if (c >= 97) { if (c <= 102) { return c - 87; } }      // a-f
+    if (c >= 65) { if (c <= 70)  { return c - 55; } }      // A-F
+    return -1;
+}
+
+str char_from_code(int c) {
+    native "static char _b[2]; _b[0]=(char)$c; _b[1]=0; return _b;";
+}
+
+// 303, so a refresh after a form post does not resubmit it.
+int http_redirect(int conn, str location) {
+    native "
+    char head[512];
+    int hl = snprintf(head, sizeof(head),
+        \"HTTP/1.1 303 See Other\\r\\nLocation: %s\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\",
+        $location);
+    if (write($conn, head, hl) < 0) return 0;
+    return 1;
+    ";
+}
+
+int http_bad_request(int conn, str why) {
+    return http_respond(conn, 400, "text/html; charset=utf-8", why);
 }
 
 int http_ok(int conn, str html) {
