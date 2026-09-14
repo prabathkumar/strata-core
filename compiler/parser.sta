@@ -1583,8 +1583,11 @@ str &seen, int &unresolved) {
                     seen = sb_to_str(&grown);
                     Node mod = parse_source(file_read(path));
                     // The unit carries the import name so the emitted module
-                    // separator matches the oracle's.
+                    // separator matches the oracle's, and — for a module of
+                    // the project itself — its path, so a diagnostic from it
+                    // can name the file it is in.
                     mod.s1 = imp.s1;
+                    if (is_app == 1) { mod.s2 = path; }
                     collect_modules_from(root, src_dir, mod, &out, &seen, &unresolved);
                     nv_push(&out, mod);
                 }

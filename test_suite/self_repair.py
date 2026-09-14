@@ -97,11 +97,16 @@ ok("error_count matches the diagnostic list",
 
 diag = (report.get("diagnostics") or [{}])[0]
 for key in ("code", "classification", "message", "line", "column", "hint",
-            "remediation_strategy"):
+            "remediation_strategy", "file"):
     ok(f"diagnostic has '{key}'", key in diag, f"got keys {sorted(diag)}")
 
 ok("line is an int, not a string", isinstance(diag.get("line"), int),
    f"got {type(diag.get('line')).__name__}")
+# The loop patches a file. In a multi-file project the diagnostic is often
+# not in the file being compiled, so `file` decides which one it opens.
+ok("the diagnostic names its own file",
+   bool(diag.get("file")) and diag["file"].endswith(".sta"),
+   f"got {diag.get('file')!r}")
 ok("remediation_strategy is non-empty",
    bool(str(diag.get("remediation_strategy", "")).strip()))
 ok("classification is non-empty",

@@ -798,6 +798,57 @@ compile_run("str_eq_on_a_row_field",
     'import io from std;\ndatabase T { int id; str name; }\nint main() { T <- [id = 1, name = "acme"]; list[T] r = T <- [id > 0]; T row = r[0]; if (row.name == "acme") { print("matched"); } return 0; }',
     "matched")
 
+
+print("\n── The cross-tier contract reaches every file ───────────────────")
+
+# Only the file being compiled had its bodies checked, so a renamed column
+# failed the build at the entry point and sailed past the UI tier — the tier
+# the whole cross-tier claim is about. The break surfaced later as a C
+# compiler error naming a C symbol.
+_SCHEMA = 'database Order { int id; float amount; }\n'
+_VIEWS = ('import io from std;\nimport schema from app;\n'
+          'layout Dash() { window "w" { list[Order] r = Order <- [id > 0]; '
+          'for O in r { text str(O.amount); } } }\n')
+_MAIN = ('import io from std;\nimport str from std;\nimport mem from std;\n'
+         'import schema from app;\nimport views from app;\n'
+         'int main() { print(render Dash); return 0; }\n')
+
+check_codes("a_project_builds_across_files", _MAIN,
+    reject="E00", files={"schema.sta": _SCHEMA, "views.sta": _VIEWS})
+
+# The renamed column: `amount` is gone, and views.sta is the only file that
+# still mentions it.
+check_codes("a_renamed_column_breaks_the_ui_tier", _MAIN,
+    expect="E004",
+    files={"schema.sta": 'database Order { int id; float total_amount; }\n',
+           "views.sta": _VIEWS})
+
+def _ui_break_names_the_ui_file():
+    global PASS, FAIL
+    d = tempfile.mkdtemp()
+    try:
+        open(os.path.join(d, "schema.sta"), "w").write(
+            'database Order { int id; float total_amount; }\n')
+        open(os.path.join(d, "views.sta"), "w").write(_VIEWS)
+        sta = os.path.join(d, "case.sta")
+        open(sta, "w").write(_MAIN)
+        r = subprocess.run(["python3", "bootstrap/stage0.py", sta, "--json"],
+                           capture_output=True, text=True, timeout=60)
+        payload = json.loads(r.stdout)
+        files = {x.get("file", "") for x in payload.get("diagnostics", [])}
+        if any(f.endswith("views.sta") for f in files):
+            print("  PASS  the diagnostic names views.sta, not the entry point")
+            PASS += 1
+        else:
+            print(f"  FAIL  the diagnostic names views.sta — got {files}")
+            FAIL += 1
+    except Exception as e:
+        print(f"  FAIL  the diagnostic names views.sta — {e}"); FAIL += 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+_ui_break_names_the_ui_file()
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")

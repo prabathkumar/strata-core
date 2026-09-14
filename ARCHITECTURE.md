@@ -46,7 +46,17 @@ more than one file without putting its modules in the standard library.
 | Transport | `http_listen`, `http_path`, `http_ok` | ordinary Strata, in `std/http.sta` |
 
 Rename `amount` in `schema.sta` and the build fails at the insert, at the
-aggregate and at the page — before anything runs. That is the argument for
+aggregate and at the page — before anything runs, and each diagnostic names
+the file it is in:
+
+```
+[E004] Column 'amount' does not exist in 'Order' (line 17, col 5)
+[E004] Field 'amount' not in 'Order' (src/views.sta:line 21, col 30)
+```
+
+The project's own modules are checked; `std` and `compiler` are not. They are
+dependencies with their own suite, and re-checking them on every application
+build would put their diagnostics in every user's output. That is the argument for
 Strata being a language rather than a library, and it is now demonstrable on a
 service rather than on an example.
 
@@ -68,10 +78,6 @@ the language.
 - **The HTTP server is one connection at a time.** No TLS, no keep-alive, no
   concurrency, no streaming, no timeouts, and a request body larger than one
   `read()` is truncated. A second client waits. Not for the public internet.
-- **Imported modules are not type-checked.** Only the file being compiled has
-  its bodies checked, so a break inside `views.sta` is caught by the C
-  compiler rather than by Strata — which is how the column-rename demo above
-  misses the layout and catches only `main.sta`.
 - **No client-side interactivity.** Pages are server-rendered HTML. The
   WebAssembly target cannot reach the DOM without a JavaScript shim, as with
   every WASM framework.

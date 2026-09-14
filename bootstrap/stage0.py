@@ -1188,6 +1188,9 @@ def resolve_imports(ast, source_path, verbose=False):
     # can be more than one file without putting its modules in std/.
     app_root = src_dir
     modules, unresolved, seen = [], [], set()
+    # The project's own modules, with their paths, so a diagnostic from one of
+    # them can name the file it is in.
+    app_modules = []
 
     def walk(node_ast):
         for imp in node_ast.imports:
@@ -1217,6 +1220,10 @@ def resolve_imports(ast, source_path, verbose=False):
                 continue
             walk(mod_ast)
             modules.append((imp.name, mod_ast))
+            if imp.source == "app":
+                app_modules.append((os.path.relpath(path, os.getcwd())
+                                    if not os.path.isabs(source_path)
+                                    else path, mod_ast))
             if verbose:
                 print(f"  import: {imp.name} from {imp.source} -> {os.path.relpath(path, search_root)}")
     walk(ast)
@@ -1224,7 +1231,7 @@ def resolve_imports(ast, source_path, verbose=False):
     # point at the line rather than at the file.
     root_unresolved = [imp for imp in ast.imports
                        if _resolve_module(imp, search_root, app_root) is None]
-    return modules, unresolved, root_unresolved
+    return modules, unresolved, root_unresolved, app_modules
 
 _TAXONOMY_CACHE = None
 
@@ -1257,6 +1264,10 @@ def diagnostics_payload(source_path, errors, stage):
         meta = tax.get(e.code, {})
         out.append({
             "code": e.code,
+            # Which file the diagnostic is in. The repair loop needs this to
+            # know which file to patch: an application is several files, and
+            # the one being compiled is often not the one that is wrong.
+            "file": e.file or source_path,
             "classification": meta.get("classification", ""),
             "severity": meta.get("severity", "CRITICAL_HALT"),
             "message": e.message,
@@ -1311,12 +1322,14 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # error naming a C symbol — invisible to --json and to the repair loop.
     # An import with no local checkout means the picture is incomplete, so the
     # checker is left lenient rather than guessing.
-    modules, unresolved, root_unresolved = resolve_imports(ast, source_path, verbose)
+    modules, unresolved, root_unresolved, app_modules = resolve_imports(
+        ast, source_path, verbose)
     try:
         from compiler.typechecker import TypeChecker
         errors = TypeChecker(ast, filename=source_path,
                              modules=None if root_unresolved else modules,
-                             unresolved_imports=root_unresolved).check()
+                             unresolved_imports=root_unresolved,
+                             project_modules=app_modules).check()
     except ImportError:
         errors = []
     if json_diagnostics:
@@ -1416,7 +1429,7 @@ def main():
         # only the root unit produces C that cannot link.
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
-        modules, _, _ = resolve_imports(ast, args.file, args.verbose)
+        modules, _, _, _ = resolve_imports(ast, args.file, args.verbose)
         print(CodeGen(ast,args.file,modules,target=args.target).generate()); return
     compile_sta(args.file, out, target=args.target, verbose=args.verbose,
                 json_diagnostics=args.json, test_mode=args.test)

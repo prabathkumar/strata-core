@@ -27,8 +27,12 @@ from compiler.parser import (
 @dataclass
 class StrataError:
     code: str; message: str; line: int; col: int; hint: str = ""
+    # The file the diagnostic is in. An application is several files, and a
+    # line number against the wrong one is worse than no line number.
+    file: str = ""
     def __str__(self):
-        out = f"[{self.code}] {self.message} (line {self.line}, col {self.col})"
+        where = f"{self.file}:" if self.file else ""
+        out = f"[{self.code}] {self.message} ({where}line {self.line}, col {self.col})"
         if self.hint: out += f"\n  Hint: {self.hint}"
         return out
 
@@ -107,7 +111,7 @@ CAST_AND_AGGREGATE = frozenset((
 
 class TypeChecker:
     def __init__(self, ast, filename="<stdin>", modules=None,
-                 unresolved_imports=None):
+                 unresolved_imports=None, project_modules=None):
         """`modules` is the resolved import graph, when the caller has one.
 
         Without it a call to an unknown function cannot be distinguished from a
@@ -123,6 +127,11 @@ class TypeChecker:
         self.functions={}; self.current_return_type=None
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
+        # Which file the diagnostics being produced right now belong to.
+        self.current_file = ""
+        # (path, unit) for each module of the project itself. Dependencies are
+        # not here: they have their own suite.
+        self.project_modules = [(p, u, "app") for p, u in (project_modules or [])]
         # Names only, not signatures: knowing that `str_pad` exists is enough
         # to not report it, and checking argument types across a module
         # boundary is a separate change with its own risk.
@@ -161,6 +170,7 @@ class TypeChecker:
                 for st in d.assertions:
                     self._check_stmt(st, vscope)
         self._check_functions()
+        self._check_project_modules()
         return self.errors
 
     def _report_unresolved_imports(self):
@@ -255,6 +265,49 @@ class TypeChecker:
             if fn.kind=="function" and fn.return_type:
                 self.current_return_type=self._resolve_type(fn.return_type)
             self._check_body(fn.body,scope)
+
+    def _check_project_modules(self):
+        """Check the bodies of the project's own modules, not its dependencies.
+
+        Only the file being compiled used to have its bodies checked, so a
+        column renamed in schema.sta failed the build at main.sta and sailed
+        past views.sta — the UI tier, which is the one the cross-tier claim is
+        about. The break surfaced later as a C compiler error naming a C
+        symbol.
+
+        `std` and `compiler` modules are deliberately not checked here. They
+        are dependencies with their own suite (`stdlib_compiles.py`), and
+        re-checking them on every application build would put their
+        diagnostics in every user's output.
+        """
+        for name, unit, source in self.project_modules:
+            self.current_file = name
+            saved_functions = self.functions
+            # An imported module's own functions and declarations, on top of
+            # what is already known, so a call between two project modules
+            # resolves.
+            self.functions = dict(self.functions)
+            for fn in unit.functions:
+                rt = T_VOID
+                if fn.kind == "function" and fn.return_type:
+                    rt = self._resolve_type(fn.return_type)
+                self.functions[fn.name] = (
+                    rt, [self._resolve_type(p.param_type) for p in fn.params])
+            for d in unit.declarations:
+                if isinstance(d, ReportDecl):
+                    self._check_report(d)
+                elif isinstance(d, LayoutDecl):
+                    self._check_layout(d)
+            for fn in unit.functions:
+                scope = Scope(parent=self.global_scope)
+                for p in fn.params:
+                    scope.define(p.name, self._resolve_type(p.param_type))
+                self.current_return_type = T_VOID
+                if fn.kind == "function" and fn.return_type:
+                    self.current_return_type = self._resolve_type(fn.return_type)
+                self._check_body(fn.body, scope)
+            self.functions = saved_functions
+        self.current_file = ""
 
     def _check_body(self,stmts,scope):
         for s in stmts: self._check_stmt(s,scope)
@@ -686,7 +739,8 @@ class TypeChecker:
         return T_VOID
 
     def _error(self,code,message,line,col,hint=""):
-        self.errors.append(StrataError(code,message,line,col,hint))
+        self.errors.append(StrataError(code,message,line,col,hint,
+                                       self.current_file))
 
 def typecheck_file(path):
     toks=tokenise_file(path); ast=Parser(toks).parse()

@@ -239,11 +239,15 @@ database TC {
     // callee cannot be told apart from a call into std/, so the check stays
     // off and the mistake surfaces as a C linker error instead.
     int strict_calls;
+    // The file the diagnostics being produced right now belong to. An
+    // application is several files, and a line number against the wrong one is
+    // worse than no line number.
+    str current_file;
     str imported;     // ",name,name," of everything the imports make reachable
 }
 
 TC tc_new() {
-    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; return _t;";
+    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; return _t;";
 }
 
 // Functions the generated C already has, from the runtime prelude or as a
@@ -274,6 +278,10 @@ def emit(TC &tc, str code, str msg, int line, int col) {
     StringBuilder sb = sb_new();
     sb_append(&sb, code);
     sb_append(&sb, " ");
+    if (str_len(tc.current_file) > 0) {
+        sb_append(&sb, tc.current_file);
+        sb_append(&sb, ":");
+    }
     sb_append(&sb, str(line));
     sb_append(&sb, ":");
     sb_append(&sb, str(col));
@@ -1272,6 +1280,58 @@ int check_unit_project(str root, str src_dir, Node unit) {
     1, nv_ptr(mods));
 }
 
+// Check the bodies of the project's own modules, not its dependencies.
+//
+// Only the file being compiled used to have its bodies checked, so a column
+// renamed in schema.sta failed the build at main.sta and sailed past
+// views.sta — the UI tier, which is the one the cross-tier claim is about.
+//
+// `std` and `compiler` modules are deliberately not checked here: they are
+// dependencies with their own suite, and re-checking them on every application
+// build would put their diagnostics in every user's output. A module carries
+// its path in s2 only when it came from `app`, which is how they are told
+// apart.
+def check_project_modules(TC &tc, int mods_p) {
+    NodeVec mods = nv_at(mods_p);
+    int nm = mods.len;
+    for (int m = 0; m < nm; m = m + 1) {
+        Node mu = nv_get(&mods, m);
+        if (str_len(mu.s2) > 0) {
+            tc.current_file = mu.s2;
+            register_module_functions(&tc, mu);
+            NodeVec decls = nv_at(mu.v2);
+            int nd = decls.len;
+            for (int d = 0; d < nd; d = d + 1) {
+                Node dec = nv_get(&decls, d);
+                if (dec.kind == 6)  { check_report(&tc, dec); }
+                if (dec.kind == 70) { check_layout(&tc, dec); }
+            }
+            check_unit_functions(&tc, mu);
+        }
+    }
+    tc.current_file = "";
+}
+
+// An imported module's own functions, so a call between two project modules
+// resolves while its bodies are being checked.
+def register_module_functions(TC &tc, Node unit) {
+    NodeVec fns = nv_at(unit.v3);
+    int n = fns.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node f = nv_get(&fns, i);
+        int rt = ty_ptr(ty_new("void"));
+        if (f.c1 != 0) { rt = resolve_type(f.c1); }
+        NodeVec ps = nv_at(f.v1);
+        int plist = 0;
+        int np = ps.len;
+        for (int k = np - 1; k >= 0; k = k - 1) {
+            Node prm = nv_get(&ps, k);
+            plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
+        }
+        tc.fns = fn_cons(f.s2, rt, plist, np, tc.fns);
+    }
+}
+
 int check_unit(Node unit) { return check_unit_mode(unit, 0, ""); }
 
 int check_unit_mode(Node unit, int strict, str imported) {
@@ -1308,6 +1368,12 @@ str src_dir, int report_imports, int mods_p) {
         if (dec.kind == 26) { check_verify(&tc, dec); }
     }
 
+    check_unit_functions(&tc, unit);
+    if (mods_p != 0) { check_project_modules(&tc, mods_p); }
+    return tc.error_count;
+}
+
+def check_unit_functions(TC &tc, Node unit) {
     NodeVec fns = nv_at(unit.v3);
     int nf = fns.len;
     for (int i = 0; i < nf; i = i + 1) {
@@ -1326,5 +1392,4 @@ str src_dir, int report_imports, int mods_p) {
         int nb = body.len;
         for (int b = 0; b < nb; b = b + 1) { check_stmt(&tc, nv_get(&body, b), fp); }
     }
-    return tc.error_count;
 }

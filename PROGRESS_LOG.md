@@ -189,3 +189,17 @@ test_suite/project_build.py, 14 checks, ending by starting the real service
 and reading /summary over HTTP.
 
 All thirteen suites green.
+
+## 2026-09-14 — step 2 of PLAN.md
+
+Imported project modules are type-checked. A renamed column now breaks the UI
+tier at build time, naming src/views.sta and its line — previously it sailed
+past and became a C compiler error.
+
+Diagnostics carry their file, in the human output, in --json (for the repair
+loop, which has to know which file to patch), and in the type checker
+differential, so a misattributed error is a divergence.
+
+std and compiler modules are deliberately not checked on every app build.
+
+All thirteen suites green. Conformance 168/168.

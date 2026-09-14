@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### The cross-tier contract reaches every file
+
+Only the file being compiled had its bodies checked. So renaming a column in
+`schema.sta` failed the build at `main.sta` and sailed straight past
+`views.sta` — the UI tier, which is the tier the cross-tier claim is actually
+about. The break surfaced later as a C compiler error naming a C symbol.
+
+The project's own modules are checked now. `std` and `compiler` are not: they
+are dependencies with their own suite, and re-checking them on every
+application build would put their diagnostics in every user's output.
+
+Diagnostics carry the file they are in, because a line number against the
+wrong file is worse than no line number:
+
+    [E004] Field 'amount' not in 'Order' (src/views.sta:line 21, col 30)
+
+`file` is in the `--json` payload too — the repair loop patches a file, and in
+a multi-file project the diagnostic is usually not in the one being compiled.
+The type checker differential compares the file as part of each diagnostic, so
+an error attributed to the wrong file is a divergence rather than something
+nobody notices.
+
+
 ### A project is the unit of building
 
 `Strata.toml` existed and nothing read it. `strata build` took a file path, so
