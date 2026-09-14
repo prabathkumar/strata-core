@@ -8,3 +8,6 @@ build/
 # Every runtime prelude, not just the native one. Naming a single file
 # here let the wasm prelude be silently excluded the moment it was added.
 !compiler/runtime_preamble*.c
+
+# The lock file the service creates to serialise writes.
+apps/orders/data/.lock

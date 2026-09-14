@@ -1,40 +1,8 @@
-feat(journey): the service survives contact
+chore: the service's lock file is not source
 
-Journey C. Two clients at once, a slow client, a client that walks away, a
-malformed request, ten writes arriving together, a restart with live data, and
-2000 rows — with the numbers printed rather than claimed.
-
-The server served one connection at a time, had no timeout, and died on
-SIGPIPE. A client that opened a socket and said nothing held every other
-client indefinitely; a client that closed its browser mid-response terminated
-the process.
-
-- A process per connection: http_fork after http_accept, the child serves and
-  _exits. http_reap_children stops them accumulating as zombies,
-  http_ignore_broken_pipes stops an abandoned page load taking the service.
-- A 5s receive timeout. A request that never finishes arriving comes back as
-  an empty string and is answered 408; it used to come back as whatever bytes
-  had arrived, which looked like a real request with a strange path.
-- lock_shared and lock_exclusive. The children share nothing but the
-  filesystem: a GET takes the shared lock and is served in parallel, anything
-  that can write takes the exclusive one across read, change and save.
-
-The lock is not a precaution. With it removed, ten concurrent creates against
-a thousand-row table leave 856 rows, hundreds of them all-zero — two
-processes writing the same file. The test was first written against an empty
-table, where it passed without the lock and proved nothing. A test that passes
-when the thing it tests is deleted is not a test.
-
-Measured, on a 4-core development machine: dashboard p50 2.2 ms / p95 2.6 ms
-over 20 rows, 15 ms over 2000; ~445 req/s sequential; ~380 req/s and p95
-32 ms over 8 concurrent clients. Concurrent below sequential is the finding,
-not a rounding error — every request forks and reloads all three tables. What
-the process per connection buys is that one slow or hostile client cannot hold
-the others.
-
-All suites green: conformance 182/182, documentation 11/11, four
-differentials identical, fixpoint reached, stdlib 19/19, project 14/14,
-journeys 25/25, 19/19 and 18/18, repair loop 48/48.
+apps/orders/data/.lock is created by lock_exclusive at run time. It reached
+the last commit because it was sitting in data/ when everything there was
+staged.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C
