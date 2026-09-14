@@ -61,11 +61,16 @@ def corpus():
     # typecheck_cases/ holds deliberately broken programs, one per rule. A
     # checker compared only against code that passes has not been compared.
     for d in ("std", "examples", "test_suite", "test_suite/typecheck_cases",
-              "compiler"):
+              "compiler", "apps"):
         full = os.path.join(ROOT, d)
         if os.path.isdir(full):
-            files += [os.path.join(full, f) for f in sorted(os.listdir(full))
-                      if f.endswith(".sta")]
+            # Walked rather than listed: an application keeps its sources in
+            # src/ under its own directory, so a flat listing of apps/ finds
+            # nothing. Quarantined trees are skipped — they do not compile.
+            for dirpath, dirnames, names in os.walk(full):
+                dirnames[:] = [d for d in dirnames if d != "unimplemented"]
+                files += [os.path.join(dirpath, n) for n in sorted(names)
+                          if n.endswith(".sta")]
     return files
 
 

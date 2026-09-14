@@ -15,7 +15,10 @@ int main() {
     str source = file_read(path);
     Node unit = parse_source(source);
 
-    int errors = check_unit_root(".", unit);
+    // The project's src/ directory, so `import x from app;` resolves beside
+    // the file being compiled.
+    str src_dir = dir_of(path);
+    int errors = check_unit_project(".", src_dir, unit);
     if (errors > 0) { return 1; }
 
     print_raw(generate(".", path));

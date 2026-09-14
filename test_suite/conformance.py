@@ -765,6 +765,39 @@ test("count_of_a_non_list_is_E003",
     'import io from std;\nint main() { int n = 5; int c = count(n); return 0; }',
     "E003")
 
+
+print("\n── String equality compares contents ────────────────────────────")
+
+# `==` on strings compiled to C's pointer comparison. It looked right whenever
+# both sides were literals in the same binary — which is every test that
+# existed — and failed the moment one side came from a file or was built at
+# runtime. `status == "OPEN"` matched every row before a save and no row after
+# a load.
+compile_run("str_eq_literal_and_built_value",
+    'import io from std;\nint main() { str a = "OPEN"; str b = strata_concat("OP", "EN"); if (a == b) { print("equal"); } return 0; }',
+    "equal")
+
+compile_run("str_neq_is_also_by_content",
+    'import io from std;\nint main() { str a = "OPEN"; str b = strata_concat("OP", "EN"); if (a != b) { print("differ"); } else { print("same"); } return 0; }',
+    "same")
+
+compile_run("str_eq_distinguishes_different_content",
+    'import io from std;\nint main() { str a = "OPEN"; str b = strata_concat("CLOS", "ED"); if (a == b) { print("equal"); } else { print("differ"); } return 0; }',
+    "differ")
+
+# The case that found it: a string query after a round trip through disk.
+compile_run_in("str_query_matches_after_a_load",
+    ['import io from std;\ndatabase T { int id; str status; }\n'
+     'int main() { T <- [id = 1, status = "OPEN"]; T <- [id = 2, status = "CLOSED"]; '
+     'save T to "t.tsv"; print("saved"); return 0; }',
+     'import io from std;\ndatabase T { int id; str status; }\n'
+     'int main() { load T from "t.tsv"; print(str(count(T <- [status == "OPEN"]))); return 0; }'],
+    "saved\n1")
+
+compile_run("str_eq_on_a_row_field",
+    'import io from std;\ndatabase T { int id; str name; }\nint main() { T <- [id = 1, name = "acme"]; list[T] r = T <- [id > 0]; T row = r[0]; if (row.name == "acme") { print("matched"); } return 0; }',
+    "matched")
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")

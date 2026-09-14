@@ -307,7 +307,7 @@ int resolve_type(int node_p) {
 // It is an advisory, not an error: a dependency provided at link time is
 // legitimate, and failing the build on one would make external modules
 // unusable.
-def report_unresolved_imports(TC &tc, Node unit, str root) {
+def report_unresolved_imports(TC &tc, Node unit, str root, str src_dir) {
     NodeVec imps = nv_at(unit.v1);
     int n = imps.len;
     for (int i = 0; i < n; i = i + 1) {
@@ -315,9 +315,12 @@ def report_unresolved_imports(TC &tc, Node unit, str root) {
         int local = 0;
         if (str_eq(imp.s2, "std") == 1) { local = 1; }
         if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
+        if (str_eq(imp.s2, "app") == 1) { if (str_len(src_dir) > 0) { local = 1; } }
         int found = 0;
         if (local == 1) {
-            if (file_exists(module_path(root, imp.s2, imp.s1)) == 1) { found = 1; }
+            str mp = module_path(root, imp.s2, imp.s1);
+            if (str_eq(imp.s2, "app") == 1) { mp = app_module_path(src_dir, imp.s1); }
+            if (file_exists(mp) == 1) { found = 1; }
         }
         if (found == 0) {
             StringBuilder sb = sb_new();
@@ -327,6 +330,38 @@ def report_unresolved_imports(TC &tc, Node unit, str root) {
             sb_append(&sb, imp.s2);
             sb_append(&sb, "' has no local checkout");
             emit(&tc, "E007", sb_to_str(&sb), imp.line, imp.col);
+        }
+    }
+}
+
+def register_imported_decls(TC &tc, int mods_p) {
+    NodeVec mods = nv_at(mods_p);
+    int nm = mods.len;
+    for (int m = 0; m < nm; m = m + 1) {
+        Node mu = nv_get(&mods, m);
+        NodeVec decls = nv_at(mu.v2);
+        int nd = decls.len;
+        for (int i = 0; i < nd; i = i + 1) {
+            Node d = nv_get(&decls, i);
+            // A local declaration of the same name wins, so an already-known
+            // schema is left alone.
+            if (schema_find(tc.schemas, d.s1) == 0) {
+                if (d.kind == 3) { tc.schemas = schema_cons(d.s1, fields_of(d), tc.schemas); }
+                if (d.kind == 4) { tc.schemas = schema_cons(d.s1, fields_of(d), tc.schemas); }
+            }
+            if (d.kind == 5) {
+                tc.models = mdl_cons(d.s1, resolve_type(d.c1), resolve_type(d.c2), tc.models);
+            }
+            int declares = 0;
+            if (d.kind == 3)  { declares = 1; }
+            if (d.kind == 4)  { declares = 1; }
+            if (d.kind == 5)  { declares = 1; }
+            if (d.kind == 6)  { declares = 1; }
+            if (d.kind == 70) { declares = 1; }
+            if (declares == 1) {
+                Scp g = scp_at(tc.globals);
+                scp_define(&g, d.s1, ty_ptr(ty_new(d.s1)));
+            }
         }
     }
 }
@@ -499,6 +534,16 @@ int infer(TC &tc, int node_p, int scope_p) {
         sb2_msg(&sb2, ty_str(bt));
         emit(&tc, "E003", sb_to_str(&sb2), e.line, e.col);
         return 0;
+    }
+
+    if (k == 55) {                                   // render L  -> str
+        if (scp_lookup(tc.globals, e.s1) == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "'"); sb_append(&sb, e.s1);
+            sb_append(&sb, "' is not a layout or report");
+            emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+        }
+        return ty_ptr(ty_new("str"));
     }
 
     if (k == 46) {                                   // QueryExpr
@@ -1160,11 +1205,16 @@ def check_block(TC &tc, int vec_p, int parent) {
 // Check a file whose imports have been resolved, so an unknown callee is an
 // error rather than a shrug. `root` is the tree the std/ and compiler/ module
 // directories sit under.
-int check_unit_root(str root, Node unit) {
+int check_unit_root(str root, Node unit) { return check_unit_project(root, "", unit); }
+
+// Check a file together with the project it belongs to: `src_dir` is where an
+// `app` import resolves, and the modules it pulls in have their declarations
+// registered so a schema in one file is visible to the module that queries it.
+int check_unit_project(str root, str src_dir, Node unit) {
     NodeVec mods = nv_new();
     str seen = "";
     int unresolved = 0;
-    collect_modules(root, unit, &mods, &seen, &unresolved);
+    collect_modules_from(root, src_dir, unit, &mods, &seen, &unresolved);
 
     // This file's OWN imports that do not resolve. Only these get a
     // diagnostic: a transitive one has no line here to point at. They also
@@ -1178,9 +1228,12 @@ int check_unit_root(str root, Node unit) {
         int local = 0;
         if (str_eq(imp.s2, "std") == 1) { local = 1; }
         if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
+        if (str_eq(imp.s2, "app") == 1) { if (str_len(src_dir) > 0) { local = 1; } }
         int found = 0;
         if (local == 1) {
-            if (file_exists(module_path(root, imp.s2, imp.s1)) == 1) { found = 1; }
+            str mp = module_path(root, imp.s2, imp.s1);
+            if (str_eq(imp.s2, "app") == 1) { mp = app_module_path(src_dir, imp.s1); }
+            if (file_exists(mp) == 1) { found = 1; }
         }
         if (found == 0) { root_unresolved = root_unresolved + 1; }
     }
@@ -1215,7 +1268,8 @@ int check_unit_root(str root, Node unit) {
     // the check stays off rather than guessing — the same rule the oracle uses.
     int strict = 1;
     if (root_unresolved > 0) { strict = 0; }
-    return check_unit_mode_imports(unit, strict, sb_to_str(&names), root, 1);
+    return check_unit_mode_project(unit, strict, sb_to_str(&names), root, src_dir,
+    1, nv_ptr(mods));
 }
 
 int check_unit(Node unit) { return check_unit_mode(unit, 0, ""); }
@@ -1226,11 +1280,22 @@ int check_unit_mode(Node unit, int strict, str imported) {
 
 int check_unit_mode_imports(Node unit, int strict, str imported,
 str root, int report_imports) {
+    return check_unit_mode_project(unit, strict, imported, root, "",
+    report_imports, 0);
+}
+
+int check_unit_mode_project(Node unit, int strict, str imported, str root,
+str src_dir, int report_imports, int mods_p) {
     TC tc = tc_new();
     tc.strict_calls = strict;
     tc.imported = imported;
-    if (report_imports == 1) { report_unresolved_imports(&tc, unit, root); }
+    if (report_imports == 1) { report_unresolved_imports(&tc, unit, root, src_dir); }
     register_decls(&tc, unit);
+    // Schemas and models an import brings in. Without this an application
+    // cannot be more than one file: a `database` in schema.sta is invisible to
+    // the module that queries it, and every query reports E004 against a table
+    // that is right there.
+    if (mods_p != 0) { register_imported_decls(&tc, mods_p); }
 
     // Checked after functions are registered: a layout may reference a handler
     // declared further down the file, and either may precede its database.

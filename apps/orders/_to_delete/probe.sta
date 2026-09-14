@@ -1,0 +1,10 @@
+import io     from std;
+import str    from std;
+import mem    from std;
+import schema from app;
+int main() {
+    load Order from "data/orders.tsv";
+    print(strata_concat("loaded: ", str(count(Order <- [id > 0]))));
+    print(strata_concat("open:   ", str(count(Order <- [status == "OPEN"]))));
+    return 0;
+}

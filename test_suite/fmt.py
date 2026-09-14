@@ -161,7 +161,7 @@ ok("a file that is only a comment is handled",
 print("\n── Every file in the repository ─────────────────────────────────")
 
 targets = []
-for d in ("std", "compiler", "examples", "test_suite"):
+for d in ("std", "compiler", "examples", "test_suite", "apps"):
     full = os.path.join(ROOT, d)
     for dirpath, _, names in os.walk(full):
         if "unimplemented" in dirpath:

@@ -939,12 +939,20 @@ int main(int argc, char** argv) {
         if isinstance(expr, BinaryExpr):
             l = self._gen_expr(expr.left, param_names)
             r = self._gen_expr(expr.right, param_names)
+            lt = self._expr_ctype(expr.left, param_names)
+            rt = self._expr_ctype(expr.right, param_names)
             if expr.op == "+":
-                lt = self._expr_ctype(expr.left, param_names)
-                rt = self._expr_ctype(expr.right, param_names)
                 if lt == "strata_str" or rt == "strata_str":
                     return f"strata_concat({l},{r})"
                 return f"({l} + {r})"
+            # Comparing two strings with C's == compares POINTERS. It looks
+            # right whenever both sides are literals in the same binary, and
+            # silently fails the moment one side was read from a file or built
+            # at runtime: `status == "OPEN"` matched every row before a save
+            # and no row after a load.
+            if expr.op in ("==", "!=") and "strata_str" in (lt, rt):
+                eq = f"(strcmp({l},{r}) == 0)"
+                return eq if expr.op == "==" else f"(!{eq})"
             return f"({l} {expr.op} {r})"
         if isinstance(expr, UnaryExpr):
             return f"({expr.op}{self._gen_expr(expr.operand, param_names)})"

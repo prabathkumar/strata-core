@@ -139,7 +139,7 @@ str jlist(int p) {
 // 40 BinaryExpr      41 UnaryExpr   42 CallExpr      43 BorrowExpr
 // 44 CastExpr        45 PredictExpr 46 QueryExpr     47 ListLiteral
 // 48 MemberAccess    49 IndexExpr   50 IntLiteral    51 FloatLiteral
-// 52 StrLiteral      53 BoolLiteral 54 Identifier
+// 52 StrLiteral      53 BoolLiteral 54 Identifier   55 RenderExpr
 
 str node_name(int k) {
     if (k == 1)  { return "CompilationUnit"; }
@@ -148,6 +148,7 @@ str node_name(int k) {
     if (k == 4)  { return "ProtocolDecl"; }
     if (k == 5)  { return "ModelDecl"; }
     if (k == 33) { return "HiddenLayer"; }
+    if (k == 55) { return "RenderExpr"; }
     if (k == 6)  { return "ReportDecl"; }
     if (k == 7)  { return "ReportMetric"; }
     if (k == 8)  { return "FieldDecl"; }
@@ -217,6 +218,7 @@ str node_json(Node n) {
         jfield(&sb, "width", str(n.i1));
         jfield(&sb, "activation", jstr(n.s1));
     }
+    if (k == 55) { jfield(&sb, "target", jstr(n.s1)); }
     if (k == 6) {
         jfield(&sb, "name", jstr(n.s1));
         jfield(&sb, "title", jstr(n.s2));
@@ -933,7 +935,11 @@ Node parse_statement(P &p) {
                 Token op = p_advance(&p);
                 Token table = p_expect(&p, 4);
                 if (is_save == 1) { p_expect_word(&p, "to"); }
-                if (is_save == 0) { p_expect_word(&p, "from"); }
+                // `from` lexes as a keyword, not an identifier, so it is
+                // consumed by kind. Expecting it as a word printed a parse
+                // error on every file using `load` — recoverable, so the AST
+                // was right and the syntax-tree differential never saw it.
+                if (is_save == 0) { p_expect(&p, 22); }
                 Token path = p_advance(&p);
                 p_expect(&p, 56);
                 Node n = node_new(75);
@@ -944,7 +950,15 @@ Node parse_statement(P &p) {
         }
     }
 
-    if (k == 30) {                             // render X to "path";
+    // `render X to "path";` is a statement; a bare `render X` is an
+    // expression, so the two are told apart by what follows the name.
+    int render_stmt = 0;
+    if (k == 30) {
+        Token after = p_peek(&p, 2);
+        if (after.kind != 4) { render_stmt = 1; }
+        if (str_eq(after.value, "to") == 1) { render_stmt = 1; }
+    }
+    if (render_stmt == 1) {                    // render X to "path";
         p_advance(&p);
         Token rep = p_expect(&p, 4);
         p_expect_word(&p, "to");
@@ -1136,6 +1150,15 @@ Node parse_primary(P &p) {
         n.i1 = 1; n_pos(n, t); return n; }
     if (k == 40) { p_advance(&p); Node n = node_new(53);
         n.i1 = 0; n_pos(n, t); return n; }
+
+    if (k == 30) {                             // render X  -> the document
+        p_advance(&p);
+        Token target = p_expect(&p, 4);
+        Node n = node_new(55);
+        n.s1 = target.value;
+        n_pos(n, t);
+        return n;
+    }
 
     if (k == 28) {                             // predict Model(arg)
         p_advance(&p);
@@ -1486,6 +1509,30 @@ Node parse_layout_if(P &p) {
 // a call into std/, and the mistake reaches the user as a C linker error
 // naming a C symbol.
 
+// `app` is the project's own src/ directory, so an application can be more
+// than one file without putting its modules in the standard library. It
+// resolves beside the file being compiled rather than under the tree root.
+// The directory part of a path: "apps/orders/src/main.sta" -> "apps/orders/src".
+str dir_of(str path) {
+    int last = -1;
+    int n = str_len(path);
+    for (int i = 0; i < n; i = i + 1) { if (path[i] == 47) { last = i; } }
+    if (last < 0) { return "."; }
+    return str_slice(path, 0, last);
+}
+
+str app_module_path(str src_dir, str name) {
+    int last_dot = -1;
+    int n = str_len(name);
+    for (int i = 0; i < n; i = i + 1) { if (name[i] == 46) { last_dot = i; } }
+    str leaf = name;
+    if (last_dot >= 0) { leaf = str_slice(name, last_dot + 1, n); }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, src_dir); sb_append(&sb, "/"); sb_append(&sb, leaf);
+    sb_append(&sb, ".sta");
+    return sb_to_str(&sb);
+}
+
 str module_path(str root, str source, str name) {
     // The leaf of a dotted path names the file: core.io -> std/io.sta
     int last_dot = -1;
@@ -1503,6 +1550,11 @@ str module_path(str root, str source, str name) {
 // module's own dependencies come before it. `seen` is a ",path,path," string
 // rather than a map so this stays free of the code generator's machinery.
 def collect_modules(str root, Node unit, NodeVec &out, str &seen, int &unresolved) {
+    collect_modules_from(root, "", unit, &out, &seen, &unresolved);
+}
+
+def collect_modules_from(str root, str src_dir, Node unit, NodeVec &out,
+str &seen, int &unresolved) {
     NodeVec imps = nv_at(unit.v1);
     int n = imps.len;
     for (int i = 0; i < n; i = i + 1) {
@@ -1510,9 +1562,12 @@ def collect_modules(str root, Node unit, NodeVec &out, str &seen, int &unresolve
         int local = 0;
         if (str_eq(imp.s2, "std") == 1) { local = 1; }
         if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
+        int is_app = 0;
+        if (str_eq(imp.s2, "app") == 1) { if (str_len(src_dir) > 0) { is_app = 1; local = 1; } }
         if (local == 0) { unresolved = unresolved + 1; }
         if (local == 1) {
             str path = module_path(root, imp.s2, imp.s1);
+            if (is_app == 1) { path = app_module_path(src_dir, imp.s1); }
             if (file_exists(path) == 0) { unresolved = unresolved + 1; }
             if (file_exists(path) == 1) {
                 StringBuilder needle = sb_new();
@@ -1530,7 +1585,7 @@ def collect_modules(str root, Node unit, NodeVec &out, str &seen, int &unresolve
                     // The unit carries the import name so the emitted module
                     // separator matches the oracle's.
                     mod.s1 = imp.s1;
-                    collect_modules(root, mod, &out, &seen, &unresolved);
+                    collect_modules_from(root, src_dir, mod, &out, &seen, &unresolved);
                     nv_push(&out, mod);
                 }
             }

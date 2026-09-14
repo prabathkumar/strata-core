@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### String equality was comparing pointers
+
+    str a = "OPEN";
+    str b = strata_concat("OP", "EN");
+    a == b        // false
+
+`==` on strings compiled to C's `==`, which compares addresses. It looked
+correct whenever both sides were literals in the same binary — which was every
+test that existed, including `db_query_by_string` — and failed the moment one
+side came from a file or was built at runtime.
+
+The integration found it, not a test: the orders service showed two open
+orders when seeded in memory and zero after a restart that loaded the same
+rows from disk. `status == "OPEN"` matched nothing, because the loaded strings
+were fresh allocations.
+
+`==` and `!=` now compare contents when either side is a str. Five conformance
+tests cover it, including the one that found it — a string query after a round
+trip through disk.
+
+### The self-hosted compiler builds the service
+
+`render` as an expression, `app` imports and imported declarations are in the
+Strata parser, type checker and code generator, so `compiler/*.sta` compiles
+`apps/orders` to byte-identical C. All four differentials now walk directories
+rather than listing them, which is what lets them see an application that
+keeps its sources in `src/`.
+
+Found while porting: `load X from "p"` printed a spurious parse error from the
+Strata parser on every file that used it. `from` lexes as a keyword and the
+parser expected it as an identifier. The error was recoverable, so the syntax
+tree was right and the tree-comparing differential never saw it.
+
+
 ### `len()` was returning garbage
 
     len([1, 2, 3])       -> 5

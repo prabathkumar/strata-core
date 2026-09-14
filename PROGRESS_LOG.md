@@ -160,3 +160,18 @@ they are ported, and no repo file exercises them, so the differentials do not
 cover them yet. That is the next thing.
 
 All twelve suites green, fixpoint reached.
+
+## 2026-09-14 — step 0 of PLAN.md
+
+Self-hosted port finished: the Strata compiler builds apps/orders to
+byte-identical C. All four differentials now walk directories rather than
+listing them, so they cover an app with sources in src/.
+
+Two bugs found by the integration, neither by a test:
+  - `==` on strings compared POINTERS. The service showed 2 open orders when
+    seeded and 0 after a restart that loaded the same rows from disk.
+  - `load X from "p"` printed a spurious parse error from the Strata parser on
+    every file using it; recoverable, so the AST was right and the differential
+    never saw it.
+
+All twelve suites green, conformance 165/165, fixpoint reached.

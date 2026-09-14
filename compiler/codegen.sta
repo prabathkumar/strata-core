@@ -334,6 +334,7 @@ str expr_ctype(Gen &g, int p) {
         if (ends_with_star(base) == 1) { return str_slice(base, 0, str_len(base) - 1); }
         return "";
     }
+    if (k == 55) { return "strata_str"; }
     if (k == 46) {
         if (bind_has(g.records, e.s1) == 1) {
             StringBuilder sb = sb_new();
@@ -513,6 +514,24 @@ str gen_expr(Gen &g, int p) {
             sb_append(&sb, " + "); sb_append(&sb, r); sb_append(&sb, ")");
             return sb_to_str(&sb);
         }
+        // Comparing two strings with C's == compares POINTERS. It looks right
+        // whenever both sides are literals in the same binary, and silently
+        // fails the moment one side was read from a file or built at runtime:
+        // `status == "OPEN"` matched every row before a save and no row after
+        // a load.
+        int is_eq = str_eq(e.s1, "==");
+        int is_ne = str_eq(e.s1, "!=");
+        if (is_eq + is_ne > 0) {
+            str lt = expr_ctype(&g, e.c1);
+            str rt = expr_ctype(&g, e.c2);
+            if (str_eq(lt, "strata_str") + str_eq(rt, "strata_str") > 0) {
+                if (is_ne == 1) { sb_append(&sb, "(!"); }
+                sb_append(&sb, "(strcmp("); sb_append(&sb, l);
+                sb_append(&sb, ","); sb_append(&sb, r); sb_append(&sb, ") == 0)");
+                if (is_ne == 1) { sb_append(&sb, ")"); }
+                return sb_to_str(&sb);
+            }
+        }
         sb_append(&sb, "("); sb_append(&sb, l); sb_append(&sb, " ");
         sb_append(&sb, e.s1); sb_append(&sb, " "); sb_append(&sb, r);
         sb_append(&sb, ")");
@@ -603,6 +622,26 @@ str gen_expr(Gen &g, int p) {
         return sb_to_str(&sb);
     }
 
+    if (k == 55) {
+        // The layout writes to a FILE*; open_memstream makes that FILE* a
+        // buffer, so the same generated function serves a file and an HTTP
+        // response body.
+        g.query_depth = g.query_depth + 1;
+        StringBuilder tagb = sb_new();
+        sb_append(&tagb, "_r"); sb_append(&tagb, str(g.query_depth));
+        str tag = sb_to_str(&tagb);
+        g.query_depth = g.query_depth - 1;
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "({ char* "); sb_append(&sb, tag);
+        sb_append(&sb, "b = NULL; size_t "); sb_append(&sb, tag);
+        sb_append(&sb, "n = 0; FILE* "); sb_append(&sb, tag);
+        sb_append(&sb, "f = open_memstream(&"); sb_append(&sb, tag);
+        sb_append(&sb, "b, &"); sb_append(&sb, tag); sb_append(&sb, "n); ");
+        sb_append(&sb, e.s1); sb_append(&sb, "_render("); sb_append(&sb, tag);
+        sb_append(&sb, "f); strata_render_end("); sb_append(&sb, tag);
+        sb_append(&sb, "f, &"); sb_append(&sb, tag); sb_append(&sb, "b); })");
+        return sb_to_str(&sb);
+    }
     if (k == 46) { return gen_query_expr(&g, e); }
 
     return "0";
@@ -1510,7 +1549,10 @@ str generate_mode(str root, str source_path, str target, int test_mode) {
     NodeVec mods = nv_new();
     str seen = "";
     int unresolved = 0;
-    collect_modules(root, unit, &mods, &seen, &unresolved);
+    // `app` imports resolve beside the file being compiled, so the project's
+    // own src/ directory is derived from the source path rather than the tree
+    // root.
+    collect_modules_from(root, dir_of(source_path), unit, &mods, &seen, &unresolved);
 
     // A freestanding WebAssembly build has no libc and uses its own prelude.
     StringBuilder preamble_path = sb_new();

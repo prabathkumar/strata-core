@@ -72,6 +72,5 @@ the language.
   WebAssembly target cannot reach the DOM without a JavaScript shim, as with
   every WASM framework.
 - **No forms, no POST handling, no sessions, no auth.**
-- **The self-hosted compiler cannot build this app yet.** `render` as an
-  expression and imported declarations exist in the Python oracle only; until
-  they are ported, `compiler/*.sta` is behind.
+- **`_to_delete/` under `apps/orders`** holds two scratch files the mount
+  would not let me remove. Delete them when convenient.
