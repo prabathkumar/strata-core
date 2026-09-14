@@ -1,20 +1,14 @@
-fix(journey): the image must ship the real port
+docs: CI is green — run #105, 32 steps
 
-CI run #104 got 21 steps further and failed at Journey — Change The System.
-The defect is in the journey, not the service: it rewrites http_listen(8080)
-to a free port for its own steps, and then built the image from that rewritten
-source, so the container listened on a port nothing was mapped to.
+The first green run since #93 on 13 September. Every stage in STAGES.md is now
+closed against a gate that is passing rather than against this machine.
 
-That step had never run anywhere with Docker installed — this machine has none
-— so "SKIP docker is not installed here" had stood in for it since the journey
-was written. The first environment that actually had Docker found it.
-
-The port is restored before the image is built, and a failure now prints
-docker logs rather than only reporting that it did not serve.
-
-Verified in an Ubuntu 24.04 container with Docker running: the change journey
-21/21 including deploy, the CI container step run by hand, and the survive,
-operate and ledger journeys and the repair loop.
+Three passes to get there, each finding what the previous could not: the
+parser differential (an int assigned to a pointer — a warning on gcc 11, an
+error on clang), then the change journey's deploy step (the image was built
+from source whose port had been rewritten for the test, and had never run
+anywhere with Docker installed). Both were found by an environment that was
+not this machine.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

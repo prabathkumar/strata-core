@@ -17,9 +17,16 @@ The C flags now carry `-Werror=int-conversion`, `-Werror=incompatible-pointer-ty
 and `-Werror=return-type` so both reject it, and the suites are run in an
 Ubuntu 24.04 container with clang as well as here.
 
-**Every closure below is therefore provisional until CI is green on a pushed
-commit.** The evidence is real — the suites do what they say — but "it runs on
-every commit" was not true while the run was failing, and nobody had looked. Not when the code exists, not when it
+**CI is green as of run #105 on `e7db33d`** — 32 steps, the first green run
+since #93 on 13 September. Every stage below is now closed against a gate that
+is actually passing, which is what the rule at the top of this file was for.
+
+Getting there took three passes and each one found something the one before
+could not: the parser differential (an int assigned to a pointer, a warning on
+gcc 11 and an error on clang), then the change journey's deploy step (the image
+was built from source whose port had been rewritten for the test, and had never
+run anywhere with Docker installed). Both were found by an environment that was
+not this machine. Not when the code exists, not when it
 worked once by hand. Anything that has never been run is marked as not run,
 never counted as closed.
 
