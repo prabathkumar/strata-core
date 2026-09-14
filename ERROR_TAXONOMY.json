@@ -1,7 +1,7 @@
 {
   "$schema": "https://stratalang.org",
   "standard_authority": "Strata Core Architecture Board",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "taxonomy": {
     "E001": {
       "classification": "Variable Mutation Mismatch",
@@ -38,6 +38,12 @@
       "severity": "CRITICAL_HALT",
       "diagnostic": "A predict operator received a tensor whose shape does not match the model's declared input contract, or a tensor value was assigned to a scalar.",
       "ai_remediation_strategy": "Read the model block's input/output tensor dimensions, then reshape the offending tensor or correct the receiving declaration to the declared shape."
+    },
+    "E007": {
+      "classification": "Unresolved Module Import",
+      "severity": "ADVISORY",
+      "diagnostic": "Import names a module with no local checkout; its symbols must be provided at link time, and nothing it declares can be checked.",
+      "ai_remediation_strategy": "Confirm the module name and source are spelled correctly; if the dependency is genuinely external, leave it and ensure the linker is given its object file."
     }
   }
 }

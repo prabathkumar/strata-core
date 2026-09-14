@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### E007: unresolved imports are reported, and the taxonomy has advisories
+
+An import naming a module with no local checkout printed a line on stderr and
+the compiler carried on. It never reached `--json`, so the repair loop was
+blind to it — the same shape of gap the undefined-call work closed.
+
+It matters more than it looks. An unresolvable import also disarms the
+undefined-call check, because the compiler cannot know what that module makes
+reachable. The effect, seen while quarantining the broken `std` modules, is
+that moving a broken module out of the way makes everything importing it stop
+reporting anything at all.
+
+`E007` is the taxonomy's first `ADVISORY`. E001–E006 are `CRITICAL_HALT` and
+stop the build; an unresolved import does not, because a dependency provided
+at link time is legitimate and failing on one would make external modules
+unusable. The JSON payload separates the two: `error_count` and `ok` count
+only halting diagnostics, `advisory_count` the rest — so a repair loop does not
+spend every pass trying to fix something it cannot.
+
+Reported only for the file's own imports, where there is a line to point at;
+a transitive one still goes to stderr, since no line of this file names it.
+
+
 ### The standard library compiles
 
 `stdlib_parses.py` reported "13 parse, 0 fail" for as long as it had existed.

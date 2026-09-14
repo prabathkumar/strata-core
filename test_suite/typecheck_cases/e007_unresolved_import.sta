@@ -1,0 +1,11 @@
+// An import with no local checkout. Legitimate — the module may be provided at
+// link time — so it is an advisory, not an error. It is reported because it
+// also disarms the undefined-call check: without it, a file importing a module
+// that is not there reports nothing at all.
+import pricing from vendor_sdk;
+import io from std;
+
+int main() {
+    print("x");
+    return 0;
+}

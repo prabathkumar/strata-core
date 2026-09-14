@@ -343,6 +343,13 @@ error.
 | `E004` | Database Schema Selector Violation | a query or insert names a column that does not exist |
 | `E005` | Boundary Perimeter Contamination | untyped data crosses a type boundary |
 | `E006` | Tensor Dimension Drift | a tensor does not match its declared shape |
+| `E007` | Unresolved Module Import | an import names a module with no local checkout |
+
+`E001`–`E006` are `CRITICAL_HALT`: they stop the build. `E007` is `ADVISORY` —
+it is reported and the build continues, because a dependency provided at link
+time is legitimate. The JSON payload separates them: `error_count` and `ok`
+count only halting diagnostics, `advisory_count` the rest, so a repair loop
+does not burn passes on something it cannot fix.
 
 Defined in `ERROR_TAXONOMY.json`, which is the contract repair agents consume.
 
@@ -512,7 +519,7 @@ will appear here when there is a benchmark behind them.
 ## 7. Verification
 
 ```
-python3 test_suite/conformance.py     # language conformance, E001-E006 + end-to-end
+python3 test_suite/conformance.py     # language conformance, E001-E007 + end-to-end
 python3 test_suite/doc_examples.py    # compiles every code block in this file
 ```
 

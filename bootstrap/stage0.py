@@ -1111,7 +1111,11 @@ def resolve_imports(ast, source_path, verbose=False):
             if verbose:
                 print(f"  import: {imp.name} from {imp.source} -> {os.path.relpath(path, search_root)}")
     walk(ast)
-    return modules, unresolved
+    # The root file's own unresolved imports, as nodes, so a diagnostic can
+    # point at the line rather than at the file.
+    root_unresolved = [imp for imp in ast.imports
+                       if _resolve_module(imp, search_root) is None]
+    return modules, unresolved, root_unresolved
 
 _TAXONOMY_CACHE = None
 
@@ -1152,8 +1156,13 @@ def diagnostics_payload(source_path, errors, stage):
             "hint": e.hint,
             "remediation_strategy": meta.get("ai_remediation_strategy", ""),
         })
+    # An advisory is reported but does not stop the build, so it must not make
+    # `ok` false: a repair loop reads that field to decide whether to keep
+    # patching, and it cannot fix a dependency that is genuinely external.
+    halting = [d for d in out if d["severity"] != "ADVISORY"]
     return {"file": source_path, "stage": stage,
-            "ok": not out, "error_count": len(out), "diagnostics": out}
+            "ok": not halting, "error_count": len(halting),
+            "advisory_count": len(out) - len(halting), "diagnostics": out}
 
 
 def compile_sta(source_path, output_path, target="native", verbose=False,
@@ -1193,26 +1202,40 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # error naming a C symbol — invisible to --json and to the repair loop.
     # An import with no local checkout means the picture is incomplete, so the
     # checker is left lenient rather than guessing.
-    modules, unresolved = resolve_imports(ast, source_path, verbose)
+    modules, unresolved, root_unresolved = resolve_imports(ast, source_path, verbose)
     try:
         from compiler.typechecker import TypeChecker
         errors = TypeChecker(ast, filename=source_path,
-                             modules=None if unresolved else modules).check()
+                             modules=None if root_unresolved else modules,
+                             unresolved_imports=root_unresolved).check()
     except ImportError:
         errors = []
     if json_diagnostics:
         payload = diagnostics_payload(source_path, errors, "typecheck")
         print(json.dumps(payload, indent=2))
         sys.exit(1 if errors else 0)
-    if errors:
-        print(f"[Strata Check] {len(errors)} error(s) found:", file=sys.stderr)
-        for e in errors:
+    tax = load_taxonomy()
+    advisories = [e for e in errors
+                  if tax.get(e.code, {}).get("severity") == "ADVISORY"]
+    halting = [e for e in errors if e not in advisories]
+    for a in advisories:
+        print(f"[Strata Check] advisory: {a}", file=sys.stderr)
+    if halting:
+        print(f"[Strata Check] {len(halting)} error(s) found:", file=sys.stderr)
+        for e in halting:
             print(f"  {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Root-level unresolved imports are reported as E007 by the checker above.
+    # These are the transitive ones — a module we imported has an import we
+    # could not follow — which no single line of this file can point at.
+    root_keys = {f"{i.name} from {i.source}" for i in root_unresolved}
     for u in unresolved:
-        print(f"[STRATA IMPORT] '{u}' is an external module with no local "
-              f"checkout; its symbols must be provided at link time.", file=sys.stderr)
+        if u in root_keys:
+            continue
+        print(f"[STRATA IMPORT] '{u}' is an external module reached through an "
+              f"import of this file; its symbols must be provided at link time.",
+              file=sys.stderr)
     gen = CodeGen(ast, source_path, modules, target=target, test_mode=test_mode)
     c_source = gen.generate()
     link_flags = [f"-l{l}" for l in dict.fromkeys(gen.link_libs)]
@@ -1284,7 +1307,7 @@ def main():
         # only the root unit produces C that cannot link.
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
-        modules,_ = resolve_imports(ast, args.file, args.verbose)
+        modules, _, _ = resolve_imports(ast, args.file, args.verbose)
         print(CodeGen(ast,args.file,modules,target=args.target).generate()); return
     compile_sta(args.file, out, target=args.target, verbose=args.verbose,
                 json_diagnostics=args.json, test_mode=args.test)

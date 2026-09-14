@@ -18,7 +18,7 @@ All of that is done. It was understating the project by roughly three months.
 | Self-hosted front end | `compiler/*.sta` — lexer, parser, type checker, code generator, ~5,000 lines of Strata, 2% `native` C. |
 | The fixpoint | `stage0 → gen1.c → strata1 → gen2.c → strata2 → gen3.c`, and `gen1 == gen2 == gen3`. The Python bootstrap can be retired without changing a byte of output. |
 | Differential testing | Four suites compare the Strata implementation against the Python oracle: tokens, syntax trees, diagnostics, and generated C byte for byte. 47 files, 0 divergent. |
-| Error taxonomy | E001–E006, with `--json` diagnostics carrying a classification and a remediation strategy. |
+| Error taxonomy | E001–E007, with `--json` diagnostics carrying a classification, a severity and a remediation strategy. E007 is the first advisory: reported without stopping the build. |
 | Cross-tier contract | A column renamed in a `database` block fails the build at the line of UI that used it. Tested: `layout_renamed_column_breaks_ui`. |
 | `layout` / UI tier | Compiles to a function that writes HTML. Server-rendered. |
 | WebAssembly target | `--target wasm` emits freestanding C; clang builds a module exporting every top-level function. No libc. |
@@ -31,6 +31,7 @@ All of that is done. It was understating the project by roughly three months.
 | Repair loop | `ai_self_repair.py` compiles, reads the JSON diagnostics, patches, recompiles. 40 checks in CI, including the payload contract it depends on. |
 | Undefined function calls | **E002.** Imports resolve before the type check in both implementations, so a typo names the typo instead of failing at the C linker. Name existence only — signatures across a module boundary are still unchecked. |
 | Standard library | Eight modules that compile, link and run. A suite builds a program against each one and executes it. Five modules and six examples that stand on a runtime that was never built are quarantined in `unimplemented/` directories. |
+| Unresolved imports | Reported as E007, an advisory: the build continues, but the import is no longer silent. It is a `--json` diagnostic, so the repair loop sees it. |
 | CI | Eleven suites, plus both gcc and clang, plus a clean-checkout export so nothing passes only because of an untracked file. |
 
 ## Part 2 — What is not
@@ -40,7 +41,7 @@ All of that is done. It was understating the project by roughly three months.
 | Virtual Event Fibers | Design only. See Part 4. |
 | Concurrency of any kind | The runtime is single-threaded by construction. Seven mutable globals in the prelude, plus a `__rows` array and an `__count` per `database` block. |
 | Database durability | No locking, no index, no transactions, no SQL backend. Two writers corrupt the file. |
-| A file with an unresolvable import is unchecked | The undefined-call rule disarms when the compiler cannot see what an import provides. Correct — it cannot know what is reachable — but it means a file importing a missing module reports nothing at all, rather than reporting the missing module. `examples/unimplemented/` exists because of this. A diagnostic for the unresolved import itself would close it. |
+| Calls into an unresolved import | Still unchecked — knowing the module is missing (E007) is not the same as knowing what it declares. A file with an external import gets the advisory and no call checking. |
 | Aggregation | No `sum`, `avg`, `count` over a query result. A report metric sees `rows`, not columns. |
 | Training | `predict` is inference. No autograd, no optimiser, no accelerator. |
 | Client-side interactivity | Layouts are server-rendered HTML. WebAssembly has no DOM access without a JS shim, as with every WASM framework. |
@@ -51,21 +52,7 @@ All of that is done. It was understating the project by roughly three months.
 
 ## Part 3 — Next, in order
 
-### 1. Report unresolved imports (half a day)
-
-Quarantining the broken `std` modules made their broken callers go quiet: the
-undefined-call rule disarms for a file whose imports cannot be resolved, so
-moving a module out of the way makes everything importing it look clean. The
-compiler prints `[STRATA IMPORT]` on stderr in that case but emits no
-diagnostic, so it is invisible to `--json` and to the repair loop — the same
-shape of gap the undefined-call work just closed.
-
-A file importing a module with no local checkout should say so as a
-diagnostic. It is not necessarily an error — an external dependency provided
-at link time is legitimate — so it wants a code of its own rather than being
-folded into E002.
-
-### 2. A formatter, `strata fmt` (3–5 days)
+### 1. A formatter, `strata fmt` (3–5 days)
 
 The premise is that AI writes the code and developers review it. Reviewers need
 canonical formatting or every diff is noise. This matters more than the LSP:
@@ -75,14 +62,14 @@ Written in Strata, over the existing parser. The test is idempotence — format
 twice, get the same bytes — plus formatting every file in the repo and
 requiring the AST to be unchanged.
 
-### 3. Aggregation over query results (1 week)
+### 2. Aggregation over query results (1 week)
 
 `sum`, `avg`, `min`, `max`, `count` over a `list[T]` and a column. The parser
 and type checker already reserve these names and return `float` for them; there
 is no evaluation behind it. Report metrics are the obvious consumer, and today
 a metric can only count rows.
 
-### 4. Single-threaded coroutines (1–2 weeks) — see Part 4
+### 3. Single-threaded coroutines (1–2 weeks) — see Part 4
 
 ---
 

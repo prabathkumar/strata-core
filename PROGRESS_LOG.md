@@ -68,3 +68,23 @@ Found while doing it, and NOT fixed: quarantining a broken module makes its
 broken callers go SILENT, because the undefined-call rule disarms on an
 unresolvable import. The compiler prints `[STRATA IMPORT]` on stderr but emits
 no diagnostic, so it never reaches `--json`. That is now item 1 in Part 3.
+
+## 2026-09-14 — session (attended), third item
+
+E007: unresolved imports are reported, and the taxonomy has advisories.
+
+An import with no local checkout printed to stderr and the compiler carried
+on, so it never reached `--json` or the repair loop. It also disarms the
+undefined-call check, which is how quarantining the broken std modules made
+their callers go silent.
+
+E007 is the first ADVISORY severity: reported, build continues. The payload
+now separates `error_count`/`ok` (halting only) from `advisory_count`, so the
+repair loop does not spend passes on something it cannot fix.
+
+All eleven suites green. Conformance 140/140, self-repair 46/46 (six new
+checks covering the advisory contract), type checker differential 54 files
+identical, fixpoint reached.
+
+Not done: a call INTO an unresolved import is still unchecked. Knowing the
+module is missing is not knowing what it declares. Recorded in Part 2.

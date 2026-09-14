@@ -27,7 +27,7 @@ CODEGEN_BIN = os.path.join(ROOT, "build", "strata-codegen-sta")
 def oracle(path):
     from bootstrap.stage0 import CodeGen, parse_file, resolve_imports
     ast = parse_file(path)
-    modules, _ = resolve_imports(ast, path)
+    modules, _, _ = resolve_imports(ast, path)
     return CodeGen(ast, path, modules).generate()
 
 

@@ -106,7 +106,8 @@ CAST_AND_AGGREGATE = frozenset((
 
 
 class TypeChecker:
-    def __init__(self, ast, filename="<stdin>", modules=None):
+    def __init__(self, ast, filename="<stdin>", modules=None,
+                 unresolved_imports=None):
         """`modules` is the resolved import graph, when the caller has one.
 
         Without it a call to an unknown function cannot be distinguished from a
@@ -121,6 +122,7 @@ class TypeChecker:
         self.global_scope=Scope(); self.schemas={}; self.models={}
         self.functions={}; self.current_return_type=None
         self.strict_calls = modules is not None
+        self.unresolved_imports = unresolved_imports or []
         # Names only, not signatures: knowing that `str_pad` exists is enough
         # to not report it, and checking argument types across a module
         # boundary is a separate change with its own risk.
@@ -138,6 +140,7 @@ class TypeChecker:
                     self.imported_names.add(ffn.name)
 
     def check(self):
+        self._report_unresolved_imports()
         self._register_declarations()
         self._register_foreign()
         self._register_functions()
@@ -156,6 +159,27 @@ class TypeChecker:
                     self._check_stmt(st, vscope)
         self._check_functions()
         return self.errors
+
+    def _report_unresolved_imports(self):
+        """An import with no local checkout, reported at its own line.
+
+        The compiler used to print this on stderr and carry on, so it never
+        reached `--json` and the repair loop could not see it. It matters more
+        than it looks: an unresolvable import also disarms the undefined-call
+        check, so a file importing a module that is not there reports nothing
+        at all — moving a broken module out of the way makes its callers look
+        clean.
+
+        It is an advisory, not an error. A dependency provided at link time is
+        legitimate, and failing the build on one would make external modules
+        unusable.
+        """
+        for imp in self.unresolved_imports:
+            self._error("E007",
+                f"'{imp.name}' from '{imp.source}' has no local checkout",
+                imp.line, imp.col,
+                f"Its symbols must be provided at link time, and nothing it "
+                f"declares is checked here — including calls into it")
 
     def _register_declarations(self):
         for d in self.ast.declarations:

@@ -108,6 +108,30 @@ ok("classification is non-empty",
    bool(str(diag.get("classification", "")).strip()))
 shutil.rmtree(d, ignore_errors=True)
 
+# An advisory is reported but must not make ok=false. The loop reads that
+# field to decide whether to keep patching, and it cannot fix a dependency
+# that is genuinely external — it would burn every pass and report failure on
+# a file that compiles.
+d, p = write('import pricing from vendor_sdk;\n'
+             'import io from std;\n'
+             'int main() { print("x"); return 0; }\n')
+adv = diagnose(p)
+ok("an advisory does not make ok=false", adv.get("ok") is True,
+   f"ok={adv.get('ok')} diagnostics={adv.get('diagnostics')}")
+ok("an advisory is still reported",
+   any(x.get("code") == "E007" for x in adv.get("diagnostics", [])))
+ok("the advisory is marked ADVISORY",
+   all(x.get("severity") == "ADVISORY"
+       for x in adv.get("diagnostics", []) if x.get("code") == "E007"))
+ok("payload carries advisory_count", adv.get("advisory_count") == 1,
+   f"got {adv.get('advisory_count')}")
+ok("error_count excludes advisories", adv.get("error_count") == 0,
+   f"got {adv.get('error_count')}")
+rc, out = run_repair(p)
+ok("the loop does not try to repair an advisory",
+   rc == 0 and "clean after 0 repair" in out, out[-160:])
+shutil.rmtree(d, ignore_errors=True)
+
 # A clean file must report ok=true with no diagnostics, or the loop would
 # never terminate.
 d, p = write('import io from std;\nint main() { print("hi"); return 0; }\n')

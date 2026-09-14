@@ -34,9 +34,10 @@ def oracle(path):
     # without the graph the checker cannot tell a typo'd call from a call into
     # std/. Resolving on both sides is also what makes this suite the
     # false-positive guard for that rule, across every file it covers.
-    modules, unresolved = resolve_imports(ast, path)
+    modules, _, root_unresolved = resolve_imports(ast, path)
     errs = TypeChecker(ast, filename=path,
-                       modules=None if unresolved else modules).check()
+                       modules=None if root_unresolved else modules,
+                       unresolved_imports=root_unresolved).check()
     return [f"{e.code} {e.line}:{e.col} {e.message}" for e in errs]
 
 

@@ -667,6 +667,30 @@ check_codes("an_unresolved_import_disarms_the_rule",
     'import pricing from vendor_sdk;\nint main() { return vendor_only_function(1); }',
     reject="Undefined function")
 
+
+print("\n── Unresolved imports ───────────────────────────────────────────")
+
+check_codes("unresolved_import_is_E007",
+    'import pricing from vendor_sdk;\nimport io from std;\nint main() { print("x"); return 0; }',
+    expect="E007")
+
+check_codes("a_resolvable_import_is_not_reported",
+    'import io from std;\nint main() { print("x"); return 0; }',
+    reject="E007")
+
+# The point of making it an advisory: the build still succeeds. A dependency
+# provided at link time is legitimate, and halting on one would make external
+# modules unusable.
+compile_run_in("an_advisory_does_not_stop_the_build",
+    ['import pricing from vendor_sdk;\nimport io from std;\nint main() { print("built"); return 0; }'],
+    "built")
+
+# And the reason it is worth reporting at all: an unresolvable import disarms
+# the undefined-call check, so without E007 this file would say nothing.
+check_codes("an_unresolved_import_is_reported_even_though_calls_are_not",
+    'import pricing from vendor_sdk;\nint main() { return vendor_only(1); }',
+    expect="E007", reject="Undefined function")
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")
