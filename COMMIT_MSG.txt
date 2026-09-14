@@ -1,41 +1,40 @@
-feat(journey): a developer can change the system
+feat(journey): the service survives contact
 
-Journey B. Clone, run it, add a column to the schema, watch the build fail at
-every insert, let the repair loop close it, run the tests, and find the data
-written before the change still loads.
+Journey C. Two clients at once, a slow client, a client that walks away, a
+malformed request, ten writes arriving together, a restart with live data, and
+2000 rows — with the numbers printed rather than claimed.
 
-The middle of that journey did not exist. Adding a column to a `database`
-compiled fine and every insert in the program wrote the new column as a zero
-or an empty string, in every row, with nothing to say so. E009 is that error:
-an insert must name every column. It found one immediately —
-std/telemetry.sta had been omitting trace_id since it was written.
+The server served one connection at a time, had no timeout, and died on
+SIGPIPE. A client that opened a socket and said nothing held every other
+client indefinitely; a client that closed its browser mid-response terminated
+the process.
 
-Everything else here is what the journey needed:
+- A process per connection: http_fork after http_accept, the child serves and
+  _exits. http_reap_children stops them accumulating as zombies,
+  http_ignore_broken_pipes stops an abandoned page load taking the service.
+- A 5s receive timeout. A request that never finishes arriving comes back as
+  an empty string and is answered 408; it used to come back as whatever bytes
+  had arrived, which looked like a real request with a strange path.
+- lock_shared and lock_exclusive. The children share nothing but the
+  filesystem: a GET takes the shared lock and is served in parallel, anything
+  that can write takes the exclusive one across read, change and save.
 
-- ai_self_repair.py --project DIR follows the `file` field the compiler
-  already put on every diagnostic, so it repairs whichever of a project's
-  files the error is in. The single-file assumption was in the loop, not in
-  the compiler.
-- `strata test` inside a project compiles every .sta under it from the project
-  root. An application had no way to be tested before this.
-- `import x from app` also looks in a sibling src/, so a test in tests/ can
-  import the module it tests.
-- apps/orders/src/rules.sta holds the business rules apart from HTTP; the
-  handlers are adapters. apps/orders/tests/rules_test.sta is the
-  application's first test — 5 blocks, 14 assertions, no socket.
-- A Dockerfile that has been built. The previous one cloned
-  "https://github.com" and built CPython; CI checked the file existed.
+The lock is not a precaution. With it removed, ten concurrent creates against
+a thousand-row table leave 856 rows, hundreds of them all-zero — two
+processes writing the same file. The test was first written against an empty
+table, where it passed without the lock and proved nothing. A test that passes
+when the thing it tests is deleted is not a test.
 
-test_suite/journey_change.py walks 19 steps from an export of HEAD. The plan
-said the build would fail in three files; it fails in two, and the plan is
-corrected rather than the claim repeated.
+Measured, on a 4-core development machine: dashboard p50 2.2 ms / p95 2.6 ms
+over 20 rows, 15 ms over 2000; ~445 req/s sequential; ~380 req/s and p95
+32 ms over 8 concurrent clients. Concurrent below sequential is the finding,
+not a rounding error — every request forks and reloads all three tables. What
+the process per connection buys is that one slow or hostile client cannot hold
+the others.
 
 All suites green: conformance 182/182, documentation 11/11, four
 differentials identical, fixpoint reached, stdlib 19/19, project 14/14,
-journey A 25/25, journey B 19/19, repair loop 48/48.
-
-Docker is not installed on this machine, so the deploy step is skipped here
-and verified in CI on every push.
+journeys 25/25, 19/19 and 18/18, repair loop 48/48.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

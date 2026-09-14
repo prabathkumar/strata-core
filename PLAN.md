@@ -70,26 +70,59 @@ The deploy step is honest about where it runs: there is no Docker on the
 development machine, so the journey skips it there and CI builds the image and
 asks the container for a page on every push.
 
-## Journey C — Survive contact (2.5 days)
+## Journey C — Survive contact ✅ **closed 2026-09-14**
 
 *The service meets more than one person.*
 
-Two clients at once → a slow client → a malformed request → a restart with
-live data → a list long enough to hurt.
+Two clients at once → a slow client → a client that walks away → a malformed
+request → ten writes arriving together → a restart with live data → 2000 rows.
 
-| Needs | State before |
+`test_suite/journey_survive.py` walks all 18 steps and prints the numbers.
+
+| Built | Note |
 |---|---|
-| Concurrency | one connection at a time; the second waits |
-| A request timeout | a client that under-delivers its Content-Length hangs the server |
-| Errors that do not take the process down | unchecked |
-| Measured numbers | none published, correctly — none measured |
+| A process per connection | `http_fork` after `http_accept`; the child serves and `_exit`s |
+| A receive timeout | 5s, so a client that under-delivers its `Content-Length` is answered 408 rather than holding the connection |
+| SIGPIPE ignored | A client that walked away mid-response used to terminate the service |
+| Children reaped | `SIGCHLD` to `SIG_IGN`, so nothing accumulates as a zombie |
+| `lock_shared` / `lock_exclusive` | The children share nothing but the filesystem. A GET takes the shared lock and is served in parallel; anything that can write takes the exclusive one |
+| An incomplete request is empty | It used to come back as whatever bytes had arrived, which looked like a real request with a strange path |
 
-## Then
+### Measured, on a 4-core development machine
 
-Hardening (2 days) for whatever A–C expose, and the first measured
-performance figures.
+| | |
+|---|---|
+| dashboard, 20 rows | p50 2.2 ms, p95 2.6 ms |
+| dashboard, 2000 rows | 15 ms, 746 KB |
+| sequential throughput | ~445 req/s |
+| concurrent throughput, 8 clients | ~380 req/s, p95 32 ms |
+| slow client released after | 5.0 s (the configured timeout) |
 
-**Total: 11.5 days.**
+**Concurrent throughput comes out below sequential, and that is the finding.**
+It is not the lock — reads take a shared one. Every request forks a process
+and reloads all three tables from disk. What the process per connection buys
+is that one slow or hostile client cannot hold the others; throughput is the
+next piece of work, and the figure above is the honest starting point.
+
+The lost-update test is the one worth keeping: run with `lock_exclusive`
+removed, ten concurrent creates against a thousand-row table leave **856 rows,
+hundreds of them all-zero** — two processes writing the same file. It was
+written first against an empty table, where it passed with the lock removed
+and proved nothing.
+
+## Then — what A, B and C left behind
+
+All three journeys are closed. The numbers are measured and published above.
+What they exposed, and nobody has done yet:
+
+| Open | Why it matters |
+|---|---|
+| `delete` does not exist in the language | Sessions expire rather than being removed; nothing prunes the table, and it grows forever |
+| Every request reloads all three tables | It is what caps throughput, and it is the next performance work |
+| No CSRF token, no rate limit, no lockout | A signed-in operator's browser can be made to post; an attacker can guess passwords as fast as the service answers |
+| No connection limit | Nothing stops a client opening sockets faster than children can serve them |
+| The region filter reaches the view but not the query | Journey A recorded it; it is still true |
+| The Docker image has never been built here | No Docker on this machine. CI builds it and asks the container for a page on every push |
 
 ## Deferred, and why
 

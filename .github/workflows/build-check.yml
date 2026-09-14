@@ -117,6 +117,12 @@ jobs:
     - name: Journey — Change The System
       run: python3 test_suite/journey_change.py
 
+    # The third journey: two clients at once, a slow client, a client that
+    # walks away, a malformed request, ten writes arriving together, a restart
+    # with live data, and 2000 rows. It prints the measured numbers.
+    - name: Journey — Survive Contact
+      run: python3 test_suite/journey_survive.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

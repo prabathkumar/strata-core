@@ -278,3 +278,38 @@ Not done:
 - `delete` still does not exist in the language, so sessions expire rather
   than being removed and nothing prunes the table.
 - The region filter still reaches the view without being applied to the query.
+
+## 2026-09-14 — Journey C closed (attended)
+
+Landed: a process per connection, a 5s receive timeout, SIGPIPE ignored,
+children reaped, shared and exclusive file locks in `std/http.sta`, an
+incomplete request reported as empty, and `test_suite/journey_survive.py` —
+18 steps with the numbers printed.
+
+Every suite green: conformance 182/182, documentation 11/11, four
+differentials identical, fixpoint reached, stdlib 19/19, project 14/14,
+journey A 25/25, journey B 19/19, journey C 18/18, repair loop 48/48.
+
+First published performance figures, on a 4-core development machine:
+dashboard p50 2.2 ms / p95 2.6 ms over 20 rows, 15 ms over 2000 rows,
+~445 req/s sequential, ~380 req/s and p95 32 ms over 8 concurrent clients.
+
+Found by the journey:
+- A client that disconnected mid-response terminated the service. SIGPIPE's
+  default action, and nothing in the code said so.
+- A half-sent request came back as the bytes that had arrived, so a truncated
+  request looked like a real one.
+- Once connections forked, concurrent writes corrupted the table outright:
+  856 rows from 1000 + 10, hundreds of them all-zero.
+
+Corrected in my own work: the lost-update test was first written against an
+empty table, where it passed with the lock removed. A test that passes when
+the thing it tests is deleted is not a test. Rewritten against a thousand-row
+table, where removing the lock fails it immediately.
+
+Not done:
+- **Throughput is capped by forking and reloading all three tables on every
+  request.** Concurrent throughput is below sequential and the figure is
+  published rather than explained away.
+- No CSRF token, no rate limit, no lockout, no connection limit.
+- `delete` still does not exist in the language.

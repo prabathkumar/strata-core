@@ -175,19 +175,66 @@ int handle(int conn, str request) {
     return http_not_found(conn);
 }
 
+// One connection, served in a child process.
+//
+// The order of the three steps is the whole design. The request is read
+// before the lock is taken, so a slow client delays nobody but itself. The
+// tables are loaded inside the lock, because a child forked ten minutes ago
+// inherited a copy of them that is now wrong. The lock is held until the
+// handler has saved, because two children that each read, change and write a
+// whole table would otherwise lose one of the two changes.
+int serve(int conn) {
+    http_set_timeout(conn, 5);
+    str request = http_read_request(conn);
+    if (str_len(request) == 0) {
+        http_request_timeout(conn);
+        http_close(conn);
+        return 1;
+    }
+    // A GET takes a shared lock, so pages are served in parallel; anything
+    // that can write takes the exclusive one. Taking the exclusive lock for
+    // everything was correct and serialised every read behind every other
+    // read, which showed up as concurrent throughput below sequential.
+    int lock = -1;
+    if (str_eq(http_method(request), "GET") == 1) {
+        lock = lock_shared("data/.lock");
+    } else {
+        lock = lock_exclusive("data/.lock");
+    }
+    load_all();
+    handle(conn, request);
+    unlock(lock);
+    http_close(conn);
+    return 1;
+}
+
 int main() {
     load_all();
     seed_if_empty();
 
     int fd = http_listen(8080);
     if (fd < 0) { eprint("could not bind port 8080"); return 1; }
+
+    // A client that walks away mid-response used to take the service with it,
+    // and every child that finished used to stay behind as a zombie.
+    http_ignore_broken_pipes();
+    http_reap_children();
+
     print("orders service listening on http://127.0.0.1:8080");
 
     while (1 == 1) {
         int conn = http_accept(fd);
-        if (conn < 0) { break; }
-        handle(conn, http_read_request(conn));
+        if (conn < 0) { continue; }
+        int pid = http_fork();
+        if (pid == 0) {
+            http_close(fd);
+            serve(conn);
+            http_exit(0);
+        }
+        // The parent keeps no reference to a connection it is not serving; a
+        // socket left open here is a connection the client never sees closed.
         http_close(conn);
+        if (pid < 0) { serve(conn); }
     }
     return 0;
 }

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Journey C: the service survives contact
+
+The server served one connection at a time, had no timeout, and died on
+SIGPIPE. A client that opened a socket and said nothing held every other
+client indefinitely; a client that closed its browser mid-response terminated
+the process.
+
+- **A process per connection.** `http_fork` after `http_accept`; the child
+  serves and `_exit`s. `http_reap_children` keeps them from accumulating as
+  zombies, and `http_ignore_broken_pipes` keeps an abandoned page load from
+  taking the service with it.
+- **A receive timeout**, 5s. A request that never finishes arriving now comes
+  back as an empty string and is answered 408. It used to come back as
+  whatever bytes had arrived, which looked like a real request with a strange
+  path.
+- **`lock_shared` and `lock_exclusive`.** The children share nothing but the
+  filesystem. A GET takes the shared lock and is served in parallel; anything
+  that can write takes the exclusive one, across reading, changing and saving
+  the table.
+
+The lock is not a precaution. With it removed, ten concurrent creates against
+a thousand-row table leave **856 rows, hundreds of them all-zero** — two
+processes writing the same file at once. The test was written first against an
+empty table, where it passed without the lock and proved nothing; a thousand
+rows is what makes the window wide enough to observe.
+
+**Measured, on a 4-core development machine:** dashboard p50 2.2 ms / p95
+2.6 ms over 20 rows, 15 ms over 2000; ~445 req/s sequential; ~380 req/s and
+p95 32 ms over 8 concurrent clients.
+
+Concurrent throughput below sequential is the finding, not a rounding error.
+It is not the lock — reads take a shared one. Every request forks and reloads
+all three tables from disk. What the process per connection buys is that one
+slow or hostile client cannot hold the others.
+
+`test_suite/journey_survive.py` walks 18 steps and prints the numbers rather
+than claiming them.
+
 ### Journey B: a developer can change the system
 
 A schema change is the most common change there is, and it did not break the

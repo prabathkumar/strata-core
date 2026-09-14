@@ -10,10 +10,15 @@
 // the application, write the response, close. Enough to serve a page backed
 // by a database.
 //
-// What it is NOT: no TLS, no keep-alive, no concurrency, no streaming, no
-// chunked encoding, no request body beyond what one read() returns, no
-// timeouts. A second client waits for the first. Do not put this on the
-// public internet.
+// Concurrency is a process per connection: `http_fork` after `http_accept`,
+// the child serves and exits. The children share nothing but the filesystem,
+// so an application that writes must take `lock_exclusive` around the part
+// that reads, changes and saves its tables.
+//
+// What it is NOT: no TLS, no keep-alive, no streaming, no chunked encoding,
+// no request larger than 64KB, and no protection against a client that opens
+// connections faster than they are served. Do not put this on the public
+// internet.
 
 import io  from std;
 import str from std;
@@ -22,6 +27,11 @@ import mem from std;
 foreign "sys/socket.h" link "" { }
 foreign "netinet/in.h" link "" { }
 foreign "unistd.h"     link "" { }
+foreign "sys/file.h"   link "" { }
+foreign "sys/wait.h"   link "" { }
+foreign "signal.h"     link "" { }
+foreign "fcntl.h"      link "" { }
+foreign "sys/time.h"   link "" { }
 
 // Returns a listening socket, or -1.
 int http_listen(int port) {
@@ -68,7 +78,11 @@ str http_read_request(int conn) {
     }
     buf[have] = 0;
     sep = strstr(buf, \"\\r\\n\\r\\n\");
-    if (!sep) return buf;
+    /* No headers means the client never sent a request — it timed out, or
+       dropped, or sent something that is not HTTP. An empty string says so;
+       returning the partial bytes made a truncated request look like a real
+       one with a strange path. */
+    if (!sep) return \"\";
 
     /* Then the body the headers said was coming. A client that sends fewer
        bytes than it promised would hang here; a real server needs a timeout,
@@ -95,11 +109,87 @@ str http_read_request(int conn) {
         have += (size_t)n;
     }
     buf[have] = 0;
+    /* A body shorter than Content-Length is an incomplete request, not a
+       request with missing fields. */
+    if ((long)(have - head_len) < want) return \"\";
     return buf;
     ";
 }
 
 int http_close(int conn) { native "close($conn); return 1;"; }
+
+// ── Surviving contact ────────────────────────────────────────────────────────
+//
+// Three things kill a server that works perfectly against one polite client.
+
+// A client that disconnects while the response is being written raises
+// SIGPIPE, whose default action is to terminate the process. One abandoned
+// page load took the whole service down, and nothing in the code said so.
+int http_ignore_broken_pipes() { native "signal(SIGPIPE, SIG_IGN); return 1;"; }
+
+// Children are reaped by the kernel rather than accumulating as zombies until
+// the process table is full.
+int http_reap_children() { native "signal(SIGCHLD, SIG_IGN); return 1;"; }
+
+// A client that promises more body than it sends holds the connection open
+// for as long as it likes. With a receive timeout the read fails, the request
+// comes back empty, and the connection is answered and closed.
+int http_set_timeout(int conn, int seconds) {
+    native "
+    struct timeval tv; tv.tv_sec = (time_t)$seconds; tv.tv_usec = 0;
+    setsockopt($conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt($conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    return 1;
+    ";
+}
+
+// 0 in the child, the child's pid in the parent, -1 if the fork failed — in
+// which case the caller should serve the connection itself rather than drop
+// it.
+int http_fork() { native "return (int64_t)fork();"; }
+
+// The child leaves without running the parent's exit handlers or flushing
+// buffers it inherited a copy of.
+int http_exit(int code) { native "_exit((int)$code); return 0;"; }
+
+// The children share nothing but the filesystem. A handler that reads,
+// changes and saves a table must hold this across all three, or two requests
+// arriving together each write a whole table from their own copy and one of
+// them disappears.
+int lock_exclusive(str path) {
+    native "
+    int fd = open($path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX) < 0) { close(fd); return -1; }
+    return fd;
+    ";
+}
+
+// A reader only needs to be sure no writer is halfway through replacing the
+// file. Several readers may hold this at once, which is what lets GETs be
+// served in parallel.
+int lock_shared(str path) {
+    native "
+    int fd = open($path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_SH) < 0) { close(fd); return -1; }
+    return fd;
+    ";
+}
+
+int unlock(int fd) {
+    native "
+    if ($fd < 0) return 0;
+    flock($fd, LOCK_UN); close($fd);
+    return 1;
+    ";
+}
+
+// 408, for a request that never finished arriving.
+int http_request_timeout(int conn) {
+    return http_respond(conn, 408, "text/html; charset=utf-8",
+    "<h1>408</h1><p>the request did not finish arriving</p>");
+}
 
 // `GET /orders?x=1 HTTP/1.1` -> `/orders`
 str http_path(str request) {
@@ -127,6 +217,8 @@ int http_respond(int conn, int status, str content_type, str body) {
     const char* reason = \"OK\";
     if ($status == 404) reason = \"Not Found\";
     if ($status == 400) reason = \"Bad Request\";
+    if ($status == 403) reason = \"Forbidden\";
+    if ($status == 408) reason = \"Request Timeout\";
     if ($status == 500) reason = \"Internal Server Error\";
     char head[512];
     int hl = snprintf(head, sizeof(head),
