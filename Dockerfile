@@ -8,9 +8,16 @@
 # Two stages. The first has the toolchain — python3 for the bootstrap
 # compiler and gcc for the C it emits. The second has the binary, its data
 # and libcrypt, which the password hashing calls through FFI.
+#
+# The base is ubuntu:24.04 rather than debian:bookworm-slim for one reason:
+# this image can be built here. No container registry is reachable from the
+# development environment, and an Ubuntu root filesystem can be bootstrapped
+# from the archive and imported under that tag, so the whole file — both
+# stages, the apt layer, the compile and the tests — runs outside CI as well
+# as in it. A Dockerfile only CI can build is a Dockerfile nobody has read.
 
 # ── Stage 1: build ───────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS build
+FROM ubuntu:24.04 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 gcc libc6-dev libcrypt-dev \
@@ -31,7 +38,7 @@ RUN cd apps/orders && python3 ../../bootstrap/stage0.py src/main.sta -o build/or
 RUN cd apps/orders && ../../bin/strata test
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM ubuntu:24.04 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libcrypt1 \

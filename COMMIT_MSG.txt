@@ -1,19 +1,27 @@
-docs: the ten stages, and what closing one requires
+feat(deploy): stage 9 — the real image builds outside CI
 
-STAGES.md records the end-to-end pipeline a program passes through — write,
-check, repair, format, build, test, run, survive, deploy, operate — which are
-closed and which suite proves each. Eight are closed; repair and deploy are
-partly closed; operate has barely started.
+The two-stage Dockerfile now builds here, not only on a GitHub runner: apt
+installs the toolchain, the service is compiled, `strata test` runs inside the
+image that ships, and the runtime stage carries the binary, its data and
+libcrypt. 216 MB. It runs as uid 10001, logs its startup line, serves
+/login, signs in, creates an order and redirects a signed-out request.
 
-The definition matters more than the table: a stage is closed when a suite
-that runs on every commit proves it and exits non-zero when it does not. Not
-when the code exists, and not when it worked once by hand. Anything never run
-is marked never run rather than counted — the LLM repair backend and the
-Debian image are both in that state.
+The base is ubuntu:24.04 rather than debian:bookworm-slim because no container
+registry is reachable from this environment, and an Ubuntu root filesystem can
+be bootstrapped from the archive and imported under that tag —
+deploy/bootstrap_base_image.sh. A Dockerfile only CI can build is a Dockerfile
+nobody has read. That bootstrapped base is the same release from the same
+archive, not Canonical's published image bit for bit, so CI stays the
+authority on the published base and its gate has not yet run on a pushed
+commit.
 
-Closing a stage now means three things together: the suite is in CI, the row
-here says so and names it, and Prabath is told. He asked to hear about every
-stage closed.
+The first build failed on a real bug: stage0.py -o build/orders did not create
+build/. The linker's error for a missing output directory is "cannot open
+output file", which reads like a permissions problem and is not one. `strata
+build` had a mkdir -p of its own, so the compiler was only ever missing it
+when called directly — which is exactly what a Dockerfile does.
+
+STAGES.md: stage 9 closed, stage 10 is where we are.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

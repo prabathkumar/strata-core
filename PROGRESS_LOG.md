@@ -359,3 +359,19 @@ Not done:
 - `render X to <expr>` still does not exist.
 - `client-ledger-service/` is a leftover stub with a fabricated Strata.toml
   (`target = "wasm"`, `opt_level`), unrelated to `apps/ledger`. It should go.
+
+## 2026-09-14 — stage 9 closed (attended)
+
+The real two-stage Dockerfile now builds outside CI. Base changed to
+ubuntu:24.04 so it can be bootstrapped locally with debootstrap and imported
+under that tag (`deploy/bootstrap_base_image.sh`); the build installs the
+toolchain with apt, compiles the service, runs `strata test` inside the image,
+and ships a 216 MB runtime that serves as uid 10001.
+
+Found by the build, first attempt: `stage0.py -o build/orders` did not create
+`build/`. `strata build` had its own `mkdir -p`, so the gap only showed when
+the compiler was called directly.
+
+Not done: the CI gate has not run on a pushed commit, so Canonical's published
+base is still unverified here; and stage 10 has nothing in it but
+line-buffered logs.

@@ -1565,6 +1565,14 @@ def main():
         import json; ast=parse_file(args.file); print(json.dumps(ast.to_dict(),indent=2)); return
     base = os.path.splitext(args.file)[0]
     out = args.output or base
+    # `-o build/orders` creates build/ if it is not there. The linker's error
+    # for a missing directory is "cannot open output file", which reads like a
+    # permission problem and is not one; `strata build` had a mkdir of its own,
+    # so the compiler was only ever missing it when called directly — which is
+    # exactly what a Dockerfile does.
+    out_dir = os.path.dirname(os.path.abspath(out))
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
     if args.emit_c:
         # Imports must be resolved here exactly as in a real build; emitting
         # only the root unit produces C that cannot link.

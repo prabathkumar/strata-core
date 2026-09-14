@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Stage 9 closed: the real image builds outside CI
+
+`strata-orders:real` — 216 MB, Ubuntu 24.04, both stages of the actual
+Dockerfile: apt installs the toolchain, the service is compiled, `strata test`
+runs **inside the image that ships**, and the runtime stage carries the binary,
+its data and libcrypt. It runs as uid 10001, logs its startup line, serves the
+sign-in page, signs in, creates an order, and redirects a signed-out request.
+
+The base moved from `debian:bookworm-slim` to `ubuntu:24.04`, because no
+container registry is reachable from the development environment and an Ubuntu
+root filesystem can be bootstrapped from the archive and imported under that
+tag — `deploy/bootstrap_base_image.sh`. A Dockerfile only CI can build is a
+Dockerfile nobody has read. The bootstrapped base is the same release from the
+same archive rather than Canonical's published image bit for bit, so CI stays
+the authority on the published base.
+
+The first build failed on something real: **`stage0.py -o build/orders` did
+not create `build/`**. The linker's error for a missing output directory is
+"cannot open output file", which reads like a permissions problem and is not
+one. `strata build` had a `mkdir -p` of its own, so the compiler was only ever
+missing it when invoked directly — which is exactly what a Dockerfile does.
+
 ### A second application, and what it cost
 
 `apps/ledger` — invoices and what has been paid against them. A command-line

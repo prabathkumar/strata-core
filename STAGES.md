@@ -19,8 +19,8 @@ never counted as closed.
 | 6 | Test — an application can be tested | closed | `strata test` over a project; both apps have their own |
 | 7 | Run — it does the job | closed | `journey_orders.py` 25/25, `journey_ledger.py` 19/19 |
 | 8 | Survive — more than one person | closed | `journey_survive.py` 18/18, with measured numbers |
-| 9 | Deploy — an image that runs | **partly — here** | scratch image built and driven; the Debian Dockerfile is CI-only |
-| 10 | Operate — running it for real | not started | only line-buffered logs exist |
+| 9 | Deploy — an image that runs | closed | the real two-stage Dockerfile built outside CI: apt layer, compile, `strata test` inside the image, container serves as a non-root user |
+| 10 | Operate — running it for real | **not started — here** | only line-buffered logs exist |
 
 ## Closing a stage
 
@@ -30,10 +30,36 @@ When a stage closes, three things change together, or it has not closed:
 2. the row above says so, with the suite named;
 3. Prabath is told — he asked to hear about every stage closed.
 
+### Stage 9, closed 14 September 2026
+
+The image is `strata-orders:real`, 216 MB, Ubuntu 24.04. The build compiles
+the service and runs `strata test` inside the image it ships, so an image that
+builds is an image whose tests passed. It runs as uid 10001, logs its startup
+line, serves the sign-in page, signs in, creates an order, and refuses a
+signed-out request with a redirect.
+
+Two things are worth stating rather than leaving implied. The base moved from
+`debian:bookworm-slim` to `ubuntu:24.04` because no registry is reachable from
+here and an Ubuntu root filesystem can be bootstrapped from the archive
+(`deploy/bootstrap_base_image.sh`) and imported under that tag — a Dockerfile
+only CI can build is a Dockerfile nobody has read. And that bootstrapped base
+is the same release from the same archive, not Canonical's published image bit
+for bit, so CI remains the authority on the published base; the CI gate has
+not yet run on a pushed commit.
+
+The build failed the first time, on something real: `stage0.py -o build/orders`
+did not create `build/`, and the linker's error for a missing directory is
+"cannot open output file", which reads like a permissions problem and is not
+one. `strata build` had a `mkdir -p` of its own, so the compiler was only ever
+missing it when called directly — which is exactly what a Dockerfile does.
+
+`deploy/build_scratch_image.sh` remains for the other question: the smallest
+thing that can serve. `FROM scratch`, the binary and three libraries, 5.35 MB.
+
 ## What stands between stage 9 and stage 10
 
 1. CSRF token, rate limit, login lockout, connection limit.
-2. The real image built somewhere other than CI.
+2. Request logging and any metric at all.
 3. Stop reloading every table on every request.
 4. `delete` in the language — nothing prunes an expired session.
 5. The LLM repair backend, run once for real.
