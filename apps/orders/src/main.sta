@@ -58,6 +58,7 @@ int current_user(str request) {
 }
 
 str start_session(int user_id) {
+    prune_sessions();
     str token = new_session_token();
     // A second random token, never sent as a cookie. A form carries it, so a
     // request that did not come from a page this service rendered cannot
@@ -68,16 +69,20 @@ str start_session(int user_id) {
     return token;
 }
 
-// Expiring it rather than deleting it, because the language has no delete.
-// Said plainly: the row stays on disk until something prunes it, and nothing
-// does yet.
+// Signing out removes the row. It used to set `expires_at` to 0 and leave it,
+// because the language had no delete: every sign-out grew the table by one row
+// that would never be read again, forever.
 int end_session(str want) {
-    list[Session] found = Session <- [token == want];
-    if (count(found) > 0) {
-        Session s = found[0];
-        s.expires_at = 0;
-        save_sessions();
-    }
+    delete Session <- [token == want];
+    save_sessions();
+    return 1;
+}
+
+// Sessions that have run out are removed on every write. Nothing else prunes
+// them, and a table that only grows is a service that fails in a month rather
+// than in a minute — which is worse, because nobody is watching in a month.
+int prune_sessions() {
+    delete Session <- [expires_at < now_seconds()];
     return 1;
 }
 

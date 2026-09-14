@@ -435,3 +435,24 @@ The port is restored before the image is built, and a failure now prints
 Verified in the Ubuntu 24.04 container with Docker running: the change journey
 21/21 including the deploy step, the CI container step by hand, and survive,
 operate, ledger and the repair loop.
+
+## 2026-09-14 — delete, and the repair loop on a subscription
+
+Landed: `delete T <- [cond];` across the parser, both type checkers and both
+code generators; session rows removed on sign-out and pruned on sign-in;
+`--backend claude`, which drives the CLI a developer is already signed in to
+rather than an API key.
+
+The model-backed repair path had never been run. It has now: given E008 — the
+auth bypass — the deterministic backend correctly declined and the Claude
+backend renamed the parameter, after which a forged token no longer
+authenticated.
+
+Two of my own tests were wrong before they were right. The first searched the
+whole case file for the broken line and found it in the comment that explains
+it, failing a correct repair. The second asked the service for a page half a
+second after a flood and called a correct 503 a failure — the flood's children
+hold their connections until the read timeout expires.
+
+Not done: the Claude checks skip in CI, which has no Claude credentials; and
+nothing prunes sessions on a schedule, only when one is created.

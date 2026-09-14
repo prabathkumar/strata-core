@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### `delete`, and a repair loop that needs no API key
+
+**`delete T <- [cond];`** — the write the language did not have. Contextual
+like `save` and `load`, so the word stays available as an identifier. The
+condition is a query condition and is checked as one: a column that does not
+exist is E004 here too, and a bare name that is also a variable in scope is
+E008. Parser, both type checkers, both code generators, with the emitted C
+still byte-identical between them.
+
+Rows are moved down and the count reduced; the row itself is not freed,
+because a list a query returned a moment ago points at the same rows and this
+language has no way to know. A leak is a better bug than a dangling pointer.
+
+`apps/orders` uses it: signing out removes the session row instead of setting
+`expires_at` to 0 and leaving it forever, and expired sessions are pruned
+whenever a new one is created. Every sign-out used to grow that table by a row
+nothing would ever read again.
+
+**The repair loop can use a Claude subscription.**
+`ai_self_repair.py --backend claude` drives `claude -p`, the non-interactive
+mode of the CLI a developer already has signed in. No API key to provision,
+store or rotate — which is the difference between a demo that gets run and one
+that does not.
+
+It has now been run, which the model-backed path never had been. On E008 — the
+auth bypass, where `Session <- [token == token]` matches every row — the
+deterministic backend produced no change and stopped, correctly, because the
+fix is judgement rather than a lookup. The Claude backend renamed the parameter
+and its use; the program built and a forged token stopped authenticating.
+
+Running it found a hole in the backend: a CLI that is installed but not signed
+in prints a sentence and exits 0, and the loop wrote that sentence over the
+file and called it a repair. An answer that is not a program is a failed call
+now, for both model-backed backends.
+
 ### The serialisers generated invalid C, and only some compilers said so
 
 CI failed at the parser differential on a commit whose suites were all green

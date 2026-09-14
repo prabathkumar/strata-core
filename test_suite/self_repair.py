@@ -254,6 +254,76 @@ ok("and the loop reports unresolved rather than success",
 shutil.rmtree(d, ignore_errors=True)
 
 
+# ── 4. The claude backend, where the CLI is available ─────────────────────────
+
+print("\n── Claude backend ───────────────────────────────────────────────")
+
+# `claude -p` is the non-interactive mode of the CLI a developer already has
+# signed in, so this backend runs on a subscription rather than on an API key
+# somebody has to provision and rotate. A demo that needs a key is a demo that
+# does not get run.
+#
+# It is skipped where the CLI is absent — CI has no Claude credentials — so
+# this suite reports it as skipped rather than passing on nothing. What it
+# repairs when it does run is E008, the auth bypass: `Session <- [token ==
+# token]` compares the column with itself and matches every row. The
+# deterministic backend has no rule for that, because the fix is to rename a
+# parameter and its uses.
+
+CASE = os.path.join(ROOT, "test_suite", "repair_cases", "e008_auth_bypass.sta")
+
+def claude_answers():
+    """Installed is not the same as usable: the CLI can be on PATH and print
+    `claude is not enabled in this environment` with a zero exit status."""
+    try:
+        r = subprocess.run(["claude", "-p", "Reply with exactly: PONG"],
+                           capture_output=True, text=True, timeout=120)
+    except Exception:
+        return False
+    return r.returncode == 0 and "PONG" in r.stdout
+
+
+if shutil.which("claude") is None:
+    print("  SKIP  the claude CLI is not on PATH")
+elif not claude_answers():
+    print("  SKIP  the claude CLI is present but not usable here")
+elif not os.path.exists(CASE):
+    print("  SKIP  the case file is missing")
+else:
+    d = tempfile.mkdtemp(prefix="strata-repair-claude-")
+    p = os.path.join(d, "e008_auth_bypass.sta")
+    shutil.copy(CASE, p)
+
+    r = subprocess.run([sys.executable, REPAIR, p, "--backend", "claude",
+                        "--max-passes", "3"],
+                       capture_output=True, text=True, cwd=ROOT, timeout=600)
+    out = r.stdout + r.stderr
+    ok("it repairs an E008 the rules backend cannot",
+       r.returncode == 0 and "clean after" in out, out[-300:])
+
+    patched = open(p).read()
+    # Comments are not code: the case file's own header quotes the broken line
+    # to explain it, and an earlier version of this check searched the whole
+    # file and failed on a correct repair.
+    code = "\n".join(l for l in patched.splitlines()
+                     if not l.lstrip().startswith("//"))
+    ok("by renaming the parameter rather than the column",
+       "Session <- [token == token]" not in code
+       and "Session <- [token ==" in code,
+       code[code.find("user_for"):][:160])
+
+    binary = os.path.join(d, "e008")
+    b = subprocess.run([sys.executable, COMPILER, p, "-o", binary],
+                       capture_output=True, text=True, cwd=ROOT, timeout=300)
+    ok("and the repaired program builds", b.returncode == 0,
+       (b.stdout + b.stderr)[-200:])
+    if b.returncode == 0:
+        run = subprocess.run([binary], capture_output=True, text=True, timeout=60)
+        ok("a forged token no longer authenticates",
+           run.stdout.strip() == "0", run.stdout.strip())
+    shutil.rmtree(d, ignore_errors=True)
+
+
 total = PASS + FAIL
 print("\n" + "=" * 62)
 print(f"  {PASS}/{total} checks passed")

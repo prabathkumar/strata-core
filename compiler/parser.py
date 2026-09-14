@@ -111,6 +111,22 @@ class QueryExpr(Node):
                                "condition":self.condition.to_dict()}
 
 @dataclass
+class DeleteStmt(Node):
+    """`delete Table <- [cond];` — rows matching the condition are removed.
+
+    The condition is the same one a query takes, and is checked the same way:
+    a column that does not exist is E004 here too, and a bare name that is
+    also a variable in scope is E008.
+
+    `delete` is contextual rather than a keyword, like `save` and `load`, so
+    it stays available as an ordinary identifier everywhere else.
+    """
+    table: str
+    condition: Any
+    def to_dict(self): return {"node":"DeleteStmt","table":self.table,
+                               "condition":self.condition.to_dict()}
+
+@dataclass
 class InsertStmt(Node):
     """`Table <- [col = expr, ...];` — the write form of the <- operator."""
     target: str
@@ -856,6 +872,20 @@ class Parser:
             return self._parse_render()
         if self._check(TT.KW_RENDER) and self._peek_at(2).value == "to":
             return self._parse_render()
+
+        # `delete T <- [cond];` — contextual, for the same reason as save and
+        # load. Until this existed a row could be written and never removed:
+        # a signed-out session was expired in place and the table grew forever.
+        if self._at_word("delete") and self._peek_at(1).type == TT.IDENT \
+           and self._peek_at(2).type == TT.ARROW_L:
+            self._advance()
+            table = self._consume(TT.IDENT).value
+            self._consume(TT.ARROW_L)
+            self._consume(TT.L_BRACKET)
+            cond = self._parse_expr()
+            self._consume(TT.R_BRACKET)
+            self._consume(TT.SEMICOLON)
+            return DeleteStmt(t.line, t.col, table, cond)
 
         # `save T to "p";` / `load T from "p";` — contextual, so neither word
         # is taken from user code.

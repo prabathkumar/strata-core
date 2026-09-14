@@ -34,7 +34,7 @@ never counted as closed.
 |---|---|---|---|
 | 1 | Write — the language surface | closed | `conformance.py` 182/182, `doc_examples.py`, `stdlib_compiles.py` |
 | 2 | Check — E001–E009, the cross-tier contract | closed | `typecheck_diff.py`, 84 files identical to the oracle |
-| 3 | Repair — diagnostics to a patch | **partly** | `self_repair.py` 48/48 — rules backend only; the LLM backend has never run |
+| 3 | Repair — diagnostics to a patch | closed | `self_repair.py` — 48 checks gated in CI on the deterministic backend, plus 4 on the Claude backend where the CLI is usable |
 | 4 | Format — one canonical form | closed | `strata fmt --check` in CI, `fmt.py` |
 | 5 | Build — C, self-hosted, reproducible | closed | four differentials byte-identical, `fixpoint.py` |
 | 6 | Test — an application can be tested | closed | `strata test` over a project; both apps have their own |
@@ -50,6 +50,29 @@ When a stage closes, three things change together, or it has not closed:
 1. the suite that proves it runs in `.github/workflows/build-check.yml`;
 2. the row above says so, with the suite named;
 3. Prabath is told — he asked to hear about every stage closed.
+
+### Stage 3, closed 14 September 2026
+
+The model-backed repair backend has now been run, which it never had been.
+`ai_self_repair.py --backend claude` drives `claude -p`, the non-interactive
+mode of the CLI a developer already has signed in, so it needs **no API key** —
+a demo that needs a secret provisioned is a demo that does not get run.
+
+What it repaired is the part worth stating. The deterministic backend fixes
+what the hint spells out and declines the rest. Given E008 — the auth bypass,
+`Session <- [token == token]`, which matches every row so any token
+authenticates — it produced no change and stopped, correctly. The Claude
+backend renamed the parameter and its use, the program built, and a forged
+token stopped authenticating.
+
+It is gated in CI only for the deterministic backend, because CI has no Claude
+credentials; the four Claude checks skip there and run where the CLI works.
+The skip is reported as a skip, never as a pass.
+
+Running it found a hole in the backend itself: a CLI that is installed but not
+signed in prints a sentence and exits 0, and the loop wrote that sentence over
+the file and called it a repair. An answer that is not a program is a failed
+call now.
 
 ### Stage 10, closed 14 September 2026
 
@@ -105,12 +128,12 @@ thing that can serve. `FROM scratch`, the binary and three libraries, 5.35 MB.
 
 ## All ten are closed. What is still not true
 
-1. `delete` does not exist in the language, so nothing prunes an expired
-   session and the table grows forever.
+1. Nothing prunes an expired session *on a schedule* — `delete` exists now and
+   sessions are pruned whenever one is created, which is not the same thing.
 2. Every request forks and reloads all three tables, which is why eight
    concurrent clients are slower than one.
-3. The LLM repair backend has never been run — stage 3 is closed on the rules
-   backend alone.
+3. The Claude repair backend is not gated in CI, because CI has no Claude
+   credentials. It runs where the CLI does.
 4. No metrics, and no log of anything but requests.
 5. The lockout is per account, not per source: it stops a password guess and
    also lets someone lock an operator out on purpose.

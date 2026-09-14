@@ -1,0 +1,27 @@
+// The auth bypass, as it was actually written, for the repair loop.
+//
+// `Session <- [token == token]` compares the column with itself and matches
+// every row, so any token authenticates. The deterministic backend has no
+// rule for it — the fix is to rename a parameter and its uses, which is
+// judgement rather than a lookup. A model-backed backend does it.
+
+import io from std;
+
+database Session {
+    str token;
+    int user_id;
+}
+
+int user_for(str token) {
+    list[Session] found = Session <- [token == token];
+    if (count(found) == 0) { return 0; }
+    Session s = found[0];
+    return s.user_id;
+}
+
+int main() {
+    Session <- [token = "real", user_id = 7];
+    // 0 if the lookup is right, 7 if every token matches.
+    print(str(user_for("forged")));
+    return 0;
+}

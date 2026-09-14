@@ -1139,6 +1139,20 @@ def check_stmt(TC &tc, Node st, int scope_p) {
         return;
     }
 
+    if (k == 76) {                                   // delete
+        if (schema_find(tc.schemas, st.s1) == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "Database '");
+            sb_append(&sb, st.s1);
+            sb_append(&sb, "' not declared");
+            emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
+            return;
+        }
+        validate_query(&tc, st.c1, st.s1, st.line, st.col);
+        validate_query_scoped(&tc, st.c1, st.s1, st.line, st.col, scope_p);
+        return;
+    }
+
     if (k == 75) {                                   // save / load
         if (schema_find(tc.schemas, st.s2) == 0) {
             StringBuilder sb = sb_new();

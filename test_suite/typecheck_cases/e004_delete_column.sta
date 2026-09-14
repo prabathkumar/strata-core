@@ -1,0 +1,9 @@
+// A delete is checked like a query: a column that does not exist is E004,
+// at the delete rather than at run time.
+
+database Session { str token; int expires_at; }
+
+int main() {
+    delete Session <- [expired_at < 100];
+    return 0;
+}

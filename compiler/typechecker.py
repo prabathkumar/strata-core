@@ -16,7 +16,7 @@ from compiler.parser import (
     FunctionDecl, ImportDecl, FieldDecl, Param,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
-    AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
+    AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -447,6 +447,13 @@ class TypeChecker:
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
         elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
+        elif isinstance(stmt,DeleteStmt):
+            if stmt.table not in self.schemas:
+                self._error("E004",f"Database '{stmt.table}' not declared",
+                    stmt.line,stmt.col,f"Declare 'database {stmt.table}' before deleting from it")
+            else:
+                self._validate_query_cond(stmt.condition,stmt.table,
+                                          stmt.line,stmt.col,scope)
         elif isinstance(stmt,TableIOStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",

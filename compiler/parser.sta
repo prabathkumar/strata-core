@@ -191,6 +191,7 @@ str node_name(int k) {
     if (k == 73) { return "ForInStmt"; }
     if (k == 74) { return "ForeignDecl"; }
     if (k == 75) { return "TableIOStmt"; }
+    if (k == 76) { return "DeleteStmt"; }
     return "Unknown";
 }
 
@@ -316,6 +317,10 @@ str node_json(Node n) {
         jfield(&sb, "op", jstr(n.s1));
         jfield(&sb, "table", jstr(n.s2));
         jfield(&sb, "path", jstr(n.s3));
+    }
+    if (k == 76) {
+        jfield(&sb, "table", jstr(n.s1));
+        jfield(&sb, "condition", jchild(n.c1));
     }
     if (k == 74) {
         jfield(&sb, "header", jstr(n.s1));
@@ -946,6 +951,27 @@ Node parse_statement(P &p) {
 
     // `save T to "p";` / `load T from "p";` — contextual words.
     if (k == 4) {
+        // `delete T <- [cond];` — contextual, for the same reason as save and
+        // load. Until this existed a row could be written and never removed.
+        if (p_at_word(&p, "delete") == 1) {
+            if (p_kind(&p, 1) == 4) {
+                if (p_kind(&p, 2) == 76) {          // <-
+                    Token dk = p_advance(&p);
+                    Token dtable = p_expect(&p, 4);
+                    p_expect(&p, 76);
+                    p_expect(&p, 54);
+                    Node dcond = parse_expr(&p);
+                    p_expect(&p, 55);
+                    p_expect(&p, 56);
+                    Node dn = node_new(76);
+                    dn.s1 = dtable.value;
+                    dn.c1 = node_ptr(dcond);
+                    n_pos(dn, dk);
+                    return dn;
+                }
+            }
+        }
+
         int is_save = p_at_word(&p, "save");
         int is_load = p_at_word(&p, "load");
         if (is_save + is_load > 0) {

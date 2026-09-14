@@ -1,0 +1,40 @@
+// `delete T <- [cond];` — the write the language did not have.
+//
+// Until this existed a row could be created and never removed: a signed-out
+// session was expired in place, and nothing pruned the table.
+
+import io from std;
+
+database Session { str token; int expires_at; }
+
+int live_at(int now) {
+    return count(Session <- [expires_at > now]);
+}
+
+verify "delete removes exactly the matching rows" {
+    Session <- [token = "a", expires_at = 10];
+    Session <- [token = "b", expires_at = 20];
+    Session <- [token = "c", expires_at = 30];
+    assert count(Session <- [expires_at > 0]) == 3;
+
+    delete Session <- [expires_at < 25];
+    assert count(Session <- [expires_at > 0]) == 1;
+    assert live_at(0) == 1;
+
+    list[Session] left = Session <- [expires_at > 0];
+    Session s = left[0];
+    assert s.expires_at == 30;
+}
+
+verify "deleting nothing leaves the table alone" {
+    delete Session <- [expires_at == 999];
+    assert count(Session <- [expires_at > 0]) == 1;
+}
+
+verify "deleting everything empties it" {
+    delete Session <- [expires_at > 0];
+    assert count(Session <- [expires_at > 0]) == 0;
+    // And the table still works afterwards.
+    Session <- [token = "d", expires_at = 50];
+    assert count(Session <- [expires_at > 0]) == 1;
+}

@@ -10,7 +10,7 @@ from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
 from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
-    FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt,
+    FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
@@ -666,6 +666,35 @@ int main(int argc, char** argv) {
             self.emit(f'fprintf(_out," {name}=\\"%s\\"",'
                       f'{self._gen_expr(value, [])});')
 
+    def _gen_delete(self, stmt, param_names):
+        """`delete T <- [cond];` — the surviving rows are moved down and the
+        count is reduced, so the table holds exactly what is left.
+
+        The row is not freed. Something else may still be holding it — a list
+        a query returned a moment ago points at the same rows — and this
+        language has no way to know. A leak is a worse bug than a leak.
+        """
+        src = stmt.table
+        if src not in self.schemas:
+            return
+        self._validate_query_columns(stmt.condition, src, stmt.line)
+        prev = self.query_row_type
+        self.query_row_type = src
+        cond = self._gen_expr(stmt.condition, param_names)
+        self.query_row_type = prev
+        self.emit("{")
+        self.indent += 1
+        self.emit("strata_int _kept = 0;")
+        self.emit(f"for (strata_int _di = 0; _di < {src}__count; _di++) {{")
+        self.indent += 1
+        self.emit(f"{src}* _row = {src}__rows[_di];")
+        self.emit(f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }}")
+        self.indent -= 1
+        self.emit("}")
+        self.emit(f"{src}__count = _kept;")
+        self.indent -= 1
+        self.emit("}")
+
     def _gen_for_in(self, node, param_names=None):
         """Iterate a list, by its length.
 
@@ -826,6 +855,8 @@ int main(int argc, char** argv) {
             self._gen_for(stmt, param_names)
         elif isinstance(stmt, ForInStmt):
             self._gen_for_in(stmt, param_names)
+        elif isinstance(stmt, DeleteStmt):
+            self._gen_delete(stmt, param_names)
         elif isinstance(stmt, BreakStmt):
             self.emit("break;")
         elif isinstance(stmt, ContinueStmt):

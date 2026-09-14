@@ -881,6 +881,43 @@ def gen_stmt(Gen &g, Node st) {
         return;
     }
 
+    if (k == 76) {                                    // delete
+        // The surviving rows are moved down and the count is reduced. The row
+        // is not freed: something else may still be holding it — a list a
+        // query returned a moment ago points at the same rows — and this
+        // language has no way to know. A leak is a better bug than a
+        // dangling pointer.
+        str prev_row = g.query_row;
+        g.query_row = st.s1;
+        str dcond = gen_expr(&g, st.c1);
+        g.query_row = prev_row;
+
+        cg_emit(&g, "{");
+        g.indent = g.indent + 1;
+        cg_emit(&g, "strata_int _kept = 0;");
+        StringBuilder dh = sb_new();
+        sb_append(&dh, "for (strata_int _di = 0; _di < "); sb_append(&dh, st.s1);
+        sb_append(&dh, "__count; _di++) {");
+        cg_emit(&g, sb_to_str(&dh));
+        g.indent = g.indent + 1;
+        StringBuilder db = sb_new();
+        sb_append(&db, st.s1); sb_append(&db, "* _row = "); sb_append(&db, st.s1);
+        sb_append(&db, "__rows[_di];");
+        cg_emit(&g, sb_to_str(&db));
+        StringBuilder dk = sb_new();
+        sb_append(&dk, "if (!("); sb_append(&dk, dcond); sb_append(&dk, ")) { ");
+        sb_append(&dk, st.s1); sb_append(&dk, "__rows[_kept++] = _row; }");
+        cg_emit(&g, sb_to_str(&dk));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
+        StringBuilder dc = sb_new();
+        sb_append(&dc, st.s1); sb_append(&dc, "__count = _kept;");
+        cg_emit(&g, sb_to_str(&dc));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
+        return;
+    }
+
     if (k == 27) {                                    // insert
         NodeVec pairs = nv_at(st.v1);
         cg_emit(&g, "{");

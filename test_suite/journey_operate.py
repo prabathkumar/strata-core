@@ -122,6 +122,28 @@ def main():
             except urllib.error.HTTPError as e:
                 return e.code, e.read().decode(), dict(e.headers)
 
+        print("\n── Signing out removes the row ──────────────────────────────────")
+        # Sessions used to be expired in place, because the language had no
+        # delete: every sign-out left a row that would never be read again.
+        sessions = os.path.join(app, "data", "sessions.tsv")
+
+        def session_rows():
+            if not os.path.exists(sessions):
+                return 0
+            return len([l for l in open(sessions).read().splitlines()[1:] if l])
+
+        s0 = session()
+        go(s0, "/login", b"username=manager&password=strata", "POST")
+        _, page0, _ = go(s0, "/")
+        m0 = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', page0)
+        after_login = session_rows()
+        ok("signing in writes a session", after_login >= 1, str(after_login))
+        go(s0, "/logout", f"_csrf={m0.group(1) if m0 else ''}".encode(), "POST")
+        after_logout = session_rows()
+        ok("signing out removes the row rather than expiring it in place",
+           after_logout == after_login - 1,
+           f"{after_login} -> {after_logout}")
+
         print("\n── Anyone can see what it is doing ──────────────────────────────")
         ok("it logs that it started",
            any("listening" in l for l in lines), str(lines[:3]))
@@ -241,8 +263,22 @@ def main():
 
         time.sleep(0.5)
         ok("the service is still up", proc.poll() is None)
-        code, _, _ = go(session(), "/login")
-        ok("and serving normally afterwards", code == 200, f"got {code}")
+
+        # The flood's children are still holding their connections until the
+        # read timeout expires, so the cap is still full and the next request
+        # is legitimately refused. What matters is that the service comes back
+        # on its own, not that it comes back instantly — an earlier version of
+        # this check asked once, half a second later, and called a correct 503
+        # a failure.
+        code = 0
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            code, _, _ = go(session(), "/login")
+            if code == 200:
+                break
+            time.sleep(0.5)
+        ok("and serving normally once the flood's connections time out",
+           code == 200, f"got {code}")
         ok("the refusals are in the log",
            any(l.startswith("- - 503") for l in lines), str(lines[-3:]))
 

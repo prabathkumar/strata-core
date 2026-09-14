@@ -1,14 +1,38 @@
-docs: CI is green — run #105, 32 steps
+feat(lang): delete, and a repair loop that needs no API key
 
-The first green run since #93 on 13 September. Every stage in STAGES.md is now
-closed against a gate that is passing rather than against this machine.
+`delete T <- [cond];` — the write the language did not have. Contextual like
+save and load, so the word stays available as an identifier. The condition is
+a query condition and is checked as one: a column that does not exist is E004
+here too, and a bare name that is also a variable in scope is E008. Parser,
+both type checkers, both code generators, with the emitted C still
+byte-identical between them.
 
-Three passes to get there, each finding what the previous could not: the
-parser differential (an int assigned to a pointer — a warning on gcc 11, an
-error on clang), then the change journey's deploy step (the image was built
-from source whose port had been rewritten for the test, and had never run
-anywhere with Docker installed). Both were found by an environment that was
-not this machine.
+Rows are moved down and the count reduced; the row is not freed, because a
+list a query returned a moment ago points at the same rows and this language
+has no way to know. A leak is a better bug than a dangling pointer.
+
+apps/orders uses it: signing out removes the session row rather than setting
+expires_at to 0 and leaving it forever, and expired sessions are pruned
+whenever a new one is created. Every sign-out used to grow that table by a row
+nothing would ever read again.
+
+ai_self_repair.py --backend claude drives `claude -p`, the non-interactive
+mode of the CLI a developer already has signed in. No API key to provision,
+store or rotate.
+
+The model-backed path had never been run. It has now, on E008 — the auth
+bypass, where `Session <- [token == token]` matches every row: the
+deterministic backend produced no change and stopped, correctly, because the
+fix is judgement rather than a lookup; the Claude backend renamed the
+parameter and its use, the program built, and a forged token stopped
+authenticating. test_suite/repair_cases/e008_auth_bypass.sta is that case, and
+self_repair.py runs it where the CLI works and reports a skip where it does
+not — 52/52 with it, 48/48 without.
+
+Running it found a hole in the backend: a CLI that is installed but not signed
+in prints a sentence and exits 0, and the loop wrote that sentence over the
+file and called it a repair. An answer that is not a program is a failed call
+now.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

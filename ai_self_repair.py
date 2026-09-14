@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -141,7 +142,27 @@ def repair_llm(source: str, d: dict):
         print("  [llm] ANTHROPIC_API_KEY not set; skipping", file=sys.stderr)
         return None
 
-    prompt = f"""You are repairing a program written in Strata.
+    prompt = _repair_prompt(source, d)
+    try:
+        client = anthropic.Anthropic()
+        msg = client.messages.create(
+            model=os.environ.get("STRATA_REPAIR_MODEL", "claude-sonnet-4-5"),
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        out = msg.content[0].text.strip()
+        out = re.sub(r"^```[a-z]*\n|\n```$", "", out)
+        return _plausible_source(out, source, "llm")
+    except Exception as e:
+        print(f"  [llm] request failed: {e}", file=sys.stderr)
+        return None
+
+
+def _repair_prompt(source: str, d: dict) -> str:
+    """The whole of what a repair backend sends. One place, so the two
+    model-backed backends cannot drift apart and be compared as if they had
+    not."""
+    return f"""You are repairing a program written in Strata.
 
 The Strata compiler rejected it with this diagnostic:
 
@@ -160,22 +181,65 @@ Full source:
 Return the complete corrected source and nothing else. No explanation, no
 code fences. Change only what the diagnostic requires."""
 
-    try:
-        client = anthropic.Anthropic()
-        msg = client.messages.create(
-            model=os.environ.get("STRATA_REPAIR_MODEL", "claude-sonnet-4-5"),
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        out = msg.content[0].text.strip()
-        out = re.sub(r"^```[a-z]*\n|\n```$", "", out)
-        return out if out.strip() else None
-    except Exception as e:
-        print(f"  [llm] request failed: {e}", file=sys.stderr)
+
+def repair_claude(source: str, d: dict):
+    """Send the diagnostic to Claude Code's CLI and take back patched source.
+
+    This is the backend that needs no API key. `claude -p` is the
+    non-interactive mode of the CLI a developer already has signed in, so the
+    repair loop runs on a subscription rather than on a secret somebody has to
+    provision, store and rotate. That matters more than it sounds: a demo that
+    needs a key is a demo that does not get run.
+
+    The prompt is the same payload `llm` sends. The compiler's diagnostic
+    carries its own taxonomy classification and remediation strategy, so the
+    model is told what kind of error this is and how the language's authors say
+    to fix it — no Strata-specific prompt engineering here.
+    """
+    if shutil.which("claude") is None:
+        print("  [claude] the claude CLI is not on PATH; skipping", file=sys.stderr)
         return None
 
+    prompt = _repair_prompt(source, d)
+    try:
+        r = subprocess.run(["claude", "-p", prompt],
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        print("  [claude] timed out", file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        print(f"  [claude] exited {r.returncode}: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return None
+    out = r.stdout.strip()
+    # A model asked for source sometimes wraps it in a fence anyway.
+    out = re.sub(r"^```[a-z]*\n", "", out)
+    out = re.sub(r"\n```$", "", out)
+    return _plausible_source(out, source, "claude")
 
-BACKENDS = {"rules": repair_rules, "llm": repair_llm}
+
+def _plausible_source(out: str, original: str, who: str):
+    """Reject an answer that is not a program.
+
+    A CLI that is installed but not signed in prints a sentence and exits 0.
+    Without this the loop wrote that sentence over the file and called it a
+    repair — found the first time this ran on a machine where the CLI was
+    present and disabled. A repair backend is given a file and must return a
+    file; anything that is obviously not one is a failed call, not a patch.
+    """
+    if not out or "{" not in out:
+        print(f"  [{who}] the answer is not source; ignoring it",
+              file=sys.stderr)
+        return None
+    if len(out) < len(original) // 2:
+        print(f"  [{who}] the answer is far shorter than the file "
+              f"({len(out)} vs {len(original)} bytes); ignoring it",
+              file=sys.stderr)
+        return None
+    return out
+
+
+BACKENDS = {"rules": repair_rules, "llm": repair_llm, "claude": repair_claude}
 
 
 # ── Loop ──────────────────────────────────────────────────────────────────────
