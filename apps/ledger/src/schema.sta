@@ -1,0 +1,21 @@
+// The data tier.
+//
+// Two tables and a derived one. `Invoice.settled` and `Invoice.state` are
+// written by reconciliation rather than by whoever imported the invoice —
+// the file records what was billed, reconciliation records what is true now.
+
+database Invoice {
+    int   id;
+    str   client;
+    int   issued_day;          // days since the epoch; the language has no date type
+    float amount;
+    float settled;             // paid so far, written by reconcile
+    str   state;               // "OPEN", "PART", "PAID", "OVER"
+}
+
+database Payment {
+    int   id;
+    int   invoice_id;
+    int   received_day;
+    float amount;
+}

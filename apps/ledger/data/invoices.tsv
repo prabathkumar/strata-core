@@ -1,0 +1,5 @@
+#strata	Invoice	id:i	client:s	issued_day:i	amount:f	settled:f	state:s
+1	acme	100	1250	1250	PAID
+2	globex	101	340.5	100	PART
+3	initech	102	980.75	1000	OVER
+4	acme	103	500	0	OPEN

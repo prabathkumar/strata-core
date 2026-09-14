@@ -1,0 +1,49 @@
+// The ledger's rules, tested without a socket or a file.
+
+import io     from std;
+import str    from std;
+import schema from app;
+import rules  from app;
+
+verify "an invoice with nothing against it is open" {
+    Invoice <- [id = 1, client = "acme", issued_day = 100,
+    amount = 100.00, settled = 0.00, state = ""];
+    assert reconcile() == 1;
+    list[Invoice] found = Invoice <- [id == 1];
+    Invoice inv = found[0];
+    assert str_eq(inv.state, "OPEN") == 1;
+}
+
+verify "a part payment is PART, the whole of it is PAID" {
+    assert record_payment(1, 110, 40.00) == 0;
+    reconcile();
+    list[Invoice] a = Invoice <- [id == 1];
+    Invoice inv = a[0];
+    assert str_eq(inv.state, "PART") == 1;
+    assert record_payment(1, 111, 60.00) == 0;
+    reconcile();
+    list[Invoice] b = Invoice <- [id == 1];
+    Invoice inv2 = b[0];
+    assert str_eq(inv2.state, "PAID") == 1;
+}
+
+verify "money is compared with a tolerance, not exactly" {
+    // A cent's worth of float error must not leave an invoice PART forever.
+    assert str_eq(state_for(100.00, 99.999), "PAID") == 1;
+    assert str_eq(state_for(100.00, 100.001), "PAID") == 1;
+    assert str_eq(state_for(100.00, 100.50), "OVER") == 1;
+    assert str_eq(state_for(100.00, 0.00), "OPEN") == 1;
+    assert str_eq(state_for(100.00, 50.00), "PART") == 1;
+}
+
+verify "a payment against an invoice that does not exist is refused" {
+    assert record_payment(9999, 110, 10.00) == 1;
+}
+
+verify "outstanding is what is billed and not yet settled" {
+    Invoice <- [id = 2, client = "acme", issued_day = 101,
+    amount = 250.00, settled = 0.00, state = "OPEN"];
+    reconcile();
+    assert outstanding_for("acme") == 250.00;
+    assert outstanding_for("nobody") == 0.00;
+}

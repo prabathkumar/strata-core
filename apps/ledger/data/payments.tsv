@@ -1,0 +1,4 @@
+#strata	Payment	id:i	invoice_id:i	received_day:i	amount:f
+1	1	110	1250
+2	2	111	100
+3	3	112	1000

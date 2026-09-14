@@ -134,12 +134,24 @@ def subst_native(code: str, param_names: list) -> str:
     result = re.sub(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', lambda m: m.group(1), code)
     return result
 
+class StrataCodegenError(Exception):
+    """A statement the generator has no rule for.
+
+    Raised rather than ignored: an unhandled statement used to be emitted as
+    nothing, so a program could compile, link, run and quietly skip a loop.
+    """
+
+
 class CodeGen:
     def __init__(self, ast, source_path, modules=None, target="native",
                  test_mode=False):
         self.target = target
         # In test mode the entry point runs verify blocks instead of main().
         self.test_mode = test_mode
+        # Whether code is being generated for a layout body, where a
+        # statement may be an element, or for a function body, where it may
+        # not. `for X in xs` is the one construct that appears in both.
+        self.in_layout = False
         self.verify_blocks = []
         self.ast = ast
         self.source_path = source_path
@@ -550,8 +562,10 @@ int main(int argc, char** argv) {
             self.var_types[p.name] = self._c_type(p.param_type)
         self.indent = 1
         self.emit('fprintf(_out,"<!doctype html><meta charset=\\"utf-8\\">");')
+        self.in_layout = True
         for st in decl.body:
             self._gen_layout_node(st)
+        self.in_layout = False
         self.indent = 0
         self.emit_raw("}")
 
@@ -641,15 +655,17 @@ int main(int argc, char** argv) {
             self.emit(f'fprintf(_out," {name}=\\"%s\\"",'
                       f'{self._gen_expr(value, [])});')
 
-    def _gen_for_in(self, node):
+    def _gen_for_in(self, node, param_names=None):
         """Iterate a list, by its length.
 
         This used to walk to the first NULL, which was wrong for any list of
         scalars — 0 is a valid int — and became wrong for query results too
         once lists started carrying a length header instead of a terminator.
         """
-        coll = self._gen_expr(node.collection, [])
-        ct = self._expr_ctype(node.collection, []) or ""
+        if param_names is None:
+            param_names = []
+        coll = self._gen_expr(node.collection, param_names)
+        ct = self._expr_ctype(node.collection, param_names) or ""
         elem = ct[:-1] if ct.endswith("*") else "void*"
         self.var_types[node.var] = elem
         it = f"_it_{cname(node.var)}"
@@ -661,7 +677,10 @@ int main(int argc, char** argv) {
         self.indent += 1
         self.emit(f"{elem} {cname(node.var)} = {it}[{it}_i];")
         for st in node.body:
-            self._gen_layout_node(st)
+            if self.in_layout:
+                self._gen_layout_node(st)
+            else:
+                self._gen_stmt(st, param_names)
         self.indent -= 1
         self.emit("}")
         self.indent -= 1
@@ -794,6 +813,8 @@ int main(int argc, char** argv) {
             self.emit("}")
         elif isinstance(stmt, ForStmt):
             self._gen_for(stmt, param_names)
+        elif isinstance(stmt, ForInStmt):
+            self._gen_for_in(stmt, param_names)
         elif isinstance(stmt, BreakStmt):
             self.emit("break;")
         elif isinstance(stmt, ContinueStmt):
@@ -826,6 +847,14 @@ int main(int argc, char** argv) {
                 self._gen_stmt(a, param_names)
         elif isinstance(stmt, ExprStmt):
             self.emit(f"{self._gen_expr(stmt.expr, param_names)};")
+        else:
+            # A statement the generator does not know was previously emitted
+            # as nothing at all: `for R in rows { ... }` in a function body
+            # compiled, linked, ran and did nothing, with no diagnostic
+            # anywhere. Silence is the worst answer a compiler can give.
+            raise StrataCodegenError(
+                f"no code generated for {type(stmt).__name__} "
+                f"at line {getattr(stmt, 'line', 0)}")
 
     def _gen_var_decl(self, stmt, param_names):
         ctype = self._c_type(stmt.var_type)

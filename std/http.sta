@@ -310,10 +310,6 @@ int hex_digit(int c) {
     return -1;
 }
 
-str char_from_code(int c) {
-    native "char _b[2]; _b[0]=(char)$c; _b[1]=0; return strata_dup(_b);";
-}
-
 // 303, so a refresh after a form post does not resubmit it.
 int http_redirect(int conn, str location) {
     native "

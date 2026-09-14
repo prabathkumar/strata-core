@@ -1,0 +1,104 @@
+// Reconciliation.
+//
+// No HTTP, no pages, no session — this is the half of the application that a
+// command line and a JSON API both call, and the only half worth testing.
+
+import io     from std;
+import str    from std;
+import schema from app;
+
+int load_all() {
+    load Invoice from "data/invoices.tsv";
+    load Payment from "data/payments.tsv";
+    return 1;
+}
+
+int save_invoices() { save Invoice to "data/invoices.tsv"; return 1; }
+int save_payments() { save Payment to "data/payments.tsv"; return 1; }
+
+// What has been paid against one invoice.
+// Named `want`, not `invoice_id`: inside a query a bare name is the COLUMN,
+// so `invoice_id == invoice_id` compares the column with itself and matches
+// every payment in the table. E008 caught it here, in new code, twice.
+float paid_against(int want) {
+    list[Payment] against = Payment <- [invoice_id == want];
+    if (count(against) == 0) { return 0.00; }
+    return sum(against.amount);
+}
+
+// The state an invoice is in, given what it is for and what has arrived.
+// Money is compared with a tolerance: two floats that are a cent apart are
+// the same payment, and exact equality on a float is a bug waiting for a
+// customer to find it.
+str state_for(float amount, float settled) {
+    if (settled < 0.005) { return "OPEN"; }
+    if (settled > amount + 0.005) { return "OVER"; }
+    if (settled > amount - 0.005) { return "PAID"; }
+    return "PART";
+}
+
+// Recompute every invoice from the payments. Returns how many changed, so a
+// caller can say what it did rather than claiming to have done something.
+int reconcile() {
+    int changed = 0;
+    list[Invoice] all = Invoice <- [id > 0];
+    for Inv in all {
+        float settled = paid_against(Inv.id);
+        str state = state_for(Inv.amount, settled);
+        if (str_eq(state, Inv.state) == 0) { changed = changed + 1; }
+        Inv.settled = settled;
+        Inv.state = state;
+    }
+    return changed;
+}
+
+// Recording a payment against an invoice that does not exist is the mistake
+// an import makes, so it is an outcome rather than a crash.
+//   0  recorded
+//   1  no such invoice
+//   2  amount is not a number, or is zero
+int record_payment(int invoice_id, int day, float amount) {
+    list[Invoice] found = Invoice <- [id == invoice_id];
+    if (count(found) == 0) { return 1; }
+    if (amount < 0.005) { if (amount > 0.00 - 0.005) { return 2; } }
+    Payment <- [id = next_payment_id(), invoice_id = invoice_id,
+    received_day = day, amount = amount];
+    return 0;
+}
+
+int next_payment_id() {
+    list[Payment] all = Payment <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+int next_invoice_id() {
+    list[Invoice] all = Invoice <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+float outstanding_for(str who) {
+    list[Invoice] theirs = Invoice <- [client == who];
+    float owed = 0.00;
+    for Inv in theirs {
+        if (Inv.settled < Inv.amount) { owed = owed + (Inv.amount - Inv.settled); }
+    }
+    return owed;
+}
+
+float total_billed()  {
+    list[Invoice] all = Invoice <- [id > 0];
+    if (count(all) == 0) { return 0.00; }
+    return sum(all.amount);
+}
+
+float total_settled() {
+    list[Invoice] all = Invoice <- [id > 0];
+    if (count(all) == 0) { return 0.00; }
+    return sum(all.settled);
+}
+
+int count_in_state(str want) {
+    return count(Invoice <- [state == want]);
+}

@@ -1,0 +1,257 @@
+// The ledger.
+//
+// A second application, deliberately unlike the first: no pages, no forms, no
+// session, no HTML. It is a command-line tool that also answers JSON, which
+// is the shape most internal software actually has.
+//
+//   ledger import <file.tsv>   record payments from a file
+//   ledger reconcile           recompute every invoice from the payments
+//   ledger report              write ageing.md
+//   ledger show                print the summary
+//   ledger serve [port]        answer JSON over HTTP
+//
+// What building it exposed is in PROGRESS_LOG.md. The short version: the
+// command line was reachable only by writing C, JSON had to be escaped by
+// hand, and `for Row in rows` worked in a layout but silently generated
+// nothing in a function.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import cli    from std;
+import json   from std;
+import http   from std;
+import schema from app;
+import rules  from app;
+
+// ── The report tier ──────────────────────────────────────────────────────────
+//
+// A `report` is the one part of the language neither the orders desk nor its
+// journeys ever used.
+
+report Ageing {
+    title: "Outstanding invoices",
+    datasource: Invoice <- [settled < 0.005],
+    metrics: {
+        int unpaid = strata_len(rows);
+    }
+}
+
+// ── JSON ─────────────────────────────────────────────────────────────────────
+
+str invoice_json(Invoice inv) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, json_field("id", json_int(inv.id)));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("client", json_str(inv.client)));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("issued_day", json_int(inv.issued_day)));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("amount", json_num(inv.amount)));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("settled", json_num(inv.settled)));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("state", json_str(inv.state)));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+str invoices_json(str client_filter) {
+    list[Invoice] all = Invoice <- [id > 0];
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int first = 0;
+    for Inv in all {
+        int wanted = 1;
+        if (str_len(client_filter) > 0) {
+            if (str_eq(Inv.client, client_filter) == 0) { wanted = 0; }
+        }
+        if (wanted == 1) {
+            json_next(&sb, first);
+            sb_append(&sb, invoice_json(Inv));
+            first = 1;
+        }
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
+str summary_json() {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, json_field("invoices", json_int(count(Invoice <- [id > 0]))));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("billed", json_num(total_billed())));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("settled", json_num(total_settled())));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("open", json_int(count_in_state("OPEN"))));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("part", json_int(count_in_state("PART"))));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("paid", json_int(count_in_state("PAID"))));
+    sb_append(&sb, ",");
+    sb_append(&sb, json_field("over", json_int(count_in_state("OVER"))));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// ── HTTP, read-only ──────────────────────────────────────────────────────────
+
+int respond_json(int conn, str body) {
+    return http_respond(conn, 200, "application/json", body);
+}
+
+int handle(int conn, str request) {
+    str path = http_path(request);
+    if (str_eq(http_method(request), "GET") == 0) {
+        return http_respond(conn, 400, "application/json",
+        "{\"error\":\"this service is read-only\"}");
+    }
+    if (str_eq(path, "/health") == 1)   { return respond_json(conn, "{\"ok\":true}"); }
+    if (str_eq(path, "/summary") == 1)  { return respond_json(conn, summary_json()); }
+    if (str_eq(path, "/invoices") == 1) {
+        str who = http_form_value(http_query_string(request), "client");
+        return respond_json(conn, invoices_json(who));
+    }
+    return http_respond(conn, 404, "application/json",
+    "{\"error\":\"no such resource\"}");
+}
+
+int serve(int port) {
+    int fd = http_listen(port);
+    if (fd < 0) { eprint("could not bind the port"); return 1; }
+    http_ignore_broken_pipes();
+    http_reap_children();
+    print("ledger answering JSON");
+    while (1 == 1) {
+        int conn = http_accept(fd);
+        if (conn < 0) { continue; }
+        int pid = http_fork();
+        if (pid == 0) {
+            http_close(fd);
+            http_set_timeout(conn, 5);
+            str request = http_read_request(conn);
+            if (str_len(request) == 0) { http_request_timeout(conn); }
+            else {
+                int lock = lock_shared("data/.lock");
+                load_all();
+                handle(conn, request);
+                unlock(lock);
+            }
+            http_close(conn);
+            http_exit(0);
+        }
+        http_close(conn);
+    }
+    return 0;
+}
+
+// ── Commands ─────────────────────────────────────────────────────────────────
+
+int cmd_import(str path) {
+    if (str_len(path) == 0) {
+        eprint("usage: ledger import <file.tsv>");
+        return 2;
+    }
+    int lock = lock_exclusive("data/.lock");
+    load_all();
+    int added = 0;
+    int rejected = 0;
+    str text = file_read(path);
+    int n = str_len(text);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        else { if (text[i] == 10) { at_end = 1; } }
+        if (at_end == 1) {
+            str line = str_slice(text, start, i);
+            start = i + 1;
+            if (str_len(line) > 0) {
+                if (line[0] != 35) {
+                    int outcome = import_line(line);
+                    if (outcome == 0) { added = added + 1; }
+                    else { rejected = rejected + 1; }
+                }
+            }
+        }
+    }
+    save_payments();
+    reconcile();
+    save_invoices();
+    unlock(lock);
+    print(strata_concat("imported ", strata_concat(str(added),
+    strata_concat(" payment(s), rejected ", str(rejected)))));
+    return 0;
+}
+
+// `invoice_id<TAB>day<TAB>amount`
+int import_line(str line) {
+    int t1 = str_index_of(line, "\t");
+    if (t1 < 0) { return 1; }
+    str rest = str_slice(line, t1 + 1, str_len(line));
+    int t2 = str_index_of(rest, "\t");
+    if (t2 < 0) { return 1; }
+    int invoice_id = str_to_int(str_slice(line, 0, t1));
+    int day = str_to_int(str_slice(rest, 0, t2));
+    float amount = str_to_float(str_slice(rest, t2 + 1, str_len(rest)));
+    return record_payment(invoice_id, day, amount);
+}
+
+int cmd_reconcile() {
+    int lock = lock_exclusive("data/.lock");
+    load_all();
+    int changed = reconcile();
+    save_invoices();
+    unlock(lock);
+    print(strata_concat(str(changed), " invoice(s) changed state"));
+    return 0;
+}
+
+// The destination is not a parameter, and cannot be: `render X to "path"`
+// takes a string literal, not an expression, so a program cannot choose where
+// a report goes at run time. The command therefore does not pretend to accept
+// a filename — an earlier version took one, ignored it, and printed the name
+// it had been given as though it had written there.
+int cmd_report() {
+    int lock = lock_shared("data/.lock");
+    load_all();
+    render Ageing to "ageing.md";
+    unlock(lock);
+    print("wrote ageing.md");
+    return 0;
+}
+
+int cmd_show() {
+    int lock = lock_shared("data/.lock");
+    load_all();
+    unlock(lock);
+    print(summary_json());
+    return 0;
+}
+
+int main() {
+    str cmd = subcommand();
+
+    if (str_eq(cmd, "import") == 1)    { return cmd_import(positional(1)); }
+    if (str_eq(cmd, "reconcile") == 1) { return cmd_reconcile(); }
+    if (str_eq(cmd, "report") == 1)    { return cmd_report(); }
+    if (str_eq(cmd, "show") == 1)      { return cmd_show(); }
+    if (str_eq(cmd, "serve") == 1) {
+        int port = 8090;
+        str given = positional(1);
+        if (str_len(given) > 0) { port = str_to_int(given); }
+        return serve(port);
+    }
+
+    print("ledger — invoices and what has been paid against them");
+    print("");
+    print("  ledger import <file.tsv>   record payments: invoice_id, day, amount");
+    print("  ledger reconcile           recompute every invoice from the payments");
+    print("  ledger report              write ageing.md");
+    print("  ledger show                print the summary as JSON");
+    print("  ledger serve [port]        answer JSON over HTTP");
+    return 0;
+}

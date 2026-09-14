@@ -675,16 +675,21 @@ class Parser:
         self._consume(TT.R_BRACKET)
         return props
 
-    def _parse_for_in(self) -> ForInStmt:
+    def _parse_for_in(self, layout: bool = True) -> ForInStmt:
         t = self._consume(TT.KW_FOR)
         var = self._consume(TT.IDENT).value
         kw = self._advance()            # contextual `in`
         if kw.value != "in":
             raise ParseError(f"Expected 'in' in for-loop, got '{kw.value}'", kw.line, kw.col)
         collection = self._parse_expr()
-        self._consume(TT.L_BRACE)
-        body = self._parse_layout_body()
-        self._consume(TT.R_BRACE)
+        # The node is the same either way; only the body differs, because a
+        # layout body holds elements and a function body holds statements.
+        if layout:
+            self._consume(TT.L_BRACE)
+            body = self._parse_layout_body()
+            self._consume(TT.R_BRACE)
+        else:
+            body = self._parse_block()
         return ForInStmt(t.line, t.col, var, collection, body)
 
     def _parse_layout_if(self) -> IfStmt:
@@ -811,6 +816,14 @@ class Parser:
             return self._parse_while()
 
         if self._check(TT.KW_FOR):
+            # `for Row in rows { ... }` in a function body, not only in a
+            # layout. Iterating query results was a UI-tier privilege: the
+            # business rules of an application could not walk their own rows
+            # without an index loop, which is how apps/ledger found this.
+            if (self._peek_at(1).type == TT.IDENT
+                    and self._peek_at(2).type == TT.IDENT
+                    and self._peek_at(2).value == "in"):
+                return self._parse_for_in(layout=False)
             return self._parse_for()
 
         if self._check(TT.KW_BREAK):

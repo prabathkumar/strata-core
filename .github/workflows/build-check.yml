@@ -123,6 +123,12 @@ jobs:
     - name: Journey — Survive Contact
       run: python3 test_suite/journey_survive.py
 
+    # A second, differently-shaped application: a command-line tool that also
+    # answers JSON, with no pages, no forms and no session. It is the check
+    # that the language is not shaped by its only program.
+    - name: The Second Application
+      run: python3 test_suite/journey_ledger.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

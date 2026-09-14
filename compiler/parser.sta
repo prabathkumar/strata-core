@@ -870,6 +870,17 @@ Node parse_statement(P &p) {
     }
 
     if (k == 42) {                             // for
+        // `for Row in rows { ... }` in a function body, not only in a layout.
+        // Iterating query results was a UI-tier privilege: an application's
+        // business rules could not walk their own rows without an index loop.
+        if (p_kind(&p, 1) == 4) {
+            if (p_kind(&p, 2) == 4) {
+                Token maybe_in = p_peek(&p, 2);
+                if (str_eq(maybe_in.value, "in") == 1) {
+                    return parse_for_in(&p, 0);
+                }
+            }
+        }
         p_advance(&p);
         p_expect(&p, 52);
         Node n = node_new(30);
@@ -1425,7 +1436,7 @@ Node parse_layout_stmt(P &p) {
     if (t.kind == 4) {
         if (not_an_element(p_kind(&p, 1)) == 0) { return parse_element(&p); }
     }
-    if (p_check(&p, 42) == 1) { return parse_for_in(&p); }
+    if (p_check(&p, 42) == 1) { return parse_for_in(&p, 1); }
     if (p_check(&p, 17) == 1) { return parse_layout_if(&p); }
     if (is_type_kind(t.kind) == 1) { return parse_var_decl(&p, 1); }
     Node e = parse_expr(&p);
@@ -1487,14 +1498,21 @@ NodeVec parse_props(P &p) {
     return props;
 }
 
-Node parse_for_in(P &p) {
+Node parse_for_in(P &p, int as_layout) {
     Token t = p_expect(&p, 42);
     Token v = p_expect(&p, 4);
     Token kw = p_advance(&p);                  // contextual `in`
     Node coll = parse_expr(&p);
-    p_expect(&p, 50);
-    NodeVec body = parse_layout_body(&p);
-    p_expect(&p, 51);
+    // The node is the same either way; only the body differs, because a
+    // layout body holds elements and a function body holds statements.
+    NodeVec body = nv_new();
+    if (as_layout == 1) {
+        p_expect(&p, 50);
+        body = parse_layout_body(&p);
+        p_expect(&p, 51);
+    } else {
+        body = parse_block(&p);
+    }
     Node n = node_new(73);
     n.s1 = v.value;
     n.c1 = node_ptr(coll);

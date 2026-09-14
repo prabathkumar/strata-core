@@ -1,0 +1,25 @@
+// `for Row in rows` in a function body, not only in a layout.
+//
+// It parsed only inside a layout, and the generator had no rule for it in a
+// function — so it emitted nothing at all. The loop compiled, linked, ran and
+// did nothing, silently. The generator raises on an unhandled statement now.
+
+import io from std;
+
+database Row { int id; float amount; }
+
+int total_cents() {
+    list[Row] all = Row <- [id > 0];
+    int cents = 0;
+    for R in all {
+        cents = cents + R.id;
+    }
+    return cents;
+}
+
+verify "a for-in in a function body runs its body" {
+    Row <- [id = 1, amount = 10.50];
+    Row <- [id = 2, amount = 20.25];
+    Row <- [id = 4, amount = 1.00];
+    assert total_cents() == 7;
+}

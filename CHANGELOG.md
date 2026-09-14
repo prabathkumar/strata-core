@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### A second application, and what it cost
+
+`apps/ledger` — invoices and what has been paid against them. A command-line
+tool that also answers JSON: no pages, no forms, no session, no HTML, a
+`report` block, and an import that reads a file rather than a request. It
+exists to answer one question: is this a general-purpose language, or a
+language shaped by `apps/orders`?
+
+It works. `test_suite/journey_ledger.py` walks 19 steps. Five things had to be
+built or fixed first, and all five were invisible from the first application:
+
+- **`std/cli.sta`.** A Strata program could not read its own arguments. Every
+  tool in this repository, the compiler included, opens `main` with a `native`
+  block declaring `extern char** __strata_argv` and then works in C. That is
+  not a language with command-line programs; it is C with Strata in it.
+- **`for Row in rows` in a function body.** It parsed only inside a layout,
+  and the code generator had no rule for it anywhere else — so it emitted
+  nothing, and the loop compiled, linked, ran and silently did nothing.
+  Fixed in the parser and both back ends. **An unhandled statement is now an
+  error**: silence is the worst answer a compiler can give.
+- **`std/json.sta`.** Escaping for JSON is not escaping for C — a literal
+  newline is invalid inside a JSON string, and so is any control character.
+- **`char_from_code` moved from `std/http.sta` to `std/str.sta`**, so writing
+  JSON no longer means importing an HTTP server to get at a string helper.
+- **`render X to "path"` takes a literal, not an expression.** Recorded
+  rather than worked around: `ledger report` does not take a filename,
+  because it cannot honour one.
+
+E008 caught the same mistake twice in new code within a minute of it being
+written — a query comparing a column with a parameter of the same name.
+
+Two smaller things this turned up and did not fix: `strata check <file>` does
+not resolve imports the way `strata build` does, and a diagnostic from an
+imported module is reported twice.
+
 ### The image has now been built and run
 
 `deploy/build_scratch_image.sh` compiles the service, collects exactly what

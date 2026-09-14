@@ -327,3 +327,35 @@ an order both work through the container.
 Found by running it: `docker logs` was empty. stdout to a pipe is block
 buffered, so the startup line never left libc. The runtime preamble
 line-buffers now, and the journey asserts it.
+
+## 2026-09-14 — the second application (attended)
+
+Landed: `apps/ledger` (schema, rules, CLI, JSON API, report, 5 verify blocks),
+`std/cli.sta`, `std/json.sta`, `for X in xs` in statement position across the
+parser and both code generators, an error for an unhandled statement,
+`char_from_code` moved to `std/str.sta`, and
+`test_suite/journey_ledger.py` — 19 steps.
+
+Every suite green: conformance 182/182, documentation 11/11, four
+differentials identical, fixpoint reached, stdlib 23/23, project 14/14,
+journeys 25/25, 19/19, 18/18 and 19/19, repair loop 48/48.
+
+The question was whether the language had been shaped by its only
+application. Partly, and now measurably: five gaps, every one of them in the
+places `apps/orders` never went — the command line, JSON, iteration outside a
+view, and writing a report from a path chosen at run time. The parts that did
+hold are the parts the project is actually about: one `database` declaration
+checked the ledger's queries, aggregates, report and JSON, and E008 caught a
+new instance of the orders desk's auth bug immediately.
+
+The worst of the five is worth stating plainly: **a `for` loop in a function
+body emitted no code and said nothing.** A compiler that silently drops a
+statement is worse than one that crashes, and the generator had been able to
+do that since it was written.
+
+Not done:
+- `strata check <file>` does not resolve imports the way `strata build` does.
+- A diagnostic from an imported module is reported twice.
+- `render X to <expr>` still does not exist.
+- `client-ledger-service/` is a leftover stub with a fabricated Strata.toml
+  (`target = "wasm"`, `opt_level`), unrelated to `apps/ledger`. It should go.

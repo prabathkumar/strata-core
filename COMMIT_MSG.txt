@@ -1,21 +1,40 @@
-feat(deploy): the image is built and run, and the service logs
+feat(apps): a second application, and the five gaps it found
 
-I said the image could not be built here because there is no Docker on the
-development machine. The cloud side of this session has Docker; I should have
-checked before saying otherwise. It has no route to any container registry,
-so the two-stage Dockerfile — which pulls debian:bookworm-slim — is still
-CI-only, but the half that needs no registry can be proven here and now is.
+apps/ledger — invoices and what has been paid against them. A command-line
+tool that also answers JSON: no pages, no forms, no session, no HTML, a
+report block, an import that reads a file. It exists to answer one question:
+is this a general-purpose language, or a language shaped by apps/orders?
 
-deploy/build_scratch_image.sh compiles the service, collects exactly what ldd
-reports, builds a FROM scratch image, runs it and asks for a page. 5.35 MB;
-/login renders, a sign-in and an order both work through the container.
+It works, and test_suite/journey_ledger.py walks 19 steps of it. Five things
+had to be built or fixed first, all invisible from the first application:
 
-Running it found what reading it could not: docker logs was empty. A C
-program whose stdout is a pipe gets a 4KB block buffer, so the line the
-service prints at startup sat in libc and would have stayed there until the
-process exited — a running service that looks dead to anyone watching. The
-runtime preamble line-buffers stdout and unbuffers stderr from before main,
-and journey_survive.py asserts the startup line reaches a pipe.
+- std/cli.sta. A Strata program could not read its own arguments. Every tool
+  here, the compiler included, opens main with a native block declaring
+  extern char** __strata_argv and works in C from there.
+- `for Row in rows` in a function body generated NOTHING. It parsed only in a
+  layout, the generator had no rule for it elsewhere, and an unhandled
+  statement was emitted as silence — the loop compiled, linked, ran and did
+  nothing. Now parsed in statement position and generated in both back ends,
+  and an unhandled statement raises instead of emitting nothing.
+- std/json.sta. Escaping for JSON is not escaping for C.
+- char_from_code moved from std/http.sta to std/str.sta, so writing JSON no
+  longer means importing an HTTP server for a string helper.
+- `render X to "path"` takes a literal, not an expression. Recorded rather
+  than worked around: `ledger report` does not take a filename, because it
+  cannot honour one. An earlier version took one, ignored it, and printed the
+  name it had been given.
+
+E008 caught the same mistake twice in new code within a minute of it being
+written. The cross-tier contract held: one database declaration checked the
+ledger's queries, aggregates, report and JSON.
+
+Not fixed, recorded: `strata check <file>` does not resolve imports the way
+`strata build` does, and a diagnostic from an imported module is reported
+twice.
+
+All suites green: conformance 182/182, documentation 11/11, four
+differentials identical, fixpoint reached, stdlib 23/23, project 14/14,
+journeys 25/25, 19/19, 18/18 and 19/19, repair loop 48/48.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

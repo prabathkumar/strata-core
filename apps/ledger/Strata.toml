@@ -1,0 +1,10 @@
+[package]
+name = "ledger"
+version = "0.1.0"
+
+[build]
+main = "src/main.sta"
+output = "build/ledger"
+
+[run]
+port = 8090

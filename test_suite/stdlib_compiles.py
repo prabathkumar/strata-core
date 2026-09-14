@@ -41,6 +41,11 @@ SMOKE = {
     "simd_math": 'print(str(verify_vector_alignment(8)));',
     "telemetry": 'record_telemetry_metric(1, "s", 1.0, 2.0); dispatch_performance_audit();',
     "testing":   'assert_true("t", 1 == 1);',
+    "cli":       'print(str(arg_count())); print(arg(0)); print(subcommand()); '
+                 'print(str(has_flag("--x"))); print(flag_value("--x")); '
+                 'print(positional(0));',
+    "json":      'print(json_str("a\\"b")); print(json_field("k", json_int(1))); '
+                 'print(json_num(1.5));',
 }
 
 PASS = FAIL = 0

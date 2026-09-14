@@ -124,6 +124,35 @@ What they exposed, and nobody has done yet:
 | The region filter reaches the view but not the query | Journey A recorded it; it is still true |
 | The two-stage Dockerfile is still CI-only | No container registry is reachable from here, so `debian:bookworm-slim` cannot be pulled. `deploy/build_scratch_image.sh` builds and runs a `FROM scratch` image instead — 5.35 MB, serves `/login`, signs in, creates an order. What remains unverified outside CI is the base image and the apt layer |
 
+## The second application — `apps/ledger` ✅ **2026-09-14**
+
+Everything before this was one program: a signed-in operator, forms, pages,
+HTML. A language shaped by its only application is not general-purpose, and
+there was no way to tell which of the two Strata was. `apps/ledger` is the
+other shape — a command-line tool that also answers JSON, with a `report`
+block, an import that reads a file, and no HTML anywhere.
+
+It works, and `test_suite/journey_ledger.py` walks 19 steps of it. What it
+cost, in order of severity:
+
+| Found | Fix |
+|---|---|
+| The command line was reachable only by writing C. Every tool here, the compiler included, opens `main` with a `native` block declaring `extern char** __strata_argv` | `std/cli.sta` — `arg`, `arg_count`, `subcommand`, `has_flag`, `flag_value`, `positional` |
+| **`for Row in rows` in a function body generated nothing at all.** It parsed only inside a layout, the generator had no rule for it elsewhere, and an unhandled statement was emitted as silence — the loop compiled, linked, ran and did nothing | Parsed in statement position, generated in both back ends; **an unhandled statement is now an error rather than nothing** |
+| No way to write JSON | `std/json.sta` — escaping what JSON requires, which is not what C requires |
+| `char_from_code` lived in `std/http.sta`, so writing JSON meant importing an HTTP server for a string helper | Moved to `std/str.sta` |
+| `render X to "path"` takes a literal, not an expression, so a program cannot choose at run time where a report goes | Recorded, not worked around: `ledger report` does not take a filename. An earlier version took one, ignored it, and printed the name it had been given |
+
+E008 — the rule the orders desk's auth bypass produced — caught the same
+mistake twice in new code within a minute of it being written. The
+cross-tier contract held: the ledger's schema, queries, aggregates, report
+and JSON all check against one `database` declaration.
+
+Still open from this: `strata check <file>` does not resolve imports the way
+`strata build` does, so it reports undeclared databases for any file that
+imports its schema. And a diagnostic from an imported module is reported
+twice.
+
 ## Deferred, and why
 
 | Deferred | Reason |

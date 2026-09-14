@@ -53,3 +53,12 @@ str sb_to_str(StringBuilder &sb) {
 int sb_length(StringBuilder &sb) {
     native "return $sb->length;";
 }
+
+// One character as a string of length one.
+//
+// It lived in std/http.sta, because percent-decoding was the first thing that
+// needed it. Writing JSON needs it too, and a JSON writer has no business
+// importing an HTTP server to get at a string helper.
+str char_from_code(int c) {
+    native "char _b[2]; _b[0]=(char)$c; _b[1]=0; return strata_dup(_b);";
+}

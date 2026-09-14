@@ -1,0 +1,79 @@
+// STRATA STANDARD LIBRARY — std/json.sta
+//
+// Writing JSON.
+//
+// Small on purpose: a service that answers in JSON needs escaping it cannot
+// get wrong, and a way to build an object and an array without counting
+// commas. There is no parser here — nothing in the project reads JSON yet,
+// and a parser nobody calls is a parser nobody tests.
+
+import io  from std;
+import str from std;
+
+// A string as a JSON string literal, quotes included.
+//
+// The characters that must be escaped are not the ones that must be escaped
+// in C: a literal newline inside a JSON string is invalid, and so is any
+// control character below 0x20.
+str json_str(str value) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "\"");
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c == 34) { sb_append(&sb, "\\\""); }
+        else {
+            if (c == 92) { sb_append(&sb, "\\\\"); }
+            else {
+                if (c == 10) { sb_append(&sb, "\\n"); }
+                else {
+                    if (c == 13) { sb_append(&sb, "\\r"); }
+                    else {
+                        if (c == 9) { sb_append(&sb, "\\t"); }
+                        else {
+                            if (c < 32) { sb_append(&sb, json_control(c)); }
+                            else { sb_append(&sb, char_from_code(c)); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    sb_append(&sb, "\"");
+    return sb_to_str(&sb);
+}
+
+// \u00XX for a control character with no shorter form.
+str json_control(int c) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "\\u00");
+    sb_append(&sb, hex_nibble(c / 16));
+    sb_append(&sb, hex_nibble(c - (c / 16) * 16));
+    return sb_to_str(&sb);
+}
+
+str hex_nibble(int v) {
+    if (v < 10) { return char_from_code(48 + v); }
+    return char_from_code(87 + v);
+}
+
+// A `"name": value` pair. The value is written as given, so the caller says
+// whether it is a string, a number or a nested object.
+str json_field(str name, str value) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, json_str(name));
+    sb_append(&sb, ":");
+    sb_append(&sb, value);
+    return sb_to_str(&sb);
+}
+
+// Commas, so nobody counts them. `first` is 0 for the first item of an
+// object or array and 1 afterwards.
+def json_next(StringBuilder &sb, int first) {
+    if (first == 1) { sb_append(&sb, ","); }
+}
+
+// A float written plainly. str() on a float is the language's own rendering;
+// this exists so a reader of the service can see where numbers come from.
+str json_num(float value) { return str(value); }
+str json_int(int value)   { return str(value); }
