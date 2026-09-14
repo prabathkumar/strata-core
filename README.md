@@ -500,7 +500,7 @@ what runs and what is planned is unambiguous.
 | `stream` blocks | **Dispatching.** Each `stream` handler registers under its own name as a channel; `strata_publish(channel, message)` enqueues and `strata_run()` drains the queue, returning the number delivered. Handlers may publish while the queue drains. This is a cooperative single-threaded loop: no separate stacks, no preemption, no parallelism, no I/O integration. Messages to an unknown channel are dropped. |
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
-| Calls to undefined functions | **Not caught by the type checker.** `undefined_thing(1)` type-checks clean and fails at the C linker, with a message naming a C symbol rather than a Strata diagnostic. It is therefore invisible to `--json` and to the repair loop. Known gap, found by writing the repair-loop tests. |
+| Calls to undefined functions | **Caught as E002.** Imports are resolved before the type check, so the set of reachable names is known and a typo names the typo rather than a C symbol at link time. It is a `--json` diagnostic, so the repair loop can see it. The rule disarms for a file importing a module with no local checkout — that picture is incomplete. It checks that a name exists, not its signature: argument count and types are still unchecked across a module boundary. |
 | Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
 
 No performance numbers are published, because none have been measured. Figures

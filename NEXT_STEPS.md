@@ -29,16 +29,17 @@ All of that is done. It was understating the project by roughly three months.
 | `verify` blocks | `strata test` builds and runs them, reporting each failed assertion with its line. |
 | FFI | `foreign` blocks: include a header, name the library, declare signatures checked at call sites. |
 | Repair loop | `ai_self_repair.py` compiles, reads the JSON diagnostics, patches, recompiles. 40 checks in CI, including the payload contract it depends on. |
+| Undefined function calls | **E002.** Imports resolve before the type check in both implementations, so a typo names the typo instead of failing at the C linker. Name existence only — signatures across a module boundary are still unchecked. |
 | CI | Eleven suites, plus both gcc and clang, plus a clean-checkout export so nothing passes only because of an untracked file. |
 
 ## Part 2 — What is not
 
 | Gap | State |
 |---|---|
-| **Calls to undefined functions** | Not caught. `undefined_thing(1)` type-checks clean and fails at the C linker, naming a C symbol. It never reaches `--json`, so the repair loop is blind to it. The cause is structural: the type checker runs per-file without the resolved import graph, so an undefined call is indistinguishable from an imported one. |
 | Virtual Event Fibers | Design only. See Part 4. |
 | Concurrency of any kind | The runtime is single-threaded by construction. Seven mutable globals in the prelude, plus a `__rows` array and an `__count` per `database` block. |
 | Database durability | No locking, no index, no transactions, no SQL backend. Two writers corrupt the file. |
+| **Seven `std` modules and five examples do not compile** | They call functions that do not exist — mostly `print_line`, which lives in `std/core.sta` while those files import `io`. They have never compiled; the undefined-call check made it visible. `stdlib_parses.py` only ever checked that they *parse*. |
 | Aggregation | No `sum`, `avg`, `count` over a query result. A report metric sees `rows`, not columns. |
 | Training | `predict` is inference. No autograd, no optimiser, no accelerator. |
 | Client-side interactivity | Layouts are server-rendered HTML. WebAssembly has no DOM access without a JS shim, as with every WASM framework. |
@@ -49,20 +50,27 @@ All of that is done. It was understating the project by roughly three months.
 
 ## Part 3 — Next, in order
 
-### 1. Undefined function calls (2–3 days)
+### 1. Make the standard library compile (2–3 days)
 
-The highest-value correctness gap, because it is the one place the compiler
-currently defers to the C linker, and the repair loop cannot see linker output.
+Turning on the undefined-call check exposed that seven `std` modules and five
+examples call functions that do not exist. Most are `print_line`, defined in
+`std/core.sta` while the callers import `io`. The rest —
+`native_sys_write`, `native_network_http_get`, `compute_sha256`,
+`fetch_secure_stream`, `native_crypto_derive_keys` — have no definition
+anywhere and are aspirational: those modules describe a runtime that was never
+built.
 
-The fix is not a new rule; it is plumbing. `stage0.py` already calls
-`resolve_imports()` before the type checker runs — the resolved units simply are
-not handed to it. Give `TypeChecker` the imported modules' signatures, then
-`fn is None` becomes E002 rather than a shrug.
+Two decisions, and they are different:
 
-Guard rail: the last time a call-site rule was added it false-positived on the
-project's own standard library. The single-file path must stay lenient, so the
-check fires only when imports were actually resolved. `stdlib_parses.py` and the
-type-checker differential are the tests that catch a regression here.
+- Modules that are a missing import away from working (`telemetry`, `testing`,
+  `core` consumers) get the import fixed.
+- Modules that stand on a runtime that does not exist (`tls`, `pkg_system`,
+  parts of `stdlib`) should move to `std/unimplemented/` the way the twelve
+  `bin/` stubs did, rather than shipping as if they work.
+
+The exit criterion is a suite that **compiles** every `std` module, replacing
+`stdlib_parses.py`, which checks that they parse and nothing more. That suite
+is the point of the item: parsing was never the claim worth making.
 
 ### 2. A formatter, `strata fmt` (3–5 days)
 

@@ -1186,9 +1186,18 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # Type-check before generating code. Without this the E001-E006 taxonomy
     # only ever runs under `strata check`, and a type error reaches the user as
     # a C compiler diagnostic instead of a Strata one.
+    #
+    # Imports are resolved BEFORE the check, not after, so the checker knows
+    # which names are reachable. Without that it cannot tell a typo from a
+    # call into std/, and an undefined function reaches the user as a C linker
+    # error naming a C symbol — invisible to --json and to the repair loop.
+    # An import with no local checkout means the picture is incomplete, so the
+    # checker is left lenient rather than guessing.
+    modules, unresolved = resolve_imports(ast, source_path, verbose)
     try:
         from compiler.typechecker import TypeChecker
-        errors = TypeChecker(ast, filename=source_path).check()
+        errors = TypeChecker(ast, filename=source_path,
+                             modules=None if unresolved else modules).check()
     except ImportError:
         errors = []
     if json_diagnostics:
@@ -1201,7 +1210,6 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
             print(f"  {e}", file=sys.stderr)
         sys.exit(1)
 
-    modules, unresolved = resolve_imports(ast, source_path, verbose)
     for u in unresolved:
         print(f"[STRATA IMPORT] '{u}' is an external module with no local "
               f"checkout; its symbols must be provided at link time.", file=sys.stderr)

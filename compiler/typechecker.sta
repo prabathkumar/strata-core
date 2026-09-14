@@ -235,10 +235,37 @@ database TC {
     int globals;
     int current_return;
     int error_count;
+    // Set when the caller resolved the import graph. Without it an unknown
+    // callee cannot be told apart from a call into std/, so the check stays
+    // off and the mistake surfaces as a C linker error instead.
+    int strict_calls;
+    str imported;     // ",name,name," of everything the imports make reachable
 }
 
 TC tc_new() {
-    native "TC* _t=(TC*)calloc(1,sizeof(TC)); return _t;";
+    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; return _t;";
+}
+
+// Functions the generated C already has, from the runtime prelude or as a
+// compiler intrinsic. A call to one of these is never undefined. Kept in step
+// with the oracle's RUNTIME_BUILTINS by a conformance test.
+int is_runtime_builtin(str name) {
+    str known = ",file_exists,file_read,file_write,float_to_str,int_to_str,sb_append_f,sb_append_line_f,sb_new_f,str_concat,str_eq,str_index_of,str_len,str_slice,str_starts_with,str_to_int,strata_concat,strata_float_to_str,strata_int_to_str,strata_dup,strata_len,strata_write_escaped,strata_read_field,strata_read_header,strata_load_refuse,strata_on,strata_publish,strata_run,current_message,strata_set_message,strata_tensor,strata_tensor_set,strata_tensor_get,strata_tensor_add,strata_predict,strata_model_load,strata_activate,strata_weight_count,native,";
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ",");
+    sb_append(&needle, name);
+    sb_append(&needle, ",");
+    if (str_index_of(known, sb_to_str(&needle)) >= 0) { return 1; }
+    return 0;
+}
+
+int name_in_list(str names, str name) {
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ",");
+    sb_append(&needle, name);
+    sb_append(&needle, ",");
+    if (str_index_of(names, sb_to_str(&needle)) >= 0) { return 1; }
+    return 0;
 }
 
 // Diagnostics are written as they are found, which preserves traversal order —
@@ -524,12 +551,42 @@ int infer_call(TC &tc, Node e, int scope_p) {
         return ty_ptr(ty_new("bool"));
     }
     if (str_eq(e.s1, "native") == 1) { return 0; }
+    // Aggregates are reserved names with a fixed result type. There is no
+    // evaluation behind them yet — see the roadmap — but they are not
+    // undefined functions either.
+    if (str_eq(e.s1, "len") == 1) {
+        for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+        return ty_ptr(ty_new("int"));
+    }
+    int agg = 0;
+    if (str_eq(e.s1, "sum") == 1)   { agg = 1; }
+    if (str_eq(e.s1, "avg") == 1)   { agg = 1; }
+    if (str_eq(e.s1, "min") == 1)   { agg = 1; }
+    if (str_eq(e.s1, "max") == 1)   { agg = 1; }
+    if (str_eq(e.s1, "count") == 1) { agg = 1; }
+    if (agg == 1) {
+        for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+        return ty_ptr(ty_new("float"));
+    }
 
     int fp = fn_find(tc.fns, e.s1);
     if (fp == 0) {
         // Unknown callee: arguments are still ordinary expressions and every
         // rule applies inside them.
         for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+        if (tc.strict_calls == 1) {
+            if (is_runtime_builtin(e.s1) == 0) {
+                if (name_in_list(tc.imported, e.s1) == 0) {
+                    if (schema_find(tc.schemas, e.s1) == 0) {
+                        StringBuilder sb = sb_new();
+                        sb_append(&sb, "Undefined function '");
+                        sb_append(&sb, e.s1);
+                        sb_append(&sb, "'");
+                        emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+                    }
+                }
+            }
+        }
         return 0;
     }
 
@@ -960,8 +1017,54 @@ def check_block(TC &tc, int vec_p, int parent) {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-int check_unit(Node unit) {
+// Check a file whose imports have been resolved, so an unknown callee is an
+// error rather than a shrug. `root` is the tree the std/ and compiler/ module
+// directories sit under.
+int check_unit_root(str root, Node unit) {
+    NodeVec mods = nv_new();
+    str seen = "";
+    int unresolved = 0;
+    collect_modules(root, unit, &mods, &seen, &unresolved);
+
+    StringBuilder names = sb_new();
+    sb_append(&names, ",");
+    int nm = mods.len;
+    for (int m = 0; m < nm; m = m + 1) {
+        Node mu = nv_get(&mods, m);
+        NodeVec mfns = nv_at(mu.v3);
+        int mf = mfns.len;
+        for (int i = 0; i < mf; i = i + 1) {
+            Node f = nv_get(&mfns, i);
+            sb_append(&names, f.s2); sb_append(&names, ",");
+        }
+        NodeVec mdecls = nv_at(mu.v2);
+        int md = mdecls.len;
+        for (int j = 0; j < md; j = j + 1) {
+            Node d = nv_get(&mdecls, j);
+            sb_append(&names, d.s1); sb_append(&names, ",");
+            if (d.kind == 74) {
+                NodeVec ffns = nv_at(d.v1);
+                int nff = ffns.len;
+                for (int q = 0; q < nff; q = q + 1) {
+                    Node ff = nv_get(&ffns, q);
+                    sb_append(&names, ff.s2); sb_append(&names, ",");
+                }
+            }
+        }
+    }
+    // An import with no local checkout means the picture is incomplete, so
+    // the check stays off rather than guessing — the same rule the oracle uses.
+    int strict = 1;
+    if (unresolved > 0) { strict = 0; }
+    return check_unit_mode(unit, strict, sb_to_str(&names));
+}
+
+int check_unit(Node unit) { return check_unit_mode(unit, 0, ""); }
+
+int check_unit_mode(Node unit, int strict, str imported) {
     TC tc = tc_new();
+    tc.strict_calls = strict;
+    tc.imported = imported;
     register_decls(&tc, unit);
 
     // Checked after functions are registered: a layout may reference a handler

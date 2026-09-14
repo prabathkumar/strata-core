@@ -15,7 +15,7 @@ int main() {
     str source = file_read(path);
     Node unit = parse_source(source);
 
-    int errors = check_unit(unit);
+    int errors = check_unit_root(".", unit);
     if (errors > 0) { return 1; }
 
     print_raw(generate(".", path));

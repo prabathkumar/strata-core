@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Calls to undefined functions are caught
+
+`undefined_thing(1)` type-checked clean and failed at the C linker:
+
+    undefined reference to `undefined_thing'
+
+A C symbol name, from a tool the developer never invoked, pointing at no line
+of Strata — and invisible to `--json`, so the repair loop could not see it
+either.
+
+The cause was structural, not a missing rule: the type checker ran on one file
+with no import graph, and an unknown name is indistinguishable from a call into
+`std/`. `resolve_imports()` now runs *before* the check in both
+implementations, and module resolution moved from the code generator into the
+parser so the type checker can reach it. A file importing a module with no
+local checkout disarms the rule rather than guessing.
+
+The check is name-existence only. Argument count and type across a module
+boundary are still unchecked; that is a separate change with its own risk.
+
+The rule rests on a hand-written list of names the runtime provides, held in
+both implementations. Three conformance checks guard it: the list must cover
+everything the code generator can emit, the two copies must agree, and a
+program calling a builtin must compile. Removing one name from either list
+fails all three.
+
+Turning it on found real breakage that had never been visible: seven `std`
+modules and five examples call functions that do not exist anywhere, mostly
+`print_line` (which lives in `std/core.sta` while those files import `io`).
+Those modules only ever *parsed* — `stdlib_parses.py` checks exactly that and
+no more. Recorded in NEXT_STEPS rather than fixed here.
+
+
 ### The repair loop has tests
 
 `ai_self_repair.py` is the project's headline claim and it was the last major

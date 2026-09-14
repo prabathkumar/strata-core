@@ -1478,3 +1478,62 @@ Node parse_layout_if(P &p) {
     }
     return n;
 }
+
+// ── Module resolution ────────────────────────────────────────────────────────
+//
+// Lives here rather than in the code generator because the type checker needs
+// it too: without the resolved import graph it cannot tell a typo'd call from
+// a call into std/, and the mistake reaches the user as a C linker error
+// naming a C symbol.
+
+str module_path(str root, str source, str name) {
+    // The leaf of a dotted path names the file: core.io -> std/io.sta
+    int last_dot = -1;
+    int n = str_len(name);
+    for (int i = 0; i < n; i = i + 1) { if (name[i] == 46) { last_dot = i; } }
+    str leaf = name;
+    if (last_dot >= 0) { leaf = str_slice(name, last_dot + 1, n); }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, root); sb_append(&sb, "/"); sb_append(&sb, source);
+    sb_append(&sb, "/"); sb_append(&sb, leaf); sb_append(&sb, ".sta");
+    return sb_to_str(&sb);
+}
+
+// Transitively parse every locally-resolvable import, deepest first, so a
+// module's own dependencies come before it. `seen` is a ",path,path," string
+// rather than a map so this stays free of the code generator's machinery.
+def collect_modules(str root, Node unit, NodeVec &out, str &seen, int &unresolved) {
+    NodeVec imps = nv_at(unit.v1);
+    int n = imps.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node imp = nv_get(&imps, i);
+        int local = 0;
+        if (str_eq(imp.s2, "std") == 1) { local = 1; }
+        if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
+        if (local == 0) { unresolved = unresolved + 1; }
+        if (local == 1) {
+            str path = module_path(root, imp.s2, imp.s1);
+            if (file_exists(path) == 0) { unresolved = unresolved + 1; }
+            if (file_exists(path) == 1) {
+                StringBuilder needle = sb_new();
+                sb_append(&needle, ",");
+                sb_append(&needle, path);
+                sb_append(&needle, ",");
+                if (str_index_of(seen, sb_to_str(&needle)) < 0) {
+                    StringBuilder grown = sb_new();
+                    if (str_len(seen) == 0) { sb_append(&grown, ","); }
+                    sb_append(&grown, seen);
+                    sb_append(&grown, path);
+                    sb_append(&grown, ",");
+                    seen = sb_to_str(&grown);
+                    Node mod = parse_source(file_read(path));
+                    // The unit carries the import name so the emitted module
+                    // separator matches the oracle's.
+                    mod.s1 = imp.s1;
+                    collect_modules(root, mod, &out, &seen, &unresolved);
+                    nv_push(&out, mod);
+                }
+            }
+        }
+    }
+}

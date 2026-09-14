@@ -28,8 +28,15 @@ def oracle(path):
     from compiler.lexer import tokenise_file
     from compiler.parser import Parser
     from compiler.typechecker import TypeChecker
+    from bootstrap.stage0 import resolve_imports
     ast = Parser(tokenise_file(path)).parse()
-    errs = TypeChecker(ast, filename=path).check()
+    # Imports are resolved here for the same reason the compiler resolves them:
+    # without the graph the checker cannot tell a typo'd call from a call into
+    # std/. Resolving on both sides is also what makes this suite the
+    # false-positive guard for that rule, across every file it covers.
+    modules, unresolved = resolve_imports(ast, path)
+    errs = TypeChecker(ast, filename=path,
+                       modules=None if unresolved else modules).check()
     return [f"{e.code} {e.line}:{e.col} {e.message}" for e in errs]
 
 

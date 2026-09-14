@@ -75,11 +75,67 @@ class Scope:
         if self.parent: return self.parent.lookup(name)
         return None
 
+# Functions the generated C already has, either from the runtime prelude or as
+# a compiler intrinsic. A call to one of these is never "undefined", and this
+# list drifting out of date would show up as a false positive on real code —
+# `test_suite/conformance.py` asserts it covers everything the code generator
+# knows how to emit.
+RUNTIME_BUILTINS = frozenset((
+    # prelude: strings, files, string builder
+    'file_exists', 'file_read', 'file_write', 'float_to_str', 'int_to_str',
+    'sb_append_f', 'sb_append_line_f', 'sb_new_f', 'str_concat', 'str_eq',
+    'str_index_of', 'str_len', 'str_slice', 'str_starts_with', 'str_to_int',
+    'strata_concat', 'strata_float_to_str', 'strata_int_to_str', 'strata_dup',
+    'strata_len', 'strata_write_escaped', 'strata_read_field',
+    'strata_read_header', 'strata_load_refuse',
+    # prelude: streams
+    'strata_on', 'strata_publish', 'strata_run', 'current_message',
+    'strata_set_message',
+    # prelude: tensors and models
+    'strata_tensor', 'strata_tensor_set', 'strata_tensor_get',
+    'strata_tensor_add', 'strata_predict', 'strata_model_load',
+    'strata_activate', 'strata_weight_count',
+    # compiler intrinsics
+    'native',
+))
+
+# Handled before the lookup, but listed so the test above can be exhaustive.
+CAST_AND_AGGREGATE = frozenset((
+    'str', 'int', 'float', 'bool', 'len', 'sum', 'avg', 'min', 'max', 'count',
+))
+
+
 class TypeChecker:
-    def __init__(self, ast, filename="<stdin>"):
+    def __init__(self, ast, filename="<stdin>", modules=None):
+        """`modules` is the resolved import graph, when the caller has one.
+
+        Without it a call to an unknown function cannot be distinguished from a
+        call into an import, so the checker stays lenient and the mistake
+        surfaces as a C linker error naming a C symbol. With it, the set of
+        reachable names is known and an unknown callee is E002.
+
+        Pass [] for a file that imports nothing — that is still a complete
+        picture. None means "imports were not resolved", which is not.
+        """
         self.ast=ast; self.filename=filename; self.errors=[]
         self.global_scope=Scope(); self.schemas={}; self.models={}
         self.functions={}; self.current_return_type=None
+        self.strict_calls = modules is not None
+        # Names only, not signatures: knowing that `str_pad` exists is enough
+        # to not report it, and checking argument types across a module
+        # boundary is a separate change with its own risk.
+        self.imported_names = set()
+        for m in (modules or []):
+            # resolve_imports yields (module_name, unit) pairs.
+            unit = m[1] if isinstance(m, tuple) else m
+            for fn in getattr(unit, "functions", []):
+                self.imported_names.add(fn.name)
+            for d in getattr(unit, "declarations", []):
+                name = getattr(d, "name", None)
+                if name:
+                    self.imported_names.add(name)
+                for ffn in getattr(d, "functions", []) or []:
+                    self.imported_names.add(ffn.name)
 
     def check(self):
         self._register_declarations()
@@ -438,11 +494,19 @@ class TypeChecker:
             return T_FLOAT
         fn=self.functions.get(expr.callee)
         if fn is None:
-            # An imported or not-yet-resolved callee. Its signature is unknown,
-            # but its arguments are ordinary expressions and every rule still
-            # applies inside them — otherwise any call into std/ is a hole
-            # through which unchecked code passes.
+            # Whether or not the callee resolves, its arguments are ordinary
+            # expressions and every rule still applies inside them — otherwise
+            # any call into std/ is a hole through which unchecked code passes.
             for a in expr.args: self._infer_type(a,scope)
+            if (self.strict_calls
+                    and expr.callee not in self.imported_names
+                    and expr.callee not in RUNTIME_BUILTINS
+                    and expr.callee not in self.schemas
+                    and expr.callee not in self.models
+                    and self.global_scope.lookup(expr.callee) is None):
+                self._error("E002", f"Undefined function '{expr.callee}'",
+                    expr.line, expr.col,
+                    f"Declare '{expr.callee}' or import the module that defines it")
             return None
         rt,pts=fn
         if len(expr.args)!=len(pts):

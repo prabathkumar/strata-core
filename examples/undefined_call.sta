@@ -1,0 +1,51 @@
+// A typo in a function name is a Strata error, not a C linker error.
+//
+// This used to compile clean and fail at link time with:
+//
+//     undefined reference to `calculate_totl'
+//
+// — a C symbol name, from a tool the developer never invoked, pointing at no
+// line of Strata. It never reached `--json`, so the repair loop could not see
+// it either.
+//
+// The type checker could not catch it before because it ran on one file with
+// no import graph, and an unknown name is indistinguishable from a call into
+// std/. Imports are resolved before the check now, so the set of reachable
+// names is known.
+//
+// Uncomment the call below to see it:
+//
+//     [E002] Undefined function 'calculate_totl' (line N, col M)
+//       Hint: Declare 'calculate_totl' or import the module that defines it
+//
+// The rule disarms for a file importing a module with no local checkout —
+// that picture is incomplete, and guessing would make every external
+// dependency unusable.
+
+import io from std;
+
+database Order {
+    int   id;
+    float amount;
+}
+
+float calculate_total(list[Order] rows) {
+    float total = 0.0;
+    for (int i = 0; i < strata_len(rows); i = i + 1) {
+        Order row = rows[i];
+        total = total + row.amount;
+    }
+    return total;
+}
+
+int main() {
+    Order <- [id = 1, amount = 120.50];
+    Order <- [id = 2, amount =  75.00];
+
+    list[Order] all = Order <- [id > 0];
+
+    // print(str(calculate_totl(all)));   // E002: no such function
+    print(str(calculate_total(all)));
+
+    return 0;
+}

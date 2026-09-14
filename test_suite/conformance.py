@@ -35,6 +35,39 @@ def test(name, source, expect_error=None):
         else:
             print(f"  FAIL  {name} — parse error: {e}"); FAIL += 1
 
+def check_codes(name, source, expect=None, reject=None, files=None):
+    """Compile with --json and assert on the diagnostics.
+
+    The undefined-call rule only arms once imports are resolved, which happens
+    inside the compiler, so it cannot be reached through the bare TypeChecker
+    the `test` helper uses.
+    """
+    global PASS, FAIL
+    d = tempfile.mkdtemp()
+    try:
+        for fn, content in (files or {}).items():
+            os.makedirs(os.path.dirname(os.path.join(d, fn)) or d, exist_ok=True)
+            open(os.path.join(d, fn), "w").write(content)
+        sta = os.path.join(d, "case.sta")
+        open(sta, "w").write(source)
+        r = subprocess.run(["python3", "bootstrap/stage0.py", sta, "--json"],
+                           capture_output=True, text=True, timeout=60)
+        try:
+            payload = json.loads(r.stdout)
+        except Exception:
+            print(f"  FAIL  {name} — no JSON: {(r.stdout + r.stderr)[:120]}"); FAIL += 1; return
+        msgs = [f"{x['code']} {x['message']}" for x in payload.get("diagnostics", [])]
+        if expect and not any(expect in m for m in msgs):
+            print(f"  FAIL  {name} — expected {expect!r}, got {msgs or 'no errors'}"); FAIL += 1; return
+        if reject and any(reject in m for m in msgs):
+            print(f"  FAIL  {name} — {reject!r} fired and should not have: {msgs}"); FAIL += 1; return
+        print(f"  PASS  {name}"); PASS += 1
+    except Exception as e:
+        print(f"  FAIL  {name} — {e}"); FAIL += 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def compile_run_in(name, source, expected, files=None, runs=1):
     """Compile and run in a scratch directory, optionally seeding files first.
 
@@ -319,6 +352,7 @@ test("persist_unknown_table_is_e004",
      'int main() { save Ghost to "/tmp/x"; return 0; }', "E004")
 
 print("\n── Test runner ───────────────────────────────────────────────────")
+import json
 import shutil
 import subprocess as _sp, tempfile as _tf, os as _os
 def run_test_build(name, source, want_exit, want_in_output):
@@ -556,6 +590,82 @@ test("nn_unknown_activation_is_rejected",
 
 test("nn_hidden_is_contextual_not_reserved",
     'import io from std;\nint main() { int hidden = 1; int relu = 2; print(str(hidden + relu)); return 0; }')
+
+
+print("\n── Undefined function calls ─────────────────────────────────────")
+
+# The rule rests entirely on one hand-written list of names the runtime
+# provides. If the code generator learns to emit a builtin that the list does
+# not know, every program calling it is rejected. This is the guard.
+def _builtin_lists_agree():
+    global PASS, FAIL
+    import re as _re
+    from compiler.typechecker import RUNTIME_BUILTINS, CAST_AND_AGGREGATE
+    from bootstrap.stage0 import BUILTIN_RETURNS, PREAMBLE_BUILTINS
+    emitted = set(BUILTIN_RETURNS) | set(PREAMBLE_BUILTINS)
+    missing = emitted - RUNTIME_BUILTINS - CAST_AND_AGGREGATE
+    if missing:
+        print(f"  FAIL  runtime_builtins_cover_the_code_generator — "
+              f"the generator emits {sorted(missing)} but the checker would "
+              f"call them undefined"); FAIL += 1
+    else:
+        print(f"  PASS  runtime_builtins_cover_the_code_generator "
+              f"({len(emitted)} emitted names covered)"); PASS += 1
+
+    # And the self-hosted checker carries its own copy of the same list.
+    src = open(os.path.join("compiler", "typechecker.sta")).read()
+    m = _re.search(r'str known = ",([^"]*)";', src)
+    if not m:
+        print("  FAIL  strata_builtin_list_found — is_runtime_builtin no longer "
+              "holds a comma-separated list"); FAIL += 1; return
+    sta_names = {n for n in m.group(1).split(",") if n}
+    if sta_names != set(RUNTIME_BUILTINS):
+        only_py = sorted(set(RUNTIME_BUILTINS) - sta_names)
+        only_sta = sorted(sta_names - set(RUNTIME_BUILTINS))
+        print(f"  FAIL  strata_builtin_list_matches_oracle — "
+              f"only in oracle: {only_py}, only in .sta: {only_sta}"); FAIL += 1
+    else:
+        print(f"  PASS  strata_builtin_list_matches_oracle "
+              f"({len(sta_names)} names)"); PASS += 1
+
+_builtin_lists_agree()
+
+_STD = 'import io from std;\n'
+
+check_codes("undefined_call_is_E002",
+    _STD + 'int main() { return undefined_thing(1); }',
+    expect="E002 Undefined function 'undefined_thing'")
+
+check_codes("a_typo_names_the_typo_not_a_C_symbol",
+    _STD + 'int helper() { return 1; }\nint main() { return helpr(); }',
+    expect="Undefined function 'helpr'")
+
+check_codes("calls_into_std_are_not_undefined",
+    _STD + 'int main() { print("hi"); return 0; }',
+    reject="Undefined function")
+
+check_codes("runtime_builtins_are_not_undefined",
+    _STD + 'int main() { print(strata_concat("a", str(strata_len(strata_tensor(2))))); return 0; }',
+    reject="Undefined function")
+
+check_codes("aggregates_are_not_undefined",
+    _STD + 'int main() { list[int] xs = [1,2]; int n = len(xs); print(str(n)); return 0; }',
+    reject="Undefined function")
+
+check_codes("foreign_declarations_are_not_undefined",
+    'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { float r = sqrt(4.0); return 0; }',
+    reject="Undefined function")
+
+check_codes("a_database_name_is_not_an_undefined_call",
+    _STD + 'database T { int id; }\nint main() { T <- [id = 1]; print(str(strata_len(T <- [id > 0]))); return 0; }',
+    reject="Undefined function")
+
+# An import with no local checkout means the picture is incomplete, so the
+# rule disarms rather than guessing. Without this, any program using an
+# external module would be unusable.
+check_codes("an_unresolved_import_disarms_the_rule",
+    'import pricing from vendor_sdk;\nint main() { return vendor_only_function(1); }',
+    reject="Undefined function")
 
 total = PASS + FAIL
 print(f"\n{'='*60}")
