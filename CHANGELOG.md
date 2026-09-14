@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Stage 10 closed: the service can be operated
+
+Four things it could not do, and now can.
+
+**It says what it is doing.** One line per request on stdout, as it happens:
+`GET /login 200 3ms`. No levels, no format to configure — a service nobody can
+see is worse than one with a format somebody dislikes. Every response helper
+returns its status code rather than 1, because a log line needs the status the
+handler actually chose.
+
+**A form from somewhere else is refused.** Each session carries a second random
+token that is never sent as a cookie; every form renders it and every write
+checks it. A signed-in operator's browser could be made to post to this service
+by any page on the web, and nothing distinguished a form this service rendered
+from one that merely pointed at it. `journey_orders` now reads the token off
+the page the way a browser does — a test that could still post without one
+would have meant the protection was not real.
+
+**Guessing a password stops working.** Five failures lock an account for five
+minutes. The lockout is checked before the password and answers identically
+whatever was typed, so it does not tell an attacker which usernames exist. It
+lives on the user row rather than in a table of attempts, because the language
+has no `delete` and a table of attempts would grow for as long as someone was
+attacking it.
+
+**A flood is refused rather than forked.** 64 connections at once; the 65th is
+answered 503. That meant counting children, which meant taking `SIGCHLD` back
+from `SIG_IGN` — and that brought zombies back, because the parent only reaped
+when the next connection arrived, which is never while idle. The listening
+socket now has a one-second timeout and the loop reaps at the top of each pass.
+
+A module-level `int LOCKOUT_AFTER = 5;` in the rules module does not parse and
+took the rest of the file with it. Constants are functions here, which is the
+existing gap rather than a new one.
+
 ### Stage 9 closed: the real image builds outside CI
 
 `strata-orders:real` — 216 MB, Ubuntu 24.04, both stages of the actual

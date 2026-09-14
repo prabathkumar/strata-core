@@ -20,6 +20,7 @@ What it found on the way in, none of which a unit test would have:
 Usage:  python3 test_suite/journey_orders.py
 """
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -125,6 +126,14 @@ def main():
         print("\n── Working ──────────────────────────────────────────────────────")
         code, body, _ = go("/")
         ok("the dashboard is reachable now", code == 200, f"got {code}")
+
+        # Every form on the page carries the session's CSRF token, so the
+        # journey reads it off the page the way a browser does rather than
+        # being handed it.
+        m = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', body)
+        csrf = m.group(1) if m else ""
+        ok("the page's forms carry a CSRF token", len(csrf) == 64,
+           f"len {len(csrf)}")
         ok("it offers the actions of the job",
            "Add order" in body and "Close" in body and "Sign out" in body)
         ok("each row carries its own id",
@@ -134,7 +143,8 @@ def main():
         ok("two orders are open", "open orders: 2" in body, body[:160])
 
         code, _, _ = go("/orders",
-                        b"customer=wayne+ent&region=apac&amount=450.25", "POST")
+                        f"_csrf={csrf}&customer=wayne+ent&region=apac"
+                        f"&amount=450.25".encode(), "POST")
         ok("an order is created", code == 303, f"got {code}")
         code, body, _ = go("/summary")
         ok("three orders are open now", "open orders: 3" in body, body[:160])
@@ -142,20 +152,21 @@ def main():
         ok("the row reached disk, percent-decoded",
            "wayne ent" in open(os.path.join(data, "orders.tsv")).read())
 
-        code, _, _ = go("/close", b"id=1", "POST")
+        code, _, _ = go("/close", f"_csrf={csrf}&id=1".encode(), "POST")
         ok("an order is closed", code == 303, f"got {code}")
         code, body, _ = go("/summary")
         ok("two orders are open again", "open orders: 2" in body, body[:160])
 
         print("\n── Signing out ──────────────────────────────────────────────────")
-        code, _, _ = go("/logout", b"", "POST")
+        code, _, _ = go("/logout", f"_csrf={csrf}".encode(), "POST")
         ok("signing out redirects", code == 303, f"got {code}")
 
         code, _, headers = go("/")
         ok("the dashboard is refused again", code == 303, f"got {code}")
         ok("and points at the sign-in page",
            headers.get("Location", "").endswith("/login"))
-        code, _, _ = go("/orders", b"customer=x&amount=1", "POST")
+        code, _, _ = go("/orders",
+                        f"_csrf={csrf}&customer=x&amount=1".encode(), "POST")
         ok("and so is a write", code == 403, f"got {code}")
 
         # The session was ended, not merely forgotten by the client: replaying

@@ -56,3 +56,58 @@ int close_order(int want) {
 int open_count() {
     return count(Order <- [status == "OPEN"]);
 }
+
+// ── Guarding the sign-in ─────────────────────────────────────────────────────
+//
+// Nothing slowed a password guess down: the service answered as fast as it
+// could, forever. A lockout is kept on the user row rather than in a table of
+// attempts, because the language has no delete and a table of attempts would
+// grow for as long as anyone was attacking it — which is the wrong way round.
+
+// Constants are functions: the language has no module-level variables, and a
+// literal repeated in three places is how the lockout window and the message
+// about it drift apart.
+int lockout_after()   { return 5; }
+int lockout_seconds() { return 300; }
+
+// Seconds remaining on a lockout, or 0.
+int locked_for(str who, int now) {
+    list[User] found = User <- [username == who];
+    if (count(found) == 0) { return 0; }
+    User u = found[0];
+    if (u.locked_until > now) { return u.locked_until - now; }
+    return 0;
+}
+
+// Record a failed attempt; lock the account when there have been enough.
+// Returns the number of failures now standing against it.
+int note_failure(str who, int now) {
+    list[User] found = User <- [username == who];
+    if (count(found) == 0) { return 0; }
+    User u = found[0];
+    u.failed_logins = u.failed_logins + 1;
+    if (u.failed_logins >= lockout_after()) {
+        u.locked_until = now + lockout_seconds();
+    }
+    return u.failed_logins;
+}
+
+int clear_failures(str who) {
+    list[User] found = User <- [username == who];
+    if (count(found) == 0) { return 0; }
+    User u = found[0];
+    u.failed_logins = 0;
+    u.locked_until = 0;
+    return 1;
+}
+
+int save_users() { save User to "data/users.tsv"; return 1; }
+
+// The CSRF token this session's forms must carry, or "" when there is no
+// session. A form without it is not from a page this service rendered.
+str csrf_for(str want) {
+    list[Session] found = Session <- [token == want];
+    if (count(found) == 0) { return ""; }
+    Session s = found[0];
+    return s.csrf;
+}

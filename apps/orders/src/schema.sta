@@ -13,6 +13,8 @@ database User {
     int id;
     str username;
     str password_hash;         // SHA-512 crypt, salt included
+    int failed_logins;         // consecutive failures; reset on a success
+    int locked_until;          // unix time, 0 when not locked
 }
 
 // Persisted, so a signed-in operator stays signed in across a restart of the
@@ -21,4 +23,5 @@ database Session {
     str token;
     int user_id;
     int expires_at;
+    str csrf;                  // the token every form in this session carries
 }

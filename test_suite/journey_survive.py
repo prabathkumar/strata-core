@@ -26,6 +26,7 @@ What it found on the way in:
 Usage:  python3 test_suite/journey_survive.py
 """
 import os
+import re
 import shutil
 import socket
 import statistics
@@ -105,10 +106,17 @@ class Service:
 
 
 def signed_in(svc):
+    """A signed-in client, and the CSRF token its forms carry.
+
+    The service requires the token on every write, so a client that only holds
+    a cookie is not a client that can do anything.
+    """
     opener = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(CookieJar()))
     opener.open(svc.url("/login"), b"username=manager&password=strata", timeout=10)
-    return opener
+    page = opener.open(svc.url("/"), timeout=10).read().decode()
+    m = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', page)
+    return opener, (m.group(1) if m else "")
 
 
 def main():
@@ -214,13 +222,15 @@ def main():
                     .read().splitlines()[1:] if l]
 
         before = len(rows_on_disk())
-        openers = [signed_in(svc) for _ in range(10)]
+        openers = [signed_in(svc) for _ in range(10)]  # (opener, csrf) pairs
         errors = []
 
-        def create(i, opener):
+        def create(i, pair):
+            opener, csrf = pair
             try:
                 opener.open(svc.url("/orders"),
-                            f"customer=c{i}&region=apac&amount=10.00".encode(),
+                            f"_csrf={csrf}&customer=c{i}&region=apac"
+                            f"&amount=10.00".encode(),
                             timeout=20)
             except Exception as e:                      # noqa: BLE001
                 errors.append(repr(e))
@@ -247,7 +257,7 @@ def main():
         svc.stop()
         svc.start()
         ok("it comes back up", svc.alive())
-        page = signed_in(svc).open(svc.url("/"), timeout=10).read().decode()
+        page = signed_in(svc)[0].open(svc.url("/"), timeout=10).read().decode()
         ok("with the ten orders still there",
            all(f"c{i}" in page for i in range(10)), page[:200])
 
@@ -259,7 +269,7 @@ def main():
             for i in range(1, 2001):
                 f.write(f"{i}\tcustomer{i}\tapac\t100.50\tOPEN\n")
         svc.start()
-        opener = signed_in(svc)
+        opener = signed_in(svc)[0]
         t0 = time.time()
         page = opener.open(svc.url("/"), timeout=60).read().decode()
         big = time.time() - t0
@@ -274,7 +284,7 @@ def main():
             "#strata\tOrder\tid:i\tcustomer:s\tregion:s\tamount:f\tstatus:s\n"
             + "".join(f"{i}\tc{i}\tapac\t10.00\tOPEN\n" for i in range(1, 21)))
         svc.start()
-        opener = signed_in(svc)
+        opener = signed_in(svc)[0]
         samples = []
         for _ in range(100):
             t0 = time.time()
@@ -291,7 +301,7 @@ def main():
         lock = threading.Lock()
 
         def hammer(n):
-            o = signed_in(svc)
+            o = signed_in(svc)[0]
             for _ in range(n):
                 t0 = time.time()
                 try:
@@ -350,10 +360,22 @@ def main():
         svc.start()
 
         print("\n── Nothing left behind ──────────────────────────────────────────")
-        ps = subprocess.run(["ps", "-o", "stat=,comm=", "--ppid",
-                             str(svc.proc.pid)], capture_output=True, text=True)
-        zombies = [l for l in ps.stdout.splitlines() if l.strip().startswith("Z")]
-        ok("no zombie children after 200-odd requests", not zombies,
+        # The parent reaps at the top of its accept loop, which wakes once a
+        # second, so a child that has just finished is briefly defunct. What
+        # matters is that they go, not that they were never there: this waits
+        # for the table to clear, and fails if it does not.
+        zombies = []
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            ps = subprocess.run(["ps", "-o", "stat=,comm=", "--ppid",
+                                 str(svc.proc.pid)],
+                                capture_output=True, text=True)
+            zombies = [l for l in ps.stdout.splitlines()
+                       if l.strip().startswith("Z")]
+            if not zombies:
+                break
+            time.sleep(0.5)
+        ok("children are reaped, not left defunct", not zombies,
            str(zombies[:3]))
         ok("the service is still the same process", svc.alive())
 

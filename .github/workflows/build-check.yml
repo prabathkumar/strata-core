@@ -129,6 +129,12 @@ jobs:
     - name: The Second Application
       run: python3 test_suite/journey_ledger.py
 
+    # Stage 10: could anyone run this? One line per request on stdout, a form
+    # from somewhere else refused, a guessed password locking the account, and
+    # a flood answered 503 rather than forked.
+    - name: Journey — Operate It
+      run: python3 test_suite/journey_operate.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

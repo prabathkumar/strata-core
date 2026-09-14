@@ -1,27 +1,37 @@
-feat(deploy): stage 9 — the real image builds outside CI
+feat(operate): stage 10 — the service can be run by someone
 
-The two-stage Dockerfile now builds here, not only on a GitHub runner: apt
-installs the toolchain, the service is compiled, `strata test` runs inside the
-image that ships, and the runtime stage carries the binary, its data and
-libcrypt. 216 MB. It runs as uid 10001, logs its startup line, serves
-/login, signs in, creates an order and redirects a signed-out request.
+Four things it could not do.
 
-The base is ubuntu:24.04 rather than debian:bookworm-slim because no container
-registry is reachable from this environment, and an Ubuntu root filesystem can
-be bootstrapped from the archive and imported under that tag —
-deploy/bootstrap_base_image.sh. A Dockerfile only CI can build is a Dockerfile
-nobody has read. That bootstrapped base is the same release from the same
-archive, not Canonical's published image bit for bit, so CI stays the
-authority on the published base and its gate has not yet run on a pushed
-commit.
+It says what it is doing: one line per request on stdout, as it happens —
+GET /login 200 3ms. Every response helper returns its status code instead of
+1, because a log line needs the status the handler chose.
 
-The first build failed on a real bug: stage0.py -o build/orders did not create
-build/. The linker's error for a missing output directory is "cannot open
-output file", which reads like a permissions problem and is not one. `strata
-build` had a mkdir -p of its own, so the compiler was only ever missing it
-when called directly — which is exactly what a Dockerfile does.
+A form from somewhere else is refused. Each session carries a second random
+token, never sent as a cookie; every form renders it and every write checks
+it. A signed-in operator's browser could be made to post to this service by
+any page on the web. journey_orders now reads the token off the page the way
+a browser does — a test that could still post without one would have meant
+the protection was not real.
 
-STAGES.md: stage 9 closed, stage 10 is where we are.
+Guessing a password stops working. Five failures lock an account for five
+minutes; the lockout is checked before the password and answers identically
+whatever was typed, so it does not tell an attacker which usernames exist. It
+lives on the user row rather than in a table of attempts, because the language
+has no delete and a table of attempts would grow for as long as someone was
+attacking it.
+
+A flood is refused rather than forked: 64 connections at once, the 65th
+answered 503. That meant counting children, which meant taking SIGCHLD back
+from SIG_IGN — and that brought zombies back, because a parent that reaps only
+when the next connection arrives never reaps while idle. The listening socket
+now has a one-second timeout and the loop reaps at the top of each pass.
+
+test_suite/journey_operate.py walks 21 steps. STAGES.md: all ten closed, with
+what is still not true listed rather than implied.
+
+All suites green: conformance 182/182, four differentials identical, fixpoint
+reached, stdlib 23/23, project 14/14, journeys 26/26, 19/19, 19/19, 19/19 and
+21/21, repair loop 48/48.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

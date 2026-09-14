@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Stage 10 — operating the thing.
+
+Everything up to here proved the service does its job and survives contact.
+This asks the different question: could anyone run it? Can they see what it is
+doing, and does it refuse the traffic that is not a customer?
+
+  - one line per request, on stdout, as it happens
+  - a form posted from somewhere else is refused
+  - guessing a password locks the account, and the lockout does not leak
+    which usernames are real
+  - a flood of connections is refused rather than forking until the machine
+    runs out of processes
+
+What it found on the way in:
+
+  - A signed-in operator's browser could be made to post to this service by
+    any page on the web. Nothing distinguished a form this service rendered
+    from one that merely pointed at it.
+  - Passwords could be guessed as fast as the service could answer, which was
+    about 450 a second.
+  - `SIGCHLD` was handed to `SIG_IGN`, so the service could not count its own
+    children and had no way to refuse the next connection.
+  - `strata test` in the module that holds the lockout rules stopped seeing
+    them: a module-level `int LOCKOUT_AFTER = 5;` does not parse, and takes
+    the rest of the file with it.
+
+Usage:  python3 test_suite/journey_operate.py
+"""
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.cookiejar import CookieJar
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+PASS = FAIL = 0
+
+
+def ok(name, cond, detail=""):
+    global PASS, FAIL
+    if cond:
+        print(f"  PASS  {name}")
+        PASS += 1
+    else:
+        print(f"  FAIL  {name}" + (f" — {detail}" if detail else ""))
+        FAIL += 1
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None
+
+
+def main():
+    tmp = tempfile.mkdtemp(prefix="strata-operate-")
+    work = os.path.join(tmp, "work")
+    shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(
+        ".git", "build", "__pycache__", "_to_delete"))
+    app = os.path.join(work, "apps", "orders")
+    port = free_port()
+    proc = None
+    lines = []
+
+    try:
+        src = os.path.join(app, "src", "main.sta")
+        text = open(src).read()
+        open(src, "w").write(text.replace("http_listen(8080)",
+                                          f"http_listen({port})"))
+        r = subprocess.run([os.path.join(work, "bin", "strata"), "build"],
+                           cwd=app, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            print((r.stdout + r.stderr)[-400:])
+            ok("the service builds", False)
+            return 1
+
+        proc = subprocess.Popen([os.path.join(app, "build", "orders")], cwd=app,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, bufsize=1)
+
+        # Read the log on a thread, so a test can look at what has been written
+        # so far without blocking on the next line.
+        def pump():
+            for line in proc.stdout:
+                lines.append(line.strip())
+        threading.Thread(target=pump, daemon=True).start()
+
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(80):
+            time.sleep(0.1)
+            try:
+                urllib.request.urlopen(base + "/health", timeout=2).read()
+                break
+            except Exception:
+                continue
+
+        def session():
+            return urllib.request.build_opener(
+                NoRedirect, urllib.request.HTTPCookieProcessor(CookieJar()))
+
+        def go(opener, path, data=None, method=None):
+            req = urllib.request.Request(base + path, data=data, method=method)
+            try:
+                r = opener.open(req, timeout=10)
+                return r.status, r.read().decode(), dict(r.headers)
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode(), dict(e.headers)
+
+        print("\n── Anyone can see what it is doing ──────────────────────────────")
+        ok("it logs that it started",
+           any("listening" in l for l in lines), str(lines[:3]))
+
+        before = len(lines)
+        s1 = session()
+        go(s1, "/login")
+        time.sleep(0.4)
+        new = lines[before:]
+        ok("a request produces a log line", len(new) >= 1, str(new))
+        ok("which says what was asked, what it got and how long it took",
+           bool(new) and re.match(r"^GET /login 200 \d+ms$", new[-1]),
+           str(new[-1:]))
+
+        before = len(lines)
+        go(s1, "/nope")
+        time.sleep(0.4)
+        ok("a signed-out request is logged as the redirect it was",
+           any(l.startswith("GET /nope 303") for l in lines[before:]),
+           str(lines[before:]))
+
+        print("\n── A form from somewhere else is refused ────────────────────────")
+        go(s1, "/login", b"username=manager&password=strata", "POST")
+        code, body, _ = go(s1, "/")
+        ok("signed in, the dashboard renders", code == 200, f"got {code}")
+        m = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', body)
+        csrf = m.group(1) if m else ""
+        ok("its forms carry a token", len(csrf) == 64, f"len {len(csrf)}")
+
+        code, _, _ = go(s1, "/orders",
+                        b"customer=forged&region=apac&amount=1.00", "POST")
+        ok("a write with a valid session but no token is refused",
+           code == 403, f"got {code}")
+
+        before = len(lines)
+        go(s1, "/nope")
+        time.sleep(0.4)
+        ok("and now that there is a session, a 404 is logged as a 404",
+           any(l.startswith("GET /nope 404") for l in lines[before:]),
+           str(lines[before:]))
+
+        code, _, _ = go(s1, "/orders",
+                        b"_csrf=0000&customer=forged&region=apac&amount=1.00",
+                        "POST")
+        ok("and a wrong token is refused too", code == 403, f"got {code}")
+
+        code, _, _ = go(s1, "/orders",
+                        f"_csrf={csrf}&customer=real&region=apac&amount=1.00"
+                        .encode(), "POST")
+        ok("the page's own form still works", code == 303, f"got {code}")
+
+        # A second session's token must not work in this one.
+        s2 = session()
+        go(s2, "/login", b"username=manager&password=strata", "POST")
+        _, body2, _ = go(s2, "/")
+        m2 = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', body2)
+        other = m2.group(1) if m2 else ""
+        ok("the two sessions have different tokens", other and other != csrf)
+        code, _, _ = go(s1, "/orders",
+                        f"_csrf={other}&customer=x&region=apac&amount=1.00"
+                        .encode(), "POST")
+        ok("another session's token does not work here", code == 403,
+           f"got {code}")
+
+        print("\n── Guessing a password stops working ────────────────────────────")
+        guesser = session()
+        codes = []
+        for i in range(5):
+            _, b, _ = go(guesser, "/login",
+                         f"username=manager&password=wrong{i}".encode(), "POST")
+            codes.append("Wrong username or password" in b)
+        ok("the first five guesses are simply wrong", all(codes), str(codes))
+
+        code, body, _ = go(guesser, "/login",
+                           b"username=manager&password=wrong5", "POST")
+        ok("the sixth is refused with 429", code == 429, f"got {code}")
+        ok("and says the account is locked", "Too many attempts" in body,
+           body[:120])
+
+        code, body, _ = go(guesser, "/login",
+                           b"username=manager&password=strata", "POST")
+        ok("the real password does not work while locked", code == 429,
+           f"got {code}")
+
+        code, body, _ = go(guesser, "/login",
+                           b"username=ghost&password=whatever", "POST")
+        ok("an account that does not exist answers like a wrong password, "
+           "not like a lockout", code == 200
+           and "Wrong username or password" in body, f"got {code}")
+
+        print("\n── A flood is refused, not served ───────────────────────────────")
+        # Open more connections than the service will serve at once and hold
+        # them, so the cap is what answers rather than the speed of the box.
+        held = []
+        try:
+            for _ in range(90):
+                c = socket.create_connection(("127.0.0.1", port), timeout=5)
+                c.sendall(b"GET /login HTTP/1.1\r\nHost: x\r\n")   # unfinished
+                held.append(c)
+            time.sleep(1.0)
+            busy = 0
+            for c in held:
+                c.settimeout(2)
+                try:
+                    if b"503" in c.recv(64):
+                        busy += 1
+                except Exception:
+                    pass
+            ok("connections past the cap are answered 503", busy > 0,
+               f"{busy} of {len(held)}")
+        finally:
+            for c in held:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+        time.sleep(0.5)
+        ok("the service is still up", proc.poll() is None)
+        code, _, _ = go(session(), "/login")
+        ok("and serving normally afterwards", code == 200, f"got {code}")
+        ok("the refusals are in the log",
+           any(l.startswith("- - 503") for l in lines), str(lines[-3:]))
+
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("\n" + "=" * 64)
+    print(f"  {PASS}/{PASS + FAIL} steps passed")
+    print("=" * 64)
+    if FAIL:
+        print("  Nobody could operate this yet. NOT OK")
+        return 1
+    print("  The service can be watched, and refuses what is not a customer. OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

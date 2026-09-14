@@ -34,7 +34,19 @@ layout LoginFailed() {
 // The dashboard is a function of what it is showing. `region` is "" for all
 // regions; Strata has no module-level variables, so a view that filters has
 // to take the filter as an argument — which is the better shape anyway.
-layout Dashboard(str region, str notice) {
+// A page that can be signed out of, or written from, carries the session's
+// CSRF token in every form. The token is a parameter because the view has no
+// way to read a session and should not have one.
+layout LoginLocked() {
+    window "Sign in — Orders" [width = 420] {
+        column [padding = 24, background = "#10131a"] {
+            text "Too many attempts" [color = "#ff7b72", weight = "bold"];
+            text "This account is locked for a few minutes." [color = "#8b949e"];
+        }
+    }
+}
+
+layout Dashboard(str region, str notice, str csrf) {
     window "Orders" [width = 1100] {
         row [padding = 16, background = "#10131a"] {
             text "ORDERS" [color = "#7ee787", weight = "bold", size = 18];
@@ -42,6 +54,7 @@ layout Dashboard(str region, str notice) {
             text region [color = "#8b949e"];
             spacer;
             form [action = "/logout", method = "post"] {
+                field "_csrf" [type = "hidden", value = csrf];
                 button "Sign out" [type = "submit"];
             }
         }
@@ -50,6 +63,7 @@ layout Dashboard(str region, str notice) {
             text notice [color = "#7ee787"];
 
             form [action = "/orders", method = "post"] {
+                field "_csrf" [type = "hidden", value = csrf];
                 field "customer" [placeholder = "customer"];
                 field "region" [placeholder = "region"];
                 field "amount" [type = "number", step = "0.01", placeholder = "0.00"];
@@ -66,6 +80,7 @@ layout Dashboard(str region, str notice) {
                     text str(O.amount) [color = "#7ee787"];
                     spacer;
                     form [action = "/close", method = "post"] {
+                        field "_csrf" [type = "hidden", value = csrf];
                         field "id" [type = "hidden", value = str(O.id)];
                         button "Close" [type = "submit"];
                     }

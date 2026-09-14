@@ -191,8 +191,13 @@ def main():
         ok("the rows from before the change are on the dashboard",
            "acme" in page and "globex" in page, page[:200])
 
+        # The service requires the session's CSRF token on a write, so the
+        # journey reads it off the page it was rendered on, like a browser.
+        token = re.search(r'name="_csrf" type="hidden" value="([^"]+)"', page)
         opener.open(f"http://127.0.0.1:{port}/orders",
-                    b"customer=wayne&region=amer&amount=99.50", timeout=5)
+                    f"_csrf={token.group(1) if token else ''}"
+                    f"&customer=wayne&region=amer&amount=99.50".encode(),
+                    timeout=5)
         page = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
         ok("a new order can still be created", "wayne" in page, page[:200])
         proc.terminate(); proc.wait(timeout=10); proc = None

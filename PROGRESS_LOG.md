@@ -375,3 +375,25 @@ the compiler was called directly.
 Not done: the CI gate has not run on a pushed commit, so Canonical's published
 base is still unverified here; and stage 10 has nothing in it but
 line-buffered logs.
+
+## 2026-09-14 — stage 10 closed (attended)
+
+Landed: a request log, CSRF tokens on every form and every write, a five-strike
+account lockout that does not leak which usernames exist, a 64-connection cap
+answering 503, and `test_suite/journey_operate.py` — 21 steps.
+
+All ten stages are now closed, with stage 3 closed on the rules repair backend
+alone and stage 9's published base still verified only by CI.
+
+Found on the way in: the service could be made to post by any page on the web;
+a password could be guessed as fast as it could answer; counting children to
+enforce a cap reintroduced zombies, because a parent that reaps only on the
+next connection never reaps while idle.
+
+Corrected in my own work: the first zombie test slept a fixed 2.5s and failed
+on timing rather than on the defect. It now waits for the process table to
+clear and fails only if it does not.
+
+Not done: no metrics; nothing prunes an expired session; the lockout is per
+account rather than per source, so it also lets someone lock an operator out
+on purpose.

@@ -22,7 +22,7 @@ import views  from app;
 int seed_if_empty() {
     if (count(User <- [id > 0]) == 0) {
         User <- [id = 1, username = "manager",
-        password_hash = hash_password("strata")];
+        password_hash = hash_password("strata"), failed_logins = 0, locked_until = 0];
         save User to "data/users.tsv";
         print("seeded user 'manager' with password 'strata' — demo only");
     }
@@ -38,6 +38,10 @@ int seed_if_empty() {
 // ── Sessions ─────────────────────────────────────────────────────────────────
 
 int now_seconds() { native "return (int64_t)time(NULL);"; }
+
+// How many connections may be in flight at once. A process each, so this is
+// also the cap on processes this service will create.
+int max_connections() { return 64; }
 
 // The signed-in user's id, or 0. A session that has expired is not a session.
 int current_user(str request) {
@@ -55,8 +59,11 @@ int current_user(str request) {
 
 str start_session(int user_id) {
     str token = new_session_token();
+    // A second random token, never sent as a cookie. A form carries it, so a
+    // request that did not come from a page this service rendered cannot
+    // produce it — which is the whole of CSRF protection.
     Session <- [token = token, user_id = user_id,
-    expires_at = now_seconds() + 28800];
+    expires_at = now_seconds() + 28800, csrf = new_session_token()];
     save_sessions();
     return token;
 }
@@ -87,12 +94,26 @@ str cookie_header(str token) {
 int do_login(int conn, str body) {
     str want_user = http_form_value(body, "username");
     str password = http_form_value(body, "password");
+    int now = now_seconds();
+
+    // The lockout is checked before the password, and answers the same way for
+    // a locked account whatever was typed — otherwise the lockout itself tells
+    // an attacker which usernames are real.
+    if (locked_for(want_user, now) > 0) {
+        return http_respond(conn, 429, "text/html; charset=utf-8",
+        render LoginLocked);
+    }
+
     list[User] found = User <- [username == want_user];
     if (count(found) == 0) { return http_ok(conn, render LoginFailed); }
     User u = found[0];
     if (password_matches(password, u.password_hash) == 0) {
+        note_failure(want_user, now);
+        save_users();
         return http_ok(conn, render LoginFailed);
     }
+    clear_failures(want_user);
+    save_users();
     return http_redirect_with(conn, "/", cookie_header(start_session(u.id)));
 }
 
@@ -163,6 +184,18 @@ int handle(int conn, str request) {
         return http_forbidden(conn);
     }
 
+    // Every write carries the session's CSRF token. A signed-in operator's
+    // browser can be made to post to this service by any page on the web; what
+    // that page cannot do is read this token out of a page it is not allowed
+    // to see.
+    str sid = http_cookie(request, "sid");
+    if (str_eq(method, "POST") == 1) {
+        if (str_eq(http_form_value(body, "_csrf"), csrf_for(sid)) == 0) {
+            return http_respond(conn, 403, "text/html; charset=utf-8",
+            "<h1>403</h1><p>this form did not come from here</p>");
+        }
+    }
+
     if (str_eq(path, "/logout") == 1)  { return do_logout(conn, request); }
     if (str_eq(path, "/orders") == 1)  { return do_create(conn, body); }
     if (str_eq(path, "/close") == 1)   { return do_close(conn, body); }
@@ -170,7 +203,7 @@ int handle(int conn, str request) {
     if (str_eq(path, "/") == 1) {
         str region = http_form_value(http_query_string(request), "region");
         str notice = http_form_value(http_query_string(request), "notice");
-        return http_ok(conn, render Dashboard(region, notice));
+        return http_ok(conn, render Dashboard(region, notice, csrf_for(sid)));
     }
     return http_not_found(conn);
 }
@@ -184,10 +217,12 @@ int handle(int conn, str request) {
 // handler has saved, because two children that each read, change and write a
 // whole table would otherwise lose one of the two changes.
 int serve(int conn) {
+    int started = now_millis();
     http_set_timeout(conn, 5);
     str request = http_read_request(conn);
     if (str_len(request) == 0) {
-        http_request_timeout(conn);
+        int code = http_request_timeout(conn);
+        log_request("-", "-", code, now_millis() - started);
         http_close(conn);
         return 1;
     }
@@ -202,8 +237,12 @@ int serve(int conn) {
         lock = lock_exclusive("data/.lock");
     }
     load_all();
-    handle(conn, request);
+    int status = handle(conn, request);
     unlock(lock);
+    // Logged after the work, with what the handler actually returned. A log
+    // line written before the handler runs is a log of intentions.
+    log_request(http_method(request), http_path(request), status,
+    now_millis() - started);
     http_close(conn);
     return 1;
 }
@@ -215,22 +254,41 @@ int main() {
     int fd = http_listen(8080);
     if (fd < 0) { eprint("could not bind port 8080"); return 1; }
 
-    // A client that walks away mid-response used to take the service with it,
-    // and every child that finished used to stay behind as a zombie.
+    // A client that walks away mid-response used to take the service with it.
     http_ignore_broken_pipes();
-    http_reap_children();
 
     print("orders service listening on http://127.0.0.1:8080");
 
+    // Children are counted rather than handed to SIG_IGN, because a service
+    // that does not know how many it has cannot refuse the next one. Nothing
+    // used to stop a client opening connections faster than they could be
+    // served, until the machine ran out of processes.
+    // A one-second receive timeout on the listening socket so accept() gives
+    // up regularly. Without it the loop sits in accept() while finished
+    // children stay defunct: reaping only when the next connection arrives
+    // leaves zombies for as long as the service is idle, which is exactly when
+    // nobody is watching. This costs one wakeup a second.
+    http_set_timeout(fd, 1);
+
+    int live = 0;
     while (1 == 1) {
+        live = live - http_reap_finished();
+        if (live < 0) { live = 0; }
         int conn = http_accept(fd);
         if (conn < 0) { continue; }
+        if (live >= max_connections()) {
+            http_too_busy(conn);
+            log_request("-", "-", 503, 0);
+            http_close(conn);
+            continue;
+        }
         int pid = http_fork();
         if (pid == 0) {
             http_close(fd);
             serve(conn);
             http_exit(0);
         }
+        if (pid > 0) { live = live + 1; }
         // The parent keeps no reference to a connection it is not serving; a
         // socket left open here is a connection the client never sees closed.
         http_close(conn);

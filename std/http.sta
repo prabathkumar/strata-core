@@ -118,6 +118,54 @@ str http_read_request(int conn) {
 
 int http_close(int conn) { native "close($conn); return 1;"; }
 
+// ── Operating it ─────────────────────────────────────────────────────────────
+
+// Milliseconds since the epoch, for timing a request.
+int now_millis() {
+    native "
+    struct timeval tv; gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000 + (int64_t)(tv.tv_usec / 1000);
+    ";
+}
+
+// One line per request, to stdout, in the order a person reads it:
+// what was asked, what it got, how long it took.
+//
+//     GET /            200   3ms
+//     POST /orders     303  11ms
+//
+// There is no configurable format and no levels. A service nobody can see is
+// worse than a service with a format somebody dislikes.
+def log_request(str method, str path, int status, int took_ms) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, method);
+    sb_append(&sb, " ");
+    sb_append(&sb, path);
+    sb_append(&sb, " ");
+    sb_append(&sb, str(status));
+    sb_append(&sb, " ");
+    sb_append(&sb, str(took_ms));
+    sb_append(&sb, "ms");
+    print(sb_to_str(&sb));
+}
+
+// 503, for a request arriving when every connection slot is taken.
+int http_too_busy(int conn) {
+    return http_respond(conn, 503, "text/html; charset=utf-8",
+    "<h1>503</h1><p>too many connections</p>");
+}
+
+// Reap whatever children have finished, without waiting for any, and return
+// how many. A server that caps its concurrency has to count its children
+// itself, so it cannot hand them to SIG_IGN.
+int http_reap_finished() {
+    native "
+    int64_t n = 0;
+    while (waitpid(-1, NULL, WNOHANG) > 0) { n++; }
+    return n;
+    ";
+}
+
 // ── Surviving contact ────────────────────────────────────────────────────────
 //
 // Three things kill a server that works perfectly against one polite client.
@@ -219,6 +267,7 @@ int http_respond(int conn, int status, str content_type, str body) {
     if ($status == 400) reason = \"Bad Request\";
     if ($status == 403) reason = \"Forbidden\";
     if ($status == 408) reason = \"Request Timeout\";
+    if ($status == 503) reason = \"Service Unavailable\";
     if ($status == 500) reason = \"Internal Server Error\";
     char head[512];
     int hl = snprintf(head, sizeof(head),
@@ -229,7 +278,10 @@ int http_respond(int conn, int status, str content_type, str body) {
         (long long)$status, reason, $content_type, strlen($body));
     if (write($conn, head, hl) < 0) return 0;
     if (write($conn, $body, strlen($body)) < 0) return 0;
-    return 1;
+    /* The status, not a 1. A handler's return value is then the status it
+       chose, which is what a request log needs and what a caller checking for
+       403 can read. Nothing was using the old 1. */
+    return $status;
     ";
 }
 
@@ -318,7 +370,8 @@ int http_redirect(int conn, str location) {
         \"HTTP/1.1 303 See Other\\r\\nLocation: %s\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\",
         $location);
     if (write($conn, head, hl) < 0) return 0;
-    return 1;
+    /* 303, not 1 — the status is what the request log records. */
+    return 303;
     ";
 }
 
@@ -431,7 +484,7 @@ int http_respond_with(int conn, int status, str content_type, str extra, str bod
         (long long)$status, reason, $content_type, strlen($body), $extra);
     if (write($conn, head, hl) < 0) return 0;
     if (write($conn, $body, strlen($body)) < 0) return 0;
-    return 1;
+    return $status;
     ";
 }
 
