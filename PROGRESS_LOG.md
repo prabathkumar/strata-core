@@ -219,3 +219,29 @@ Two bugs found by the test, not by hand:
   - and separately: "\r\n" in a string literal did not compile at all.
 
 All thirteen suites green. Conformance 175/175, project_build 21/21.
+
+## 2026-09-14 — Journey A closed
+
+Sign in → dashboard → create → close → sign out → refused. 25 steps, walked by
+test_suite/journey_orders.py on every commit.
+
+Four bugs, every one found by the journey and none reachable by a unit test:
+  - crypt(3) returns a buffer libc reuses, so the stored hash and a fresh one
+    were the same pointer and EVERY PASSWORD MATCHED.
+  - random_hex returned a static char[], so two session tokens were the same
+    pointer — every session was the same session.
+  - `Session <- [token == token]` compares the column with itself: a lookup for
+    a token that does not exist returned every row. Any cookie authenticated.
+    Now E008.
+  - a `link` in an imported module was dropped, because dedup keyed nameless
+    declarations as None and the first one marked every later one emitted.
+
+Built along the way because the journey needed them: layout parameters (there
+are no module-level variables — they do not parse, despite NEXT_STEPS claiming
+Phase 1 delivered them), computed HTML attributes, cookies, query strings,
+headers, 303/403.
+
+Not built: delete does not exist in the language. Sign-out expires a session
+rather than removing it, and nothing prunes the table.
+
+All fourteen suites green. Conformance 182/182, journey 25/25.

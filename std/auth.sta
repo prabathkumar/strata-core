@@ -1,0 +1,75 @@
+// STRATA STANDARD LIBRARY — std/auth.sta
+// Password hashing and session tokens.
+//
+// The hashing is glibc's crypt(3) with SHA-512 and a random salt, reached
+// through a `foreign` block. Writing a password hash by hand is how projects
+// ship something that looks like security and is not, so this borrows one that
+// is already reviewed — which is also what the FFI is for.
+//
+// What this is NOT: there is no rate limiting, no lockout, no password policy,
+// no reset flow, and no protection against a timing attack on the username
+// lookup. Those belong to the application, and this file does not pretend to
+// provide them.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+foreign "crypt.h" link "crypt" {
+    str crypt(str phrase, str setting);
+}
+
+// Random bytes as lowercase hex. Used for salts and session tokens, so it
+// reads /dev/urandom rather than rand() — a predictable session token is the
+// same as no session token.
+str random_hex(int bytes) {
+    native "
+    static char out[129];
+    int want = (int)$bytes;
+    if (want < 1) want = 1;
+    if (want > 64) want = 64;
+    unsigned char raw[64];
+    FILE* f = fopen(\"/dev/urandom\", \"rb\");
+    if (!f) { out[0] = 0; return out; }
+    size_t got = fread(raw, 1, (size_t)want, f);
+    fclose(f);
+    if (got != (size_t)want) { out[0] = 0; return out; }
+    static const char* hex = \"0123456789abcdef\";
+    for (int i = 0; i < want; i++) {
+        out[i*2]   = hex[(raw[i] >> 4) & 0xF];
+        out[i*2+1] = hex[raw[i] & 0xF];
+    }
+    out[want*2] = 0;
+    /* A copy: a static buffer would make two tokens the same pointer. */
+    return strata_dup(out);
+    ";
+}
+
+// crypt(3) returns a buffer libc owns and reuses on the next call. Without a
+// copy the stored hash and a freshly computed one are the SAME POINTER, so
+// comparing them always succeeds and every password is accepted.
+str dup_str(str s) { native "return strata_dup($s);"; }
+
+// A SHA-512 crypt hash with a fresh 16-character salt. The salt is stored
+// inside the result, which is why verifying only needs the stored hash.
+str hash_password(str plaintext) {
+    StringBuilder setting = sb_new();
+    sb_append(&setting, "$6$");
+    sb_append(&setting, random_hex(8));
+    sb_append(&setting, "$");
+    return dup_str(crypt(plaintext, sb_to_str(&setting)));
+}
+
+// Re-hash the candidate with the stored hash as the setting: crypt reads the
+// algorithm and salt out of it, so a match means the same password.
+int password_matches(str plaintext, str stored) {
+    if (str_len(stored) == 0) { return 0; }
+    str again = dup_str(crypt(plaintext, stored));
+    if (str_len(again) == 0) { return 0; }
+    return str_eq(again, stored);
+}
+
+// 256 bits, hex-encoded.
+str new_session_token() {
+    return random_hex(32);
+}

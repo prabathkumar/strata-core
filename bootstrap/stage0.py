@@ -196,12 +196,20 @@ class CodeGen:
 
         for mod_name, unit in units:
             is_root = unit is self.ast
-            decls = [d for d in unit.declarations if getattr(d, "name", None) not in emitted_decls]
+            # Dedup is by name, for the diamond case — one module reached by
+            # two import paths. A `foreign` block has no name, so keying it as
+            # None made the first one mark every later nameless declaration as
+            # already emitted: a `link` in an imported module was dropped and
+            # the program failed at the linker.
+            decls = [d for d in unit.declarations
+                     if getattr(d, "name", None) is None
+                     or getattr(d, "name") not in emitted_decls]
             fns = [f for f in unit.functions if f.name not in emitted_fns]
             if not is_root and (decls or fns):
                 self.emit_raw(f"\n/* ── module {mod_name} ── */")
             for d in decls:
-                emitted_decls.add(getattr(d, "name", None))
+                if getattr(d, "name", None) is not None:
+                    emitted_decls.add(d.name)
                 self._forward_declare(d)
             for d in decls:
                 self._gen_decl(d)
@@ -528,8 +536,18 @@ int main(int argc, char** argv) {
             self.func_returns[fn.name] = self._c_type(fn.return_type)
 
     def _gen_layout(self, decl):
-        """A layout becomes a function that writes HTML to a stream."""
-        self.emit_raw(f"\nvoid {decl.name}_render(FILE* _out) {{")
+        """A layout becomes a function that writes HTML to a stream.
+
+        Its parameters are the view's inputs — a filter, an id — because
+        Strata has no module-level variables and a view that can only read
+        globals is a view that cannot be reused.
+        """
+        params = getattr(decl, "params", [])
+        sig = "".join(f", {self._c_param(p)}" for p in params)
+        self.emit_raw(f"\nvoid {decl.name}_render(FILE* _out{sig}) {{")
+        self.var_types = dict(self.var_types)
+        for p in params:
+            self.var_types[p.name] = self._c_type(p.param_type)
         self.indent = 1
         self.emit('fprintf(_out,"<!doctype html><meta charset=\\"utf-8\\">");')
         for st in decl.body:
@@ -547,7 +565,7 @@ int main(int argc, char** argv) {
         self._gen_stmt(node, [])
 
     def _attrs_for(self, el):
-        """HTML attributes from an element's properties."""
+        """Literal HTML attributes from an element's properties."""
         out = []
         for p in el.props:
             if p.name not in self.ATTR_PROPS:
@@ -559,6 +577,22 @@ int main(int argc, char** argv) {
             out.append(f' {p.name}=\\"{self._html_escape(str(raw))}\\"')
         return "".join(out)
 
+    def _computed_attrs(self, el):
+        """Attributes whose value is an expression rather than a literal.
+
+        A row's own id has to reach the form that acts on it, and a literal
+        cannot carry it. These are emitted as their own fprintf because the
+        value is only known at run time.
+        """
+        out = []
+        for p in el.props:
+            if p.name not in self.ATTR_PROPS:
+                continue
+            if isinstance(p.value, (StrLiteral, IntLiteral, FloatLiteral)):
+                continue
+            out.append((p.name, p.value))
+        return out
+
     def _gen_element(self, el):
         tag = self.HTML_TAG.get(el.tag, "div")
         css = self._css_for(el)
@@ -569,8 +603,11 @@ int main(int argc, char** argv) {
         if el.tag == "field" and isinstance(el.label, StrLiteral) \
            and " name=" not in attrs:
             attrs = f' name=\\"{self._html_escape(el.label.value)}\\"' + attrs
+        computed = self._computed_attrs(el)
         if tag in self.VOID_TAGS:
-            self.emit('fprintf(_out,"<' + tag + attrs + style + '>");')
+            self.emit('fprintf(_out,"<' + tag + attrs + '");')
+            self._emit_computed_attrs(computed)
+            self.emit('fprintf(_out,"' + style + '>");')
             return
         if el.tag == "window":
             title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
@@ -580,16 +617,29 @@ int main(int argc, char** argv) {
                 self._gen_layout_node(c)
             self.emit('fprintf(_out,"</body>");')
             return
-        self.emit('fprintf(_out,"<' + tag + attrs + style + '>");')
+        self.emit('fprintf(_out,"<' + tag + attrs + '");')
+        self._emit_computed_attrs(computed)
+        self.emit('fprintf(_out,"' + style + '>");')
         if el.label is not None and el.tag != "canvas":
             if isinstance(el.label, StrLiteral):
                 self.emit('fprintf(_out,"%s","' + self._html_escape(el.label.value) + '");')
             elif not isinstance(el.label, Identifier):
                 # A computed label — a field from a query row, for instance.
                 self.emit(f'fprintf(_out,"%s",{self._gen_expr(el.label, [])});')
+            elif el.label.name in self.var_types:
+                # A bare identifier names the element — `canvas topology_view`
+                # — unless it resolves to a value in scope, which is the same
+                # rule the type checker applies. Without this a layout
+                # parameter renders as nothing at all.
+                self.emit(f'fprintf(_out,"%s",{self._gen_expr(el.label, [])});')
         for c in el.children:
             self._gen_layout_node(c)
         self.emit('fprintf(_out,"</' + tag + '>");')
+
+    def _emit_computed_attrs(self, computed):
+        for name, value in computed:
+            self.emit(f'fprintf(_out," {name}=\\"%s\\"",'
+                      f'{self._gen_expr(value, [])});')
 
     def _gen_for_in(self, node):
         """Iterate a list, by its length.
@@ -1066,9 +1116,11 @@ int main(int argc, char** argv) {
             self.query_depth += 1
             tag = f"_r{self.query_depth}"
             self.query_depth -= 1
+            args = "".join("," + self._gen_expr(a, param_names)
+                           for a in getattr(expr, "args", []))
             return (f"({{ char* {tag}b = NULL; size_t {tag}n = 0; "
                     f"FILE* {tag}f = open_memstream(&{tag}b, &{tag}n); "
-                    f"{expr.target}_render({tag}f); "
+                    f"{expr.target}_render({tag}f{args}); "
                     f"strata_render_end({tag}f, &{tag}b); }})")
         if isinstance(expr, QueryExpr):
             return self._gen_query_expr(expr, param_names)

@@ -28,5 +28,5 @@ int print_line(str buffer_message) {
 }
 
 str convert_int_to_str(int hardware_value) {
-    native "static char _b[32]; snprintf(_b,32,\"%lld\",(long long)$hardware_value); return _b;";
+    native "char _b[32]; snprintf(_b,32,\"%lld\",(long long)$hardware_value); return strata_dup(_b);";
 }

@@ -1,17 +1,54 @@
 // The UI tier. A layout is a value: `render Dashboard` yields the document as
-// a str, which is what lets it answer an HTTP request rather than only being
-// written to a file.
+// a str, which is what lets it answer an HTTP request.
 
 import io     from std;
 import schema from app;
 
-layout Dashboard() {
+layout LoginPage() {
+    window "Sign in — Orders" [width = 420] {
+        column [padding = 24, background = "#10131a"] {
+            text "ORDERS" [color = "#7ee787", weight = "bold", size = 18];
+            text "Sign in to continue" [color = "#8b949e"];
+            form [action = "/login", method = "post"] {
+                field "username" [placeholder = "username"];
+                field "password" [type = "password", placeholder = "password"];
+                button "Sign in" [type = "submit"];
+            }
+        }
+    }
+}
+
+layout LoginFailed() {
+    window "Sign in — Orders" [width = 420] {
+        column [padding = 24, background = "#10131a"] {
+            text "Wrong username or password" [color = "#ff7b72"];
+            form [action = "/login", method = "post"] {
+                field "username" [placeholder = "username"];
+                field "password" [type = "password", placeholder = "password"];
+                button "Sign in" [type = "submit"];
+            }
+        }
+    }
+}
+
+// The dashboard is a function of what it is showing. `region` is "" for all
+// regions; Strata has no module-level variables, so a view that filters has
+// to take the filter as an argument — which is the better shape anyway.
+layout Dashboard(str region, str notice) {
     window "Orders" [width = 1100] {
         row [padding = 16, background = "#10131a"] {
             text "ORDERS" [color = "#7ee787", weight = "bold", size = 18];
+            spacer;
+            text region [color = "#8b949e"];
+            spacer;
+            form [action = "/logout", method = "post"] {
+                button "Sign out" [type = "submit"];
+            }
         }
+
         column [padding = 20] {
-            // Data flows inward here: the UI tier collects, not just renders.
+            text notice [color = "#7ee787"];
+
             form [action = "/orders", method = "post"] {
                 field "customer" [placeholder = "customer"];
                 field "region" [placeholder = "region"];
@@ -27,6 +64,11 @@ layout Dashboard() {
                     text O.region [color = "#8b949e"];
                     spacer;
                     text str(O.amount) [color = "#7ee787"];
+                    spacer;
+                    form [action = "/close", method = "post"] {
+                        field "id" [type = "hidden", value = str(O.id)];
+                        button "Close" [type = "submit"];
+                    }
                 }
             }
         }

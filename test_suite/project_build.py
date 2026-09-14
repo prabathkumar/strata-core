@@ -135,66 +135,34 @@ else:
             proc = subprocess.Popen([os.path.join(orders, "build", "orders")],
                                     cwd=orders, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
+            # What this suite is about is that a PROJECT builds and the
+            # binary it produces runs and answers. What the service does once
+            # it is running belongs to journey_orders.py, which signs in
+            # first — everything else is behind a session now.
             body = ""
-            for _ in range(40):
+            for _ in range(60):
                 time.sleep(0.1)
                 try:
                     body = urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/summary", timeout=2).read().decode()
+                        f"http://127.0.0.1:{port}/health", timeout=2).read().decode()
                     break
                 except Exception:
                     continue
-            # The numbers come from data/orders.tsv, read back through a load,
-            # which is what made the pointer-comparison bug visible.
-            ok("it serves the summary", "open orders:" in body, body[:160])
-            ok("the aggregates are right, after a load from disk",
-               "open orders: 2" in body and "1590.5" in body, body[:200])
+            ok("the binary it produced serves", body.strip() == "ok", repr(body[:80]))
 
-            # Data flowing inward: the UI tier renders the form, the post is
-            # parsed, validated, inserted, persisted and redirected.
-            page = urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/", timeout=5).read().decode()
-            ok("the page carries a form", '<form action="/orders"' in page)
-            ok("with named fields",
-               'name="customer"' in page and 'name="amount"' in page)
-
-            data = os.path.join(orders, "data", "orders.tsv")
-            before = open(data).read()
+            # Not urlopen: it follows the 303 to /login and reports 200, which
+            # would make "protected" indistinguishable from "wide open".
+            opener = urllib.request.build_opener(NoRedirect)
+            code = 0
             try:
-                # A 303 is the success case, so redirects must not be followed:
-                # following one would make a 200 on `/` look like proof.
-                opener = urllib.request.build_opener(NoRedirect)
-                code = 0
-                try:
-                    opener.open(urllib.request.Request(
-                        f"http://127.0.0.1:{port}/orders",
-                        data=b"customer=wayne+ent&region=apac&amount=450.25",
-                        method="POST"), timeout=5)
-                except urllib.error.HTTPError as e:
-                    code = e.code
-                ok("a post redirects with 303", code == 303, f"got {code}")
-
-                after = urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/summary", timeout=5).read().decode()
-                ok("the new order is counted", "open orders: 3" in after,
-                   after[:160])
-                ok("and its amount is in the total", "2040.75" in after,
-                   after[:160])
-                # `wayne+ent` is `wayne ent`: the body is percent-encoded.
-                ok("the row reached disk, decoded",
-                   "wayne ent" in open(data).read(), open(data).read()[-120:])
-
-                code = 0
-                try:
-                    opener.open(urllib.request.Request(
-                        f"http://127.0.0.1:{port}/orders",
-                        data=b"amount=1.00", method="POST"), timeout=5)
-                except urllib.error.HTTPError as e:
-                    code = e.code
-                ok("a post missing a required field is 400", code == 400,
-                   f"got {code}")
-            finally:
-                open(data, "w").write(before)
+                code = opener.open(
+                    f"http://127.0.0.1:{port}/summary", timeout=5).status
+            except urllib.error.HTTPError as e:
+                code = e.code
+            except Exception as e:
+                code = str(e)
+            ok("and its protected routes are protected", code in (303, 403),
+               f"got {code}")
     finally:
         if proc:
             proc.terminate()

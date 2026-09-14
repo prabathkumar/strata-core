@@ -105,6 +105,11 @@ jobs:
     - name: Project Builds And The Service Serves
       run: python3 test_suite/project_build.py
 
+    # The whole journey, not its parts: sign in, look, create, close, sign out,
+    # and be refused afterwards.
+    - name: Journey — Run The Orders Desk
+      run: python3 test_suite/journey_orders.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.

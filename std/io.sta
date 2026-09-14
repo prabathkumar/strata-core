@@ -23,7 +23,7 @@ str read_line() {
     if (fgets(_buf, sizeof(_buf), stdin) == NULL) _buf[0]='\\0';
     size_t _l=strlen(_buf);
     if (_l>0 && _buf[_l-1]=='\\n') _buf[_l-1]='\\0';
-    return _buf;
+    return strata_dup(_buf);
     ";
 }
 
@@ -49,11 +49,11 @@ int file_exists(str path) {
 }
 
 str int_to_str(int value) {
-    native "static char _b[32]; snprintf(_b,32,\"%lld\",(long long)$value); return _b;";
+    native "char _b[32]; snprintf(_b,32,\"%lld\",(long long)$value); return strata_dup(_b);";
 }
 
 str float_to_str(float value) {
-    native "static char _b[64]; snprintf(_b,64,\"%.6f\",$value); return _b;";
+    native "char _b[64]; snprintf(_b,64,\"%.6f\",$value); return strata_dup(_b);";
 }
 
 int str_to_int(str value) {

@@ -218,7 +218,10 @@ str node_json(Node n) {
         jfield(&sb, "width", str(n.i1));
         jfield(&sb, "activation", jstr(n.s1));
     }
-    if (k == 55) { jfield(&sb, "target", jstr(n.s1)); }
+    if (k == 55) {
+        jfield(&sb, "target", jstr(n.s1));
+        jfield(&sb, "args", jlist(n.v1));
+    }
     if (k == 6) {
         jfield(&sb, "name", jstr(n.s1));
         jfield(&sb, "title", jstr(n.s2));
@@ -297,7 +300,11 @@ str node_json(Node n) {
         if (n.i1 == 0) { jfield(&sb, "value", "false"); }
     }
     if (k == 54) { jfield(&sb, "name", jstr(n.s1)); }
-    if (k == 70) { jfield(&sb, "name", jstr(n.s1)); jfield(&sb, "body", jlist(n.v1)); }
+    if (k == 70) {
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "params", jlist(n.v2));
+        jfield(&sb, "body", jlist(n.v1));
+    }
     if (k == 71) {
         jfield(&sb, "tag", jstr(n.s1));
         jfield(&sb, "label", jchild(n.c1));
@@ -1151,11 +1158,22 @@ Node parse_primary(P &p) {
     if (k == 40) { p_advance(&p); Node n = node_new(53);
         n.i1 = 0; n_pos(n, t); return n; }
 
-    if (k == 30) {                             // render X  -> the document
+    if (k == 30) {                             // render X / render X(args)
         p_advance(&p);
         Token target = p_expect(&p, 4);
+        NodeVec args = nv_new();
+        if (p_check(&p, 52) == 1) {
+            p_advance(&p);
+            while (p_check(&p, 53) == 0) {
+                if (p_at_end(&p) == 1) { break; }
+                nv_push(&args, parse_expr(&p));
+                if (p_check(&p, 58) == 1) { p_advance(&p); }
+            }
+            p_expect(&p, 53);
+        }
         Node n = node_new(55);
         n.s1 = target.value;
+        n.v1 = nv_ptr(args);
         n_pos(n, t);
         return n;
     }
@@ -1377,13 +1395,18 @@ Node parse_verify_block(P &p) {
 Node parse_layout(P &p) {
     Token t = p_expect(&p, 31);
     Token name = p_expect(&p, 4);
-    p_expect(&p, 52); p_expect(&p, 53);
+    p_expect(&p, 52);
+    // A view is a function of its inputs. Without parameters a layout can only
+    // show what a global holds, and Strata has no module-level variables.
+    NodeVec params = parse_params(&p);
+    p_expect(&p, 53);
     p_expect(&p, 50);
     NodeVec body = parse_layout_body(&p);
     p_expect(&p, 51);
     Node n = node_new(70);
     n.s1 = name.value;
     n.v1 = nv_ptr(body);
+    n.v2 = nv_ptr(params);
     n_pos(n, t);
     return n;
 }

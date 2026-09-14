@@ -890,6 +890,52 @@ compile_run("a_layout_renders_a_form",
     'import io from std;\nlayout F() { window "w" { form [action = "/x", method = "post"] { field "who" [placeholder = "name"]; button "Go" [type = "submit"]; } } }\nint main() { print(render F); return 0; }',
     '<!doctype html><meta charset="utf-8"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
+
+print("\n── A query name that is also a variable ─────────────────────────")
+
+# Inside a query a bare name is always the COLUMN. If a variable of the same
+# name is in scope, the column wins silently: `Session <- [token == token]`
+# compares the column with itself and matches every row. Written as a session
+# lookup — which is the natural way to write it — any token authenticates.
+_SESS = 'database Session { str token; int user_id; }\n'
+
+test("a_variable_shadowed_by_a_column_is_E008",
+    _SESS + 'int lookup(str token) { list[Session] r = Session <- [token == token]; return count(r); }',
+    "E008")
+
+test("a_differently_named_variable_is_fine",
+    _SESS + 'int lookup(str want) { list[Session] r = Session <- [token == want]; return count(r); }')
+
+test("a_column_compared_with_a_literal_is_fine",
+    _SESS + 'int lookup() { list[Session] r = Session <- [token == "abc"]; return count(r); }')
+
+print("\n── Views take their inputs ──────────────────────────────────────")
+
+# Strata has no module-level variables, so a view that filters has to take the
+# filter as an argument.
+compile_run("a_layout_takes_parameters",
+    'import io from std;\nlayout D(str region) { window "w" { text region; } }\nint main() { print(render D("apac")); return 0; }',
+    '<!doctype html><meta charset="utf-8"><title>w</title><body><span>apac</span></body>')
+
+# A row's own id has to reach the form that acts on it, which a literal
+# attribute cannot carry.
+compile_run("an_attribute_value_can_be_computed",
+    'import io from std;\ndatabase T { int id; }\nlayout D() { window "w" { list[T] r = T <- [id > 0]; for O in r { field "id" [type = "hidden", value = str(O.id)]; } } }\nint main() { T <- [id = 7]; print(render D); return 0; }',
+    '<!doctype html><meta charset="utf-8"><title>w</title><body><input name="id" type="hidden" value="7"></body>')
+
+print("\n── Native blocks and shared buffers ─────────────────────────────")
+
+# A native block returning a `static char[]` hands every caller the SAME
+# pointer, so two results alias and the second overwrites the first. That made
+# two session tokens identical and every password match.
+compile_run("two_results_do_not_alias",
+    'import io from std;\nimport str from std;\nimport mem from std;\nimport auth from std;\nint main() { str a = new_session_token(); str b = new_session_token(); if (str_eq(a, b) == 1) { print("ALIASED"); } else { print("distinct"); } return 0; }',
+    "distinct")
+
+compile_run("a_wrong_password_is_rejected",
+    'import io from std;\nimport str from std;\nimport mem from std;\nimport auth from std;\nint main() { str h = hash_password("right"); print(strata_concat(str(password_matches("right", h)), str(password_matches("wrong", h)))); return 0; }',
+    "10")
+
 total = PASS + FAIL
 print(f"\n{'='*60}")
 print(f"  Results: {PASS}/{total} passed, {FAIL} failed")

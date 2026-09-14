@@ -1,11 +1,24 @@
-// The data tier. One declaration, and every other tier is checked against it:
-// rename a column here and the query, the aggregate and the page all fail to
-// build — not at runtime, in front of a user.
+// The data tier. Every other tier is checked against these declarations:
+// rename a column and the query, the aggregate and the page fail to build.
 
 database Order {
     int   id;
     str   customer;
     str   region;
     float amount;
-    str   status;
+    str   status;              // "OPEN" or "CLOSED"
+}
+
+database User {
+    int id;
+    str username;
+    str password_hash;         // SHA-512 crypt, salt included
+}
+
+// Persisted, so a signed-in operator stays signed in across a restart of the
+// service. `expires_at` is a unix timestamp.
+database Session {
+    str token;
+    int user_id;
+    int expires_at;
 }

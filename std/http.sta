@@ -219,7 +219,7 @@ int hex_digit(int c) {
 }
 
 str char_from_code(int c) {
-    native "static char _b[2]; _b[0]=(char)$c; _b[1]=0; return _b;";
+    native "char _b[2]; _b[0]=(char)$c; _b[1]=0; return strata_dup(_b);";
 }
 
 // 303, so a refresh after a form post does not resubmit it.
@@ -236,6 +236,130 @@ int http_redirect(int conn, str location) {
 
 int http_bad_request(int conn, str why) {
     return http_respond(conn, 400, "text/html; charset=utf-8", why);
+}
+
+// One header's value, or "". Header names are case-insensitive.
+str http_header(str request, str name) {
+    int n = str_len(request);
+    int start = 0;
+    while (start < n) {
+        int end = start;
+        while (end < n) {
+            if (request[end] == 10) { break; }
+            end = end + 1;
+        }
+        str line = str_slice(request, start, end);
+        if (str_len(line) == 0) { return ""; }          // end of headers
+        int colon = str_index_of(line, ":");
+        if (colon > 0) {
+            if (str_eq(lower(str_slice(line, 0, colon)), lower(name)) == 1) {
+                return trim_spaces(str_slice(line, colon + 1, str_len(line)));
+            }
+        }
+        if (end >= n) { return ""; }
+        start = end + 1;
+    }
+    return "";
+}
+
+str lower(str v) {
+    StringBuilder sb = sb_new();
+    int n = str_len(v);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = v[i];
+        if (c >= 65) { if (c <= 90) { c = c + 32; } }
+        sb_append(&sb, char_from_code(c));
+    }
+    return sb_to_str(&sb);
+}
+
+str trim_spaces(str v) {
+    int n = str_len(v);
+    int a = 0;
+    while (a < n) {
+        if (v[a] != 32) { if (v[a] != 13) { if (v[a] != 9) { break; } } }
+        a = a + 1;
+    }
+    int b = n;
+    while (b > a) {
+        int c = v[b - 1];
+        if (c != 32) { if (c != 13) { if (c != 9) { break; } } }
+        b = b - 1;
+    }
+    return str_slice(v, a, b);
+}
+
+// One cookie out of the Cookie header. Cookies are `a=1; b=2`.
+str http_cookie(str request, str name) {
+    str header = http_header(request, "Cookie");
+    int n = str_len(header);
+    int start = 0;
+    StringBuilder probe = sb_new();
+    sb_append(&probe, name); sb_append(&probe, "=");
+    str want = sb_to_str(&probe);
+    while (start <= n) {
+        int end = start;
+        while (end < n) {
+            if (header[end] == 59) { break; }           // ;
+            end = end + 1;
+        }
+        str pair = trim_spaces(str_slice(header, start, end));
+        if (str_starts_with(pair, want) == 1) {
+            return str_slice(pair, str_len(want), str_len(pair));
+        }
+        if (end >= n) { return ""; }
+        start = end + 1;
+    }
+    return "";
+}
+
+// The query string of the request line, without the `?`. It is the same
+// urlencoded format as a form body, so http_form_value reads it too.
+str http_query_string(str request) {
+    int sp1 = str_index_of(request, " ");
+    if (sp1 < 0) { return ""; }
+    str rest = str_slice(request, sp1 + 1, str_len(request));
+    int sp2 = str_index_of(rest, " ");
+    if (sp2 < 0) { return ""; }
+    str target = str_slice(rest, 0, sp2);
+    int q = str_index_of(target, "?");
+    if (q < 0) { return ""; }
+    return str_slice(target, q + 1, str_len(target));
+}
+
+// A response with extra headers — a Set-Cookie, for instance. `extra` is
+// already CRLF-terminated, or empty.
+int http_respond_with(int conn, int status, str content_type, str extra, str body) {
+    native "
+    const char* reason = \"OK\";
+    if ($status == 303) reason = \"See Other\";
+    if ($status == 400) reason = \"Bad Request\";
+    if ($status == 403) reason = \"Forbidden\";
+    if ($status == 404) reason = \"Not Found\";
+    if ($status == 500) reason = \"Internal Server Error\";
+    char head[1024];
+    int hl = snprintf(head, sizeof(head),
+        \"HTTP/1.1 %lld %s\\r\\nContent-Type: %s\\r\\nContent-Length: %zu\\r\\n%sConnection: close\\r\\n\\r\\n\",
+        (long long)$status, reason, $content_type, strlen($body), $extra);
+    if (write($conn, head, hl) < 0) return 0;
+    if (write($conn, $body, strlen($body)) < 0) return 0;
+    return 1;
+    ";
+}
+
+// A redirect that also sets or clears a cookie.
+int http_redirect_with(int conn, str location, str extra) {
+    StringBuilder head = sb_new();
+    sb_append(&head, "Location: ");
+    sb_append(&head, location);
+    sb_append(&head, "\r\n");
+    sb_append(&head, extra);
+    return http_respond_with(conn, 303, "text/plain", sb_to_str(&head), "");
+}
+
+int http_forbidden(int conn) {
+    return http_respond(conn, 403, "text/html; charset=utf-8",
+    "<!doctype html><title>403</title><h1>403</h1><p>Sign in first.</p>");
 }
 
 int http_ok(int conn, str html) {

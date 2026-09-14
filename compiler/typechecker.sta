@@ -545,6 +545,11 @@ int infer(TC &tc, int node_p, int scope_p) {
     }
 
     if (k == 55) {                                   // render L  -> str
+        NodeVec rargs = nv_at(e.v1);
+        int nra = rargs.len;
+        for (int i = 0; i < nra; i = i + 1) {
+            infer(&tc, node_ptr(nv_get(&rargs, i)), scope_p);
+        }
         if (scp_lookup(tc.globals, e.s1) == 0) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "'"); sb_append(&sb, e.s1);
@@ -565,6 +570,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             return 0;
         }
         validate_query(&tc, e.c1, e.s1, e.line, e.col);
+        validate_query_scoped(&tc, e.c1, e.s1, e.line, e.col, scope_p);
         return ty_ptr(ty_list(ty_new(e.s1)));
     }
 
@@ -884,7 +890,10 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             sb_append(&qsb, "' not declared");
             emit(&tc, "E004", sb_to_str(&qsb), st.line, st.col);
         }
-        if (qsch != 0) { validate_query(&tc, qval.c1, qval.s1, st.line, st.col); }
+        if (qsch != 0) {
+            validate_query(&tc, qval.c1, qval.s1, st.line, st.col);
+            validate_query_scoped(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
+        }
         Scp sq = scp_at(scope_p);
         scp_define(&sq, st.s1, declared);
         return;
@@ -941,6 +950,43 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
 
     Scp sc = scp_at(scope_p);
     scp_define(&sc, st.s1, declared);
+}
+
+// Columns exist, and a bare name is not ambiguous.
+//
+// Inside the brackets a bare identifier is always the ROW's column. If a
+// variable of the same name is also in scope the column wins silently, so
+// `Session <- [token == token]` compares the column with itself and matches
+// every row — written as a session lookup, any token authenticates. Naming a
+// parameter after the column it filters on is the most natural thing to
+// write, which is what makes it worth an error rather than a convention.
+def validate_query_scoped(TC &tc, int cond_p, str schema, int line, int col,
+int scope_p) {
+    if (cond_p == 0) { return; }
+    Node c = node_at(cond_p);
+    if (c.kind == 54) {
+        int sch = schema_find(tc.schemas, schema);
+        if (sch != 0) {
+            Schema sc = schema_at(sch);
+            if (sym_find(sc.fields, c.s1) != 0) {
+                if (scope_p != 0) {
+                    if (scp_lookup(scope_p, c.s1) != 0) {
+                        StringBuilder sb = sb_new();
+                        sb_append(&sb, "'"); sb_append(&sb, c.s1);
+                        sb_append(&sb, "' is both a column of '");
+                        sb_append(&sb, schema);
+                        sb_append(&sb, "' and a variable in scope");
+                        emit(&tc, "E008", sb_to_str(&sb), line, col);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if (c.kind == 40) {
+        validate_query_scoped(&tc, c.c1, schema, line, col, scope_p);
+        validate_query_scoped(&tc, c.c2, schema, line, col, scope_p);
+    }
 }
 
 def validate_query(TC &tc, int cond_p, str schema, int line, int col) {
@@ -1149,6 +1195,12 @@ def check_layout(TC &tc, Node decl) {
     // of UI that used it.
     Scp s = scp_new(tc.globals);
     int sp = scp_ptr(s);
+    NodeVec params = nv_at(decl.v2);
+    int np = params.len;
+    for (int j = 0; j < np; j = j + 1) {
+        Node prm = nv_get(&params, j);
+        scp_define(&s, prm.s1, resolve_type(prm.c1));
+    }
     NodeVec body = nv_at(decl.v1);
     int n = body.len;
     for (int i = 0; i < n; i = i + 1) { check_stmt(&tc, nv_get(&body, i), sp); }

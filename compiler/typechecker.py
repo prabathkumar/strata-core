@@ -382,6 +382,8 @@ class TypeChecker:
         runtime in front of a user.
         """
         scope=Scope(self.global_scope)
+        for p in getattr(decl,"params",[]):
+            scope.define(p.name,self._resolve_type(p.param_type))
         for st in decl.body: self._check_stmt(st,scope)
 
     def _check_report(self,decl):
@@ -459,7 +461,7 @@ class TypeChecker:
                 self._error("E004",f"Database '{src}' not declared",stmt.line,stmt.col,
                     f"Declare 'database {src}' before querying")
             else:
-                self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col)
+                self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col,scope)
             scope.define(stmt.name,declared); return
         actual=self._infer_type(stmt.value,scope)
         if actual and not is_compatible(declared,actual):
@@ -552,6 +554,7 @@ class TypeChecker:
                     expr.line,expr.col,"Indexing applies to list[T] and str values")
             return None
         if isinstance(expr,RenderExpr):
+            for a in getattr(expr,"args",[]): self._infer_type(a,scope)
             if self.global_scope.lookup(expr.target) is None:
                 self._error("E002",f"'{expr.target}' is not a layout or report",
                     expr.line,expr.col,
@@ -564,7 +567,7 @@ class TypeChecker:
                     expr.line,expr.col,
                     f"Declare 'database {src}' before querying it")
                 return None
-            self._validate_query_cond(expr.condition,src,expr.line,expr.col)
+            self._validate_query_cond(expr.condition,src,expr.line,expr.col,scope)
             return SType("list",is_list=True,element_type=SType(src))
         return None
 
@@ -719,15 +722,34 @@ class TypeChecker:
                     f"List '{name}' element {i+1}: expected '{expected}', got '{et}'",
                     line,col,f"All elements of list[{expected}] must be '{expected}'")
 
-    def _validate_query_cond(self,cond,schema,line,col):
+    def _validate_query_cond(self,cond,schema,line,col,scope=None):
+        """Columns exist, and a bare name is not ambiguous.
+
+        Inside the brackets a bare identifier is always the ROW's column. If a
+        variable of the same name is also in scope, the column wins silently —
+        so `Session <- [token == token]` compares the column with itself and
+        matches every row. Written as a session lookup, that means any token
+        authenticates. Naming a parameter after the column it filters on is
+        the most natural thing to write, which is what makes it worth an error
+        rather than a convention.
+        """
         fields=self.schemas.get(schema,{})
         if isinstance(cond,BinaryExpr):
             if isinstance(cond.left,Identifier) and cond.left.name not in fields:
                 self._error("E004",
                     f"Column '{cond.left.name}' does not exist in '{schema}'",
                     line,col,f"Valid columns: {list(fields.keys())}")
-            self._validate_query_cond(cond.left,schema,line,col)
-            self._validate_query_cond(cond.right,schema,line,col)
+            self._validate_query_cond(cond.left,schema,line,col,scope)
+            self._validate_query_cond(cond.right,schema,line,col,scope)
+        elif isinstance(cond,Identifier) and scope is not None:
+            if cond.name in fields and scope.lookup(cond.name) is not None:
+                self._error("E008",
+                    f"'{cond.name}' is both a column of '{schema}' and a "
+                    f"variable in scope",
+                    line,col,
+                    f"Inside a query the name is always the column, so this "
+                    f"compares '{cond.name}' with itself and matches every "
+                    f"row. Rename the variable.")
 
     def _resolve_type(self,node):
         if node is None: return T_VOID

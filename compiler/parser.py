@@ -232,13 +232,15 @@ class RenderStmt(Node):
 
 @dataclass
 class RenderExpr(Node):
-    """`render L` — the rendered document as a str.
+    """`render L` / `render L(args)` — the rendered document as a str.
 
     A layout that can only be written to a file cannot answer an HTTP
     request, which is what made this the first thing a server needed.
     """
     target: str
-    def to_dict(self): return {"node":"RenderExpr","target":self.target}
+    args: List[Any] = field(default_factory=list)
+    def to_dict(self): return {"node":"RenderExpr","target":self.target,
+                               "args":[a.to_dict() for a in self.args]}
 
 # ── Top-Level Declarations ────────────────────────────────────────────────────
 
@@ -333,7 +335,11 @@ class ForeignDecl(Node):
 class LayoutDecl(Node):
     name: str
     body: List[Any]
+    # A view is a function of its inputs. Without parameters a layout can only
+    # show what a global holds, and Strata has no module-level variables.
+    params: List[Any] = field(default_factory=list)
     def to_dict(self): return {"node":"LayoutDecl","name":self.name,
+                               "params":[p.to_dict() for p in self.params],
                                "body":[b.to_dict() for b in self.body]}
 
 @dataclass
@@ -606,11 +612,13 @@ class Parser:
     def _parse_layout(self) -> LayoutDecl:
         t = self._consume(TT.KW_LAYOUT)
         name = self._consume(TT.IDENT).value
-        self._consume(TT.L_PAREN); self._consume(TT.R_PAREN)
+        self._consume(TT.L_PAREN)
+        params = self._parse_params()
+        self._consume(TT.R_PAREN)
         self._consume(TT.L_BRACE)
         body = self._parse_layout_body()
         self._consume(TT.R_BRACE)
-        return LayoutDecl(t.line, t.col, name, body)
+        return LayoutDecl(t.line, t.col, name, body, params)
 
     def _parse_layout_body(self) -> List[Any]:
         out = []
@@ -1091,7 +1099,14 @@ class Parser:
         if self._check(TT.KW_RENDER):
             r = self._advance()
             target = self._consume(TT.IDENT).value
-            return RenderExpr(r.line, r.col, target)
+            args = []
+            if self._check(TT.L_PAREN):
+                self._advance()
+                while not self._check(TT.R_PAREN):
+                    args.append(self._parse_expr())
+                    if self._check(TT.COMMA): self._advance()
+                self._consume(TT.R_PAREN)
+            return RenderExpr(r.line, r.col, target, args)
 
         # Type cast call: str(expr)
         if self._is_type_keyword():

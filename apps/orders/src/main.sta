@@ -1,23 +1,147 @@
 // The Orders service.
 //
 // One binary: it owns its data, its business rules, its HTTP surface and the
-// page it serves. There is no separate front end, no JSON contract between
+// pages it serves. There is no separate front end, no JSON contract between
 // tiers, and no second language — a column renamed in schema.sta breaks this
-// file at build time.
+// file, views.sta and the build, before anything runs.
 
 import io     from std;
 import str    from std;
 import mem    from std;
 import http   from std;
+import auth   from std;
 import schema from app;
 import views  from app;
 
-int seed_if_empty() {
-    if (count(Order <- [id > 0]) > 0) { return 0; }
-    Order <- [id = 1, customer = "acme",    region = "apac", amount = 1250.00, status = "OPEN"];
-    Order <- [id = 2, customer = "globex",  region = "emea", amount =  340.50, status = "OPEN"];
-    Order <- [id = 3, customer = "initech", region = "amer", amount =  980.75, status = "CLOSED"];
+// ── Storage ──────────────────────────────────────────────────────────────────
+
+int load_all() {
+    load Order from "data/orders.tsv";
+    load User from "data/users.tsv";
+    load Session from "data/sessions.tsv";
     return 1;
+}
+
+int save_orders()   { save Order to "data/orders.tsv"; return 1; }
+int save_sessions() { save Session to "data/sessions.tsv"; return 1; }
+
+// The demo operator. A real deployment would not seed a password from source;
+// this one prints what it did so nobody mistakes it for a secret.
+int seed_if_empty() {
+    if (count(User <- [id > 0]) == 0) {
+        User <- [id = 1, username = "manager",
+        password_hash = hash_password("strata")];
+        save User to "data/users.tsv";
+        print("seeded user 'manager' with password 'strata' — demo only");
+    }
+    if (count(Order <- [id > 0]) == 0) {
+        Order <- [id = 1, customer = "acme",    region = "apac", amount = 1250.00, status = "OPEN"];
+        Order <- [id = 2, customer = "globex",  region = "emea", amount =  340.50, status = "OPEN"];
+        Order <- [id = 3, customer = "initech", region = "amer", amount =  980.75, status = "CLOSED"];
+        save_orders();
+    }
+    return 1;
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
+int now_seconds() { native "return (int64_t)time(NULL);"; }
+
+// The signed-in user's id, or 0. A session that has expired is not a session.
+int current_user(str request) {
+    str want = http_cookie(request, "sid");
+    if (str_len(want) == 0) { return 0; }
+    // Named `want`, not `token`: inside a query a bare name is the COLUMN, so
+    // `token == token` compares the column with itself and matches every row.
+    // That is E008 now rather than an auth bypass.
+    list[Session] found = Session <- [token == want];
+    if (count(found) == 0) { return 0; }
+    Session s = found[0];
+    if (s.expires_at < now_seconds()) { return 0; }
+    return s.user_id;
+}
+
+str start_session(int user_id) {
+    str token = new_session_token();
+    Session <- [token = token, user_id = user_id,
+    expires_at = now_seconds() + 28800];
+    save_sessions();
+    return token;
+}
+
+// Expiring it rather than deleting it, because the language has no delete.
+// Said plainly: the row stays on disk until something prunes it, and nothing
+// does yet.
+int end_session(str want) {
+    list[Session] found = Session <- [token == want];
+    if (count(found) > 0) {
+        Session s = found[0];
+        s.expires_at = 0;
+        save_sessions();
+    }
+    return 1;
+}
+
+str cookie_header(str token) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "Set-Cookie: sid=");
+    sb_append(&sb, token);
+    sb_append(&sb, "; Path=/; HttpOnly; SameSite=Lax\r\n");
+    return sb_to_str(&sb);
+}
+
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
+int next_id() {
+    list[Order] all = Order <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+int do_login(int conn, str body) {
+    str want_user = http_form_value(body, "username");
+    str password = http_form_value(body, "password");
+    list[User] found = User <- [username == want_user];
+    if (count(found) == 0) { return http_ok(conn, render LoginFailed); }
+    User u = found[0];
+    if (password_matches(password, u.password_hash) == 0) {
+        return http_ok(conn, render LoginFailed);
+    }
+    return http_redirect_with(conn, "/", cookie_header(start_session(u.id)));
+}
+
+int do_logout(int conn, str request) {
+    end_session(http_cookie(request, "sid"));
+    return http_redirect_with(conn, "/login",
+    "Set-Cookie: sid=; Path=/; Max-Age=0\r\n");
+}
+
+int do_create(int conn, str body) {
+    str customer = http_form_value(body, "customer");
+    str region   = http_form_value(body, "region");
+    str amount   = http_form_value(body, "amount");
+    if (str_len(customer) == 0) {
+        return http_bad_request(conn, "<h1>400</h1><p>customer is required</p>");
+    }
+    if (str_len(amount) == 0) {
+        return http_bad_request(conn, "<h1>400</h1><p>amount is required</p>");
+    }
+    if (str_len(region) == 0) { region = "unknown"; }
+    Order <- [id = next_id(), customer = customer, region = region,
+    amount = str_to_float(amount), status = "OPEN"];
+    save_orders();
+    return http_redirect(conn, "/?notice=created");
+}
+
+int do_close(int conn, str body) {
+    int want = str_to_int(http_form_value(body, "id"));
+    if (want == 0) { return http_bad_request(conn, "<h1>400</h1><p>id is required</p>"); }
+    list[Order] found = Order <- [id == want];
+    if (count(found) == 0) { return http_not_found(conn); }
+    Order o = found[0];
+    o.status = "CLOSED";
+    save_orders();
+    return http_redirect(conn, "/?notice=closed");
 }
 
 str summary_page() {
@@ -34,56 +158,44 @@ str summary_page() {
     return sb_to_str(&sb);
 }
 
-// The next free id. There is no sequence in the database tier yet, so the
-// service computes one — which is honest about what the language provides.
-int next_id() {
-    list[Order] all = Order <- [id > 0];
-    if (count(all) == 0) { return 1; }
-    return max(all.id) + 1;
-}
-
-// Creating an order from the form. Every field is validated before a row is
-// inserted: a browser can post anything, and "amount" arrives as text.
-int create_order(int conn, str body) {
-    str customer = http_form_value(body, "customer");
-    str region   = http_form_value(body, "region");
-    str amount   = http_form_value(body, "amount");
-
-    if (str_len(customer) == 0) {
-        return http_bad_request(conn, "<h1>400</h1><p>customer is required</p>");
-    }
-    if (str_len(amount) == 0) {
-        return http_bad_request(conn, "<h1>400</h1><p>amount is required</p>");
-    }
-    if (str_len(region) == 0) { region = "unknown"; }
-
-    Order <- [id = next_id(), customer = customer, region = region,
-    amount = str_to_float(amount), status = "OPEN"];
-    save Order to "data/orders.tsv";
-
-    // 303, so a refresh does not post the form again.
-    return http_redirect(conn, "/");
-}
+// ── Routing ──────────────────────────────────────────────────────────────────
 
 int handle(int conn, str request) {
-    str path = http_path(request);
-    if (str_eq(http_method(request), "POST") == 1) {
-        if (str_eq(path, "/orders") == 1) {
-            return create_order(conn, http_body(request));
-        }
-        return http_not_found(conn);
-    }
-    if (str_eq(path, "/") == 1)        { return http_ok(conn, render Dashboard); }
-    if (str_eq(path, "/summary") == 1) { return http_ok(conn, summary_page()); }
-    if (str_eq(path, "/health") == 1)  {
+    str method = http_method(request);
+    str path   = http_path(request);
+    str body   = http_body(request);
+    int user   = current_user(request);
+
+    // Open to everyone.
+    if (str_eq(path, "/health") == 1) {
         return http_respond(conn, 200, "text/plain", "ok");
+    }
+    if (str_eq(path, "/login") == 1) {
+        if (str_eq(method, "POST") == 1) { return do_login(conn, body); }
+        return http_ok(conn, render LoginPage);
+    }
+
+    // Everything below needs a session.
+    if (user == 0) {
+        if (str_eq(method, "GET") == 1) { return http_redirect(conn, "/login"); }
+        return http_forbidden(conn);
+    }
+
+    if (str_eq(path, "/logout") == 1)  { return do_logout(conn, request); }
+    if (str_eq(path, "/orders") == 1)  { return do_create(conn, body); }
+    if (str_eq(path, "/close") == 1)   { return do_close(conn, body); }
+    if (str_eq(path, "/summary") == 1) { return http_ok(conn, summary_page()); }
+    if (str_eq(path, "/") == 1) {
+        str region = http_form_value(http_query_string(request), "region");
+        str notice = http_form_value(http_query_string(request), "notice");
+        return http_ok(conn, render Dashboard(region, notice));
     }
     return http_not_found(conn);
 }
 
 int main() {
-    load Order from "data/orders.tsv";
-    if (seed_if_empty() == 1) { save Order to "data/orders.tsv"; }
+    load_all();
+    seed_if_empty();
 
     int fd = http_listen(8080);
     if (fd < 0) { eprint("could not bind port 8080"); return 1; }

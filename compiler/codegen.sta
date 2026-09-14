@@ -649,7 +649,14 @@ str gen_expr(Gen &g, int p) {
         sb_append(&sb, "f = open_memstream(&"); sb_append(&sb, tag);
         sb_append(&sb, "b, &"); sb_append(&sb, tag); sb_append(&sb, "n); ");
         sb_append(&sb, e.s1); sb_append(&sb, "_render("); sb_append(&sb, tag);
-        sb_append(&sb, "f); strata_render_end("); sb_append(&sb, tag);
+        sb_append(&sb, "f");
+        NodeVec rargs = nv_at(e.v1);
+        int nra = rargs.len;
+        for (int i = 0; i < nra; i = i + 1) {
+            sb_append(&sb, ",");
+            sb_append(&sb, gen_expr(&g, node_ptr(nv_get(&rargs, i))));
+        }
+        sb_append(&sb, "); strata_render_end("); sb_append(&sb, tag);
         sb_append(&sb, "f, &"); sb_append(&sb, tag); sb_append(&sb, "b); })");
         return sb_to_str(&sb);
     }
@@ -2014,7 +2021,17 @@ def emit_fprintf(Gen &g, str literal) {
 def gen_layout(Gen &g, Node decl) {
     StringBuilder head = sb_new();
     sb_append(&head, "\nvoid "); sb_append(&head, decl.s1);
-    sb_append(&head, "_render(FILE* _out) {");
+    sb_append(&head, "_render(FILE* _out");
+    // A view's inputs — a filter, an id. Strata has no module-level variables,
+    // so a view that can only read globals is a view that cannot be reused.
+    NodeVec lparams = nv_at(decl.v2);
+    int nlp = lparams.len;
+    for (int i = 0; i < nlp; i = i + 1) {
+        Node prm = nv_get(&lparams, i);
+        sb_append(&head, ", "); sb_append(&head, c_param(&g, prm));
+        g.var_types = bind_cons(prm.s1, c_type(&g, prm.c1), g.var_types);
+    }
+    sb_append(&head, ") {");
     emit_raw(&g, sb_to_str(&head));
     g.indent = 1;
     emit_fprintf(&g, "<!doctype html><meta charset=\\\"utf-8\\\">");
@@ -2037,6 +2054,33 @@ str style_attr(Gen &g, Node el) {
     StringBuilder sb = sb_new();
     sb_append(&sb, " style=\\\""); sb_append(&sb, css); sb_append(&sb, "\\\"");
     return sb_to_str(&sb);
+}
+
+// Attributes whose value is an expression rather than a literal. A row's own
+// id has to reach the form that acts on it, and a literal cannot carry it.
+// Emitted as their own fprintf because the value is only known at run time.
+def emit_computed_attrs(Gen &g, Node el) {
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node p = nv_get(&props, i);
+        if (is_attr_prop(p.s1) == 1) {
+            Node v = node_at(p.c1);
+            int literal = 0;
+            if (v.kind == 50) { literal = 1; }
+            if (v.kind == 51) { literal = 1; }
+            if (v.kind == 52) { literal = 1; }
+            if (literal == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "fprintf(_out,\" ");
+                sb_append(&sb, p.s1);
+                sb_append(&sb, "=\\\"%s\\\"\",");
+                sb_append(&sb, gen_expr(&g, p.c1));
+                sb_append(&sb, ");");
+                cg_emit(&g, sb_to_str(&sb));
+            }
+        }
+    }
 }
 
 def gen_element(Gen &g, Node el) {
@@ -2081,8 +2125,11 @@ def gen_element(Gen &g, Node el) {
 
     StringBuilder open = sb_new();
     sb_append(&open, "<"); sb_append(&open, tag); sb_append(&open, attrs);
-    sb_append(&open, style); sb_append(&open, ">");
     emit_fprintf(&g, sb_to_str(&open));
+    emit_computed_attrs(&g, el);
+    StringBuilder close_open = sb_new();
+    sb_append(&close_open, style); sb_append(&close_open, ">");
+    emit_fprintf(&g, sb_to_str(&close_open));
     // A void element has no closing tag and no children.
     if (is_void_tag(tag) == 1) { return; }
 
@@ -2102,6 +2149,18 @@ def gen_element(Gen &g, Node el) {
                     sb_append(&s, "fprintf(_out,\"%s\","); sb_append(&s, gen_expr(&g, el.c1));
                     sb_append(&s, ");");
                     cg_emit(&g, sb_to_str(&s));
+                }
+                // A bare identifier names the element — `canvas topology_view`
+                // — unless it resolves to a value in scope, which is the same
+                // rule the type checker applies. Without this a layout
+                // parameter renders as nothing at all.
+                if (lab.kind == 54) {
+                    if (str_len(bind_get(g.var_types, lab.s1)) > 0) {
+                        StringBuilder s2 = sb_new();
+                        sb_append(&s2, "fprintf(_out,\"%s\","); sb_append(&s2, gen_expr(&g, el.c1));
+                        sb_append(&s2, ");");
+                        cg_emit(&g, sb_to_str(&s2));
+                    }
                 }
             }
         }
