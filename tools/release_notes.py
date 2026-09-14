@@ -148,11 +148,13 @@ def measure():
                                 if m and ok else "FAILING")
         ok_all = ok_all and bool(ok)
 
-    ok, text = run_suite("stdlib_parses.py")
+    ok, text = run_suite("stdlib_compiles.py")
     if ok is not None:
-        m = re.search(r"(\d+) parse, (\d+) fail", text)
-        facts["Standard library"] = (f"{m.group(1)} modules parse" if m and ok
-                                     else "FAILING")
+        m = re.search(r"(\d+)/(\d+) checks passed over (\d+) modules "
+                      r"\((\d+) quarantined\)", text)
+        facts["Standard library"] = (
+            f"{m.group(3)} modules compile, link and run "
+            f"({m.group(4)} quarantined)" if m and ok else "FAILING")
         ok_all = ok_all and bool(ok)
 
     # Self-hosted source size and how much of it is native C.

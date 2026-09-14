@@ -3,6 +3,8 @@
 // Native Unit & Integration Testing Primitives Specification
 // ==============================================================================
 
+import core from std;
+
 #region TEST_CONTEXT_SCHEMAS
 database TestSuiteTelemetry {
     str   test_case_name;

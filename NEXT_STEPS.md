@@ -30,6 +30,7 @@ All of that is done. It was understating the project by roughly three months.
 | FFI | `foreign` blocks: include a header, name the library, declare signatures checked at call sites. |
 | Repair loop | `ai_self_repair.py` compiles, reads the JSON diagnostics, patches, recompiles. 40 checks in CI, including the payload contract it depends on. |
 | Undefined function calls | **E002.** Imports resolve before the type check in both implementations, so a typo names the typo instead of failing at the C linker. Name existence only — signatures across a module boundary are still unchecked. |
+| Standard library | Eight modules that compile, link and run. A suite builds a program against each one and executes it. Five modules and six examples that stand on a runtime that was never built are quarantined in `unimplemented/` directories. |
 | CI | Eleven suites, plus both gcc and clang, plus a clean-checkout export so nothing passes only because of an untracked file. |
 
 ## Part 2 — What is not
@@ -39,7 +40,7 @@ All of that is done. It was understating the project by roughly three months.
 | Virtual Event Fibers | Design only. See Part 4. |
 | Concurrency of any kind | The runtime is single-threaded by construction. Seven mutable globals in the prelude, plus a `__rows` array and an `__count` per `database` block. |
 | Database durability | No locking, no index, no transactions, no SQL backend. Two writers corrupt the file. |
-| **Seven `std` modules and five examples do not compile** | They call functions that do not exist — mostly `print_line`, which lives in `std/core.sta` while those files import `io`. They have never compiled; the undefined-call check made it visible. `stdlib_parses.py` only ever checked that they *parse*. |
+| A file with an unresolvable import is unchecked | The undefined-call rule disarms when the compiler cannot see what an import provides. Correct — it cannot know what is reachable — but it means a file importing a missing module reports nothing at all, rather than reporting the missing module. `examples/unimplemented/` exists because of this. A diagnostic for the unresolved import itself would close it. |
 | Aggregation | No `sum`, `avg`, `count` over a query result. A report metric sees `rows`, not columns. |
 | Training | `predict` is inference. No autograd, no optimiser, no accelerator. |
 | Client-side interactivity | Layouts are server-rendered HTML. WebAssembly has no DOM access without a JS shim, as with every WASM framework. |
@@ -50,27 +51,19 @@ All of that is done. It was understating the project by roughly three months.
 
 ## Part 3 — Next, in order
 
-### 1. Make the standard library compile (2–3 days)
+### 1. Report unresolved imports (half a day)
 
-Turning on the undefined-call check exposed that seven `std` modules and five
-examples call functions that do not exist. Most are `print_line`, defined in
-`std/core.sta` while the callers import `io`. The rest —
-`native_sys_write`, `native_network_http_get`, `compute_sha256`,
-`fetch_secure_stream`, `native_crypto_derive_keys` — have no definition
-anywhere and are aspirational: those modules describe a runtime that was never
-built.
+Quarantining the broken `std` modules made their broken callers go quiet: the
+undefined-call rule disarms for a file whose imports cannot be resolved, so
+moving a module out of the way makes everything importing it look clean. The
+compiler prints `[STRATA IMPORT]` on stderr in that case but emits no
+diagnostic, so it is invisible to `--json` and to the repair loop — the same
+shape of gap the undefined-call work just closed.
 
-Two decisions, and they are different:
-
-- Modules that are a missing import away from working (`telemetry`, `testing`,
-  `core` consumers) get the import fixed.
-- Modules that stand on a runtime that does not exist (`tls`, `pkg_system`,
-  parts of `stdlib`) should move to `std/unimplemented/` the way the twelve
-  `bin/` stubs did, rather than shipping as if they work.
-
-The exit criterion is a suite that **compiles** every `std` module, replacing
-`stdlib_parses.py`, which checks that they parse and nothing more. That suite
-is the point of the item: parsing was never the claim worth making.
+A file importing a module with no local checkout should say so as a
+diagnostic. It is not necessarily an error — an external dependency provided
+at link time is legitimate — so it wants a code of its own rather than being
+folded into E002.
 
 ### 2. A formatter, `strata fmt` (3–5 days)
 

@@ -47,3 +47,24 @@ do not exist, mostly `print_line` (in `std/core.sta`, while those files import
 `io`). They have never compiled. `stdlib_parses.py` only checks that they
 parse. This is now item 1 in NEXT_STEPS Part 3, with the exit criterion being
 a suite that compiles every std module rather than parsing it.
+
+## 2026-09-14 — session (attended), second item
+
+NEXT_STEPS item 1: the standard library compiles.
+
+`std/core.sta` made real (`print_line`, `convert_int_to_str` were calling
+natives that do not exist). `telemetry` and `testing` imported `core.io`,
+which resolves to `io.sta`, while calling `print_line` from `core.sta`; fixed.
+Five modules — `runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager` —
+quarantined to `std/unimplemented/`, and six examples built on them to
+`examples/unimplemented/`.
+
+`test_suite/stdlib_compiles.py` replaces `stdlib_parses.py`: per module a clean
+type-check AND a program that imports it, links and runs. Eight modules,
+17/17 checks. All eleven suites green, conformance 136/136, fixpoint reached,
+all 18 remaining examples compile.
+
+Found while doing it, and NOT fixed: quarantining a broken module makes its
+broken callers go SILENT, because the undefined-call rule disarms on an
+unresolvable import. The compiler prints `[STRATA IMPORT]` on stderr but emits
+no diagnostic, so it never reaches `--json`. That is now item 1 in Part 3.

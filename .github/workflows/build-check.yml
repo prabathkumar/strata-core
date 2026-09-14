@@ -86,8 +86,10 @@ jobs:
     - name: Run Strata Verify Blocks
       run: ./bin/strata test test_suite/verify_cases
 
-    - name: Verify Standard Library Parses
-      run: python3 test_suite/stdlib_parses.py
+    # Parsing was the old claim and it was not worth making: seven modules
+    # parsed fine and failed at the C linker. This builds and runs them.
+    - name: Standard Library Compiles, Links And Runs
+      run: python3 test_suite/stdlib_compiles.py
 
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is

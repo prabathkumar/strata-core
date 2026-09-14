@@ -1,18 +1,32 @@
 // ==============================================================================
-// STRATA SYSTEM STANDARD LIBRARY: std/core.sta
-// Base Core Systems & Hardware-Level I/O Namespaces
+// STRATA STANDARD LIBRARY: std/core.sta
+// Console output and integer formatting.
 // ==============================================================================
+//
+// These used to call `native_sys_write` and `native_sys_itoa`, which do not
+// exist and never did — so this module, and everything importing it, failed at
+// the C linker. Nothing noticed, because the only check over std/ was that it
+// parsed.
+//
+// They are ordinary `native` blocks now, the same way std/io.sta writes its
+// primitives.
 
 database SystemConsoleContext {
     int  stdout_descriptor;
     str  encoding_format;
 }
 
+// Writes a line to standard output. Returns 1 on success, 0 if the write was
+// refused — a caller that ignores the result is fine; the value is there so a
+// closed pipe can be detected.
 int print_line(str buffer_message) {
-    // Maps directly down to native POSIX system calls or WebAssembly fd_write blocks
-    return native_sys_write(1, buffer_message);
+    native "
+    if (fputs($buffer_message, stdout) == EOF) return 0;
+    if (fputc('\\n', stdout) == EOF) return 0;
+    return 1;
+    ";
 }
 
 str convert_int_to_str(int hardware_value) {
-    return native_sys_itoa(hardware_value);
+    native "static char _b[32]; snprintf(_b,32,\"%lld\",(long long)$hardware_value); return _b;";
 }

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### The standard library compiles
+
+`stdlib_parses.py` reported "13 parse, 0 fail" for as long as it had existed.
+Seven of those thirteen also called functions that exist nowhere in the
+project, so anything importing them failed at the C linker. Parsing was never
+the claim worth making.
+
+`std/core.sta` is real now: `print_line` and `convert_int_to_str` called
+`native_sys_write` and `native_sys_itoa`, which do not exist, and are ordinary
+`native` blocks the way `std/io.sta` writes its primitives. `telemetry` and
+`testing` imported `core.io` — which resolves to `io.sta` — while calling
+`print_line`, which lives in `core.sta`; they import `core` now.
+
+Five modules moved to `std/unimplemented/`: `runtime`, `stdlib`, `tls`,
+`pkg_system`, `pkg_manager`. They describe POSIX syscall wrappers, an HTTP
+client, a TLS 1.3 handshake with AES-NI acceleration and a cryptographic
+package resolver — none of which exist. Six examples built on them moved to
+`examples/unimplemented/` for the same reason.
+
+`test_suite/stdlib_compiles.py` replaces the parse check. Per module it
+requires a clean type-check AND a program that imports it, calls into it,
+links and runs — because a module can type-check and still fail to link, which
+is precisely how this went unnoticed. It also asserts no live module imports a
+quarantined one.
+
+Worth naming: quarantining the TLS and runtime modules made the three examples
+importing them **stop reporting errors**, because the undefined-call rule
+disarms when an import cannot be resolved. Moving a broken module out of the
+way makes its broken callers look clean. That is why those examples are
+quarantined rather than left in place.
+
+
 ### Calls to undefined functions are caught
 
 `undefined_thing(1)` type-checked clean and failed at the C linker:

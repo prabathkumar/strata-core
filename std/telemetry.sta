@@ -3,7 +3,7 @@
 // Native End-to-End Telemetry System & Performance Metrics Engine
 // ==============================================================================
 
-import core.io from std;
+import core from std;
 
 // 1. PERFORMANCE TRACE DATA CONTRACTS
 // Native persistent model tracking runtime infrastructure efficiency
