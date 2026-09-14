@@ -11,3 +11,7 @@ build/
 
 # The lock file the service creates to serialise writes.
 apps/orders/data/.lock
+
+# Scratch the sandbox will not let me unlink; safe to delete by hand.
+_to_delete/
+*.tar

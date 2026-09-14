@@ -313,3 +313,17 @@ Not done:
   published rather than explained away.
 - No CSRF token, no rate limit, no lockout, no connection limit.
 - `delete` still does not exist in the language.
+
+## 2026-09-14 — the image, actually built (attended)
+
+I had said the image could not be built because there is no Docker on the
+development machine. That was half the story and I should have checked the
+other half before saying it: the cloud side of this session has Docker. It
+also has no route to any container registry, so the real Dockerfile still
+cannot be built outside CI, but a `FROM scratch` image can — and now is, by
+`deploy/build_scratch_image.sh`. 5.35 MB, serves `/login`, and a sign-in and
+an order both work through the container.
+
+Found by running it: `docker logs` was empty. stdout to a pipe is block
+buffered, so the startup line never left libc. The runtime preamble
+line-buffers now, and the journey asserts it.

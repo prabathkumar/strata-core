@@ -324,6 +324,31 @@ def main():
         # others, which is the thing this journey is about; throughput is the
         # next piece of work, and the honest figure is the one above.
 
+        print("\n── Anyone watching can see it ───────────────────────────────────")
+        # A service whose stdout is a pipe gets a 4KB block buffer, so the one
+        # line it prints at startup sits in libc until the process exits.
+        # `docker logs` on this service was empty after a sign-in and an order.
+        # Found by running the container, which is why it is asserted here.
+        svc.stop()
+        watched = subprocess.Popen([os.path.join(app, "build", "orders")],
+                                   cwd=app, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True)
+        first_line = ""
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            line = watched.stdout.readline()
+            if line:
+                first_line = line.strip()
+                break
+        watched.terminate()
+        try:
+            watched.wait(timeout=10)
+        except Exception:
+            watched.kill()
+        ok("the startup line reaches a pipe without waiting for the process "
+           "to exit", "listening" in first_line, repr(first_line))
+        svc.start()
+
         print("\n── Nothing left behind ──────────────────────────────────────────")
         ps = subprocess.run(["ps", "-o", "stat=,comm=", "--ppid",
                              str(svc.proc.pid)], capture_output=True, text=True)

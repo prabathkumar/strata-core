@@ -122,7 +122,7 @@ What they exposed, and nobody has done yet:
 | No CSRF token, no rate limit, no lockout | A signed-in operator's browser can be made to post; an attacker can guess passwords as fast as the service answers |
 | No connection limit | Nothing stops a client opening sockets faster than children can serve them |
 | The region filter reaches the view but not the query | Journey A recorded it; it is still true |
-| The Docker image has never been built here | No Docker on this machine. CI builds it and asks the container for a page on every push |
+| The two-stage Dockerfile is still CI-only | No container registry is reachable from here, so `debian:bookworm-slim` cannot be pulled. `deploy/build_scratch_image.sh` builds and runs a `FROM scratch` image instead — 5.35 MB, serves `/login`, signs in, creates an order. What remains unverified outside CI is the base image and the apt layer |
 
 ## Deferred, and why
 

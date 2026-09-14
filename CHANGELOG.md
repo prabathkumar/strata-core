@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### The image has now been built and run
+
+`deploy/build_scratch_image.sh` compiles the service, collects exactly what
+`ldd` says it links against, builds a `FROM scratch` image, runs it, and asks
+the container for a page. It is 5.35 MB, it serves `/login`, and a sign-in and
+an order both work through it.
+
+This exists because no container registry is reachable from the development
+environment, so the two-stage Dockerfile at the repo root — which pulls
+`debian:bookworm-slim` — is built by CI and could not be built here. The
+script proves the half that does not need a registry: the binary, its data and
+three shared libraries are enough to serve.
+
+Running it found something reading it could not. **`docker logs` was empty.**
+A C program whose stdout is a pipe gets a 4KB block buffer, so the line the
+service prints at startup sat in libc and would have stayed there until the
+process exited — a service that looks dead to anyone watching it. The runtime
+preamble line-buffers stdout and unbuffers stderr from before `main` now, and
+`journey_survive.py` asserts that the startup line reaches a pipe.
+
 ### Journey C: the service survives contact
 
 The server served one connection at a time, had no timeout, and died on

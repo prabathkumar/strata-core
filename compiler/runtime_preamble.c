@@ -19,6 +19,19 @@ typedef int64_t   strata_bool;
 int __strata_argc = 0;
 char** __strata_argv = NULL;
 
+/* Output is line-buffered from the first instruction.
+ *
+ * A C program whose stdout is not a terminal gets a 4KB block buffer, so a
+ * service that prints one line at startup and then serves prints nothing that
+ * anyone can see: `docker logs` on the orders service was empty after a
+ * sign-in and an order, and would have stayed empty until the process exited.
+ * Found by running the container, not by reading the code. */
+__attribute__((constructor))
+static void __strata_line_buffer_output(void) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+}
+
 static strata_str strata_concat(strata_str a, strata_str b) {
     size_t la=strlen(a),lb=strlen(b);
     strata_str r=(strata_str)malloc(la+lb+1);
