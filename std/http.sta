@@ -1,0 +1,106 @@
+// STRATA STANDARD LIBRARY — std/http.sta
+// A blocking HTTP/1.1 server, written in Strata.
+//
+// The socket calls are `native` blocks over the headers a `foreign` block
+// includes, so this needed no compiler change: the FFI that already existed
+// was enough. That is the point worth noticing — the web tier is library
+// code, not a privileged part of the language.
+//
+// What it is: one connection at a time, read the request, hand the path to
+// the application, write the response, close. Enough to serve a page backed
+// by a database.
+//
+// What it is NOT: no TLS, no keep-alive, no concurrency, no streaming, no
+// chunked encoding, no request body beyond what one read() returns, no
+// timeouts. A second client waits for the first. Do not put this on the
+// public internet.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+foreign "sys/socket.h" link "" { }
+foreign "netinet/in.h" link "" { }
+foreign "unistd.h"     link "" { }
+
+// Returns a listening socket, or -1.
+int http_listen(int port) {
+    native "
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    a.sin_port = htons((unsigned short)$port);
+    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { close(fd); return -1; }
+    if (listen(fd, 16) < 0) { close(fd); return -1; }
+    return fd;
+    ";
+}
+
+int http_accept(int server_fd) { native "return accept($server_fd, NULL, NULL);"; }
+
+// The whole request as one read. Enough for a GET; a large POST body would be
+// truncated, which is a limit rather than a design.
+str http_read_request(int conn) {
+    native "
+    static char buf[16384];
+    ssize_t n = read($conn, buf, sizeof(buf) - 1);
+    if (n <= 0) { buf[0] = 0; return buf; }
+    buf[n] = 0;
+    return buf;
+    ";
+}
+
+int http_close(int conn) { native "close($conn); return 1;"; }
+
+// `GET /orders?x=1 HTTP/1.1` -> `/orders`
+str http_path(str request) {
+    int sp1 = str_index_of(request, " ");
+    if (sp1 < 0) { return "/"; }
+    str rest = str_slice(request, sp1 + 1, str_len(request));
+    int sp2 = str_index_of(rest, " ");
+    if (sp2 < 0) { return "/"; }
+    str target = str_slice(rest, 0, sp2);
+    int q = str_index_of(target, "?");
+    if (q >= 0) { target = str_slice(target, 0, q); }
+    if (str_len(target) == 0) { return "/"; }
+    return target;
+}
+
+// `GET /orders HTTP/1.1` -> `GET`
+str http_method(str request) {
+    int sp = str_index_of(request, " ");
+    if (sp < 0) { return "GET"; }
+    return str_slice(request, 0, sp);
+}
+
+int http_respond(int conn, int status, str content_type, str body) {
+    native "
+    const char* reason = \"OK\";
+    if ($status == 404) reason = \"Not Found\";
+    if ($status == 400) reason = \"Bad Request\";
+    if ($status == 500) reason = \"Internal Server Error\";
+    char head[512];
+    int hl = snprintf(head, sizeof(head),
+        \"HTTP/1.1 %lld %s\\r\\n\"
+        \"Content-Type: %s\\r\\n\"
+        \"Content-Length: %zu\\r\\n\"
+        \"Connection: close\\r\\n\\r\\n\",
+        (long long)$status, reason, $content_type, strlen($body));
+    if (write($conn, head, hl) < 0) return 0;
+    if (write($conn, $body, strlen($body)) < 0) return 0;
+    return 1;
+    ";
+}
+
+int http_ok(int conn, str html) {
+    return http_respond(conn, 200, "text/html; charset=utf-8", html);
+}
+
+int http_not_found(int conn) {
+    return http_respond(conn, 404, "text/html; charset=utf-8",
+    "<!doctype html><title>404</title><h1>404</h1>");
+}

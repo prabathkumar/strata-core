@@ -1,0 +1,11 @@
+// The data tier. One declaration, and every other tier is checked against it:
+// rename a column here and the query, the aggregate and the page all fail to
+// build — not at runtime, in front of a user.
+
+database Order {
+    int   id;
+    str   customer;
+    str   region;
+    float amount;
+    str   status;
+}

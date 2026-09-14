@@ -130,3 +130,33 @@ All twelve suites green. Conformance 160/160 (twenty new tests), fixpoint
 reached, generated C byte-identical, repo still canonically formatted.
 
 Not done: no GROUP BY, no HAVING, no aggregate inside a query condition.
+
+## 2026-09-14 — approach changed: structure and integration first
+
+Prabath's call, and it was right: the compiler was in good shape and there was
+no system. `client-ledger-service` was a six-line hello world that did not
+compile, `Strata.toml` was ignored, `deploy/` deployed nothing, and there was
+no HTTP server anywhere — so the "no JS/React split" claim had no way to serve
+a page.
+
+Target agreed: a service that runs and serves.
+
+Built a walking skeleton rather than another language feature. `apps/orders`
+is a multi-file project that loads persisted rows, serves a layout-rendered
+dashboard at `/`, aggregates at `/summary`, and 404s otherwise. It runs.
+
+Needed along the way, each found by the integration rather than guessed at:
+  - `render L` as an expression (a layout that can only be written to a file
+    cannot answer a request) — open_memstream behind it
+  - `app` as a module source, so a project can be more than one file
+  - imported `database`/`model` declarations registered in the checker
+
+`std/http.sta` is written in Strata over the existing FFI — no compiler change
+was needed for the server, which dropped it from a week to an afternoon.
+
+DEBT, recorded in ARCHITECTURE.md: the three compiler additions above exist in
+the Python oracle only. The self-hosted compiler cannot build this app until
+they are ported, and no repo file exercises them, so the differentials do not
+cover them yet. That is the next thing.
+
+All twelve suites green, fixpoint reached.

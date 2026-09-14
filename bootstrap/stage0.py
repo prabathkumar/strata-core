@@ -16,7 +16,7 @@ from compiler.parser import (
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
-    PredictExpr, QueryExpr, ListLiteral, MemberAccess,
+    PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
     PrimitiveType, ListType, TensorType,
 )
@@ -903,6 +903,7 @@ int main(int argc, char** argv) {
             return f"{expr.source}**" if expr.source in self.record_types else None
         if isinstance(expr, BorrowExpr):
             return self._expr_ctype(expr.target, param_names)
+        if isinstance(expr, RenderExpr): return "strata_str"
         if isinstance(expr, CallExpr):
             if expr.callee == "str":   return "strata_str"
             if expr.callee == "int":   return "strata_int"
@@ -996,6 +997,17 @@ int main(int argc, char** argv) {
             ct = self._expr_ctype(expr.obj, param_names) or ""
             arrow = "->" if ct.endswith("*") else "."
             return f"{obj}{arrow}{expr.member}"
+        if isinstance(expr, RenderExpr):
+            # The layout writes to a FILE*; open_memstream makes that FILE* a
+            # buffer, so the same generated function serves a file and an HTTP
+            # response body.
+            self.query_depth += 1
+            tag = f"_r{self.query_depth}"
+            self.query_depth -= 1
+            return (f"({{ char* {tag}b = NULL; size_t {tag}n = 0; "
+                    f"FILE* {tag}f = open_memstream(&{tag}b, &{tag}n); "
+                    f"{expr.target}_render({tag}f); "
+                    f"strata_render_end({tag}f, &{tag}b); }})")
         if isinstance(expr, QueryExpr):
             return self._gen_query_expr(expr, param_names)
         return "0"
@@ -1119,18 +1131,27 @@ int main(int argc, char** argv) {
 # bundled standard library; `compiler` lets the self-hosting sources import one
 # another. Anything else (hub, python_engine, ...) is an external registry with
 # no local checkout.
-LOCAL_SOURCES = ("std", "compiler")
+# `app` is the project's own src/ directory: an application is more than
+# one file, and without a project-local source every module of it would
+# have to live in std/.
+LOCAL_SOURCES = ("std", "compiler", "app")
 
-def _resolve_module(imp, search_root):
+def _resolve_module(imp, search_root, app_root=None):
     """Map an ImportDecl onto a .sta file path, or None if not locally resolvable.
 
     `import core.io from std;`   -> <root>/std/io.sta
     `import io from std;`        -> <root>/std/io.sta
     `import lexer from compiler;`-> <root>/compiler/lexer.sta
+    `import schema from app;`    -> <dir of the file being compiled>/schema.sta
     """
     if imp.source not in LOCAL_SOURCES:
         return None
     leaf = imp.name.split(".")[-1]
+    if imp.source == "app":
+        if app_root is None:
+            return None
+        cand = os.path.join(app_root, leaf + ".sta")
+        return cand if os.path.isfile(cand) else None
     nested = os.path.join(search_root, imp.source, *imp.name.split("."))
     for cand in (nested + ".sta", os.path.join(search_root, imp.source, leaf + ".sta")):
         if os.path.isfile(cand):
@@ -1155,11 +1176,14 @@ def resolve_imports(ast, source_path, verbose=False):
     ]
     search_root = next((c for c in candidates
                         if os.path.isdir(os.path.join(c, "std"))), src_dir)
+    # An `app` import resolves beside the file being compiled, so a project
+    # can be more than one file without putting its modules in std/.
+    app_root = src_dir
     modules, unresolved, seen = [], [], set()
 
     def walk(node_ast):
         for imp in node_ast.imports:
-            path = _resolve_module(imp, search_root)
+            path = _resolve_module(imp, search_root, app_root)
             if path is None:
                 key = f"{imp.name} from {imp.source}"
                 if key not in unresolved:
@@ -1191,7 +1215,7 @@ def resolve_imports(ast, source_path, verbose=False):
     # The root file's own unresolved imports, as nodes, so a diagnostic can
     # point at the line rather than at the file.
     root_unresolved = [imp for imp in ast.imports
-                       if _resolve_module(imp, search_root) is None]
+                       if _resolve_module(imp, search_root, app_root) is None]
     return modules, unresolved, root_unresolved
 
 _TAXONOMY_CACHE = None

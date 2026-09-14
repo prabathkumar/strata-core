@@ -19,7 +19,7 @@ from compiler.parser import (
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
-    PredictExpr, QueryExpr, ListLiteral, MemberAccess,
+    PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
     PrimitiveType, ListType, TensorType,
 )
@@ -127,7 +127,9 @@ class TypeChecker:
         # to not report it, and checking argument types across a module
         # boundary is a separate change with its own risk.
         self.imported_names = set()
-        for m in (modules or []):
+        # Kept for registering imported declarations in check().
+        self.modules = list(modules or [])
+        for m in self.modules:
             # resolve_imports yields (module_name, unit) pairs.
             unit = m[1] if isinstance(m, tuple) else m
             for fn in getattr(unit, "functions", []):
@@ -141,6 +143,7 @@ class TypeChecker:
 
     def check(self):
         self._report_unresolved_imports()
+        self._register_imported_declarations()
         self._register_declarations()
         self._register_foreign()
         self._register_functions()
@@ -180,6 +183,29 @@ class TypeChecker:
                 imp.line, imp.col,
                 f"Its symbols must be provided at link time, and nothing it "
                 f"declares is checked here — including calls into it")
+
+    def _register_imported_declarations(self):
+        """Schemas and models an import brings in.
+
+        Without this an application cannot be more than one file: a `database`
+        block in schema.sta is invisible to the module that queries it, and
+        every query reports E004 against a table that is right there.
+
+        Registered before the file's own declarations, so a local one wins.
+        """
+        for m in self.modules:
+            unit = m[1] if isinstance(m, tuple) else m
+            for d in getattr(unit, "declarations", []):
+                if isinstance(d, (DatabaseDecl, ProtocolDecl)):
+                    self.schemas[d.name] = {
+                        f.name: self._resolve_type(f.field_type) for f in d.fields}
+                    self.global_scope.define(d.name, SType(d.name))
+                elif isinstance(d, ModelDecl):
+                    self.models[d.name] = (self._resolve_type(d.input_type),
+                                           self._resolve_type(d.output_type))
+                    self.global_scope.define(d.name, SType(d.name))
+                elif isinstance(d, (ReportDecl, LayoutDecl)):
+                    self.global_scope.define(d.name, SType(d.name))
 
     def _register_declarations(self):
         for d in self.ast.declarations:
@@ -472,6 +498,12 @@ class TypeChecker:
                 self._error("E003",f"Cannot index into '{bt}' — not a list or str",
                     expr.line,expr.col,"Indexing applies to list[T] and str values")
             return None
+        if isinstance(expr,RenderExpr):
+            if self.global_scope.lookup(expr.target) is None:
+                self._error("E002",f"'{expr.target}' is not a layout or report",
+                    expr.line,expr.col,
+                    f"Declare 'layout {expr.target}' or 'report {expr.target}'")
+            return T_STR
         if isinstance(expr,QueryExpr):
             src=expr.source
             if src not in self.schemas:

@@ -230,6 +230,16 @@ class RenderStmt(Node):
     path: str
     def to_dict(self): return {"node":"RenderStmt","report":self.report,"path":self.path}
 
+@dataclass
+class RenderExpr(Node):
+    """`render L` — the rendered document as a str.
+
+    A layout that can only be written to a file cannot answer an HTTP
+    request, which is what made this the first thing a server needed.
+    """
+    target: str
+    def to_dict(self): return {"node":"RenderExpr","target":self.target}
+
 # ── Top-Level Declarations ────────────────────────────────────────────────────
 
 @dataclass
@@ -819,7 +829,11 @@ class Parser:
             self._consume(TT.SEMICOLON)
             return AssertStmt(t.line, t.col, cond)
 
-        if self._check(TT.KW_RENDER):
+        # `render L to "path";` is a statement; a bare `render L` is an
+        # expression, so the two are told apart by what follows the name.
+        if self._check(TT.KW_RENDER) and self._peek_at(2).type != TT.IDENT:
+            return self._parse_render()
+        if self._check(TT.KW_RENDER) and self._peek_at(2).value == "to":
             return self._parse_render()
 
         # `save T to "p";` / `load T from "p";` — contextual, so neither word
@@ -1073,6 +1087,11 @@ class Parser:
 
         if self._check(TT.KW_PREDICT):
             return self._parse_predict()
+
+        if self._check(TT.KW_RENDER):
+            r = self._advance()
+            target = self._consume(TT.IDENT).value
+            return RenderExpr(r.line, r.col, target)
 
         # Type cast call: str(expr)
         if self._is_type_keyword():

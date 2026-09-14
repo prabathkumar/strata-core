@@ -1,0 +1,62 @@
+// The Orders service.
+//
+// One binary: it owns its data, its business rules, its HTTP surface and the
+// page it serves. There is no separate front end, no JSON contract between
+// tiers, and no second language — a column renamed in schema.sta breaks this
+// file at build time.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import http   from std;
+import schema from app;
+import views  from app;
+
+int seed_if_empty() {
+    if (count(Order <- [id > 0]) > 0) { return 0; }
+    Order <- [id = 1, customer = "acme",    region = "apac", amount = 1250.00, status = "OPEN"];
+    Order <- [id = 2, customer = "globex",  region = "emea", amount =  340.50, status = "OPEN"];
+    Order <- [id = 3, customer = "initech", region = "amer", amount =  980.75, status = "CLOSED"];
+    return 1;
+}
+
+str summary_page() {
+    list[Order] open_orders = Order <- [status == "OPEN"];
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "<!doctype html><meta charset=\"utf-8\"><title>Orders API</title>");
+    sb_append(&sb, "<pre>open orders: ");
+    sb_append(&sb, str(count(open_orders)));
+    sb_append(&sb, "\nopen value:  ");
+    sb_append(&sb, str(sum(open_orders.amount)));
+    sb_append(&sb, "\nlargest:     ");
+    sb_append(&sb, str(max(open_orders.amount)));
+    sb_append(&sb, "</pre>");
+    return sb_to_str(&sb);
+}
+
+int handle(int conn, str request) {
+    str path = http_path(request);
+    if (str_eq(path, "/") == 1)        { return http_ok(conn, render Dashboard); }
+    if (str_eq(path, "/summary") == 1) { return http_ok(conn, summary_page()); }
+    if (str_eq(path, "/health") == 1)  {
+        return http_respond(conn, 200, "text/plain", "ok");
+    }
+    return http_not_found(conn);
+}
+
+int main() {
+    load Order from "data/orders.tsv";
+    if (seed_if_empty() == 1) { save Order to "data/orders.tsv"; }
+
+    int fd = http_listen(8080);
+    if (fd < 0) { eprint("could not bind port 8080"); return 1; }
+    print("orders service listening on http://127.0.0.1:8080");
+
+    while (1 == 1) {
+        int conn = http_accept(fd);
+        if (conn < 0) { break; }
+        handle(conn, http_read_request(conn));
+        http_close(conn);
+    }
+    return 0;
+}

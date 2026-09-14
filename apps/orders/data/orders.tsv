@@ -1,0 +1,4 @@
+#strata	Order	id:i	customer:s	region:s	amount:f	status:s
+1	acme	apac	1250	OPEN
+2	globex	emea	340.5	OPEN
+3	initech	amer	980.75	CLOSED

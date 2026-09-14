@@ -136,6 +136,19 @@ static strata_int strata_len(void* list) {
     return ((strata_int*)list)[-1];
 }
 
+/* ── Rendering to a string ────────────────────────────────────────────────
+   A layout compiles to a function that writes to a FILE*. open_memstream
+   gives it a FILE* backed by a growing buffer, so the same generated function
+   serves both `render L to "page.html"` and an HTTP response body without
+   the layout knowing the difference. */
+static strata_str strata_render_end(FILE* out, char** buf) {
+    /* open_memstream only publishes the buffer pointer on fclose, so the
+       address is taken rather than the value — passing the value hands over a
+       NULL captured before the stream was flushed. */
+    fclose(out);
+    return (*buf) ? *buf : "";
+}
+
 /* ── Aggregates ───────────────────────────────────────────────────────────
    sum, avg, min and max over a list of numbers, or over one column projected
    out of a list of rows. The column case walks an array of row pointers and

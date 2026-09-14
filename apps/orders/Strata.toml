@@ -1,0 +1,13 @@
+[package]
+name = "orders"
+version = "0.1.0"
+
+[build]
+# The entry point. `strata build` in this directory compiles it, with
+# everything it imports, into build/orders.
+main = "src/main.sta"
+output = "build/orders"
+
+[run]
+port = 8080
+data = "data/orders.tsv"

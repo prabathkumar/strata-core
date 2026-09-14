@@ -1,0 +1,26 @@
+// The UI tier. A layout is a value: `render Dashboard` yields the document as
+// a str, which is what lets it answer an HTTP request rather than only being
+// written to a file.
+
+import io     from std;
+import schema from app;
+
+layout Dashboard() {
+    window "Orders" [width = 1100] {
+        row [padding = 16, background = "#10131a"] {
+            text "ORDERS" [color = "#7ee787", weight = "bold", size = 18];
+        }
+        column [padding = 20] {
+            list[Order] open_orders = Order <- [status == "OPEN"];
+            for O in open_orders {
+                row [padding = 8, background = "#1b1f27"] {
+                    text O.customer [color = "#ffffff"];
+                    spacer;
+                    text O.region [color = "#8b949e"];
+                    spacer;
+                    text str(O.amount) [color = "#7ee787"];
+                }
+            }
+        }
+    }
+}
