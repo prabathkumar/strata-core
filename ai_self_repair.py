@@ -35,10 +35,14 @@ COMPILER = os.path.join(ROOT, "bootstrap", "stage0.py")
 
 # ── Compiler interface ────────────────────────────────────────────────────────
 
-def diagnose(path: str) -> dict:
-    """Compile and return the compiler's structured diagnostics payload."""
+def diagnose(path: str, cwd: str = ROOT) -> dict:
+    """Compile and return the compiler's structured diagnostics payload.
+
+    `cwd` is the project root when repairing a project, because a project's
+    imports resolve relative to it.
+    """
     r = subprocess.run([sys.executable, COMPILER, path, "--json"],
-                       capture_output=True, text=True, cwd=ROOT)
+                       capture_output=True, text=True, cwd=cwd)
     try:
         return json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -98,6 +102,25 @@ def repair_rules(source: str, d: dict):
                     digits += ".0"
                 return _replace_line(source, line_no,
                                      re.sub(r'"[^"]*"', digits, line, count=1))
+    # E009: an insert that does not name every column. The column and its
+    # declared type are both in the hint, so the fix is unambiguous: name it
+    # with the zero value of its type and let a human decide the real one.
+    if code == "E009":
+        m = re.search(r"omits column '([^']+)'", d.get("message", ""))
+        t = re.search(r"is '(\w+)'", d.get("hint", ""))
+        if m and t:
+            default = {"int": "0", "float": "0.0", "str": '""'}.get(t.group(1))
+            if default:
+                lines = source.splitlines()
+                # The insert may span several lines; the closing bracket is
+                # what the new column goes before.
+                for n in range(line_no, min(line_no + 8, len(lines)) + 1):
+                    cur = lines[n - 1]
+                    if "]" in cur:
+                        head, sep, tail = cur.rpartition("]")
+                        return _replace_line(
+                            source, n,
+                            f"{head.rstrip()}, {m.group(1)} = {default}{sep}{tail}")
     return None
 
 
@@ -157,52 +180,95 @@ BACKENDS = {"rules": repair_rules, "llm": repair_llm}
 
 # ── Loop ──────────────────────────────────────────────────────────────────────
 
-def repair(path: str, backend="rules", max_passes=5, dry_run=False) -> int:
-    name = backend
+def repair(path: str, backend="rules", max_passes=5, dry_run=False,
+           cwd: str = ROOT) -> int:
+    """Repair until the compilation unit is clean.
+
+    A unit is one file or a whole project, and the difference matters less
+    than it looks: the compiler reports which file each diagnostic is in, so
+    the loop reads that field and edits that file. Repairing the entry point
+    alone was a single-file assumption hiding in the loop, not in the
+    compiler — a project's first diagnostic is usually in a module the entry
+    point imports.
+    """
     backend_fn = BACKENDS[backend]
-    original = open(path).read()
-    source = original
-    print(f"[Strata Repair] target: {path}   backend: {name}")
+    originals: dict[str, str] = {}          # path -> content before any repair
+    print(f"[Strata Repair] target: {path}   backend: {backend}   root: {cwd}")
+
+    def restore():
+        for f, text in originals.items():
+            open(f, "w").write(text)
 
     for attempt in range(1, max_passes + 1):
-        report = diagnose(path)
+        report = diagnose(path, cwd)
         if report.get("ok"):
-            print(f"[Strata Repair] clean after {attempt - 1} repair(s).")
-            if dry_run and source != original:
-                open(path, "w").write(original)
-                print("[Strata Repair] dry run — original restored.")
+            print(f"[Strata Repair] clean after {attempt - 1} repair(s)"
+                  + (f" across {len(originals)} file(s)." if originals else "."))
+            if dry_run and originals:
+                restore()
+                print("[Strata Repair] dry run — originals restored.")
             return 0
 
-        diags = report.get("diagnostics", [])
+        diags = [x for x in report.get("diagnostics", [])
+                 if x.get("severity") != "ADVISORY"]
+        if not diags:
+            print("[Strata Repair] only advisories remain — stopping.")
+            break
         print(f"\n  pass {attempt}: {len(diags)} diagnostic(s) at "
               f"stage '{report.get('stage')}'")
         d = diags[0]
+        target = os.path.join(cwd, d.get("file") or path)
+        if not os.path.exists(target):
+            target = path
         print(f"    {d['code']} {d.get('classification','')} "
-              f"(line {d.get('line')}): {d.get('message','')}")
+              f"({os.path.relpath(target, cwd)}:{d.get('line')}): "
+              f"{d.get('message','')}")
 
+        source = open(target).read()
+        originals.setdefault(target, source)
         patched = backend_fn(source, d)
         if patched is None or patched == source:
-            print(f"    backend produced no change — stopping.")
+            print("    backend produced no change — stopping.")
             break
-        open(path, "w").write(patched)
-        source = patched
-        print(f"    patch applied, recompiling")
+        open(target, "w").write(patched)
+        print("    patch applied, recompiling")
 
-    if dry_run:
-        open(path, "w").write(original)
-        print("[Strata Repair] dry run — original restored.")
+    if dry_run and originals:
+        restore()
+        print("[Strata Repair] dry run — originals restored.")
     print("[Strata Repair] unresolved.")
     return 1
 
 
 def main():
     ap = argparse.ArgumentParser(description="Strata autonomous repair loop")
-    ap.add_argument("file")
+    ap.add_argument("file", nargs="?",
+                    help="a .sta file; omit it when --project is given")
+    ap.add_argument("--project", metavar="DIR",
+                    help="repair a project: its Strata.toml names the entry "
+                         "point, and diagnostics are followed into whichever "
+                         "of its files they are in")
     ap.add_argument("--backend", choices=sorted(BACKENDS), default="rules")
     ap.add_argument("--max-passes", type=int, default=5)
     ap.add_argument("--dry-run", action="store_true",
                     help="report the repairs but restore the original file")
     a = ap.parse_args()
+    if a.project:
+        root = os.path.abspath(a.project)
+        toml = os.path.join(root, "Strata.toml")
+        if not os.path.exists(toml):
+            print(f"[Strata Repair] no Strata.toml in {a.project}", file=sys.stderr)
+            return 2
+        m = re.search(r'^\s*main\s*=\s*"([^"]+)"', open(toml).read(), re.M)
+        main_rel = m.group(1) if m else "src/main.sta"
+        if not os.path.exists(os.path.join(root, main_rel)):
+            print(f"[Strata Repair] {toml} names main = \"{main_rel}\", "
+                  f"which does not exist", file=sys.stderr)
+            return 2
+        return repair(main_rel, a.backend, a.max_passes, a.dry_run, cwd=root)
+    if not a.file:
+        print("[Strata Repair] give a file or --project DIR", file=sys.stderr)
+        return 2
     if not os.path.exists(a.file):
         print(f"[Strata Repair] no such file: {a.file}", file=sys.stderr)
         return 2

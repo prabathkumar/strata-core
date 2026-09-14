@@ -356,6 +356,20 @@ class TypeChecker:
                     stmt.line,stmt.col,
                     f"Valid columns: {sorted(fields)}")
             self._infer_type(value,scope)
+        # Every column must be named. A column added to the schema and not
+        # named here would otherwise be written as a zero or an empty string,
+        # silently, in every insert in the program — which is exactly the
+        # change a developer makes most often. The build is where that is
+        # found, not the data file.
+        named={col for col,_ in stmt.assignments}
+        for col in fields:
+            if col not in named:
+                self._error("E009",
+                    f"Insert into '{stmt.target}' omits column '{col}'",
+                    stmt.line,stmt.col,
+                    f"Add '{col} = <value>' to the insert — "
+                    f"'{col}' is '{fields[col]}' — "
+                    f"or remove '{col}' from 'database {stmt.target}'")
 
     def _check_assign(self,stmt,scope):
         """`target = value` must not change the target's declared type."""

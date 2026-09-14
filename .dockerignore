@@ -1,0 +1,7 @@
+# Kept deliberately small: the build stage compiles from source, and a rule
+# clever enough to exclude generated C is a rule clever enough to exclude
+# compiler/runtime_preamble.c, which every build reads.
+.git
+**/__pycache__/
+**/build/
+_to_delete/

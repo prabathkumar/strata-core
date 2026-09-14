@@ -1,0 +1,58 @@
+// The business rules, apart from HTTP.
+//
+// These were inside the request handlers, where the only way to exercise them
+// was to start a server and post a form. A rule that can only be tested
+// through a socket is a rule that is not tested, so the handlers in main.sta
+// are now adapters — read the form, call a rule, choose a status code — and
+// everything that decides anything lives here, where `strata test` runs it.
+
+import io     from std;
+import str    from std;
+import schema from app;
+
+int load_all() {
+    load Order from "data/orders.tsv";
+    load User from "data/users.tsv";
+    load Session from "data/sessions.tsv";
+    return 1;
+}
+
+int save_orders()   { save Order to "data/orders.tsv"; return 1; }
+int save_sessions() { save Session to "data/sessions.tsv"; return 1; }
+
+int next_id() {
+    list[Order] all = Order <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// Creating an order. The rules do not persist: the caller decides when to
+// write, which is what lets `strata test` exercise them without touching the
+// service's data files.
+//
+// The return value is the outcome, not a page:
+//   0  created
+//   1  no customer
+//   2  no amount
+int create_order(str customer, str region, str amount) {
+    if (str_len(customer) == 0) { return 1; }
+    if (str_len(amount) == 0) { return 2; }
+    str where = region;
+    if (str_len(where) == 0) { where = "unknown"; }
+    Order <- [id = next_id(), customer = customer, region = where,
+    amount = str_to_float(amount), status = "OPEN"];
+    return 0;
+}
+
+// Closing an order. 0 closed, 1 no such order.
+int close_order(int want) {
+    list[Order] found = Order <- [id == want];
+    if (count(found) == 0) { return 1; }
+    Order o = found[0];
+    o.status = "CLOSED";
+    return 0;
+}
+
+int open_count() {
+    return count(Order <- [status == "OPEN"]);
+}

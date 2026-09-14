@@ -205,20 +205,48 @@ STA
 cmd_test() {
     # Builds and runs the verify blocks in each file. Previously this only
     # type-checked, so a file with a failing assertion reported PASS.
-    local dir="${1:-test_suite}"
+    #
+    # With no argument inside a project, this tests the project: every .sta
+    # under it, recursively, compiled from the project root so that
+    # `import x from app` resolves and so a test can open the project's data
+    # files by the same relative path the service uses. Testing only
+    # `test_suite/*.sta` meant an application had no way to be tested at all,
+    # which is why apps/orders had no tests until its journey demanded them.
+    local dir="$1" base=""
+    if [ -z "$dir" ]; then
+        local proj; proj="$(find_project)" || true
+        if [ -n "$proj" ]; then
+            dir="$proj"; base="$proj"
+        else
+            dir="test_suite"
+        fi
+    fi
     echo "[Strata Test] $dir"
     local p=0 f=0 skipped=0
     local tmp; tmp="$(mktemp -d)"
-    for sta in "$dir"/*.sta; do
+    local files=()
+    if [ -n "$base" ]; then
+        while IFS= read -r line; do files+=("$line"); done < <(
+            find "$dir" -name '*.sta' -not -path '*/build/*' \
+                        -not -path '*_to_delete*' | sort)
+    else
+        while IFS= read -r line; do files+=("$line"); done < <(
+            find "$dir" -maxdepth 1 -name '*.sta' | sort)
+    fi
+    for sta in "${files[@]}"; do
         [ -f "$sta" ] || continue
         if ! grep -q '^verify ' "$sta"; then
             skipped=$((skipped+1)); continue
         fi
         local bin="$tmp/$(basename "$sta" .sta)"
-        if ! python3 "$ROOT/bootstrap/stage0.py" "$sta" --test -o "$bin" >/dev/null 2>&1; then
+        local src="$sta" run_in="$PWD"
+        if [ -n "$base" ]; then
+            src="${sta#$base/}"; run_in="$base"
+        fi
+        if ! ( cd "$run_in" && python3 "$ROOT/bootstrap/stage0.py" "$src" --test -o "$bin" ) >/dev/null 2>&1; then
             echo "  BUILD FAIL: $sta"; f=$((f+1)); continue
         fi
-        if "$bin"; then
+        if ( cd "$run_in" && "$bin" ); then
             echo "  PASS: $sta"; p=$((p+1))
         else
             echo "  FAIL: $sta"; f=$((f+1))

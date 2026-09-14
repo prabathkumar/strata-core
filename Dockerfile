@@ -1,64 +1,51 @@
-# ==============================================================================
-# STAGE 1: COMPILATION TIER (Heavyweight Toolchain Engine Layer)
-# ==============================================================================
-FROM ubuntu:22.04 AS build-env
+# The orders service, built from source and shipped as one binary.
+#
+# What this replaces is worth recording: the previous Dockerfile cloned
+# "https://github.com", patched CPython's importlib to accept .sta files and
+# renamed the python binary to `strata`. It had never been built. A CI step
+# checked that the file existed.
+#
+# Two stages. The first has the toolchain — python3 for the bootstrap
+# compiler and gcc for the C it emits. The second has the binary, its data
+# and libcrypt, which the password hashing calls through FFI.
 
-# Prevent interactive prompts during structural package setup
-ENV DEBIAN_FRONTEND=noninteractive
+# ── Stage 1: build ───────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS build
 
-# Install essential bare-metal build utilities and standard C libraries
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    libssl-dev \
-    zlib1g-dev \
-    libncurses5-dev \
-    libgdbm-dev \
-    libnss3-dev \
-    libsqlite3-dev \
-    libreadline-dev \
-    libffi-dev \
-    curl \
-    pkg-config \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 gcc libc6-dev libcrypt-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /src
+COPY bootstrap/ bootstrap/
+COPY compiler/ compiler/
+COPY std/ std/
+COPY bin/ bin/
+COPY apps/orders/ apps/orders/
 
-# Clone reference parser components to patch the syntax lexer
-RUN git clone --depth 1 https://github.com strata-source
+# Built here rather than at run time, so an image that builds is an image
+# that runs. A type error in the application fails this line.
+RUN cd apps/orders && python3 ../../bootstrap/stage0.py src/main.sta -o build/orders
 
-WORKDIR /workspace/strata-source
+# The tests run in the image that ships, against the compiler that built it.
+RUN cd apps/orders && ../../bin/strata test
 
-# Inject our exact brace-enclosed enterprise format token rules
-RUN sed -i "s/SOURCE_SUFFIXES = \['.py'\]/SOURCE_SUFFIXES = \['.py', '.sta'\]/g" Lib/importlib/_bootstrap_external.py
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
 
-# Configure machine layouts and execute multi-core native compilation
-RUN ./configure --enable-optimizations --prefix=/usr/local
-RUN make regen-importlib -j$(nproc)
-RUN make -j$(nproc)
-
-# Rename binary target output to Strata Core identity specifications
-RUN mv python /workspace/strata
-
-# ==============================================================================
-# STAGE 2: PRODUCTION TIER (Micro-Thin Runtime Execution Container)
-# ==============================================================================
-FROM ubuntu:22.04 AS production-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcrypt1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /app orders
 
 WORKDIR /app
+COPY --from=build /src/apps/orders/build/orders /usr/local/bin/orders
+COPY --from=build --chown=orders:orders /src/apps/orders/data/ /app/data/
 
-# Copy ONLY the optimized binary toolchain asset from Stage 1
-COPY --from=build-env /workspace/strata /usr/local/bin/strata
+# The service writes its tables back to /app/data on every change. Mount a
+# volume there to keep them across a restart of the container.
+VOLUME ["/app/data"]
 
-# Install minimal system runtime packages required by the binary engine
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Verify system integrity flag upon container boot sequences
-RUN strata --version
-
-# Set default execution command loop entry point
-ENTRYPOINT ["strata"]
-CMD ["--help"]
+USER orders
+EXPOSE 8080
+CMD ["orders"]

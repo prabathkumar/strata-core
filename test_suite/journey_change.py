@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Journey B — a developer changes the system.
+
+Clone, run it, add a column, watch the build break, let the repair loop fix
+it, run the tests, and check the data written before the change still loads.
+
+This is the journey that makes the language's argument rather than the
+service's: the claim is that a change to the data tier is caught everywhere it
+matters, at build time, and that an agent can close the loop from the
+compiler's own diagnostics. A journey either demonstrates that or exposes that
+it is not true.
+
+What it found on the way in:
+
+  - Adding a column was not an error anywhere. Every insert in the program
+    would have written the new column as an empty string, in every row,
+    silently. That is E009 now, and it is what makes this journey have a
+    middle at all.
+  - The repair loop assumed a single file. A project's diagnostics arrive
+    with the file they are in, and the loop ignored that field.
+  - `strata test` could only see `test_suite/*.sta`. An application had no
+    way to be tested, which is why apps/orders had none.
+  - `import x from app` resolved only beside the importing file, so a test
+    in tests/ could not import the module it tests.
+
+Usage:  python3 test_suite/journey_change.py [--worktree]
+
+        --worktree runs against the working tree instead of an export of
+        HEAD. Useful while developing the journey; CI runs it without.
+"""
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+PASS = FAIL = 0
+
+
+def ok(name, cond, detail=""):
+    global PASS, FAIL
+    if cond:
+        print(f"  PASS  {name}")
+        PASS += 1
+    else:
+        print(f"  FAIL  {name}" + (f" — {detail}" if detail else ""))
+        FAIL += 1
+
+
+def run(args, cwd, timeout=600):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def serve(app, port):
+    """Start the built service on `port` and wait for it to answer."""
+    proc = subprocess.Popen([os.path.join(app, "build", "orders")], cwd=app,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(80):
+        time.sleep(0.1)
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/health",
+                                   timeout=2).read()
+            return proc
+        except Exception:
+            continue
+    return proc
+
+
+def checkout(worktree):
+    tmp = tempfile.mkdtemp(prefix="strata-journey-b-")
+    work = os.path.join(tmp, "work")
+    if worktree:
+        shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(
+            ".git", "build", "__pycache__", "_to_delete"))
+    else:
+        tar = os.path.join(tmp, "head.tar")
+        r = run(["git", "archive", "-o", tar, "HEAD"], ROOT)
+        if r.returncode != 0:
+            raise SystemExit("could not export HEAD: " + r.stderr[:200])
+        os.makedirs(work)
+        subprocess.run(["tar", "-xf", tar, "-C", work], check=True)
+    return tmp, work
+
+
+def main():
+    worktree = "--worktree" in sys.argv
+    tmp, work = checkout(worktree)
+    strata = os.path.join(work, "bin", "strata")
+    app = os.path.join(work, "apps", "orders")
+    schema = os.path.join(app, "src", "schema.sta")
+    port = free_port()
+    proc = None
+
+    try:
+        os.chmod(strata, 0o755)
+        print("\n── A developer clones and runs it ───────────────────────────────")
+        ok("the clone carries the application", os.path.isfile(schema))
+
+        r = run([strata, "build"], app)
+        ok("it builds unchanged", r.returncode == 0, (r.stdout + r.stderr)[-300:])
+        if r.returncode != 0:
+            return
+
+        r = run([strata, "test"], app)
+        ok("its own tests pass", r.returncode == 0, (r.stdout + r.stderr)[-400:])
+        ok("and they are the application's, not the compiler's",
+           "rules_test" in r.stdout, r.stdout[-200:])
+
+        # Bind the service to a free port for the duration.
+        main_src = os.path.join(app, "src", "main.sta")
+        text = open(main_src).read()
+        open(main_src, "w").write(text.replace("http_listen(8080)",
+                                               f"http_listen({port})"))
+        run([strata, "build"], app)
+        proc = serve(app, port)
+        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/login",
+                                      timeout=5).read().decode()
+        ok("the service serves", "password" in body, body[:120])
+        proc.terminate(); proc.wait(timeout=10); proc = None
+
+        rows_before = open(os.path.join(app, "data", "orders.tsv")).read()
+        ok("and there is data on disk from before the change",
+           rows_before.count("\n") > 1, rows_before[:120])
+
+        print("\n── The change: orders gain a priority ───────────────────────────")
+        s = open(schema).read()
+        assert "str   status;" in s
+        open(schema, "w").write(s.replace(
+            '    str   status;              // "OPEN" or "CLOSED"',
+            '    str   status;              // "OPEN" or "CLOSED"\n'
+            '    str   priority;            // "normal" or "rush"'))
+
+        r = run([strata, "build"], app)
+        ok("the build fails", r.returncode != 0)
+        out = r.stdout + r.stderr
+        ok("with E009 at every insert that now omits the column",
+           out.count("E009") >= 4, out[-400:])
+        ok("and names the column that was added", "priority" in out)
+
+        # The failing sites are in more than one file, which is the point of
+        # checking the data tier against every tier that uses it.
+        diag = run([sys.executable, os.path.join(work, "bootstrap", "stage0.py"),
+                    "src/main.sta", "--json"], app)
+        import json
+        payload = json.loads(diag.stdout)
+        files = {d["file"] for d in payload["diagnostics"] if d["code"] == "E009"}
+        ok("across both files that insert rows", len(files) >= 2, str(files))
+
+        print("\n── The repair loop closes it ────────────────────────────────────")
+        r = run([sys.executable, os.path.join(work, "ai_self_repair.py"),
+                 "--project", app, "--max-passes", "12"], work)
+        ok("the loop reports clean", "clean after" in r.stdout,
+           (r.stdout + r.stderr)[-400:])
+        m = re.search(r"clean after (\d+) repair\(s\) across (\d+) file", r.stdout)
+        ok("having repaired every site, in both files",
+           bool(m) and int(m.group(1)) >= 4 and int(m.group(2)) >= 2,
+           r.stdout[-300:])
+
+        r = run([strata, "build"], app)
+        ok("the build passes", r.returncode == 0, (r.stdout + r.stderr)[-300:])
+
+        r = run([strata, "test"], app)
+        ok("the tests still pass", r.returncode == 0, (r.stdout + r.stderr)[-400:])
+
+        r = run([strata, "fmt", os.path.join(app, "src", "rules.sta")], work)
+        ok("and the repaired source formats canonically", r.returncode == 0,
+           (r.stdout + r.stderr)[-200:])
+
+        print("\n── The data written before the change still loads ───────────────")
+        proc = serve(app, port)
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+        opener.open(f"http://127.0.0.1:{port}/login",
+                    b"username=manager&password=strata", timeout=5)
+        page = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+        ok("the rows from before the change are on the dashboard",
+           "acme" in page and "globex" in page, page[:200])
+
+        opener.open(f"http://127.0.0.1:{port}/orders",
+                    b"customer=wayne&region=amer&amount=99.50", timeout=5)
+        page = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+        ok("a new order can still be created", "wayne" in page, page[:200])
+        proc.terminate(); proc.wait(timeout=10); proc = None
+
+        after = open(os.path.join(app, "data", "orders.tsv")).read()
+        ok("the new column reached the file's header", "priority:s" in after,
+           after.splitlines()[0] if after else "")
+        ok("and every row carries it",
+           all(len(l.split("\t")) == 6 for l in after.splitlines()[1:] if l),
+           after[:200])
+
+        print("\n── Deploy ───────────────────────────────────────────────────────")
+        if shutil.which("docker") is None:
+            print("  SKIP  docker is not installed here; CI builds and runs the "
+                  "image on every push")
+        else:
+            r = run(["docker", "build", "-t", "strata-orders:journey", "."], work,
+                    timeout=1800)
+            ok("the image builds", r.returncode == 0, (r.stdout + r.stderr)[-500:])
+            if r.returncode == 0:
+                dport = free_port()
+                c = run(["docker", "run", "-d", "-p", f"{dport}:8080",
+                         "strata-orders:journey"], work)
+                cid = c.stdout.strip()
+                served = False
+                for _ in range(60):
+                    time.sleep(1)
+                    try:
+                        b = urllib.request.urlopen(
+                            f"http://127.0.0.1:{dport}/login", timeout=2).read()
+                        served = b"password" in b
+                        break
+                    except Exception:
+                        continue
+                ok("and the container serves the sign-in page", served)
+                run(["docker", "rm", "-f", cid], work)
+
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("\n" + "=" * 64)
+    print(f"  {PASS}/{PASS + FAIL} steps of the journey passed")
+    print("=" * 64)
+    if FAIL:
+        print("  A developer cannot yet change the system. NOT OK")
+        return 1
+    print("  A developer can change the system and deploy it. OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

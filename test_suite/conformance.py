@@ -202,8 +202,11 @@ test("e006_valid_model_decl",
 print("\n── Insert statement (write form of <-) ──────────────────────────")
 test("insert_bad_column",
      'database Audit { int id; str actor; }\nint main() { Audit <- [wrong_col = "x"]; return 0; }', "E004")
-test("insert_valid",
-     'database Audit { int id; str actor; }\nint main() { Audit <- [actor = "prabath"]; return 0; }')
+# An insert that names some of the columns used to be valid; the rest were
+# written as zeros. It is E009 now — see journey_change.py for why.
+test("insert_omits_column",
+     'database Audit { int id; str actor; }\nint main() { Audit <- [actor = "prabath"]; return 0; }',
+     "E009")
 test("insert_multi_column",
      'database Audit { int id; str actor; }\nint main() { Audit <- [id = 1, actor = "p"]; return 0; }')
 

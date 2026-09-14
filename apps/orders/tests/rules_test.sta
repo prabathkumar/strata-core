@@ -1,0 +1,39 @@
+// The orders desk's own tests. `strata test` inside apps/orders builds and
+// runs these from the project root, so the relative data paths are the ones
+// the service uses.
+
+import io     from std;
+import str    from std;
+import schema from app;
+import rules  from app;
+
+verify "an empty table numbers from one" {
+    assert next_id() == 1;
+}
+
+verify "a customer and an amount are both required" {
+    assert create_order("", "apac", "10.00") == 1;
+    assert create_order("acme", "apac", "") == 2;
+    assert open_count() == 0;
+}
+
+verify "creating an order opens it, and ids do not repeat" {
+    assert create_order("acme", "apac", "1250.00") == 0;
+    assert open_count() == 1;
+    assert next_id() == 2;
+    assert create_order("globex", "emea", "340.50") == 0;
+    assert open_count() == 2;
+}
+
+verify "a missing region becomes unknown rather than empty" {
+    assert create_order("initech", "", "10.00") == 0;
+    list[Order] found = Order <- [customer == "initech"];
+    Order o = found[0];
+    assert str_eq(o.region, "unknown") == 1;
+}
+
+verify "closing takes an order off the open list, once" {
+    assert close_order(1) == 0;
+    assert open_count() == 2;
+    assert close_order(9999) == 1;
+}

@@ -15,9 +15,13 @@ database TelemetrySnapshot {
 }
 
 // 2. REAL-TIME INSTRUMENTATION PIPELINE HOOKS
-int record_telemetry_metric(str scope_tag, float execution_ms, float memory_kb) {
-    // Inject metrics directly into Strata's lightning-fast data store operator (<-)
+// The trace id is a parameter because the caller owns it: the language has no
+// module-level variables, so there is nowhere here to keep a counter. It used
+// to be omitted, which meant every snapshot was written with trace_id 0 and
+// nothing said so. E009 is what found it.
+int record_telemetry_metric(int trace_id, str scope_tag, float execution_ms, float memory_kb) {
     TelemetrySnapshot <- [
+    trace_id = trace_id,
     subsystem_scope = scope_tag,
     processing_duration = execution_ms,
     allocated_bytes = memory_kb

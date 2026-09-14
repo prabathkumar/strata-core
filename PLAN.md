@@ -35,21 +35,40 @@ the language**, so signing out expires a session rather than removing it and
 nothing prunes the table. Filtering by region is passed to the view but not yet
 applied to the query.
 
-## Journey B — Change the system (3 days)
+## Journey B — Change the system ✅ **closed 2026-09-14**
 
 *A developer clones the repo and changes the schema.*
 
-Clone → `strata run` → add a column → the build fails in three files → the AI
-repair loop fixes them → `strata test` passes → existing data still loads →
-deploy with Docker.
+Clone → `strata run` → add a column → the build fails at every insert →
+the repair loop fixes them → `strata test` passes → existing data still
+loads → deploy.
 
-| Needs | State before |
+`test_suite/journey_change.py` walks all 19 steps, against an export of HEAD
+rather than the working tree.
+
+| Built | Note |
 |---|---|
-| `strata test` over a project | runs over a directory of files |
-| The repair loop against a multi-file project | patches one file |
-| Data surviving the schema change | works — the header carries the schema |
-| A Dockerfile that builds and runs the service | builds a toolchain, runs nothing |
-| The journey recorded, reproducible from a clean clone | — |
+| E009, incomplete insert | An insert must name every column. Without it, a new column was written as a zero in every row, silently — so "add a column" broke nothing and corrupted everything |
+| The repair loop over a project | It follows the `file` field of each diagnostic, so it repairs whichever of a project's files the error is in |
+| `strata test` over a project | Every `.sta` under it, compiled from the project root, so a test can import `app` modules and open the data files by the paths the service uses |
+| `apps/orders/src/rules.sta` | The business rules, apart from HTTP, so a rule can be tested without a socket |
+| `apps/orders/tests/rules_test.sta` | 5 blocks, 14 assertions — the application's first tests |
+| A Dockerfile that builds and runs | Two stages: the toolchain, then the binary, its data and libcrypt |
+
+Corrected from the plan: the build fails in **two** files, not three — the two
+that insert rows. The view was not affected, because showing a new column is a
+choice, not a contract. The plan claimed three before anyone had tried it.
+
+What the journey found, none of which a unit test would have: adding a column
+was an error nowhere; the repair loop had a single-file assumption in the loop
+rather than the compiler; `strata test` could not see an application at all;
+`import x from app` could not be reached from a `tests/` directory; and the
+standard library's own telemetry module had been writing `trace_id` as 0 on
+every row since it was written.
+
+The deploy step is honest about where it runs: there is no Docker on the
+development machine, so the journey skips it there and CI builds the image and
+asks the container for a page on every push.
 
 ## Journey C — Survive contact (2.5 days)
 

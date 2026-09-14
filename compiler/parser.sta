@@ -1553,7 +1553,17 @@ str app_module_path(str src_dir, str name) {
     StringBuilder sb = sb_new();
     sb_append(&sb, src_dir); sb_append(&sb, "/"); sb_append(&sb, leaf);
     sb_append(&sb, ".sta");
-    return sb_to_str(&sb);
+    str here = sb_to_str(&sb);
+    if (file_exists(here) == 1) { return here; }
+    // A project's tests do not sit beside its sources, and a test that cannot
+    // import the modules it tests is not a test. `app` therefore also looks in
+    // a sibling src/ directory — one rule, and the same one in both checkers.
+    StringBuilder sb2 = sb_new();
+    sb_append(&sb2, src_dir); sb_append(&sb2, "/../src/"); sb_append(&sb2, leaf);
+    sb_append(&sb2, ".sta");
+    str sibling = sb_to_str(&sb2);
+    if (file_exists(sibling) == 1) { return sibling; }
+    return here;
 }
 
 str module_path(str root, str source, str name) {

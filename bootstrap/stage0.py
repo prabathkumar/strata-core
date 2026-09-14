@@ -1265,7 +1265,13 @@ def _resolve_module(imp, search_root, app_root=None):
         if app_root is None:
             return None
         cand = os.path.join(app_root, leaf + ".sta")
-        return cand if os.path.isfile(cand) else None
+        if os.path.isfile(cand):
+            return cand
+        # A project's tests do not sit beside its sources. `app` therefore also
+        # looks in a sibling src/, so tests/rules_test.sta can import the
+        # modules it tests.
+        sibling = os.path.join(app_root, "..", "src", leaf + ".sta")
+        return sibling if os.path.isfile(sibling) else None
     nested = os.path.join(search_root, imp.source, *imp.name.split("."))
     for cand in (nested + ".sta", os.path.join(search_root, imp.source, leaf + ".sta")):
         if os.path.isfile(cand):

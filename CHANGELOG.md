@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Journey B: a developer can change the system
+
+A schema change is the most common change there is, and it did not break the
+build. Adding a column to a `database` compiled fine, and every insert in the
+program wrote the new column as a zero or an empty string, in every row, with
+nothing to say so. **E009** is that error: an insert must name every column.
+It is what gives "add a column" a build failure to be repaired.
+
+It found one on the way in. `std/telemetry.sta` had been omitting `trace_id`
+since it was written, so every snapshot it recorded carried trace 0.
+
+Everything else in this entry exists because the journey needed it:
+
+- **The repair loop works over a project.** `ai_self_repair.py --project DIR`
+  reads the `file` field the compiler already put on every diagnostic and
+  edits that file. Repairing only the entry point was an assumption in the
+  loop, not in the compiler.
+- **`strata test` works over a project.** With no argument inside a project it
+  compiles every `.sta` under it from the project root, so a test can
+  `import x from app` and open the data files by the same relative paths the
+  service uses. Before this, an application had no way to be tested.
+- **`import x from app` also looks in a sibling `src/`.** A test does not sit
+  beside the module it tests.
+- **`apps/orders/src/rules.sta`** holds the business rules, apart from HTTP.
+  The handlers are adapters now: read the form, call a rule, choose a status
+  code. `apps/orders/tests/rules_test.sta` is the application's first test —
+  5 blocks, 14 assertions, no socket.
+- **A Dockerfile that has been built.** The previous one cloned
+  `https://github.com`, patched CPython's importlib to accept `.sta` files and
+  renamed the python binary to `strata`; CI checked that the file existed. The
+  new one builds the compiler's dependencies, compiles the service, runs its
+  tests, and ships the binary with libcrypt and its data. CI builds the image
+  and asks the container for a page.
+
+`test_suite/journey_change.py` walks the whole thing — 19 steps, from an
+export of HEAD — and the data written before the change still loads after it.
+
 ### Forms: data flows inward
 
 The UI tier could render data and not collect any, so an application could

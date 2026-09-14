@@ -11,19 +11,11 @@ import mem    from std;
 import http   from std;
 import auth   from std;
 import schema from app;
+import rules  from app;
 import views  from app;
 
-// ── Storage ──────────────────────────────────────────────────────────────────
-
-int load_all() {
-    load Order from "data/orders.tsv";
-    load User from "data/users.tsv";
-    load Session from "data/sessions.tsv";
-    return 1;
-}
-
-int save_orders()   { save Order to "data/orders.tsv"; return 1; }
-int save_sessions() { save Session to "data/sessions.tsv"; return 1; }
+// Storage and the business rules are in rules.sta, where `strata test` can
+// reach them without a socket.
 
 // The demo operator. A real deployment would not seed a password from source;
 // this one prints what it did so nobody mistakes it for a secret.
@@ -92,12 +84,6 @@ str cookie_header(str token) {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-int next_id() {
-    list[Order] all = Order <- [id > 0];
-    if (count(all) == 0) { return 1; }
-    return max(all.id) + 1;
-}
-
 int do_login(int conn, str body) {
     str want_user = http_form_value(body, "username");
     str password = http_form_value(body, "password");
@@ -116,19 +102,18 @@ int do_logout(int conn, str request) {
     "Set-Cookie: sid=; Path=/; Max-Age=0\r\n");
 }
 
+// The handlers are adapters: read the form, call a rule, choose a status
+// code. The rule decides; this file only says what that means over HTTP.
 int do_create(int conn, str body) {
-    str customer = http_form_value(body, "customer");
-    str region   = http_form_value(body, "region");
-    str amount   = http_form_value(body, "amount");
-    if (str_len(customer) == 0) {
+    int outcome = create_order(http_form_value(body, "customer"),
+    http_form_value(body, "region"),
+    http_form_value(body, "amount"));
+    if (outcome == 1) {
         return http_bad_request(conn, "<h1>400</h1><p>customer is required</p>");
     }
-    if (str_len(amount) == 0) {
+    if (outcome == 2) {
         return http_bad_request(conn, "<h1>400</h1><p>amount is required</p>");
     }
-    if (str_len(region) == 0) { region = "unknown"; }
-    Order <- [id = next_id(), customer = customer, region = region,
-    amount = str_to_float(amount), status = "OPEN"];
     save_orders();
     return http_redirect(conn, "/?notice=created");
 }
@@ -136,10 +121,7 @@ int do_create(int conn, str body) {
 int do_close(int conn, str body) {
     int want = str_to_int(http_form_value(body, "id"));
     if (want == 0) { return http_bad_request(conn, "<h1>400</h1><p>id is required</p>"); }
-    list[Order] found = Order <- [id == want];
-    if (count(found) == 0) { return http_not_found(conn); }
-    Order o = found[0];
-    o.status = "CLOSED";
+    if (close_order(want) == 1) { return http_not_found(conn); }
     save_orders();
     return http_redirect(conn, "/?notice=closed");
 }

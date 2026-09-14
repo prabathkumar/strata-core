@@ -245,3 +245,36 @@ Not built: delete does not exist in the language. Sign-out expires a session
 rather than removing it, and nothing prunes the table.
 
 All fourteen suites green. Conformance 182/182, journey 25/25.
+
+## 2026-09-14 — Journey B closed (attended)
+
+Landed: **E009** (an insert must name every column), the repair loop over a
+project, `strata test` over a project, `app` imports reachable from `tests/`,
+`apps/orders/src/rules.sta` and the application's first tests, a Dockerfile
+that has been built, and `test_suite/journey_change.py` — 19 steps from an
+export of HEAD.
+
+Every suite green: conformance 182/182, documentation 11/11, all four
+differentials identical, fixpoint reached, stdlib 19/19, project 14/14,
+journey A 25/25, journey B 19/19, repair loop 48/48.
+
+Found by the journey, not by the unit suites:
+- Adding a column to a schema was an error nowhere. Every insert wrote it as
+  a zero, in every row, silently.
+- `std/telemetry.sta` had been omitting `trace_id` since it was written.
+- The repair loop assumed one file, though the compiler had been reporting
+  which file each diagnostic was in all along.
+- `strata test` could not see an application, so `apps/orders` had no tests.
+- A `tests/` directory could not import the modules it tests.
+
+Corrected rather than quietly fixed: the plan said the build would fail in
+three files. It fails in two — the two that insert rows. The view was
+unaffected, because displaying a new column is a choice, not a contract.
+
+Not done:
+- **Docker is not installed on this machine**, so the deploy step is skipped
+  locally and verified in CI on every push. The image has therefore never been
+  built here; the first real evidence will be the next CI run.
+- `delete` still does not exist in the language, so sessions expire rather
+  than being removed and nothing prunes the table.
+- The region filter still reaches the view without being applied to the query.

@@ -39,7 +39,7 @@ SMOKE = {
     "mem":       'print(str_concat(str_slice("abcdef", 1, 3), str(str_len("xy"))));',
     "ml":        'print(str(verify_model_dimensions(4, 2)));',
     "simd_math": 'print(str(verify_vector_alignment(8)));',
-    "telemetry": 'record_telemetry_metric("s", 1.0, 2.0); dispatch_performance_audit();',
+    "telemetry": 'record_telemetry_metric(1, "s", 1.0, 2.0); dispatch_performance_audit();',
     "testing":   'assert_true("t", 1 == 1);',
 }
 

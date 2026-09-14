@@ -26,5 +26,5 @@ stream TrackHighVolumeLedger(str network_data_socket) {
     
     // Feed telemetry natively directly inside the stream processing thread
     // This allows automated AI repair agents to watch memory stats in real-time
-    record_telemetry_metric("FIBER_EVENT", execution_delta, internal_memory);
+    record_telemetry_metric(1, "FIBER_EVENT", execution_delta, internal_memory);
 }

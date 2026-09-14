@@ -96,9 +96,15 @@ columns. The same check applies to the write form of the operator:
 ```text
 import io from std;
 database AuditTrail { int event_id; str actor; str action; }
-def record(str who, str what) { AuditTrail <- [actor = who, action = what]; }
-int main() { record("prabath", "deploy"); return 0; }
+def record(int id, str who, str what) {
+    AuditTrail <- [event_id = id, actor = who, action = what];
+}
+int main() { record(1, "prabath", "deploy"); return 0; }
 ```
+
+An insert must name every column: leave one out and the build stops with
+`E009`, because the alternative is writing it as a zero in every row the
+statement creates, with nothing to show it was forgotten.
 
 ### Zero-copy structural casts
 
@@ -510,6 +516,7 @@ what runs and what is planned is unambiguous.
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
 | Calls to undefined functions | **Caught as E002.** Imports are resolved before the type check, so the set of reachable names is known and a typo names the typo rather than a C symbol at link time. It is a `--json` diagnostic, so the repair loop can see it. The rule disarms for a file importing a module with no local checkout — that picture is incomplete. It checks that a name exists, not its signature: argument count and types are still unchecked across a module boundary. |
+| `E009` | An insert that does not name every column of the table. The unnamed ones would be written as a zero or an empty string in every row the statement creates, so adding a column to a schema used to break nothing and quietly corrupt everything. It is the error that makes a schema change a build failure. |
 | `E007` / `E008` | E007 is the first advisory: an import with no local checkout is reported without stopping the build. E008 catches a bare name inside a query that is also a variable in scope — the column wins silently, so `Session <- [token == token]` compares the column with itself and matches every row. |
 | Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. No rate limiting, no lockout, no password policy, no reset flow, no CSRF protection. |
 | Formatter (`strata fmt`) | **Canonical indentation.** Written in Strata. Re-indents by brace depth, strips trailing whitespace, collapses blank runs, ends the file with one newline. It rewrites only leading whitespace, so comments survive and the inside of a `native` block is byte-identical — the lexer discards comments, so anything reprinting from tokens would delete them. It does **not** re-wrap lines, normalise spacing around operators, or sort anything. Two properties are tested over every file in the repo: the syntax tree is unchanged, and formatting is idempotent. CI fails if any tracked source is not canonical. |

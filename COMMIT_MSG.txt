@@ -1,144 +1,41 @@
-feat(lang): streams, queries, reports, migrations, layers — and the repair loop gets tests
+feat(journey): a developer can change the system
 
-Five things that parsed and type-checked and then did not do what they said.
-Each one is the same shape: a happy path that worked and an everything-else
-that silently produced nothing, or worse, something wrong.
+Journey B. Clone, run it, add a column to the schema, watch the build fail at
+every insert, let the repair loop close it, run the tests, and find the data
+written before the change still loads.
 
-── `stream` dispatches ───────────────────────────────────────────────────────
+The middle of that journey did not exist. Adding a column to a `database`
+compiled fine and every insert in the program wrote the new column as a zero
+or an empty string, in every row, with nothing to say so. E009 is that error:
+an insert must name every column. It found one immediately —
+std/telemetry.sta had been omitting trace_id since it was written.
 
-A stream handler's body was compiled and then never reachable. Handlers now
-register under their own name as a channel; strata_publish(channel, message)
-enqueues, strata_run() drains and returns how many were delivered, and a
-handler may publish while the queue drains. A message to a channel nobody owns
-is dropped.
+Everything else here is what the journey needed:
 
-Not a fiber scheduler. No separate stacks, no preemption, no parallelism, no
-I/O integration. The runtime comment and the README row both say so, and the
-Virtual Event Fibers row stays "design only".
+- ai_self_repair.py --project DIR follows the `file` field the compiler
+  already put on every diagnostic, so it repairs whichever of a project's
+  files the error is in. The single-file assumption was in the loop, not in
+  the compiler.
+- `strata test` inside a project compiles every .sta under it from the project
+  root. An application had no way to be tested before this.
+- `import x from app` also looks in a sibling src/, so a test in tests/ can
+  import the module it tests.
+- apps/orders/src/rules.sta holds the business rules apart from HTTP; the
+  handlers are adapters. apps/orders/tests/rules_test.sta is the
+  application's first test — 5 blocks, 14 assertions, no socket.
+- A Dockerfile that has been built. The previous one cloned
+  "https://github.com" and built CPython; CI checked the file existed.
 
-── A query is an expression ──────────────────────────────────────────────────
+test_suite/journey_change.py walks 19 steps from an export of HEAD. The plan
+said the build would fail in three files; it fails in two, and the plan is
+corrected rather than the claim repeated.
 
-`Source <- [cond]` parsed in exactly one position — the right of a declaration.
-`len(Orders <- [id > 0])` was a parse error, so counting matching rows meant
-declaring a variable nobody wanted. It is an ordinary primary expression now.
+All suites green: conformance 182/182, documentation 11/11, four
+differentials identical, fixpoint reached, stdlib 19/19, project 14/14,
+journey A 25/25, journey B 19/19, repair loop 48/48.
 
-The code generator already had a branch for a query in expression position. It
-emitted NULL. The parser could never reach it, so it had never run — fixing the
-parser alone would have made every such query quietly evaluate to nothing.
-
-── `report` renders ──────────────────────────────────────────────────────────
-
-A report generated one fprintf of its title. Every metric discarded, the
-datasource never run. And `render` called Name_render while codegen emitted
-Name_generate — two RenderStmt branches in one if-chain, the reachable one
-wrong — so a program using `render` did not link at all.
-
-A report now runs its datasource, evaluates metrics with `rows` bound to the
-result, and writes Markdown. Metrics are type-checked for the first time (E001)
-and the datasource carries the E004 column contract; the Strata type checker
-had no report checking whatsoever.
-
-A metric sees `rows`, not the columns of a row — there is no aggregation, so
-`sum(col)` cannot be evaluated. One conformance test asserted that a report
-whose only metric was `float t = sum(id);` was clean. It was not: `sum` does
-not exist and `id` is not in scope. It passed because nothing checked metrics.
-
-── Saved tables migrate ──────────────────────────────────────────────────────
-
-`save` wrote bare rows in declaration order; `load` read them positionally.
-Adding a column to a `database` block silently corrupted every row in every
-file already on disk. The README said so and that was the whole mitigation.
-
-Files now carry a header — #strata\tSales\tid:i\tregion:s\tamount:f — and
-columns match by name. Dropped column skipped, new column at its zero value
-("" for a str, so it cannot crash a printf), reordering a no-op, type change
-refused with a message. A headerless file is refused too, saying to re-save it.
-
-── A model is a stack of layers ──────────────────────────────────────────────
-
-`predict` ran exactly one dense layer and there was nowhere to put a hidden
-one, so nothing non-linear was expressible.
-
-    model Scorer {
-        input:  tensor[float, 1, 2];
-        hidden: 3 relu;
-        hidden: 2 relu;
-        output: tensor[float, 1, 1];
-    }
-
-relu, sigmoid and none; the output layer is linear. `hidden` and the activation
-names are contextual, so a variable may still be called `relu`. A model with no
-hidden layers is one dense layer through the same forward pass, so everything
-that already ran is unchanged. A weights file with the wrong count used to
-return 0 silently; it now reports both counts and loads none of them.
-
-Freestanding WebAssembly has no libm, so sigmoid needed an exp. The wasm
-prelude implements it by range reduction and a Taylor series; checked against
-libm it agrees to about 1e-15 relative.
-
-Inference only. No training, no autograd, no convolution or attention, no
-accelerator.
-
-── The repair loop has tests ─────────────────────────────────────────────────
-
-`ai_self_repair.py` is the headline claim and was the last major component
-with no executable check — nothing in test_suite/ or the CI workflow
-referenced it. It worked. But the loop reads specific keys out of the
-compiler's --json payload, and renaming one does not break it loudly: it falls
-through to the E999 branch, repairs nothing, and reports that nothing was
-possible. On a file that needed no repair, that is indistinguishable from
-success. Every diagnostic change in this commit was a chance to break it that
-way.
-
-test_suite/self_repair.py, 40 checks in three groups:
-
-  - The payload contract. Every key the loop reads, asserted present and
-    correctly typed, across a type error, a parse error and a clean file.
-    error_count is checked against the length of the diagnostic list, and
-    classification and remediation_strategy against being empty — an LLM
-    backend is given nothing else to work from.
-  - The loop. Converges on E001 and E004; handles two independent errors in
-    sequence and needs more than one pass to do it; stops on the FIRST pass
-    when the repair needs judgement, rather than spinning to max-passes;
-    --dry-run restores the original byte for byte including its trailing
-    newline; a clean file is not rewritten; a missing file exits 2 without a
-    traceback.
-  - The llm backend. Not a network test — the check is that with no API key it
-    declines out loud and the loop reports unresolved, instead of looking like
-    a run that succeeded and happened to change nothing.
-
-Wired into the CI gate and into the generated release notes, so the number is
-produced by running it.
-
-Writing these found a real gap: a call to an undefined function type-checks
-clean and only fails at the C linker, with a message naming a C symbol. It
-never reaches --json, so the repair loop cannot see it at all. Recorded as a
-row in the README roadmap rather than quietly fixed in a commit about
-something else.
-
-── Roadmap rewritten ─────────────────────────────────────────────────────────
-
-NEXT_STEPS.md described a repo with no loops, no assignment statement, twelve
-stub tools and self-hosting that "cannot begin". It was the first file an
-evaluator would open and it understated the project by about three months. It
-now records what runs, what does not, and the next four items in order — with
-the fibers estimate broken down rather than asserted, and a concrete 1-2 week
-scope for single-threaded stackless coroutines as the increment actually worth
-taking.
-
-Also: cross_tier_contract.sta said "No persistence layer yet". That stopped
-being true in this commit.
-
-── Verification ──────────────────────────────────────────────────────────────
-
-Every feature landed in both implementations. All ten suites green; generated C
-byte-identical across 47 files; the fixpoint still holds. Four new examples
-(query_expression, report_rendering, schema_migration, neural_layers) agreed on
-by all four differentials, plus three new typecheck fixtures. Conformance
-126/126, up from 100 — including reading back a rendered report, because a
-title-only report still runs and still exits 0, so the only check that fails
-when rendering breaks is reading what was written. Eleven suites now, not ten:
-the repair loop's 40 checks are the new one.
+Docker is not installed on this machine, so the deploy step is skipped here
+and verified in CI on every push.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

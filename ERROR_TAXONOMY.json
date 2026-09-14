@@ -50,6 +50,12 @@
       "severity": "CRITICAL_HALT",
       "diagnostic": "A bare name inside a query condition is both a column of the queried table and a variable in scope. The column wins silently, so the comparison is column-against-itself and matches every row.",
       "ai_remediation_strategy": "Rename the local variable so it does not collide with a column of the table being queried; the column name inside the brackets always refers to the row."
+    },
+    "E009": {
+      "classification": "Incomplete Insert",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "An insert does not name every column of the table. The unnamed columns would be written as a zero or an empty string, in every row the statement creates, with no other sign that they were forgotten.",
+      "ai_remediation_strategy": "Add the named column to the insert with a value of the column's declared type, taking it from the surrounding scope where one exists; if the column does not belong on this row, remove it from the database declaration instead."
     }
   }
 }

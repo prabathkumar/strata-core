@@ -1115,6 +1115,27 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             }
             infer(&tc, pair.c1, scope_p);
         }
+        // Every column must be named — see typechecker.py for why.
+        int cur = s.fields;
+        while (cur != 0) {
+            Sym fs = sym_at(cur);
+            str fname = fs.name;
+            int seen = 0;
+            for (int j = 0; j < n; j = j + 1) {
+                Node pj = nv_get(&pairs, j);
+                if (str_eq(pj.s1, fname) == 1) { seen = 1; }
+            }
+            if (seen == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "Insert into '");
+                sb_append(&sb, st.s1);
+                sb_append(&sb, "' omits column '");
+                sb_append(&sb, fname);
+                sb_append(&sb, "'");
+                emit(&tc, "E009", sb_to_str(&sb), st.line, st.col);
+            }
+            cur = fs.next;
+        }
         return;
     }
 

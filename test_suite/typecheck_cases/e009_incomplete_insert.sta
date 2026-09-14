@@ -1,0 +1,13 @@
+// E009 — an insert that does not name every column. The omitted column would
+// be written as a zero in every row, with nothing to show it was forgotten.
+
+database Order {
+    int   id;
+    str   customer;
+    float amount;
+}
+
+int main() {
+    Order <- [id = 1, customer = "acme"];
+    return 0;
+}
