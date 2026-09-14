@@ -1,5 +1,9 @@
 # Plan of record — end-to-end journeys
 
+**Where the project is: [STAGES.md](STAGES.md)** — the ten stages from source to
+production, which are closed, and what proves each one. A journey below closes
+one or more of those stages.
+
 Reframed on 2026-09-14, at Prabath's call. The earlier plan was a list of
 features — routing, then sessions, then concurrency — and a feature list
 produces slices that each work alone and have never been walked through
