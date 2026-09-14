@@ -1,30 +1,13 @@
-fix(codegen): a table's serialisers only handle scalar columns
+docs: closures are provisional until CI is green on a pushed commit
 
-CI failed at the parser differential on a commit whose suites were all green
-locally. save and load are generated for every table and assumed every column
-is a scalar, so `database P { TokVec toks; int pos; int no_index; }` — the
-parser's own state, never saved — produced
+CI has been red for ten consecutive runs — since #94, the commit that
+introduced save and load — and every "all suites green" since then was a
+statement about this machine rather than about the gate. The suites are real
+and they do what they say; "it runs on every commit" was not true while the
+run was failing and nobody was reading it.
 
-    case 0: r->toks = (strata_int)atoll(buf); break;
-
-an integer assigned to a pointer. gcc 11 warns, clang 16+ and gcc 14 reject,
-so the compiler built on this machine and failed on the runner.
-
-A record-typed column is a pointer into this process and means nothing in a
-file: it is now left out of the header and out of the loader, in both code
-generators, with the emitted C still byte-identical between them.
-
-The second fix is the one that matters. The C flags now carry
--Werror=int-conversion, -Werror=incompatible-pointer-types and
--Werror=return-type. The backend C compiler is part of the toolchain and the
-toolchain must not depend on which one is installed — this machine has gcc 11
-and no clang, the runner has clang, and that difference is the only reason
-this reached CI.
-
-Verified in an Ubuntu 24.04 container with clang 18 and gcc 13 — the runner's
-environment — rather than only here: conformance, all four differentials,
-fixpoint, wasm, stdlib, fmt, repair loop, project build and the orders,
-ledger, operate and survive journeys all green there.
+STAGES.md now says so, and says that every closure is provisional until a
+pushed commit goes green.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

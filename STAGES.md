@@ -5,11 +5,21 @@ line to a service running in production. This file is the record; the same map
 is published as the "Strata End to End" artifact.
 
 **A stage is closed when a suite that runs on every commit proves it, and that
-suite exits non-zero when it does not** — and green must mean the same thing
-locally and on the runner. It did not once: the development machine has gcc 11
-and no clang, the runner has clang, and an integer assigned to a pointer is a
-warning on one and an error on the other. The C flags now carry
-`-Werror=int-conversion` and its neighbours so both reject it. Not when the code exists, not when it
+suite exits non-zero when it does not** — and *green must mean the same thing
+locally and on the runner*.
+
+It did not, for ten consecutive runs. The parser differential had been failing
+in CI since run #94, the commit that introduced `save`/`load`, and every stage
+below was closed on local evidence while the gate meant to prove them was red.
+The development machine has gcc 11 and no clang; the runner has clang; an
+integer assigned to a pointer is a warning on one and an error on the other.
+The C flags now carry `-Werror=int-conversion`, `-Werror=incompatible-pointer-types`
+and `-Werror=return-type` so both reject it, and the suites are run in an
+Ubuntu 24.04 container with clang as well as here.
+
+**Every closure below is therefore provisional until CI is green on a pushed
+commit.** The evidence is real — the suites do what they say — but "it runs on
+every commit" was not true while the run was failing, and nobody had looked. Not when the code exists, not when it
 worked once by hand. Anything that has never been run is marked as not run,
 never counted as closed.
 

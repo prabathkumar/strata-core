@@ -412,3 +412,9 @@ so the lax compiler now fails the same way the strict one does.
 
 Verified in an Ubuntu 24.04 container with clang 18 and gcc 13, which is what
 the runner is: every suite green there, not only on this machine.
+
+The worse finding is the one about me. **CI had been red for ten consecutive
+runs** — since #94, the commit that introduced save/load — and I reported "all
+suites green" after every one of them. I ran the suites here, asked for a push,
+and never once looked at the result. A gate nobody reads is not a gate, and
+"closed" claims made against a failing gate were claims about my machine.
