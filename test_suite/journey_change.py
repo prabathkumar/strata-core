@@ -214,6 +214,15 @@ def main():
             print("  SKIP  docker is not installed here; CI builds and runs the "
                   "image on every push")
         else:
+            # The service was bound to a free port for the steps above, by
+            # rewriting its source. The image must ship the real thing, on
+            # 8080, or it listens on a port nothing is mapped to — which is
+            # what happened the first time this ran anywhere with Docker
+            # installed, and is a defect in this journey rather than in the
+            # service.
+            bound = open(main_src).read()
+            open(main_src, "w").write(
+                bound.replace(f"http_listen({port})", "http_listen(8080)"))
             r = run(["docker", "build", "-t", "strata-orders:journey", "."], work,
                     timeout=1800)
             ok("the image builds", r.returncode == 0, (r.stdout + r.stderr)[-500:])
@@ -232,7 +241,12 @@ def main():
                         break
                     except Exception:
                         continue
-                ok("and the container serves the sign-in page", served)
+                if not served:
+                    logs = run(["docker", "logs", cid], work)
+                    detail = (logs.stdout + logs.stderr)[-300:]
+                else:
+                    detail = ""
+                ok("and the container serves the sign-in page", served, detail)
                 run(["docker", "rm", "-f", cid], work)
 
     finally:

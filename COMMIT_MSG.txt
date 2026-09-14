@@ -1,13 +1,20 @@
-docs: closures are provisional until CI is green on a pushed commit
+fix(journey): the image must ship the real port
 
-CI has been red for ten consecutive runs — since #94, the commit that
-introduced save and load — and every "all suites green" since then was a
-statement about this machine rather than about the gate. The suites are real
-and they do what they say; "it runs on every commit" was not true while the
-run was failing and nobody was reading it.
+CI run #104 got 21 steps further and failed at Journey — Change The System.
+The defect is in the journey, not the service: it rewrites http_listen(8080)
+to a free port for its own steps, and then built the image from that rewritten
+source, so the container listened on a port nothing was mapped to.
 
-STAGES.md now says so, and says that every closure is provisional until a
-pushed commit goes green.
+That step had never run anywhere with Docker installed — this machine has none
+— so "SKIP docker is not installed here" had stood in for it since the journey
+was written. The first environment that actually had Docker found it.
+
+The port is restored before the image is built, and a failure now prints
+docker logs rather than only reporting that it did not serve.
+
+Verified in an Ubuntu 24.04 container with Docker running: the change journey
+21/21 including deploy, the CI container step run by hand, and the survive,
+operate and ledger journeys and the repair loop.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01X3nmaR2hFnsQCpRArDZ78C

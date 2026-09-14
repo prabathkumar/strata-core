@@ -418,3 +418,20 @@ runs** — since #94, the commit that introduced save/load — and I reported "a
 suites green" after every one of them. I ran the suites here, asked for a push,
 and never once looked at the result. A gate nobody reads is not a gate, and
 "closed" claims made against a failing gate were claims about my machine.
+
+## 2026-09-14 — CI, second pass
+
+Run #104: the parser differential is green, and 21 steps pass. It failed at
+`Journey — Change The System`, on a defect in the journey rather than in the
+service: the journey rewrites `http_listen(8080)` to a free port for its own
+steps, then built the image from that rewritten source, so the container
+listened on a port nothing was mapped to. It had never run anywhere with
+Docker installed — this machine has none — so "SKIP" had always stood in for
+it.
+
+The port is restored before the image is built, and a failure now prints
+`docker logs` rather than only saying it did not serve.
+
+Verified in the Ubuntu 24.04 container with Docker running: the change journey
+21/21 including the deploy step, the CI container step by hand, and survive,
+operate, ledger and the repair loop.
