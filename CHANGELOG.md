@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### The claims audit
+
+Every document, config and stub in this repository was read and checked
+against something that runs. What could not be backed is gone.
+
+**The lockfile was the worst of it.** `Strata.lock` declared dependencies
+`crypto 2.4.1` and `telemetry 0.9.5` from a `registry+hub` that was never
+built, with checksums reading `UNVERIFIED-no-checksum-has-been-computed` — and
+spliced into the middle of the file, a shell script that appended a fake
+package manager to `bin/strata`, printing "Fetching package 'crypto' v2.4.1
+from corporate hub" and "Dependencies successfully locked, verified, and
+extracted" while doing nothing. The root `Strata.toml` already said the
+registry did not exist, contradicting its own lockfile.
+
+Also removed: a submodule gitlink with no `.gitmodules`, so a clone got an
+empty directory; a Kubernetes manifest deploying an image that was never
+published, commented "Strata runs on 4KB Fibers"; Terraform never applied; two
+deploy scripts and a test runner that printed success without working; twelve
+tools in `bin/unimplemented/` that did the same; a stub service with a
+fabricated `Strata.toml`; and four manuals describing a 5-year LTS programme,
+a C-level architecture board and a one-day workshop, for a language whose
+first application was written the day before.
+
+**`LANGUAGE_SPECIFICATION.md` is rewritten against the grammar the compiler
+actually has.** The old one described `stream` as an asynchronous channel on a
+fiber — it is an entry in a dispatch table, and the syntax given for it did not
+parse — `layout` as compiling to WebAssembly Text when it writes HTML, `render`
+as producing PDF when it writes Markdown, and `assert` as a compile-time check
+when it runs at run time. It now ends with what the language does **not** have,
+because the absence of module-level variables, a date type, grouping, and a
+package manager is load-bearing. Examples compiled by CI went from 11 to 15.
+
+**`strata repair` now exists.** The README's opening example — the first code
+block anyone reads — showed a command the toolchain did not have. Adding it was
+the better fix than deleting the example.
+
+Smaller corrections: version strings reconciled (`v1.0.0` to `0.4.0-alpha`),
+`Strata.toml` stripped of keys nothing reads, the README's stale rows brought
+up to date, `RELEASE_NOTES.md` regenerated from live runs (it still claimed
+conformance 64/64; it is 182/182), `NEXT_STEPS.md` retired for claiming
+module-level state the language does not have, and the editor grammar taught
+the rest of the keywords.
+
+**A CI step, `No Unbacked Claims`, fails if any of this comes back.** It caught
+two things on its first run: this changelog's own predecessor text quoting the
+old specification verbatim, and a quarantined example. The quarantine
+directories are excluded — their READMEs say plainly that nothing in them
+works, which is the honest way to keep code that describes a runtime nobody
+built.
+
 ### `delete`, and a repair loop that needs no API key
 
 **`delete T <- [cond];`** — the write the language did not have. Contextual

@@ -518,25 +518,44 @@ what runs and what is planned is unambiguous.
 | Calls to undefined functions | **Caught as E002.** Imports are resolved before the type check, so the set of reachable names is known and a typo names the typo rather than a C symbol at link time. It is a `--json` diagnostic, so the repair loop can see it. The rule disarms for a file importing a module with no local checkout — that picture is incomplete. It checks that a name exists, not its signature: argument count and types are still unchecked across a module boundary. |
 | `E009` | An insert that does not name every column of the table. The unnamed ones would be written as a zero or an empty string in every row the statement creates, so adding a column to a schema used to break nothing and quietly corrupt everything. It is the error that makes a schema change a build failure. |
 | `E007` / `E008` | E007 is the first advisory: an import with no local checkout is reported without stopping the build. E008 catches a bare name inside a query that is also a variable in scope — the column wins silently, so `Session <- [token == token]` compares the column with itself and matches every row. |
-| Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. No rate limiting, no lockout, no password policy, no reset flow, no CSRF protection. |
+| Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. `apps/orders` adds a CSRF token on every form and every write, a five-strike account lockout that answers identically for a locked account whatever was typed, and a 64-connection cap. Still no password policy, no reset flow, and the lockout is per account rather than per source — so it also lets someone lock an operator out on purpose. |
 | Formatter (`strata fmt`) | **Canonical indentation.** Written in Strata. Re-indents by brace depth, strips trailing whitespace, collapses blank runs, ends the file with one newline. It rewrites only leading whitespace, so comments survive and the inside of a `native` block is byte-identical — the lexer discards comments, so anything reprinting from tokens would delete them. It does **not** re-wrap lines, normalise spacing around operators, or sort anything. Two properties are tested over every file in the repo: the syntax tree is unchanged, and formatting is idempotent. CI fails if any tracked source is not canonical. |
-| Standard library | **Eight modules that compile, link and run** — `io`, `core`, `mem`, `str`, `ml`, `simd_math`, `telemetry`, `testing`. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
+| Standard library | **Twelve modules that compile, link and run** — `io`, `core`, `mem`, `str`, `cli`, `json`, `http`, `auth`, `ml`, `simd_math`, `telemetry`, `testing`. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
 | Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
 
-No performance numbers are published, because none have been measured. Figures
-will appear here when there is a benchmark behind them.
+### Measured, on a 4-core development machine
+
+`test_suite/journey_survive.py` prints these on every run; they are the
+orders service, not the compiler.
+
+| | |
+|---|---|
+| dashboard, 20 rows | p50 2.3 ms, p95 2.9 ms |
+| dashboard, 2000 rows | 13 ms |
+| sequential throughput | ~445 req/s |
+| concurrent throughput, 8 clients | ~380 req/s, p95 32 ms |
+
+Concurrent throughput below sequential is the finding, not a rounding error:
+every request forks a process and reloads all three tables from disk. What the
+process per connection buys is that one slow or hostile client cannot hold the
+others. Nothing about the compiler has been benchmarked at all.
 
 ---
 
 ## 7. Verification
 
 ```
-python3 test_suite/conformance.py     # language conformance, E001-E007 + end-to-end
-python3 test_suite/doc_examples.py    # compiles every code block in this file
+python3 test_suite/conformance.py      # language conformance, E001-E009 + end-to-end
+python3 test_suite/doc_examples.py     # compiles every code block in this file and the spec
+python3 test_suite/fixpoint.py         # the compiler rebuilt from its own output reproduces it
+python3 test_suite/journey_orders.py   # a whole user journey, not its parts
 ```
 
-Both run in CI on every push, alongside a check that every standard library
-module parses. The documentation suite exists because this README previously
+Sixteen suites run in CI on every push — 32 steps, including four
+differentials that compare the Strata-written compiler against its Python
+oracle byte for byte, five end-to-end journeys, and a Docker image that is
+built and asked for a page. `STAGES.md` says which of the ten stages from
+source to production each one closes. The documentation suite exists because this README previously
 described an example that did not compile, and the error had already propagated
 into the example programs before anyone noticed. Documentation that cannot be
 compiled is documentation that will drift.

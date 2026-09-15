@@ -456,3 +456,25 @@ hold their connections until the read timeout expires.
 
 Not done: the Claude checks skip in CI, which has no Claude credentials; and
 nothing prunes sessions on a schedule, only when one is created.
+
+## 2026-09-15 — the claims audit
+
+Read every document, config and stub against something that runs. Removed a
+lockfile with fabricated dependencies and a fake package manager inside it, a
+submodule with no .gitmodules, unapplied Terraform and Kubernetes, twelve stub
+tools, a stub service, two deploy scripts, a mock test runner and four
+marketing manuals. Rewrote LANGUAGE_SPECIFICATION.md against the real grammar.
+Added `strata repair`, which the README had been showing for weeks without it
+existing. Regenerated the release notes from live runs.
+
+Added a CI step that fails if any of it returns. It caught my own rewritten
+spec quoting the old claim verbatim — the second time in two days a guard has
+failed on a comment rather than on code, which is worth remembering when
+writing one.
+
+All sixteen suites green afterwards, including the four differentials and the
+fixpoint.
+
+Not done: the audit covered the repository's claims, not its code. `std/` and
+`examples/` still contain quarantined modules that describe a runtime nobody
+built; they are labelled rather than removed.

@@ -5,11 +5,11 @@
   "patterns": [
     {
       "name": "keyword.control.strata",
-      "match": "\\b(database|stream|protocol|model|predict|report|render|layout|verify|import|from|return|if|else)\\b"
+      "match": "\\b(database|stream|protocol|model|predict|report|render|layout|verify|import|from|return|if|else|while|for|in|break|continue|def|assert|save|load|delete|to|foreign|link|native|true|false)\\b"
     },
     {
       "name": "storage.type.strata",
-      "match": "\\b(int|float|str|void|tensor|list)\\b"
+      "match": "\\b(int|float|str|void|bool|tensor|list)\\b"
     },
     {
       "name": "keyword.operator.query.strata",

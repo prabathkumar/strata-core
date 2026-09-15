@@ -1,17 +1,19 @@
 [package]
-name = "strata-enterprise-core"
-version = "0.3.0-alpha"
+name = "strata-core"
+version = "0.4.0-alpha"
 authors = ["Prabath Kumar"]
 edition = "2026"
 license = "Apache-2.0"
 
-[compiler]
-target = "native"
-opt_level = "aggressive"
-halt_on_error = true
-
-# No external dependencies. The `hub` registry does not exist yet; entries
-# referencing it, and their checksums, were not real and have been removed.
-[dependencies]
-
-[dev-dependencies]
+# Nothing reads this file yet.
+#
+# `strata build` reads a project's own Strata.toml — apps/orders/Strata.toml —
+# for `main` and `output`, and ignores everything else. This one previously
+# carried a [compiler] section with target, opt_level and halt_on_error, none
+# of which any tool has ever looked at, and a [dependencies] section pointing
+# at a registry that does not exist. Both are gone rather than left to be
+# believed.
+#
+# There is no package manager. `import ... from std` and `from compiler`
+# resolve inside this repository; `from app` resolves inside the project being
+# built.

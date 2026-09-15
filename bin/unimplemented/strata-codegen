@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-echo -e "(module\n  (memory (export \"memory\") 1)\n  (func \$execute_query (result i32)\n    i32.const 1\n  )\n)"

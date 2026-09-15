@@ -1,9 +1,0 @@
-[package]
-name = "client-ledger-service"
-version = "1.0.0"
-edition = "2026"
-
-[compiler]
-target = "wasm"
-halt_on_error = true
-opt_level = "aggressive"

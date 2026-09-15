@@ -143,23 +143,62 @@ jobs:
 
     - name: Reject Unimplemented Tools On PATH
       run: |
-        allowed="strata strata-lexer strata-parser unimplemented"
+        allowed="strata strata-lexer strata-parser"
         fail=0
         for f in bin/*; do
           name=$(basename "$f")
           case " $allowed " in
             *" $name "*) ;;
-            *) echo "::error file=$f::$name is not an approved tool; stubs belong in bin/unimplemented/"; fail=1 ;;
+            *) echo "::error file=$f::$name is not an approved tool"; fail=1 ;;
           esac
         done
         exit $fail
 
-    - name: Reject Forged Checksums In Lockfile
+    # Nothing in this repository may assert a capability that does not exist.
+    #
+    # The audit of 15 September removed a lockfile declaring dependencies from
+    # a registry that was never built (with a shell script spliced into it that
+    # printed "Fetching package 'crypto' v2.4.1 from corporate hub" and did
+    # nothing), a Kubernetes manifest deploying an image that was never
+    # published, Terraform never applied, twelve tools that printed success
+    # without working, a submodule with no .gitmodules, and four manuals
+    # describing a 5-year LTS programme for a language whose first application
+    # was written the day before.
+    #
+    # This is the gate that stops them coming back. Each pattern names
+    # something that was removed because nothing ran it.
+    - name: No Unbacked Claims
       run: |
-        if grep -q "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" Strata.lock; then
-          echo "::error file=Strata.lock::contains the SHA-256 of the empty string"
-          exit 1
+        fail=0
+        note() { echo "::error::$1"; fail=1; }
+
+        for f in Strata.lock deploy/production_k8s.yaml deploy/cluster.tf \
+                 deploy/run_cloud_deploy.sh deploy_container.sh \
+                 test_compiler.sh ARCHITECTURAL_MANUAL.md \
+                 DOCUMENTATION_MANIFESTO.md ONBOARDING_WORKSHOP.md \
+                 RELEASE_PROCESS.md; do
+          [ -e "$f" ] && note "$f was removed by the claims audit; it described something nothing runs"
+        done
+        [ -d bin/unimplemented ] && note "bin/unimplemented/ was removed; a tool that prints success without working does not belong in the repository"
+        [ -d client-ledger-service ] && note "client-ledger-service/ was removed; it was a stub with a fabricated Strata.toml"
+
+        # A gitlink with no .gitmodules gives a clone an empty directory.
+        if git ls-files -s | grep -q '^160000'; then
+          [ -f .gitmodules ] || note "a submodule is tracked with no .gitmodules; a clone would get an empty directory"
         fi
+
+        # Words that only ever appeared in claims nothing backed.
+        for pat in "registry+hub" "UNVERIFIED-no-checksum" "corporate hub" "4KB Fiber"; do
+          # The quarantine directories are excluded: their READMEs say plainly
+          # that nothing in them works, which is the honest way to keep code
+          # that describes a runtime nobody built.
+          hits=$(git grep -l -F "$pat" -- . ':!.github/workflows/build-check.yml' \
+                 ':!CHANGELOG.md' ':!PROGRESS_LOG.md' ':!STAGES.md' \
+                 ':!*unimplemented*' || true)
+          [ -n "$hits" ] && note "\"$pat\" is back, in: $hits"
+        done
+
+        exit $fail
 
     # The image is built and the service inside it is asked for a page. The
     # previous step here checked that a Dockerfile existed — and the one that

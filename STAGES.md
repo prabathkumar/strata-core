@@ -126,6 +126,17 @@ missing it when called directly — which is exactly what a Dockerfile does.
 `deploy/build_scratch_image.sh` remains for the other question: the smallest
 thing that can serve. `FROM scratch`, the binary and three libraries, 5.35 MB.
 
+## The claims audit, 15 September 2026
+
+Every document, config and stub in the repository was checked against something
+that runs, and what could not be backed was removed: a lockfile declaring
+dependencies from a registry that never existed (with a fake package manager
+spliced into it), a submodule with no `.gitmodules`, unapplied infrastructure,
+twelve tools that printed success without working, and four manuals describing
+an LTS programme for a language a fortnight old. `LANGUAGE_SPECIFICATION.md`
+was rewritten against the grammar the compiler has. The `No Unbacked Claims` CI
+step fails if any of it returns.
+
 ## All ten are closed. What is still not true
 
 1. Nothing prunes an expired session *on a schedule* — `delete` exists now and

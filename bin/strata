@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# STRATA Master CLI v1.0.0
+# The Strata toolchain.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 export PYTHONPATH="$ROOT:$PYTHONPATH"
 
 usage() {
-    echo "Strata Compiler Toolchain v1.0.0"
+    echo "Strata toolchain 0.4.0-alpha"
     echo "  strata build [file.sta]        no file: builds the project here"
     echo "  strata run   [file.sta]        no file: builds and runs the project"
     echo "  strata check <file.sta>"
@@ -15,6 +15,7 @@ usage() {
     echo "  strata run   <file.sta>"
     echo "  strata new   <project_name>"
     echo "  strata test  [dir]"
+    echo "  strata repair <file.sta> | --project <dir>   [--backend rules|claude|llm]"
     echo "  strata fmt   <file.sta>... [--check]   canonical formatting"
     echo "  strata version"
 }
@@ -322,6 +323,7 @@ case "$CMD" in
     run)     cmd_run   "$@" ;;
     new)     cmd_new   "$@" ;;
     test)    cmd_test  "$@" ;;
+    repair)  exec python3 "$ROOT/ai_self_repair.py" "$@" ;;
     fmt)     cmd_fmt   "$@" ;;
     version) cmd_version ;;
     ""|help) usage ;;

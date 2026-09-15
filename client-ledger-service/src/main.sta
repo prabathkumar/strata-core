@@ -1,7 +1,0 @@
-// Main Application Entry Point
-import core.io from std;
-
-int main() {
-    print_line("[Application Engine]: Initialization pass cleared safely.");
-    return 0;
-}
