@@ -338,6 +338,10 @@ int main(int argc, char** argv) {
         Emitted after the struct so the row type is complete."""
         self.emit_raw(f"static {name}* {name}__rows[STRATA_TABLE_CAP];")
         self.emit_raw(f"static strata_int {name}__count = 0;")
+        # Which file this table was last read from, and that file's identity at
+        # the time. `load` uses them to skip work it has already done.
+        self.emit_raw(f"static char* {name}__from = NULL;")
+        self.emit_raw(f"static int64_t {name}__stamp = 0;")
 
     def _gen_table_io(self, name, fields):
         """Serialisers generated from the schema.
@@ -381,10 +385,26 @@ int main(int argc, char** argv) {
                 self.emit_raw(f'        fprintf(f, "%lld", (long long)r->{fd.name});')
         self.emit_raw('        fputc(0x0a, f);')
         self.emit_raw("    }")
-        self.emit_raw("    fclose(f); return 1;")
+        self.emit_raw("    fclose(f);")
+        # A writer has the rows it just wrote; reloading them would be work
+        # to arrive back where it started.
+        self.emit_raw(f"    free({name}__from);")
+        self.emit_raw(f"    {name}__from = strata_dup(path);")
+        self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
+        self.emit_raw("    return 1;")
         self.emit_raw("}")
 
         self.emit_raw(f"static strata_int {name}__load(strata_str path) {{")
+        # Already loaded, from the same file, and the file has not changed
+        # since: there is nothing to do. A service that forks per request
+        # inherits the parent's tables, so this turns the reload on every
+        # request into a stat() — including on the requests that never touch
+        # the table.
+        self.emit_raw(f"    int64_t _stamp = strata_file_stamp(path);")
+        self.emit_raw(f"    if (_stamp != 0 && _stamp == {name}__stamp")
+        self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
+        self.emit_raw(f"        return 1;")
+        self.emit_raw(f"    }}")
         self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
         self.emit_raw("    char buf[4096];")
         self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
@@ -440,7 +460,11 @@ int main(int argc, char** argv) {
         self.emit_raw(f"        if ({name}__count < STRATA_TABLE_CAP) "
                       f"{name}__rows[{name}__count++] = r;")
         self.emit_raw("    }")
-        self.emit_raw("    fclose(f); return 1;")
+        self.emit_raw("    fclose(f);")
+        self.emit_raw(f"    free({name}__from);")
+        self.emit_raw(f"    {name}__from = strata_dup(path);")
+        self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
+        self.emit_raw("    return 1;")
         self.emit_raw("}")
 
     def _gen_struct(self, name, fields):

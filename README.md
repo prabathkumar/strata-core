@@ -532,13 +532,18 @@ orders service, not the compiler.
 |---|---|
 | dashboard, 20 rows | p50 2.3 ms, p95 2.9 ms |
 | dashboard, 2000 rows | 13 ms |
-| sequential throughput | ~445 req/s |
-| concurrent throughput, 8 clients | ~380 req/s, p95 32 ms |
+| sequential, one Python client | ~250 req/s (a latency figure turned round) |
+| concurrent throughput, 4 clients | ~1300 req/s, 4 cores |
 
-Concurrent throughput below sequential is the finding, not a rounding error:
-every request forks a process and reloads all three tables from disk. What the
-process per connection buys is that one slow or hostile client cannot hold the
-others. Nothing about the compiler has been benchmarked at all.
+The published concurrent figure used to be *below* the sequential one, and the
+reason given was that every request reloads all three tables from disk. Two
+things were wrong with that. The load generator was Python threads on one
+interpreter, so it was measuring the client, not the service; and the reload,
+once measured properly, cost 2.8 ms on a 2000-row table. A table now remembers
+which file it read and that file's modification time and size, so a reload it
+has already done costs one `stat()`. Measured on the same machine, single
+client 220 → 742 req/s and four clients 801 → 2368 req/s with 2000 orders on
+disk. Nothing about the compiler has been benchmarked at all.
 
 ---
 

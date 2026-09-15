@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <math.h>
 #include <ctype.h>
+#include <sys/stat.h>
 
 typedef int64_t   strata_int;
 typedef double    strata_float;
@@ -18,6 +19,25 @@ typedef int64_t   strata_bool;
 
 int __strata_argc = 0;
 char** __strata_argv = NULL;
+
+/* A file's identity as one number: modification time to the nanosecond,
+ * mixed with its size.
+ *
+ * `load` uses it to skip work it has already done. A service that gives every
+ * request its own process re-read every table on every request — including
+ * requests that never look at them — so a sign-in page cost three times as
+ * much with 2000 orders on disk as with 20, despite showing neither. */
+static int64_t strata_file_stamp(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    int64_t t = (int64_t)st.st_mtime * 1000000000LL;
+#ifdef __APPLE__
+    t += (int64_t)st.st_mtimespec.tv_nsec;
+#else
+    t += (int64_t)st.st_mtim.tv_nsec;
+#endif
+    return t ^ ((int64_t)st.st_size << 1);
+}
 
 /* Output is line-buffered from the first instruction.
  *

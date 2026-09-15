@@ -1206,13 +1206,39 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     }
     emit_raw(&g, "        fputc(0x0a, f);");
     emit_raw(&g, "    }");
-    emit_raw(&g, "    fclose(f); return 1;");
+    emit_raw(&g, "    fclose(f);");
+    StringBuilder ft = sb_new();
+    sb_append(&ft, "    free("); sb_append(&ft, name); sb_append(&ft, "__from);");
+    emit_raw(&g, sb_to_str(&ft));
+    StringBuilder fd2 = sb_new();
+    sb_append(&fd2, "    "); sb_append(&fd2, name);
+    sb_append(&fd2, "__from = strata_dup(path);");
+    emit_raw(&g, sb_to_str(&fd2));
+    StringBuilder fs2 = sb_new();
+    sb_append(&fs2, "    "); sb_append(&fs2, name);
+    sb_append(&fs2, "__stamp = strata_file_stamp(path);");
+    emit_raw(&g, sb_to_str(&fs2));
+    emit_raw(&g, "    return 1;");
     emit_raw(&g, "}");
 
     StringBuilder b = sb_new();
     sb_append(&b, "static strata_int "); sb_append(&b, name);
     sb_append(&b, "__load(strata_str path) {");
     emit_raw(&g, sb_to_str(&b));
+    // Already loaded, from the same file, and the file has not changed since:
+    // there is nothing to do.
+    emit_raw(&g, "    int64_t _stamp = strata_file_stamp(path);");
+    StringBuilder sk = sb_new();
+    sb_append(&sk, "    if (_stamp != 0 && _stamp == "); sb_append(&sk, name);
+    sb_append(&sk, "__stamp");
+    emit_raw(&g, sb_to_str(&sk));
+    StringBuilder sk2 = sb_new();
+    sb_append(&sk2, "        && "); sb_append(&sk2, name);
+    sb_append(&sk2, "__from && strcmp("); sb_append(&sk2, name);
+    sb_append(&sk2, "__from, path) == 0) {");
+    emit_raw(&g, sb_to_str(&sk2));
+    emit_raw(&g, "        return 1;");
+    emit_raw(&g, "    }");
     emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
     emit_raw(&g, "    char buf[4096];");
     emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
@@ -1303,7 +1329,19 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
     emit_raw(&g, sb_to_str(&ps));
     emit_raw(&g, "    }");
-    emit_raw(&g, "    fclose(f); return 1;");
+    emit_raw(&g, "    fclose(f);");
+    StringBuilder ft3 = sb_new();
+    sb_append(&ft3, "    free("); sb_append(&ft3, name); sb_append(&ft3, "__from);");
+    emit_raw(&g, sb_to_str(&ft3));
+    StringBuilder fd3 = sb_new();
+    sb_append(&fd3, "    "); sb_append(&fd3, name);
+    sb_append(&fd3, "__from = strata_dup(path);");
+    emit_raw(&g, sb_to_str(&fd3));
+    StringBuilder fs3 = sb_new();
+    sb_append(&fs3, "    "); sb_append(&fs3, name);
+    sb_append(&fs3, "__stamp = strata_file_stamp(path);");
+    emit_raw(&g, sb_to_str(&fs3));
+    emit_raw(&g, "    return 1;");
     emit_raw(&g, "}");
 }
 
@@ -1317,6 +1355,14 @@ def gen_table_storage(Gen &g, str name) {
     StringBuilder b = sb_new();
     sb_append(&b, "static strata_int "); sb_append(&b, name); sb_append(&b, "__count = 0;");
     emit_raw(&g, sb_to_str(&b));
+    // Which file this table was last read from, and that file's identity at
+    // the time. `load` uses them to skip work it has already done.
+    StringBuilder c = sb_new();
+    sb_append(&c, "static char* "); sb_append(&c, name); sb_append(&c, "__from = NULL;");
+    emit_raw(&g, sb_to_str(&c));
+    StringBuilder d = sb_new();
+    sb_append(&d, "static int64_t "); sb_append(&d, name); sb_append(&d, "__stamp = 0;");
+    emit_raw(&g, sb_to_str(&d));
 }
 
 def gen_struct(Gen &g, str name, int fields_vec) {

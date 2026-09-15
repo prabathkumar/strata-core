@@ -141,8 +141,10 @@ step fails if any of it returns.
 
 1. Nothing prunes an expired session *on a schedule* — `delete` exists now and
    sessions are pruned whenever one is created, which is not the same thing.
-2. Every request forks and reloads all three tables, which is why eight
-   concurrent clients are slower than one.
+2. A table is held in the process that loaded it, and reloaded only when the
+   file on disk changes. That is right for one service on one machine and
+   wrong the moment a second machine writes the same file over a share where
+   the clock or the metadata lags.
 3. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
 4. No metrics, and no log of anything but requests.

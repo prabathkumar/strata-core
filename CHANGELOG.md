@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### A table no longer re-reads a file it has already read
+
+`load` used to open, parse and rebuild the whole table every time it was
+called. The orders service calls it on every request, so the cost of answering
+a page grew with the amount of data on disk even for pages that show none of
+it — a dashboard with no orders on it still paid for two thousand rows.
+
+Each table now remembers which file it last read and that file's modification
+time (to the nanosecond) and size. If both still match, `load` returns
+immediately. A service that forks per connection inherits the parent's tables,
+so the reload becomes one `stat()` — and `save` records the same stamp, because
+a process that just wrote the rows does not need to read them back.
+
+Measured on the same machine, 2000 orders on disk: 220 → 742 req/s with one
+client, 801 → 2368 req/s with four. The file, not a timer, decides: another
+process writing the table changes its modification time and size, and the next
+`load` sees that and re-reads.
+
+The limit, stated rather than discovered later: this is right for one service
+on one machine. Two machines writing the same file over a network share, where
+metadata lags, can leave a stale table in memory.
+
+### The performance numbers I published were the test client's, not the service's
+
+The repository said concurrent throughput came out *below* sequential, and
+explained it by the reload above. Both halves were wrong. The load generator
+was eight Python threads sharing one interpreter and one HTTP library; it
+capped near 400 requests a second no matter what the service did, and that cap
+was written down as a fact about Strata. And the reload, once actually timed,
+cost 0.09 ms at 20 rows and 2.8 ms at 2000 — real, but not what the figure was
+measuring.
+
+`journey_survive` now drives load from separate processes on raw sockets, and
+the sequential figure is labelled as what it is: one Python client's round
+trip, turned round. README, PLAN and STAGES are corrected where they made the
+claim.
+
 ### E008 was reported twice, and I had said why wrongly
 
 `[token == token]` — the shape that made the rule necessary, because it

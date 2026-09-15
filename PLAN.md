@@ -98,15 +98,18 @@ request → ten writes arriving together → a restart with live data → 2000 r
 |---|---|
 | dashboard, 20 rows | p50 2.2 ms, p95 2.6 ms |
 | dashboard, 2000 rows | 15 ms, 746 KB |
-| sequential throughput | ~445 req/s |
-| concurrent throughput, 8 clients | ~380 req/s, p95 32 ms |
+| sequential, one Python client | ~250 req/s (a latency figure turned round) |
+| concurrent throughput, 4 clients | ~1300 req/s, 4 cores |
 | slow client released after | 5.0 s (the configured timeout) |
 
-**Concurrent throughput comes out below sequential, and that is the finding.**
-It is not the lock — reads take a shared one. Every request forks a process
-and reloads all three tables from disk. What the process per connection buys
-is that one slow or hostile client cannot hold the others; throughput is the
-next piece of work, and the figure above is the honest starting point.
+**The earlier "concurrent is slower than sequential" figure was wrong twice
+over**, and both corrections are worth keeping. The load generator was Python
+threads on one interpreter and capped around 400 req/s whatever the service
+did; and the reload it blamed cost 2.8 ms at 2000 rows, not the difference
+claimed. The generator is now processes on raw sockets, and a table skips a
+reload it has already done by comparing the file's modification time and size
+(220 → 742 req/s single client, 801 → 2368 at four clients, 2000 orders on
+disk).
 
 The lost-update test is the one worth keeping: run with `lock_exclusive`
 removed, ten concurrent creates against a thousand-row table leave **856 rows,
