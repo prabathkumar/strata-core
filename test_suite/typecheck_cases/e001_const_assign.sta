@@ -1,0 +1,8 @@
+// A constant is fixed when the program is built; assigning to one is an error.
+
+const int LIMIT = 5;
+
+int main() {
+    LIMIT = 6;
+    return LIMIT;
+}

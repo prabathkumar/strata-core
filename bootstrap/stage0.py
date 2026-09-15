@@ -10,7 +10,7 @@ from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
 from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
-    FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt,
+    FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt, ConstDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
@@ -148,6 +148,8 @@ class CodeGen:
         self.target = target
         # In test mode the entry point runs verify blocks instead of main().
         self.test_mode = test_mode
+        # name -> C type for every `const` in the unit.
+        self.const_types = {}
         # Whether code is being generated for a layout body, where a
         # statement may be an element, or for a function body, where it may
         # not. `for X in xs` is the one construct that appears in both.
@@ -160,7 +162,9 @@ class CodeGen:
         self.indent = 0
         self.schemas = {}
         self.func_returns = {}
-        self.var_types = {}
+        # Constants are file-scope, so they survive the reset that happens
+        # at the start of each function and layout.
+        self.var_types = dict(self.const_types)
         self.native_blocks = []  # collect native blocks
         # database/protocol/model names. Records are always handled by
         # reference in C, so these map to 'T*' rather than 'T'.
@@ -223,8 +227,16 @@ class CodeGen:
                 if getattr(d, "name", None) is not None:
                     emitted_decls.add(d.name)
                 self._forward_declare(d)
+            # Constants first, whatever order they were written in. A layout
+            # or report declared above a constant would otherwise not see it,
+            # and "it depends where you put it in the file" is not a rule
+            # anyone should have to learn.
             for d in decls:
-                self._gen_decl(d)
+                if isinstance(d, ConstDecl):
+                    self._gen_decl(d)
+            for d in decls:
+                if not isinstance(d, ConstDecl):
+                    self._gen_decl(d)
             for fn in fns:
                 # Strata has no namespaces, so two modules defining the same
                 # function name collide. Dedup exists for the diamond case —
@@ -291,6 +303,18 @@ int main(int argc, char** argv) {
         self.emit_raw(f"{rt} {cname(fn.name)}({params});")
 
     def _gen_decl(self, decl):
+        if isinstance(decl, ConstDecl):
+            # A file-scope `static const`, emitted with the declarations so it
+            # is in scope for every function below it. The type comes from the
+            # declaration rather than from the value, so `const float RATE = 1;`
+            # is a float.
+            ct = self._c_type(decl.const_type)
+            self.const_types[decl.name] = ct
+            self.var_types[decl.name] = ct
+            value = self._gen_expr(decl.value, [])
+            qualifier = "static const " if ct != "strata_str" else "static "
+            self.emit_raw(f"{qualifier}{ct} {cname(decl.name)} = {value};")
+            return
         if isinstance(decl, DatabaseDecl):
             self._gen_struct(decl.name, decl.fields)
             self.schemas[decl.name] = [f.name for f in decl.fields]
@@ -538,7 +562,7 @@ int main(int argc, char** argv) {
         self.emit_raw(f"\n/* verify: {decl.label} */")
         self.emit_raw(f"void __strata_verify_{safe}(void) {{")
         self.indent = 1
-        self.var_types = {}
+        self.var_types = dict(self.const_types)
         for st in decl.assertions:
             self._gen_stmt(st, [])
         self.indent = 0
@@ -748,7 +772,7 @@ int main(int argc, char** argv) {
             return
 
         prev_vars = self.var_types
-        self.var_types = {"rows": f"{src}**"}
+        self.var_types = dict(self.const_types); self.var_types["rows"] = f"{src}**"
         rows = self._gen_query_expr(decl.datasource, [])
         self.emit_raw(f"    {src}** rows = {rows};")
         self.emit_raw(f"    strata_int _rn = strata_len(rows);")
@@ -795,7 +819,7 @@ int main(int argc, char** argv) {
         if fn.kind == "def": rt = "void"
         params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
         self.func_returns[fn.name] = rt
-        self.var_types = {}
+        self.var_types = dict(self.const_types)
         self.borrowed_scalars = set()
         for p in fn.params:
             ct = self._c_type(p.param_type)

@@ -192,6 +192,7 @@ str node_name(int k) {
     if (k == 74) { return "ForeignDecl"; }
     if (k == 75) { return "TableIOStmt"; }
     if (k == 76) { return "DeleteStmt"; }
+    if (k == 77) { return "ConstDecl"; }
     return "Unknown";
 }
 
@@ -321,6 +322,11 @@ str node_json(Node n) {
     if (k == 76) {
         jfield(&sb, "table", jstr(n.s1));
         jfield(&sb, "condition", jchild(n.c1));
+    }
+    if (k == 77) {
+        jfield(&sb, "name", jstr(n.s1));
+        jfield(&sb, "const_type", jchild(n.c1));
+        jfield(&sb, "value", jchild(n.c2));
     }
     if (k == 74) {
         jfield(&sb, "header", jstr(n.s1));
@@ -1334,19 +1340,25 @@ Node parse_unit(P &p) {
         if (k == 32) { nv_push(&decls, parse_verify_block(&p)); }
         int is_foreign = p_at_word(&p, "foreign");
         if (is_foreign == 1) { nv_push(&decls, parse_foreign(&p)); }
+        // `const int NAME = value;` — contextual, so `const` stays usable as
+        // an identifier. A call like `const(1)` is not a declaration.
+        int is_const = 0;
+        if (p_at_word(&p, "const") == 1) { if (p_kind(&p, 1) != 52) { is_const = 1; } }
+        if (is_const == 1) { nv_push(&decls, parse_const(&p)); }
         if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
         if (k == 25) { nv_push(&funcs, parse_function(&p, 2)); }
-        if (is_foreign == 0) {
-            if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
-        }
-        if (is_foreign == 0) { if (is_type_kind(k) == 0) {
-                if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
-                                    if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
-                                                    eprint("[STRATA PARSE ERROR] unexpected top-level token");
-                                                    p_advance(&p);
-                                                } } } }
-                                } } } } }
+        if (is_foreign == 0) { if (is_const == 0) {
+                if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
             } }
+        if (is_foreign == 0) { if (is_const == 1) { }
+            else { if (is_type_kind(k) == 0) {
+                    if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
+                                        if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
+                                                        eprint("[STRATA PARSE ERROR] unexpected top-level token");
+                                                        p_advance(&p);
+                                                    } } } }
+                                    } } } } }
+                } } }
     }
 
     Node unit = node_new(1);
@@ -1586,6 +1598,21 @@ str dir_of(str path) {
     for (int i = 0; i < n; i = i + 1) { if (path[i] == 47) { last = i; } }
     if (last < 0) { return "."; }
     return str_slice(path, 0, last);
+}
+
+Node parse_const(P &p) {
+    Token t = p_advance(&p);                     // `const`
+    Node ty = parse_type(&p);
+    Token name = p_expect(&p, 4);
+    p_expect(&p, 60);                            // =
+    Node value = parse_expr(&p);
+    p_expect(&p, 56);                            // ;
+    Node n = node_new(77);
+    n.s1 = name.value;
+    n.c1 = node_ptr(ty);
+    n.c2 = node_ptr(value);
+    n_pos(n, t);
+    return n;
 }
 
 str app_module_path(str src_dir, str name) {

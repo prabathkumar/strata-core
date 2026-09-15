@@ -1,0 +1,46 @@
+// `const` at the top of a file — a named value fixed when the program is
+// built.
+//
+// Before this, every constant in the repository was a function returning a
+// literal: `int lockout_after() { return 5; }`. That works and reads like an
+// apology. A constant cannot be assigned to, so it also cannot quietly become
+// shared mutable state in a service that serves each connection in its own
+// process.
+
+import io  from std;
+import str from std;
+
+const int   LOCKOUT_AFTER   = 5;
+const int   LOCKOUT_SECONDS = 300;
+const float TOLERANCE       = 0.005;
+const str   SERVICE_NAME    = "orders";
+
+// A constant may be written in terms of one declared above it.
+const int LOCKOUT_MINUTES = LOCKOUT_SECONDS / 60;
+
+int locked_for(int failures) {
+    if (failures >= LOCKOUT_AFTER) { return LOCKOUT_SECONDS; }
+    return 0;
+}
+
+verify "a constant is the value it was given" {
+    assert LOCKOUT_AFTER == 5;
+    assert LOCKOUT_SECONDS == 300;
+    assert str_eq(SERVICE_NAME, "orders") == 1;
+}
+
+verify "one constant can be built from another" {
+    assert LOCKOUT_MINUTES == 5;
+}
+
+verify "constants work where any other value does" {
+    assert locked_for(4) == 0;
+    assert locked_for(5) == 300;
+    assert locked_for(99) == LOCKOUT_SECONDS;
+}
+
+verify "a float constant keeps its precision" {
+    float almost = 100.00 - TOLERANCE;
+    assert almost < 100.00;
+    assert almost > 99.99;
+}

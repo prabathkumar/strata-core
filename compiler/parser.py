@@ -111,6 +111,29 @@ class QueryExpr(Node):
                                "condition":self.condition.to_dict()}
 
 @dataclass
+class ConstDecl(Node):
+    """`const int LOCKOUT_AFTER = 5;` at the top of a file.
+
+    A named value fixed when the program is built. Strata has no module-level
+    variables and this is deliberately not one: a constant cannot be assigned
+    to, so it cannot become shared mutable state in a service that serves each
+    connection in its own process.
+
+    Before it existed, every constant in this repository was a function
+    returning a literal — `int lockout_after() { return 5; }` — which works and
+    reads like an apology.
+
+    `const` is contextual, like `save` and `delete`, so the word stays usable
+    as an identifier everywhere else.
+    """
+    name: str
+    const_type: Any
+    value: Any
+    def to_dict(self): return {"node":"ConstDecl","name":self.name,
+                               "const_type":self.const_type.to_dict(),
+                               "value":self.value.to_dict()}
+
+@dataclass
 class DeleteStmt(Node):
     """`delete Table <- [cond];` — rows matching the condition are removed.
 
@@ -457,6 +480,8 @@ class Parser:
                 declarations.append(self._parse_report())
             elif self._check(TT.KW_LAYOUT):
                 declarations.append(self._parse_layout())
+            elif self._at_word("const") and self._peek_at(1).type != TT.L_PAREN:
+                declarations.append(self._parse_const())
             elif self._at_word("foreign"):
                 declarations.append(self._parse_foreign())
             elif self._check(TT.KW_VERIFY):
@@ -471,6 +496,15 @@ class Parser:
                 t = self._peek()
                 raise ParseError(f"Unexpected token '{t.value}'", t.line, t.col)
         return CompilationUnit(0, 0, imports, declarations, functions)
+
+    def _parse_const(self) -> ConstDecl:
+        t = self._advance()                      # `const`
+        const_type = self._parse_type()
+        name = self._consume(TT.IDENT).value
+        self._consume(TT.ASSIGN)
+        value = self._parse_expr()
+        self._consume(TT.SEMICOLON)
+        return ConstDecl(t.line, t.col, name, const_type, value)
 
     # ── Import ────────────────────────────────────────────────────────────────
 

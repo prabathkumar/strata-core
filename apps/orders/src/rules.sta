@@ -64,11 +64,8 @@ int open_count() {
 // attempts, because the language has no delete and a table of attempts would
 // grow for as long as anyone was attacking it — which is the wrong way round.
 
-// Constants are functions: the language has no module-level variables, and a
-// literal repeated in three places is how the lockout window and the message
-// about it drift apart.
-int lockout_after()   { return 5; }
-int lockout_seconds() { return 300; }
+const int LOCKOUT_AFTER   = 5;
+const int LOCKOUT_SECONDS  = 300;
 
 // Seconds remaining on a lockout, or 0.
 int locked_for(str who, int now) {
@@ -86,8 +83,8 @@ int note_failure(str who, int now) {
     if (count(found) == 0) { return 0; }
     User u = found[0];
     u.failed_logins = u.failed_logins + 1;
-    if (u.failed_logins >= lockout_after()) {
-        u.locked_until = now + lockout_seconds();
+    if (u.failed_logins >= LOCKOUT_AFTER) {
+        u.locked_until = now + LOCKOUT_SECONDS;
     }
     return u.failed_logins;
 }

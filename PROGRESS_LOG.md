@@ -496,3 +496,25 @@ All seventeen suites green.
 Not done: module-level constants still do not exist — the lockout window in
 apps/orders is a function returning 5, and so is every other constant in the
 repository.
+
+## 2026-09-15 — const
+
+Landed: `const int NAME = value;` at the top of a file, across the parser, both
+type checkers and both code generators, with the emitted C still byte-identical
+between them. Assigning to one is E001; the value is type-checked at the
+declaration; constants cross module boundaries; they are emitted before every
+other declaration so declaration order in the file does not matter.
+
+Both applications use them — the lockout window, the connection cap, the
+session length, the request timeout, the money tolerance.
+
+Found while building it: a constant declared in an imported module was
+invisible to the file that imported it, exactly as `database` blocks were
+before `register_imported_decls`. Caught by moving the orders lockout into
+rules.sta, which is where it belongs.
+
+All eighteen suites green.
+
+Not done: a property value in a layout that is not a literal is still dropped —
+`window [width = WIDTH]` renders no width. That predates constants and is
+identical in both code generators; recorded rather than fixed.

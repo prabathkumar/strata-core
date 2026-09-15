@@ -41,7 +41,12 @@ int now_seconds() { native "return (int64_t)time(NULL);"; }
 
 // How many connections may be in flight at once. A process each, so this is
 // also the cap on processes this service will create.
-int max_connections() { return 64; }
+const int MAX_CONNECTIONS = 64;
+
+// How long a signed-in session lasts, and how long the service waits for a
+// client to finish sending its request.
+const int SESSION_SECONDS = 28800;
+const int REQUEST_TIMEOUT = 5;
 
 // The signed-in user's id, or 0. A session that has expired is not a session.
 int current_user(str request) {
@@ -64,7 +69,7 @@ str start_session(int user_id) {
     // request that did not come from a page this service rendered cannot
     // produce it — which is the whole of CSRF protection.
     Session <- [token = token, user_id = user_id,
-    expires_at = now_seconds() + 28800, csrf = new_session_token()];
+    expires_at = now_seconds() + SESSION_SECONDS, csrf = new_session_token()];
     save_sessions();
     return token;
 }
@@ -223,7 +228,7 @@ int handle(int conn, str request) {
 // whole table would otherwise lose one of the two changes.
 int serve(int conn) {
     int started = now_millis();
-    http_set_timeout(conn, 5);
+    http_set_timeout(conn, REQUEST_TIMEOUT);
     str request = http_read_request(conn);
     if (str_len(request) == 0) {
         int code = http_request_timeout(conn);
@@ -281,7 +286,7 @@ int main() {
         if (live < 0) { live = 0; }
         int conn = http_accept(fd);
         if (conn < 0) { continue; }
-        if (live >= max_connections()) {
+        if (live >= MAX_CONNECTIONS) {
             http_too_busy(conn);
             log_request("-", "-", 503, 0);
             http_close(conn);

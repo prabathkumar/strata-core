@@ -62,6 +62,9 @@ database Gen {
     int schemas;      // Bind list: table -> ",col,col,"
     int field_types;  // Bind list: "Table.col" -> C type
     int models;       // Bind list: model name -> "1"
+    // Bind list: constant -> C type. File-scope, so it survives the reset at
+    // the start of every function and layout.
+    int const_types;
     // Whether code is being generated for a layout body, where a statement
     // may be an element, or for a function body, where it may not.
     // `for X in xs` is the one construct that appears in both.
@@ -1333,6 +1336,22 @@ def gen_struct(Gen &g, str name, int fields_vec) {
 }
 
 def gen_decl(Gen &g, Node d) {
+    if (d.kind == 77) {                           // const
+        // A file-scope constant, emitted with the declarations so it is in
+        // scope for every function below. The type comes from the declaration
+        // rather than from the value.
+        str ct = c_type(&g, d.c1);
+        g.const_types = bind_cons(d.s1, ct, g.const_types);
+        g.var_types = bind_cons(d.s1, ct, g.var_types);
+        str value = gen_expr(&g, d.c2);
+        StringBuilder cb = sb_new();
+        if (str_eq(ct, "strata_str") == 1) { sb_append(&cb, "static "); }
+        else { sb_append(&cb, "static const "); }
+        sb_append(&cb, ct); sb_append(&cb, " "); sb_append(&cb, cname(d.s1));
+        sb_append(&cb, " = "); sb_append(&cb, value); sb_append(&cb, ";");
+        emit_raw(&g, sb_to_str(&cb));
+        return;
+    }
     if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
         gen_table_io(&g, d.s1, d.v1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
@@ -1428,7 +1447,7 @@ def gen_report(Gen &g, Node d) {
     int prev_vars = g.var_types;
     StringBuilder rt = sb_new();
     sb_append(&rt, src); sb_append(&rt, "**");
-    g.var_types = bind_cons("rows", sb_to_str(&rt), 0);
+    g.var_types = bind_cons("rows", sb_to_str(&rt), g.const_types);
 
     Node q = node_at(d.c1);
     str rows = gen_query_expr(&g, q);
@@ -1537,7 +1556,7 @@ def gen_function(Gen &g, Node fn) {
     if (fn.c1 != 0) { rt = c_type(&g, fn.c1); }
     if (str_eq(fn.s1, "def") == 1) { rt = "void"; }
     g.func_returns = bind_cons(fn.s2, rt, g.func_returns);
-    g.var_types = 0;
+    g.var_types = g.const_types;
     g.borrowed = 0;
 
     NodeVec ps = nv_at(fn.v1);
@@ -1908,7 +1927,15 @@ def emit_unit(Gen &g, Node unit, int is_root, int &emitted_decls, int &emitted_f
         }
     }
     for (int a = 0; a < dn; a = a + 1) { forward_declare(&g, nv_get(&pending_d, a)); }
-    for (int b = 0; b < dn; b = b + 1) { gen_decl(&g, nv_get(&pending_d, b)); }
+    // Constants first, whatever order they were written in — see stage0.py.
+    for (int b0 = 0; b0 < dn; b0 = b0 + 1) {
+        Node cdecl = nv_get(&pending_d, b0);
+        if (cdecl.kind == 77) { gen_decl(&g, cdecl); }
+    }
+    for (int b = 0; b < dn; b = b + 1) {
+        Node odecl = nv_get(&pending_d, b);
+        if (odecl.kind != 77) { gen_decl(&g, odecl); }
+    }
     int fn2 = pending_f.len;
     for (int c = 0; c < fn2; c = c + 1) { forward_fn(&g, nv_get(&pending_f, c)); }
     for (int d2 = 0; d2 < fn2; d2 = d2 + 1) { gen_function(&g, nv_get(&pending_f, d2)); }

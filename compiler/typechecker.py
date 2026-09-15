@@ -16,7 +16,7 @@ from compiler.parser import (
     FunctionDecl, ImportDecl, FieldDecl, Param,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
-    AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt,
+    AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt, ConstDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -124,6 +124,8 @@ class TypeChecker:
         """
         self.ast=ast; self.filename=filename; self.errors=[]
         self.global_scope=Scope(); self.schemas={}; self.models={}
+        # Names declared `const`, so an assignment to one is an error.
+        self.constants=set()
         self.functions={}; self.current_return_type=None
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
@@ -216,10 +218,34 @@ class TypeChecker:
                     self.global_scope.define(d.name, SType(d.name))
                 elif isinstance(d, (ReportDecl, LayoutDecl)):
                     self.global_scope.define(d.name, SType(d.name))
+                elif isinstance(d, ConstDecl):
+                    # A constant crosses a module boundary like any other
+                    # name. Without this, moving a constant into the module
+                    # that owns it makes it invisible to the file that uses
+                    # it — which is where anyone would put it.
+                    self.constants.add(d.name)
+                    self.global_scope.define(d.name,
+                                             self._resolve_type(d.const_type))
 
     def _register_declarations(self):
         for d in self.ast.declarations:
-            if isinstance(d, DatabaseDecl):
+            if isinstance(d, ConstDecl):
+                # A constant is a name in the global scope that nothing may
+                # assign to. Its value is checked against its declared type
+                # here, so `const int PORT = "8080";` fails at the declaration
+                # rather than wherever PORT is first used.
+                declared = self._resolve_type(d.const_type)
+                self.constants.add(d.name)
+                self.global_scope.define(d.name, declared)
+                actual = self._infer_type(d.value, self.global_scope)
+                if actual and not is_compatible(declared, actual):
+                    self._error("E001",
+                        f"Constant '{d.name}' is '{declared}' but its value is "
+                        f"'{actual}'",
+                        d.line, d.col,
+                        f"Give it a value of type '{declared}', or declare it "
+                        f"as '{actual}'")
+            elif isinstance(d, DatabaseDecl):
                 self.schemas[d.name]={f.name:self._resolve_type(f.field_type) for f in d.fields}
                 self.global_scope.define(d.name, SType(d.name))
             elif isinstance(d, ProtocolDecl):
@@ -372,6 +398,13 @@ class TypeChecker:
                     f"or remove '{col}' from 'database {stmt.target}'")
 
     def _check_assign(self,stmt,scope):
+        if isinstance(stmt.target,Identifier) and stmt.target.name in self.constants:
+            self._error("E001",
+                f"Cannot assign to constant '{stmt.target.name}'",
+                stmt.line,stmt.col,
+                "A constant is fixed when the program is built. Use a local "
+                "variable if the value needs to change.")
+            return
         """`target = value` must not change the target's declared type."""
         target=self._infer_type(stmt.target,scope)
         value=self._infer_type(stmt.value,scope)

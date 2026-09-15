@@ -1,0 +1,6 @@
+// A constant's value is checked against its declared type, at the declaration
+// rather than wherever it is first used.
+
+const int PORT = "8080";
+
+int main() { return PORT; }

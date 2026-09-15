@@ -244,10 +244,12 @@ database TC {
     // worse than no line number.
     str current_file;
     str imported;     // ",name,name," of everything the imports make reachable
+    // ",NAME,NAME," of every `const`, so an assignment to one is an error.
+    str constants;
 }
 
 TC tc_new() {
-    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; return _t;";
+    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; _t->constants=\",\"; return _t;";
 }
 
 // Functions the generated C already has, from the runtime prelude or as a
@@ -370,6 +372,17 @@ def register_imported_decls(TC &tc, int mods_p) {
                 Scp g = scp_at(tc.globals);
                 scp_define(&g, d.s1, ty_ptr(ty_new(d.s1)));
             }
+            // A constant crosses a module boundary like any other name — see
+            // typechecker.py for why that matters.
+            if (d.kind == 77) {
+                Scp gc = scp_at(tc.globals);
+                scp_define(&gc, d.s1, resolve_type(d.c1));
+                StringBuilder ics = sb_new();
+                sb_append(&ics, tc.constants);
+                sb_append(&ics, d.s1);
+                sb_append(&ics, ",");
+                tc.constants = sb_to_str(&ics);
+            }
         }
     }
 }
@@ -386,6 +399,18 @@ def register_decls(TC &tc, Node unit) {
         if (d.kind == 4) { tc.schemas = schema_cons(d.s1, fields_of(d), tc.schemas); }
         if (d.kind == 5) {
             tc.models = mdl_cons(d.s1, resolve_type(d.c1), resolve_type(d.c2), tc.models);
+        }
+        // A constant is a global name nothing may assign to. Its value is
+        // checked against its declared type here, so the error lands on the
+        // declaration rather than on the first use.
+        if (d.kind == 77) {
+            int declared = resolve_type(d.c1);
+            scp_define(&g, d.s1, declared);
+            StringBuilder cs = sb_new();
+            sb_append(&cs, tc.constants);
+            sb_append(&cs, d.s1);
+            sb_append(&cs, ",");
+            tc.constants = sb_to_str(&cs);
         }
     }
 
@@ -1068,6 +1093,19 @@ def check_stmt(TC &tc, Node st, int scope_p) {
     }
 
     if (k == 28) {                                   // assignment
+        // A constant is fixed when the program is built, so assigning to one
+        // is an error rather than a quiet overwrite.
+        Node atgt = node_at(st.c1);
+        if (atgt.kind == 54) {
+            if (name_in_list(tc.constants, atgt.s1) == 1) {
+                StringBuilder cb = sb_new();
+                sb_append(&cb, "Cannot assign to constant '");
+                sb_append(&cb, atgt.s1);
+                sb_append(&cb, "'");
+                emit(&tc, "E001", sb_to_str(&cb), st.line, st.col);
+                return;
+            }
+        }
         int tt = infer(&tc, st.c1, scope_p);
         int vt = infer(&tc, st.c2, scope_p);
         if (tt != 0) {
@@ -1443,6 +1481,31 @@ str src_dir, int report_imports, int mods_p) {
     // the module that queries it, and every query reports E004 against a table
     // that is right there.
     if (mods_p != 0) { register_imported_decls(&tc, mods_p); }
+
+    // A constant's value is checked once the global scope is complete, so a
+    // constant may be written in terms of one declared above it.
+    NodeVec cdecls = nv_at(unit.v2);
+    int ncd = cdecls.len;
+    for (int ci = 0; ci < ncd; ci = ci + 1) {
+        Node cd = nv_get(&cdecls, ci);
+        if (cd.kind == 77) {
+            int cdeclared = resolve_type(cd.c1);
+            int cactual = infer(&tc, cd.c2, tc.globals);
+            if (cactual != 0) {
+                if (ty_compatible(cdeclared, cactual) == 0) {
+                    StringBuilder cb2 = sb_new();
+                    sb_append(&cb2, "Constant '");
+                    sb_append(&cb2, cd.s1);
+                    sb_append(&cb2, "' is '");
+                    sb_append(&cb2, ty_str(cdeclared));
+                    sb_append(&cb2, "' but its value is '");
+                    sb_append(&cb2, ty_str(cactual));
+                    sb_append(&cb2, "'");
+                    emit(&tc, "E001", sb_to_str(&cb2), cd.line, cd.col);
+                }
+            }
+        }
+    }
 
     // Checked after functions are registered: a layout may reference a handler
     // declared further down the file, and either may precede its database.

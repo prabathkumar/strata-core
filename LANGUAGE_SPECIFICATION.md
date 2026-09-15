@@ -163,6 +163,32 @@ block is C written inline as a function body, with `$name` substituted for a
 parameter. The HTTP server and the password hashing in `std/` are built from
 these — the web tier is library code, not a privileged part of the language.
 
+### `const`
+
+A named value, fixed when the program is built.
+
+```text
+import io from std;
+
+const int   LOCKOUT_AFTER   = 5;
+const int   LOCKOUT_SECONDS = 300;
+const float TOLERANCE       = 0.005;
+const str   SERVICE_NAME    = "orders";
+
+int main() {
+    print(SERVICE_NAME);
+    print(str(LOCKOUT_AFTER * 60));
+    return 0;
+}
+```
+
+A constant may be written in terms of one declared above it, is visible to any
+file that imports the module it lives in, and may be declared anywhere in a
+file — a layout above it still sees it. Assigning to one is an error (E001),
+so it cannot become shared mutable state.
+
+This is not a module-level variable, and the language still has none.
+
 ### Functions
 
 `int f(str a) { ... }` or `def f(str a) { ... }` for one returning nothing.
@@ -257,7 +283,8 @@ repair agent. The full taxonomy is `ERROR_TAXONOMY.json`.
 Stated because their absence is load-bearing, and because earlier versions of
 this document implied otherwise:
 
-- no module-level variables or constants — a constant is a function
+- no module-level variables. `const` gives a fixed value; there is nowhere to
+  keep something that changes
 - no `map`, `set`, or dictionary type
 - no date or time type
 - no grouping or ordering in a query

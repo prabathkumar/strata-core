@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### `const` — the language has named constants
+
+```
+const int   LOCKOUT_AFTER   = 5;
+const float TOLERANCE       = 0.005;
+const str   SERVICE_NAME    = "orders";
+```
+
+Every constant in this repository used to be a function returning a literal —
+`int lockout_after() { return 5; }` — because there was nowhere else to put
+one. That works and reads like an apology, and I wrote it twice while building
+the two applications.
+
+Deliberately a constant and not a module-level variable: it cannot be assigned
+to (E001), so it cannot become shared mutable state in a service that serves
+each connection in its own process. Its value is checked against its declared
+type at the declaration rather than at the first use, it may be written in
+terms of a constant above it, and it crosses a module boundary like any other
+name — the constant belongs in the module that owns it, which is where anyone
+would put it.
+
+Constants are emitted before every other declaration, so a layout written above
+one still sees it. "It depends where you put it in the file" is not a rule
+anyone should have to learn.
+
+`apps/orders` and `apps/ledger` use them now: the lockout window, the
+connection cap, the session length, the request timeout and the money
+tolerance are all named values instead of functions or repeated literals.
+
+`const` is contextual, like `save` and `delete`, so it remains usable as an
+ordinary identifier.
+
 ### The first hour
 
 What a developer runs before deciding whether to keep going, made to work.
