@@ -478,3 +478,21 @@ fixpoint.
 Not done: the audit covered the repository's claims, not its code. `std/` and
 `examples/` still contain quarantined modules that describe a runtime nobody
 built; they are labelled rather than removed.
+
+## 2026-09-15 — the first hour
+
+Landed: `strata check` resolving imports the way the build does and treating
+E007 as advisory; `strata new` writing tests and a README; `extract_json_int`
+in std/json.sta; four `from hub` imports removed; `test_suite/first_hour.py`,
+22 checks.
+
+The checker was reporting sixteen errors for a file the compiler builds
+cleanly. Fixing it surfaced the rest: the fake `hub` imports had been
+disarming the undefined-call rule, so a call to a function nothing defined sat
+in two examples without a single suite noticing.
+
+All seventeen suites green.
+
+Not done: module-level constants still do not exist — the lockout window in
+apps/orders is a function returning 5, and so is every other constant in the
+repository.

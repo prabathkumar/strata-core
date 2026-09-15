@@ -77,3 +77,37 @@ def json_next(StringBuilder &sb, int first) {
 // this exists so a reader of the service can see where numbers come from.
 str json_num(float value) { return str(value); }
 str json_int(int value)   { return str(value); }
+
+// Reading one integer field out of a flat JSON object.
+//
+// Not a parser. It finds `"name"`, skips to the first digit or minus sign
+// after the colon, and reads the number — which is what a stream handler does
+// with a message envelope, and all that the examples in this repository ever
+// needed. It returns 0 for a field that is absent, so a caller that must tell
+// "absent" from "zero" needs something this does not do yet.
+//
+// It exists because two examples called it and nothing defined it: their
+// `import ... from hub` named a registry that never existed, and an
+// unresolvable import disarms the undefined-call rule, so the missing function
+// went unreported for as long as the fake import stood next to it.
+int extract_json_int(str text, str name) {
+    StringBuilder key = sb_new();
+    sb_append(&key, "\"");
+    sb_append(&key, name);
+    sb_append(&key, "\"");
+    int at = str_index_of(text, sb_to_str(&key));
+    if (at < 0) { return 0; }
+
+    int n = str_len(text);
+    int i = at + str_len(sb_to_str(&key));
+    while (i < n) {
+        int c = text[i];
+        if (c == 45) { return str_to_int(str_slice(text, i, n)); }
+        if (c > 47) { if (c < 58) { return str_to_int(str_slice(text, i, n)); } }
+        // Anything before the number — the colon, spaces — is skipped, but a
+        // comma means this field had no number in it.
+        if (c == 44) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}

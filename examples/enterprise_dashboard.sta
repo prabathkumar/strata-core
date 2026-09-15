@@ -4,8 +4,6 @@
 // Compiles directly to lightweight WebAssembly (Wasm) with 0% JS dependencies
 // ==============================================================================
 
-import core_ui from hub;
-import telemetry_analytics from hub;
 import core.io from std;
 
 // 1. TYPED CORE FRONT-END STATE MODEL

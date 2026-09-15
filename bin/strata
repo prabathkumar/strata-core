@@ -4,6 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 export PYTHONPATH="$ROOT:$PYTHONPATH"
+export STRATA_ROOT="$ROOT"
 
 usage() {
     echo "Strata toolchain 0.4.0-alpha"
@@ -101,28 +102,52 @@ cmd_build() {
 }
 
 cmd_check() {
+    # Checks a file the way `strata build` checks it: imports resolved first.
+    #
+    # Without that, a file importing its own schema is checked with no idea
+    # what a `database Order` is, so `strata check` reported sixteen errors
+    # for apps/orders/src/rules.sta while `strata build` compiled it without
+    # complaint. A checker that disagrees with the compiler is worse than no
+    # checker: the first thing a newcomer runs told them their code was
+    # broken when it was not.
     local f="$1"
     if [ -z "$f" ]; then echo "Usage: strata check <file.sta>"; exit 1; fi
     echo "[Strata Check] Analysing '$f'..."
-    python3 << PYEOF
+    python3 - "$f" << 'PYEOF'
 import sys, os
-sys.path.insert(0, '$ROOT')
-from compiler.lexer import tokenise_file, LexError
-from compiler.parser import Parser, ParseError
+sys.path.insert(0, os.environ["STRATA_ROOT"])
+from compiler.lexer import LexError
+from compiler.parser import ParseError
+from bootstrap.stage0 import parse_file, resolve_imports
 from compiler.typechecker import TypeChecker
+
+f = sys.argv[1]
 try:
-    toks = tokenise_file('$f')
-    ast  = Parser(toks).parse()
-    tc   = TypeChecker(ast, filename='$f')
-    errs = tc.check()
-    if errs:
-        print(f"[Strata Check] {len(errs)} error(s) found:", file=sys.stderr)
-        for e in errs: print(f"  {e}", file=sys.stderr)
-        sys.exit(1)
-    print(f"  {len(ast.imports)} imports, {len(ast.declarations)} decls, {len(ast.functions)} functions")
-    print("[Strata Check] No errors. OK")
+    ast = parse_file(f)
+    modules, _, root_unresolved, app_modules = resolve_imports(ast, f)
+    errs = TypeChecker(ast, filename=f,
+                       modules=None if root_unresolved else modules,
+                       unresolved_imports=root_unresolved,
+                       project_modules=app_modules).check()
 except (LexError, ParseError) as e:
     print(str(e), file=sys.stderr); sys.exit(1)
+
+# E007 is the advisory: an import with no local checkout is reported and the
+# build continues. `strata check` treated it as an error and exited non-zero,
+# which is the opposite of what the taxonomy says.
+ADVISORY_CODES = {"E007"}
+advisories = [e for e in errs if e.code in ADVISORY_CODES]
+hard = [e for e in errs if e.code not in ADVISORY_CODES]
+for e in advisories:
+    print(f"[Strata Check] advisory: {e}")
+if hard:
+    print(f"[Strata Check] {len(hard)} error(s) found:", file=sys.stderr)
+    for e in hard:
+        print(f"  {e}", file=sys.stderr)
+    sys.exit(1)
+print(f"  {len(ast.imports)} imports, {len(modules)} resolved module(s), "
+      f"{len(ast.declarations)} decls, {len(ast.functions)} functions")
+print("[Strata Check] No errors. OK")
 PYEOF
 }
 
@@ -165,7 +190,7 @@ cmd_new() {
     local name="$1"
     if [ -z "$name" ]; then echo "Usage: strata new <project_name>"; exit 1; fi
     if [ -e "$name" ]; then echo "'$name' already exists" >&2; return 1; fi
-    mkdir -p "$name/src" "$name/data" "$name/build"
+    mkdir -p "$name/src" "$name/tests" "$name/data" "$name/build"
     cat > "$name/Strata.toml" << TOML
 [package]
 name = "$name"
@@ -186,6 +211,46 @@ database Item {
     float price;
 }
 STA
+    cat > "$name/tests/items_test.sta" << 'STA'
+// `strata test` builds and runs every verify block in the project.
+//
+// A generated project ships with one so that the first `strata test` a new
+// developer runs says something other than "0 passed".
+
+import io     from std;
+import str    from std;
+import schema from app;
+
+int total_items() {
+    return count(Item <- [id > 0]);
+}
+
+verify "an item can be added and counted" {
+    assert total_items() == 0;
+    Item <- [id = 1, name = "first", price = 9.99];
+    assert total_items() == 1;
+}
+
+verify "the value of everything is the sum of the prices" {
+    Item <- [id = 2, name = "second", price = 0.01];
+    list[Item] all = Item <- [id > 0];
+    assert sum(all.price) == 10.00;
+}
+STA
+    cat > "$name/README.md" << MD
+# $name
+
+    strata build      compile it
+    strata run        compile and run it
+    strata test       build and run the verify blocks
+    strata check src/main.sta     type-check one file
+    strata fmt src/*.sta          canonical formatting
+    strata repair src/main.sta    let a model fix what the compiler rejected
+
+`src/schema.sta` is the data tier. Rename a column there and every query,
+aggregate and page that used it fails to build — that contract is the reason
+this language exists.
+MD
     cat > "$name/src/main.sta" << STA
 import io     from std;
 import str    from std;

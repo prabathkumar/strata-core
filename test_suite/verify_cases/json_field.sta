@@ -1,0 +1,17 @@
+// std/json.sta's one reader: pull an integer field out of a flat envelope.
+//
+// It exists because two examples called `extract_json_int` and nothing
+// defined it — their `import ... from hub` named a registry that never
+// existed, and an unresolvable import disarms the undefined-call rule.
+
+import io   from std;
+import str  from std;
+import json from std;
+
+verify "extract_json_int reads a flat envelope" {
+    str msg = "{\"account_id\": 4071, \"amount\": -25, \"tag\": \"x\"}";
+    assert extract_json_int(msg, "account_id") == 4071;
+    assert extract_json_int(msg, "amount") == 0 - 25;
+    assert extract_json_int(msg, "missing") == 0;
+    assert extract_json_int(msg, "tag") == 0;
+}

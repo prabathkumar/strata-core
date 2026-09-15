@@ -3,8 +3,8 @@
 // Deep Native Integration of Machine Learning Models & Tensor Topologies
 // ==============================================================================
 
-import security_audit from hub;
 import core.io from std;
+import json    from std;
 
 // 1. NATIVE AI MODEL TOPOLOGY DECLARATION
 // Declares model input/output dimension contracts directly in the language grammar.

@@ -135,6 +135,12 @@ jobs:
     - name: Journey — Operate It
       run: python3 test_suite/journey_operate.py
 
+    # What a developer runs before deciding whether to keep going: every
+    # command the generated README offers, against a project `strata new` just
+    # made, plus `strata check` over this repository's own sources.
+    - name: The First Hour
+      run: python3 test_suite/first_hour.py
+
     # The repair loop reads the compiler's JSON diagnostics. Every change to a
     # diagnostic's shape is a chance to break it silently, so the contract is
     # checked here rather than discovered in a demo.
@@ -188,7 +194,7 @@ jobs:
         fi
 
         # Words that only ever appeared in claims nothing backed.
-        for pat in "registry+hub" "UNVERIFIED-no-checksum" "corporate hub" "4KB Fiber"; do
+        for pat in "registry+hub" "UNVERIFIED-no-checksum" "corporate hub" "4KB Fiber" "from hub;"; do
           # The quarantine directories are excluded: their READMEs say plainly
           # that nothing in them works, which is the honest way to keep code
           # that describes a runtime nobody built.

@@ -1,6 +1,12 @@
 // Strata Corporate Microservice Template
-import audit_logger from hub;
-import legacy_pricing_model from python_engine;
+//
+// The import here used to name `legacy_pricing_model from python_engine` — a
+// source that does not exist and never did. An unresolvable import disarms the
+// undefined-call rule, so it was also hiding a call to a function nothing
+// defined.
+import io   from std;
+import str  from std;
+import json from std;
 
 database CorporateAccount {
     int    account_id;

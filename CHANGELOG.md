@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### The first hour
+
+What a developer runs before deciding whether to keep going, made to work.
+
+**`strata check` did not resolve imports.** `strata build` compiled
+`apps/orders/src/rules.sta` without complaint while `strata check` reported
+sixteen errors for it, because it checked the file with no idea what a
+`database Order` was. A checker that disagrees with the compiler is worse than
+no checker: the first thing a newcomer runs told them their code was broken
+when it was not. It now resolves imports exactly as the build does, and treats
+E007 as the advisory the taxonomy says it is rather than a failure.
+
+**`strata new` generated a project whose tests said "0 passed"** — it generated
+no tests. It now writes `tests/items_test.sta` with two blocks that pass, and a
+README listing the six commands, every one of which is checked to exist.
+
+Fixing the checker immediately found four examples importing modules
+`from hub`, a registry that has never existed. Because an unresolvable import
+disarms the undefined-call rule, the fake import was also hiding a call to
+`extract_json_int`, which nothing defined — for as long as the two stood next
+to each other. The imports are gone, and `std/json.sta` gained the one reader
+it needs: pull an integer field out of a flat envelope, absent meaning zero,
+with its limits written down.
+
+`test_suite/first_hour.py` runs all of it — 22 checks, including that renaming
+a column in a freshly generated schema breaks the build at the line that used
+it.
+
 ### The claims audit
 
 Every document, config and stub in this repository was read and checked

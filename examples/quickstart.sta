@@ -3,7 +3,6 @@
 // Developer Onboarding & Capabilities Integration Tutorial Blueprint
 // ==============================================================================
 
-import core_sys from hub;
 import core.io from std;
 
 // 1. DATA INFRASTRUCTURE SCHEMA
