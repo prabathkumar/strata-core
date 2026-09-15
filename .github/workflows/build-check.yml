@@ -194,13 +194,18 @@ jobs:
         fi
 
         # Words that only ever appeared in claims nothing backed.
+        #
+        # Source and configuration only. This check has now failed three times
+        # on prose that was explaining the removal rather than making the
+        # claim — a rewritten specification quoting the old wording, and a test
+        # file's own docstring. A guard that cannot tell a claim from a
+        # description of a claim is a guard that trains people to ignore it.
         for pat in "registry+hub" "UNVERIFIED-no-checksum" "corporate hub" "4KB Fiber" "from hub;"; do
           # The quarantine directories are excluded: their READMEs say plainly
           # that nothing in them works, which is the honest way to keep code
           # that describes a runtime nobody built.
-          hits=$(git grep -l -F "$pat" -- . ':!.github/workflows/build-check.yml' \
-                 ':!CHANGELOG.md' ':!PROGRESS_LOG.md' ':!STAGES.md' \
-                 ':!*unimplemented*' || true)
+          hits=$(git grep -l -F "$pat" -- '*.sta' '*.toml' '*.lock' '*.yaml' \
+                 '*.tf' 'bin/*' ':!*unimplemented*' || true)
           [ -n "$hits" ] && note "\"$pat\" is back, in: $hits"
         done
 
