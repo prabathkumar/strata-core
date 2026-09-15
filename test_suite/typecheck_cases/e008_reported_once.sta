@@ -1,0 +1,16 @@
+// E008 once, not twice.
+//
+// `[token == token]` has the ambiguous name on both sides — the exact shape
+// that made this rule necessary, since it compares the column with itself and
+// matches every row. The walk visits both sides, so the same mistake used to
+// be reported twice. Two different ambiguous names on one line still give two
+// diagnostics, which is right.
+
+database Session { str token; int user_id; }
+
+int user_for(str token) {
+    list[Session] found = Session <- [token == token];
+    return count(found);
+}
+
+int main() { return user_for("x"); }

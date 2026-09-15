@@ -33,7 +33,7 @@ never counted as closed.
 | # | Stage | State | Proven by |
 |---|---|---|---|
 | 1 | Write — the language surface | closed | `conformance.py` 182/182, `doc_examples.py`, `stdlib_compiles.py` |
-| 2 | Check — E001–E009, the cross-tier contract | closed | `typecheck_diff.py`, 84 files identical to the oracle |
+| 2 | Check — E001–E009, the cross-tier contract | closed | `typecheck_diff.py`, 101 files identical to the oracle; `first_hour.py` holds `strata check` to what `strata build` accepts |
 | 3 | Repair — diagnostics to a patch | closed | `self_repair.py` — 48 checks gated in CI on the deterministic backend, plus 4 on the Claude backend where the CLI is usable |
 | 4 | Format — one canonical form | closed | `strata fmt --check` in CI, `fmt.py` |
 | 5 | Build — C, self-hosted, reproducible | closed | four differentials byte-identical, `fixpoint.py` |

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### E008 was reported twice, and I had said why wrongly
+
+`[token == token]` — the shape that made the rule necessary, because it
+compares a column with itself and matches every row — has the ambiguous name on
+**both** sides. The check walks both sides of a comparison, so it reported the
+same mistake twice.
+
+I had written that this was "a diagnostic from an imported module is reported
+twice". That was wrong, and I had not checked it. An error in an imported
+module is reported once; the duplication had nothing to do with imports. The
+claim is corrected where it was made rather than quietly dropped.
+
+Reported once per name per position now, in both type checkers. Two different
+ambiguous names on one line still give two diagnostics, which is right.
+
 ### `const` — the language has named constants
 
 ```
@@ -263,6 +278,10 @@ written — a query comparing a column with a parameter of the same name.
 Two smaller things this turned up and did not fix: `strata check <file>` does
 not resolve imports the way `strata build` does, and a diagnostic from an
 imported module is reported twice.
+
+*(Corrected on 15 September: the second half of that sentence was wrong. An
+error in an imported module is reported once. What was duplicated was E008
+specifically, and for a different reason — see below.)*
 
 ### The image has now been built and run
 

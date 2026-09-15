@@ -518,3 +518,20 @@ All eighteen suites green.
 Not done: a property value in a layout that is not a literal is still dropped —
 `window [width = WIDTH]` renders no width. That predates constants and is
 identical in both code generators; recorded rather than fixed.
+
+## 2026-09-15 — E008 once, and a claim of mine that was wrong
+
+`[token == token]` has the ambiguous name on both sides, and the check walks
+both sides, so the mistake that made the rule necessary was reported twice.
+Fixed in both type checkers: once per name, per position.
+
+I had recorded this as "a diagnostic from an imported module is reported
+twice". It is not, and I had never tested it — an error in an imported module
+is reported once. The wrong claim is corrected in the changelog entry that made
+it rather than removed, since removing it would hide that it was made.
+
+That is the second time this week I have written down a cause I had not
+verified. The first was the assumption that the Docker step was too slow rather
+than never run.
+
+All eighteen suites green.

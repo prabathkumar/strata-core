@@ -126,6 +126,8 @@ class TypeChecker:
         self.global_scope=Scope(); self.schemas={}; self.models={}
         # Names declared `const`, so an assignment to one is an error.
         self.constants=set()
+        # (name, line, col) already reported as an ambiguous query identifier.
+        self._reported_ambiguous=set()
         self.functions={}; self.current_return_type=None
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
@@ -797,6 +799,15 @@ class TypeChecker:
             self._validate_query_cond(cond.right,schema,line,col,scope)
         elif isinstance(cond,Identifier) and scope is not None:
             if cond.name in fields and scope.lookup(cond.name) is not None:
+                # Once per name, per position. `[token == token]` — the exact
+                # shape that made this rule necessary — has the ambiguous name
+                # on both sides, and the walk visits both, so the same mistake
+                # was reported twice. Two different ambiguous names on one
+                # line still give two diagnostics, which is right.
+                key = (cond.name, line, col)
+                if key in self._reported_ambiguous:
+                    return
+                self._reported_ambiguous.add(key)
                 self._error("E008",
                     f"'{cond.name}' is both a column of '{schema}' and a "
                     f"variable in scope",

@@ -246,10 +246,12 @@ database TC {
     str imported;     // ",name,name," of everything the imports make reachable
     // ",NAME,NAME," of every `const`, so an assignment to one is an error.
     str constants;
+    // ",name:line:col," already reported as an ambiguous query identifier.
+    str ambiguous_seen;
 }
 
 TC tc_new() {
-    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; _t->constants=\",\"; return _t;";
+    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; _t->constants=\",\"; _t->ambiguous_seen=\",\"; return _t;";
 }
 
 // Functions the generated C already has, from the runtime prelude or as a
@@ -996,12 +998,28 @@ int scope_p) {
             if (sym_find(sc.fields, c.s1) != 0) {
                 if (scope_p != 0) {
                     if (scp_lookup(scope_p, c.s1) != 0) {
-                        StringBuilder sb = sb_new();
-                        sb_append(&sb, "'"); sb_append(&sb, c.s1);
-                        sb_append(&sb, "' is both a column of '");
-                        sb_append(&sb, schema);
-                        sb_append(&sb, "' and a variable in scope");
-                        emit(&tc, "E008", sb_to_str(&sb), line, col);
+                        // Once per name, per position — see typechecker.py.
+                        StringBuilder kb = sb_new();
+                        sb_append(&kb, c.s1);
+                        sb_append(&kb, ":");
+                        sb_append(&kb, str(line));
+                        sb_append(&kb, ":");
+                        sb_append(&kb, str(col));
+                        str akey = sb_to_str(&kb);
+                        if (name_in_list(tc.ambiguous_seen, akey) == 0) {
+                            StringBuilder ab = sb_new();
+                            sb_append(&ab, tc.ambiguous_seen);
+                            sb_append(&ab, akey);
+                            sb_append(&ab, ",");
+                            tc.ambiguous_seen = sb_to_str(&ab);
+
+                            StringBuilder sb = sb_new();
+                            sb_append(&sb, "'"); sb_append(&sb, c.s1);
+                            sb_append(&sb, "' is both a column of '");
+                            sb_append(&sb, schema);
+                            sb_append(&sb, "' and a variable in scope");
+                            emit(&tc, "E008", sb_to_str(&sb), line, col);
+                        }
                     }
                 }
             }
