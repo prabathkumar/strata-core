@@ -1184,18 +1184,35 @@ str col_sqltype(Gen &g, Node fd) {
 // program links libpq. Values go as text parameters and Postgres casts them;
 // parameters rather than a built-up string, because a customer named O'Brien
 // is a syntax error in one and a customer in the other.
-def gen_pg_save(Gen &g, str name, NodeVec fs, str cols_sql, str insert_sql) {
+def gen_pg_save(Gen &g, str name, NodeVec fs, str cols_sql, str upsert_sql,
+str delete_sql, str key) {
     int n = fs.len;
     emit_raw(&g, "#ifdef STRATA_POSTGRES");
     emit_raw(&g, "    if (strata_pg_is_url(path)) {");
     emit_raw(&g, "        void* _pg = strata_pg_open(path);");
     emit_raw(&g, "        if (!_pg) { return 0; }");
+    if (str_len(key) > 0) {
+        StringBuilder kn = sb_new();
+        sb_append(&kn, "        int _known = strata_pg_snap_describes(&");
+        sb_append(&kn, name); sb_append(&kn, "__pg_was, path);");
+        emit_raw(&g, sb_to_str(&kn));
+    }
+    if (str_len(key) == 0) {
+        emit_raw(&g, "        int _known = 0;   /* no integer key column */");
+    }
     StringBuilder bg = sb_new();
     sb_append(&bg, "        if (!strata_pg_begin(_pg, \""); sb_append(&bg, name);
-    sb_append(&bg, "\", \""); sb_append(&bg, cols_sql); sb_append(&bg, "\")) {");
+    sb_append(&bg, "\", \""); sb_append(&bg, cols_sql); sb_append(&bg, "\", \"");
+    sb_append(&bg, key); sb_append(&bg, "\", !_known)) {");
     emit_raw(&g, sb_to_str(&bg));
-    emit_raw(&g, "            strata_pg_close(_pg); return 0;");
+    emit_raw(&g, "            strata_pg_abort(_pg); return 0;");
     emit_raw(&g, "        }");
+    if (str_len(key) > 0) {
+        StringBuilder cl = sb_new();
+        sb_append(&cl, "        strata_pg_snap_clear(&"); sb_append(&cl, name);
+        sb_append(&cl, "__pg_now);");
+        emit_raw(&g, sb_to_str(&cl));
+    }
     StringBuilder lp = sb_new();
     sb_append(&lp, "        for (strata_int i = 0; i < "); sb_append(&lp, name);
     sb_append(&lp, "__count; i++) {");
@@ -1231,15 +1248,50 @@ def gen_pg_save(Gen &g, str name, NodeVec fs, str cols_sql, str insert_sql) {
             } }
         emit_raw(&g, sb_to_str(&w));
     }
+    if (str_len(key) > 0) {
+        StringBuilder h = sb_new();
+        sb_append(&h, "            uint64_t _h = strata_pg_hash("); sb_append(&h, str(n));
+        sb_append(&h, ", _v);");
+        emit_raw(&g, sb_to_str(&h));
+        StringBuilder k = sb_new();
+        sb_append(&k, "            int64_t _k = (int64_t)r->"); sb_append(&k, key);
+        sb_append(&k, ";");
+        emit_raw(&g, sb_to_str(&k));
+        StringBuilder pu = sb_new();
+        sb_append(&pu, "            strata_pg_snap_put(&"); sb_append(&pu, name);
+        sb_append(&pu, "__pg_now, _k, _h);");
+        emit_raw(&g, sb_to_str(&pu));
+        StringBuilder sk = sb_new();
+        sb_append(&sk, "            if (_known && strata_pg_snap_unchanged(&");
+        sb_append(&sk, name); sb_append(&sk, "__pg_was, _k, _h)) { continue; }");
+        emit_raw(&g, sb_to_str(&sk));
+    }
     StringBuilder ins = sb_new();
     sb_append(&ins, "            if (!strata_pg_insert(_pg, \"");
-    sb_append(&ins, insert_sql); sb_append(&ins, "\", "); sb_append(&ins, str(n));
+    sb_append(&ins, upsert_sql); sb_append(&ins, "\", "); sb_append(&ins, str(n));
     sb_append(&ins, ", _v)) {");
     emit_raw(&g, sb_to_str(&ins));
-    emit_raw(&g, "                strata_pg_close(_pg); return 0;");
+    emit_raw(&g, "                strata_pg_abort(_pg); return 0;");
     emit_raw(&g, "            }");
     emit_raw(&g, "        }");
+    if (str_len(key) > 0) {
+        StringBuilder dg = sb_new();
+        sb_append(&dg, "        if (_known && !strata_pg_delete_gone(_pg, \"");
+        sb_append(&dg, delete_sql); sb_append(&dg, "\", &"); sb_append(&dg, name);
+        sb_append(&dg, "__pg_was, &"); sb_append(&dg, name); sb_append(&dg, "__pg_now)) {");
+        emit_raw(&g, sb_to_str(&dg));
+        emit_raw(&g, "            strata_pg_abort(_pg); return 0;");
+        emit_raw(&g, "        }");
+    }
     emit_raw(&g, "        strata_int _ok = strata_pg_exec(_pg, \"COMMIT\");");
+    if (str_len(key) > 0) {
+        emit_raw(&g, "        if (_ok) {");
+        StringBuilder ad = sb_new();
+        sb_append(&ad, "            strata_pg_snap_adopt(&"); sb_append(&ad, name);
+        sb_append(&ad, "__pg_was, &"); sb_append(&ad, name); sb_append(&ad, "__pg_now, path);");
+        emit_raw(&g, sb_to_str(&ad));
+        emit_raw(&g, "        }");
+    }
     emit_raw(&g, "        strata_pg_close(_pg);");
     emit_raw(&g, "        return _ok;");
     emit_raw(&g, "    }");
@@ -1250,7 +1302,7 @@ def gen_pg_save(Gen &g, str name, NodeVec fs, str cols_sql, str insert_sql) {
 // strata_file_stamp() returns 0 for a URL, so the skip never fires and the
 // table is read every time. A file has a modification time to compare against
 // and a query does not.
-def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql) {
+def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
     int n = fs.len;
     emit_raw(&g, "#ifdef STRATA_POSTGRES");
     emit_raw(&g, "    if (strata_pg_is_url(path)) {");
@@ -1264,6 +1316,12 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql) {
     StringBuilder z = sb_new();
     sb_append(&z, "        "); sb_append(&z, name); sb_append(&z, "__count = 0;");
     emit_raw(&g, sb_to_str(&z));
+    if (str_len(key) > 0) {
+        StringBuilder cl = sb_new();
+        sb_append(&cl, "        strata_pg_snap_clear(&"); sb_append(&cl, name);
+        sb_append(&cl, "__pg_now);");
+        emit_raw(&g, sb_to_str(&cl));
+    }
     emit_raw(&g, "        strata_int _rows = strata_pg_rows(_res);");
     emit_raw(&g, "        for (strata_int _i = 0; _i < _rows; _i++) {");
     StringBuilder al = sb_new();
@@ -1290,7 +1348,35 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql) {
     sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
     sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
     emit_raw(&g, sb_to_str(&ps));
+    // What the table held when it was read, so the next save can tell which
+    // rows actually changed.
+    if (str_len(key) > 0) {
+        int cap2 = n;
+        if (cap2 < 1) { cap2 = 1; }
+        StringBuilder vd = sb_new();
+        sb_append(&vd, "            const char* _v["); sb_append(&vd, str(cap2));
+        sb_append(&vd, "];");
+        emit_raw(&g, sb_to_str(&vd));
+        for (int i = 0; i < n; i = i + 1) {
+            StringBuilder vs = sb_new();
+            sb_append(&vs, "            _v["); sb_append(&vs, str(i));
+            sb_append(&vs, "] = strata_pg_value(_res, _i, "); sb_append(&vs, str(i));
+            sb_append(&vs, ");");
+            emit_raw(&g, sb_to_str(&vs));
+        }
+        StringBuilder pu = sb_new();
+        sb_append(&pu, "            strata_pg_snap_put(&"); sb_append(&pu, name);
+        sb_append(&pu, "__pg_now, (int64_t)r->"); sb_append(&pu, key);
+        sb_append(&pu, ", strata_pg_hash("); sb_append(&pu, str(n)); sb_append(&pu, ", _v));");
+        emit_raw(&g, sb_to_str(&pu));
+    }
     emit_raw(&g, "        }");
+    if (str_len(key) > 0) {
+        StringBuilder ad = sb_new();
+        sb_append(&ad, "        strata_pg_snap_adopt(&"); sb_append(&ad, name);
+        sb_append(&ad, "__pg_was, &"); sb_append(&ad, name); sb_append(&ad, "__pg_now, path);");
+        emit_raw(&g, sb_to_str(&ad));
+    }
     emit_raw(&g, "        strata_pg_clear(_res);");
     emit_raw(&g, "        strata_pg_close(_pg);");
     emit_raw(&g, "        return 1;");
@@ -1311,16 +1397,37 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     // The SQL the Postgres branches use, built once from the same column list
     // the file format uses, so the two stores cannot describe different
     // schemas.
+    // The first column is the table's key when it is an integer -- the
+    // convention every database block here already follows. It is what an
+    // upsert conflicts on and what a delete matches. A table whose first
+    // column is not an integer keeps the whole-table replace, rather than the
+    // compiler guessing at a key.
+    str key = "";
+    if (n > 0) {
+        Node k0 = nv_get(&fs, 0);
+        if (str_eq(c_type(&g, k0.c1), "strata_int") == 1) { key = k0.s1; }
+    }
     StringBuilder cs = sb_new();
     StringBuilder cl = sb_new();
     StringBuilder ph = sb_new();
+    StringBuilder st = sb_new();
+    int nsets = 0;
     for (int i = 0; i < n; i = i + 1) {
         Node fd = nv_get(&fs, i);
         if (i > 0) { sb_append(&cs, ", "); sb_append(&cl, ", "); sb_append(&ph, ", "); }
         sb_append(&cs, "\\\""); sb_append(&cs, fd.s1); sb_append(&cs, "\\\" ");
         sb_append(&cs, col_sqltype(&g, fd));
+        if (str_len(key) > 0) { if (str_eq(fd.s1, key) == 1) {
+                sb_append(&cs, " PRIMARY KEY"); } }
         sb_append(&cl, "\\\""); sb_append(&cl, fd.s1); sb_append(&cl, "\\\"");
         sb_append(&ph, "$"); sb_append(&ph, str(i + 1));
+        if (str_eq(fd.s1, key) == 0) {
+            if (nsets > 0) { sb_append(&st, ", "); }
+            sb_append(&st, "\\\""); sb_append(&st, fd.s1);
+            sb_append(&st, "\\\" = EXCLUDED.\\\""); sb_append(&st, fd.s1);
+            sb_append(&st, "\\\"");
+            nsets = nsets + 1;
+        }
     }
     str cols_sql = sb_to_str(&cs);
     str col_list = sb_to_str(&cl);
@@ -1333,6 +1440,22 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&ins, "\\\" ("); sb_append(&ins, col_list); sb_append(&ins, ") VALUES (");
     sb_append(&ins, sb_to_str(&ph)); sb_append(&ins, ")");
     str insert_sql = sb_to_str(&ins);
+    str upsert_sql = insert_sql;
+    str delete_sql = "";
+    if (str_len(key) > 0) {
+        StringBuilder up = sb_new();
+        sb_append(&up, insert_sql);
+        sb_append(&up, " ON CONFLICT (\\\""); sb_append(&up, key);
+        sb_append(&up, "\\\") DO ");
+        if (nsets > 0) { sb_append(&up, "UPDATE SET "); sb_append(&up, sb_to_str(&st)); }
+        if (nsets == 0) { sb_append(&up, "NOTHING"); }
+        upsert_sql = sb_to_str(&up);
+        StringBuilder dl = sb_new();
+        sb_append(&dl, "DELETE FROM \\\""); sb_append(&dl, name);
+        sb_append(&dl, "\\\" WHERE \\\""); sb_append(&dl, key);
+        sb_append(&dl, "\\\" = $1");
+        delete_sql = sb_to_str(&dl);
+    }
 
     StringBuilder a = sb_new();
     sb_append(&a, "static strata_int "); sb_append(&a, name);
@@ -1340,7 +1463,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&a));
     emit_raw(&g, "    path = (strata_str)strata_env_path(path);");
     emit_raw(&g, "    if (!path || !*path) { return 0; }");
-    gen_pg_save(&g, name, fs, cols_sql, insert_sql);
+    gen_pg_save(&g, name, fs, cols_sql, upsert_sql, delete_sql, key);
     emit_raw(&g, "    FILE* f = fopen(path, \"w\"); if (!f) return 0;");
 
     StringBuilder hd = sb_new();
@@ -1417,7 +1540,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&sk2));
     emit_raw(&g, "        return 1;");
     emit_raw(&g, "    }");
-    gen_pg_load(&g, name, fs, select_sql);
+    gen_pg_load(&g, name, fs, select_sql, key);
     emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
     emit_raw(&g, "    char buf[4096];");
     emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
@@ -1542,6 +1665,18 @@ def gen_table_storage(Gen &g, str name) {
     StringBuilder d = sb_new();
     sb_append(&d, "static int64_t "); sb_append(&d, name); sb_append(&d, "__stamp = 0;");
     emit_raw(&g, sb_to_str(&d));
+    // What the Postgres store held when this process last read or wrote it,
+    // and scratch space for what it holds now.
+    emit_raw(&g, "#ifdef STRATA_POSTGRES");
+    StringBuilder e = sb_new();
+    sb_append(&e, "static StrataPgSnap "); sb_append(&e, name);
+    sb_append(&e, "__pg_was = {0};");
+    emit_raw(&g, sb_to_str(&e));
+    StringBuilder f2 = sb_new();
+    sb_append(&f2, "static StrataPgSnap "); sb_append(&f2, name);
+    sb_append(&f2, "__pg_now = {0};");
+    emit_raw(&g, sb_to_str(&f2));
+    emit_raw(&g, "#endif");
 }
 
 def gen_struct(Gen &g, str name, int fields_vec) {

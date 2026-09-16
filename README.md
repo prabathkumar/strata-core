@@ -424,12 +424,28 @@ it has no libpq dependency at all — `journey_postgres.py` checks the binary's
 linked libraries to make sure, because "it should not be linked" is a claim
 and `ldd` is evidence.
 
-The honest limits, before anyone finds them the hard way: a save replaces the
-whole table inside one transaction and a load reads all of it — which is what
-`save` and `load` have always meant in Strata, and is right for thousands of
-rows, not millions. Each one opens its own connection; there is no pool. And
-the cached-load optimisation does not apply, because a file has a modification
-time to compare and a query does not.
+A save writes only the rows that changed. Each table remembers, per row, its
+key and a fingerprint of its values as they were at the last read or write; a
+row that still matches is not sent, a key that has gone from memory is deleted,
+and everything else is an upsert. Changing one order in a table of two hundred
+is one `UPDATE`, and `journey_postgres.py` proves it with a trigger inside the
+database counting every write the table actually receives.
+
+The one sharp edge, stated rather than left to be found: a save that follows a
+load writes the difference; a save with **no** prior load from that URL
+replaces the table, because a process that has not read the table cannot know
+what else is in it. The first column is the key when it is an integer — the
+convention every `database` block here already follows. A table whose first
+column is not an integer keeps the whole-table replace.
+
+The connection is opened once per process and reused, and the process id is
+part of its identity: a service that forks per request would otherwise have
+parent and child talking down the same socket.
+
+The remaining limits: a load still reads the whole table, there is no
+connection pool beyond the one handle, and the cached-load optimisation does
+not apply, because a file has a modification time to compare and a query does
+not.
 
 ### Commands
 

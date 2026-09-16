@@ -534,13 +534,44 @@ static const char* strata_env_path(const char* path) {
  * the honest limit of this backend — see the note in README. */
 #ifdef STRATA_POSTGRES
 #include <libpq-fe.h>
+#include <unistd.h>   /* getpid, for the per-process connection */
 
 static int strata_pg_is_url(const char* path) {
     return path && (strncmp(path, "postgres://", 11) == 0
                  || strncmp(path, "postgresql://", 13) == 0);
 }
 
+/* One connection per URL, per process.
+ *
+ * Every save and every load used to open its own: a TCP connect, a password
+ * exchange and a teardown around a query that takes under a millisecond.
+ *
+ * The pid is part of the identity, and that is not a detail. A service that
+ * forks per request would otherwise have parent and child writing down the
+ * same socket, which corrupts the protocol for both. A child finds the pid
+ * does not match, drops the inherited handle without speaking on it, and
+ * opens its own. */
+static PGconn* strata_pg_cached = NULL;
+static char*   strata_pg_cached_url = NULL;
+static long    strata_pg_cached_pid = 0;
+
 static void* strata_pg_open(const char* url) {
+    long pid = (long)getpid();
+    if (strata_pg_cached && strata_pg_cached_pid == pid
+        && strata_pg_cached_url && strcmp(strata_pg_cached_url, url) == 0) {
+        if (PQstatus(strata_pg_cached) == CONNECTION_OK) return (void*)strata_pg_cached;
+        PQfinish(strata_pg_cached);
+        strata_pg_cached = NULL;
+    } else if (strata_pg_cached) {
+        /* Inherited across a fork, or pointed at a different database. The
+         * inherited one is abandoned rather than closed: closing it would
+         * send a termination message down a socket the parent is still
+         * using. */
+        if (strata_pg_cached_pid == pid) PQfinish(strata_pg_cached);
+        strata_pg_cached = NULL;
+    }
+    free(strata_pg_cached_url);
+    strata_pg_cached_url = NULL;
     PGconn* c = PQconnectdb(url);
     if (PQstatus(c) != CONNECTION_OK) {
         fprintf(stderr, "[strata] postgres: %s", PQerrorMessage(c));
@@ -552,10 +583,21 @@ static void* strata_pg_open(const char* url) {
      * normal operation writes a notice to the log teaches people to ignore
      * the log. */
     PQclear(PQexec(c, "SET client_min_messages TO WARNING"));
+    strata_pg_cached = c;
+    strata_pg_cached_url = strata_dup(url);
+    strata_pg_cached_pid = pid;
     return (void*)c;
 }
 
-static void strata_pg_close(void* c) { if (c) PQfinish((PGconn*)c); }
+/* Kept open for the next save or load. A connection is closed when the
+ * process ends, or when it is found broken on the next use. */
+static void strata_pg_close(void* c) { (void)c; }
+
+/* A transaction left open by a failed save would hold its locks until the
+ * process exited. Called on every path out of a save that is not a commit. */
+static void strata_pg_abort(void* c) {
+    if (c) PQclear(PQexec((PGconn*)c, "ROLLBACK"));
+}
 
 static int strata_pg_exec(void* c, const char* sql) {
     PGresult* r = PQexec((PGconn*)c, sql);
@@ -569,14 +611,33 @@ static int strata_pg_exec(void* c, const char* sql) {
 /* Create the table if it is not there, then empty it, inside a transaction
  * that the caller commits. A reader sees either the old contents or the new
  * ones and never the empty middle. */
-static int strata_pg_begin(void* c, const char* table, const char* columns) {
-    char sql[4096];
+static int strata_pg_begin(void* c, const char* table, const char* columns,
+                           const char* key, int wipe) {
+    char sql[8192];
     if (!strata_pg_exec(c, "BEGIN")) return 0;
     snprintf(sql, sizeof(sql),
              "CREATE TABLE IF NOT EXISTS \"%s\" (%s)", table, columns);
     if (!strata_pg_exec(c, sql)) return 0;
-    snprintf(sql, sizeof(sql), "DELETE FROM \"%s\"", table);
-    return strata_pg_exec(c, sql);
+    /* An upsert needs something to conflict on. A table created by an earlier
+     * version of this backend has no primary key, so it is added here rather
+     * than leaving a database that silently falls back to rewriting every
+     * row. Doing it in SQL keeps it one round trip and idempotent. */
+    if (key && *key) {
+        snprintf(sql, sizeof(sql),
+                 "DO $strata$ BEGIN "
+                 "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                 "WHERE conrelid = '\"%s\"'::regclass AND contype = 'p') THEN "
+                 "ALTER TABLE \"%s\" ADD PRIMARY KEY (\"%s\"); "
+                 "END IF; END $strata$;", table, table, key);
+        if (!strata_pg_exec(c, sql)) return 0;
+    }
+    /* Only when this process has not read the table and so cannot know what
+     * else is in it. */
+    if (wipe) {
+        snprintf(sql, sizeof(sql), "DELETE FROM \"%s\"", table);
+        return strata_pg_exec(c, sql);
+    }
+    return 1;
 }
 
 static int strata_pg_insert(void* c, const char* sql, int n, const char** vals) {
@@ -607,6 +668,109 @@ static const char* strata_pg_value(void* r, strata_int row, int col) {
 }
 
 static void strata_pg_clear(void* r) { if (r) PQclear((PGresult*)r); }
+
+static const char* strata_pg_int(char* buf, long long v);
+static const char* strata_pg_float(char* buf, double v);
+
+/* ── Writing only what changed ────────────────────────────────────────────────
+ *
+ * A save used to empty the table and write every row back. Change one order
+ * in fifty thousand and fifty thousand rows were written. That is what `save`
+ * has always meant -- make the store match memory -- and the meaning is kept;
+ * what changes is that the store is told only the difference.
+ *
+ * Each table remembers, per row, its key and a fingerprint of its values as
+ * they were at the last load or save against this URL. A row whose
+ * fingerprint still matches is not sent. A key that has gone from memory is
+ * deleted. Everything else is an upsert.
+ *
+ * The rule, and its one sharp edge: a save that follows a load writes only
+ * the difference. A save with NO prior load from that URL replaces the table
+ * wholesale, because a process that has not read the table cannot know what
+ * else is in it, and quietly leaving other people's rows behind would be a
+ * different meaning of `save` depending on history. */
+typedef struct {
+    int64_t*  keys;
+    uint64_t* hashes;
+    strata_int n;
+    strata_int cap;
+    char*     url;      /* which URL this snapshot describes; NULL = none */
+} StrataPgSnap;
+
+static uint64_t strata_pg_hash(int n, const char** vals) {
+    /* FNV-1a over the values exactly as they will be sent, so the fingerprint
+     * compares what the database will store rather than what is in memory. */
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < n; i++) {
+        const char* v = vals[i] ? vals[i] : "";
+        for (const char* p = v; *p; p++) {
+            h ^= (unsigned char)*p;
+            h *= 1099511628211ULL;
+        }
+        h ^= 0xff;               /* a separator, so ("ab","c") != ("a","bc") */
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void strata_pg_snap_clear(StrataPgSnap* s) { s->n = 0; }
+
+static int strata_pg_snap_put(StrataPgSnap* s, int64_t key, uint64_t h) {
+    if (s->n >= s->cap) {
+        strata_int cap = s->cap ? s->cap * 2 : 64;
+        int64_t*  k = (int64_t*)realloc(s->keys, (size_t)cap * sizeof(int64_t));
+        uint64_t* v = (uint64_t*)realloc(s->hashes, (size_t)cap * sizeof(uint64_t));
+        if (!k || !v) { free(k); free(v); s->keys = NULL; s->hashes = NULL;
+                        s->cap = 0; s->n = 0; return 0; }
+        s->keys = k; s->hashes = v; s->cap = cap;
+    }
+    s->keys[s->n] = key;
+    s->hashes[s->n] = h;
+    s->n++;
+    return 1;
+}
+
+/* Linear, and deliberately so. The alternative is an index rebuilt on every
+ * save, and at the table sizes this store is honest about the scan is far
+ * cheaper than the one database round trip it saves. */
+static int strata_pg_snap_unchanged(StrataPgSnap* s, int64_t key, uint64_t h) {
+    for (strata_int i = 0; i < s->n; i++) {
+        if (s->keys[i] == key) return s->hashes[i] == h;
+    }
+    return 0;
+}
+
+static int strata_pg_snap_has(StrataPgSnap* s, int64_t key) {
+    for (strata_int i = 0; i < s->n; i++) {
+        if (s->keys[i] == key) return 1;
+    }
+    return 0;
+}
+
+static void strata_pg_snap_adopt(StrataPgSnap* dst, StrataPgSnap* src, const char* url) {
+    free(dst->keys); free(dst->hashes); free(dst->url);
+    dst->keys = src->keys; dst->hashes = src->hashes;
+    dst->n = src->n; dst->cap = src->cap;
+    dst->url = url ? strata_dup(url) : NULL;
+    src->keys = NULL; src->hashes = NULL; src->n = 0; src->cap = 0;
+}
+
+static int strata_pg_snap_describes(StrataPgSnap* s, const char* url) {
+    return s->url && url && strcmp(s->url, url) == 0;
+}
+
+/* Rows that were in the table when it was read and are not in memory now. */
+static int strata_pg_delete_gone(void* c, const char* sql,
+                                 StrataPgSnap* was, StrataPgSnap* now) {
+    char buf[48];
+    const char* v[1];
+    for (strata_int i = 0; i < was->n; i++) {
+        if (strata_pg_snap_has(now, was->keys[i])) continue;
+        v[0] = strata_pg_int(buf, (long long)was->keys[i]);
+        if (!strata_pg_insert(c, sql, 1, v)) return 0;
+    }
+    return 1;
+}
 
 static const char* strata_pg_int(char* buf, long long v) {
     snprintf(buf, 48, "%lld", v);

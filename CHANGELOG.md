@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### A save writes only what changed
+
+A save emptied the Postgres table and wrote every row back. Change one order
+in fifty thousand and fifty thousand rows were written, which is not something
+anyone would deploy.
+
+`save` still means what it always meant — make the store match memory. What
+changed is that the store is now told only the difference. Each table
+remembers, per row, its key and a fingerprint of its values as they stood at
+the last read or write. A row whose fingerprint still matches is not sent, a
+key that has gone from memory is deleted, and everything else is an upsert,
+all inside one transaction.
+
+Measured by a trigger inside the database counting every write the table
+actually receives — seeding 200 rows, re-saving unchanged, changing one row,
+removing one row:
+
+| | before | now |
+|---|---|---|
+| inserts | 800 | 200 |
+| updates | 0 | 1 |
+| deletes | 600 | 1 |
+
+The sharp edge, stated rather than left to be found: a save that follows a
+load writes the difference; a save with **no** prior load from that URL
+replaces the table, because a process that has not read the table cannot know
+what else is in it, and quietly leaving other people's rows behind would make
+`save` mean different things depending on history. Both halves are checked.
+
+The first column is the key when it is an integer — the convention every
+`database` block in this repository already follows. A table whose first
+column is not an integer keeps the whole-table replace rather than having the
+compiler guess at a key. A table created by the previous version has no
+primary key, so one is added when the table is next written; doing it in SQL
+keeps it idempotent and one round trip.
+
+### One connection per process, not one per query
+
+Every save and every load opened its own connection: a TCP connect, a password
+exchange and a teardown around a query taking under a millisecond.
+
+The connection is now opened once and kept. The process id is part of its
+identity, and that is not a detail — a service that forks per request would
+otherwise have parent and child writing down the same socket, which corrupts
+the protocol for both. A child finds the pid does not match, abandons the
+inherited handle without speaking on it, and opens its own.
+
+Seventeen saves and loads now open one connection, counted by PostgreSQL's own
+session tally rather than a stopwatch.
+
+A transaction left open by a failed save used to hold its locks until the
+process exited; every path out of a save that is not a commit now rolls back.
+
 ### A table can live in PostgreSQL
 
 Strata stored data in tab-separated files. That is honest for one small

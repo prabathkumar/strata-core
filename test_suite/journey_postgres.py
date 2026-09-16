@@ -11,6 +11,9 @@ answer could not stay "files". This journey checks the answer is real:
   - `$NAME` in a path is an environment variable, so a database URL and its
     password are supplied at deploy time rather than compiled into the binary
   - a customer called O'Brien is a customer, not a syntax error
+  - a save writes only the rows that changed, proved by a trigger inside the
+    database counting every insert, update and delete it receives
+  - a connection is reused rather than reopened for every save and load
   - a program that does NOT import the module gains no libpq dependency
 
 Needs a PostgreSQL to talk to. Set STRATA_TEST_DB to a connection URL; without
@@ -188,19 +191,181 @@ int main() {
         ok("and no file was created", not os.path.exists(
             os.path.join(tmp, url)))
 
-        print("\n── A save replaces the table, as it always has ─────────────────")
-        # Whole-table semantics, same as the file store. Saving one row leaves
-        # one row, not three.
-        one = pg_prog.replace(
-            '    Order <- [id = 2, customer = "O\'Brien & Sons", amount =   99.99, status = "CLOSED"];\n', "")
-        out, r = build(tmp, one, "pgone")
-        ok("it builds", r.returncode == 0, r.stderr[-300:])
-        run = subprocess.run([out], cwd=tmp, capture_output=True, text=True, env=e)
-        lines = dict(
-            (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
-            for ln in run.stdout.strip().splitlines() if ": " in ln)
-        ok("the previous contents are gone, not appended to",
-           lines.get("loaded") == "1", str(lines))
+
+        print("\n── A save writes only what changed ─────────────────────────────")
+        # Proved from inside the database. A trigger records every insert,
+        # update and delete the table actually receives, so this measures what
+        # Postgres was asked to do rather than what the generated C looks like
+        # it does.
+        import subprocess as sp
+
+        def psql(sql):
+            return sp.run(["psql", url, "-tAq", "-c", sql],
+                          capture_output=True, text=True, timeout=120)
+
+        probe = psql("select 1")
+        if probe.returncode != 0:
+            skip("the write-count checks", "psql is not available here")
+        else:
+            psql('DROP TABLE IF EXISTS "Order" CASCADE')
+            psql("DROP TABLE IF EXISTS strata_write_audit")
+            psql("CREATE TABLE strata_write_audit (op text, k bigint)")
+            psql('CREATE TABLE "Order" (id bigint primary key, customer text,'
+                 ' amount double precision, status text)')
+            psql("CREATE OR REPLACE FUNCTION strata_audit_fn() RETURNS trigger AS $f$ "
+                 "BEGIN IF TG_OP = 'DELETE' THEN "
+                 "INSERT INTO strata_write_audit VALUES (TG_OP, OLD.id); RETURN OLD; "
+                 "ELSE INSERT INTO strata_write_audit VALUES (TG_OP, NEW.id); "
+                 "RETURN NEW; END IF; END; $f$ LANGUAGE plpgsql")
+            psql('CREATE TRIGGER strata_audit AFTER INSERT OR UPDATE OR DELETE'
+                 ' ON "Order" FOR EACH ROW EXECUTE FUNCTION strata_audit_fn()')
+
+            churn = SCHEMA + '''
+import io       from std;
+import str      from std;
+import mem      from std;
+import postgres from std;
+
+int main() {
+    for (int i = 1; i <= 200; i = i + 1) {
+        Order <- [id = i, customer = "c", amount = 10.0, status = "OPEN"];
+    }
+    save Order to "$STRATA_TEST_DB";
+    print("seeded");
+
+    load Order from "$STRATA_TEST_DB";
+    save Order to "$STRATA_TEST_DB";
+    print("resaved");
+
+    list[Order] one = Order <- [id == 7];
+    one[0].status = "CLOSED";
+    save Order to "$STRATA_TEST_DB";
+    print("changed");
+
+    delete Order <- [id == 9];
+    save Order to "$STRATA_TEST_DB";
+    print("removed");
+
+    load Order from "$STRATA_TEST_DB";
+    list[Order] all = Order <- [id > 0];
+    print(str_concat("rows: ", str(count(all))));
+    list[Order] seven = Order <- [id == 7];
+    print(str_concat("seven: ", seven[0].status));
+    return 0;
+}
+'''
+            out, r = build(tmp, churn, "churn")
+            ok("the churn program builds", r.returncode == 0, r.stderr[-300:])
+            run = subprocess.run([out], cwd=tmp, capture_output=True,
+                                 text=True, env=e)
+            ok("it runs", run.returncode == 0, (run.stdout + run.stderr)[-300:])
+            lines = dict(
+                (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
+                for ln in run.stdout.strip().splitlines() if ": " in ln)
+
+            counts = {}
+            got = psql("select op, count(*) from strata_write_audit group by op")
+            for ln in got.stdout.strip().splitlines():
+                if "|" in ln:
+                    o, c = ln.split("|")
+                    counts[o.strip()] = int(c)
+
+            ok("seeding 200 rows wrote 200 rows",
+               counts.get("INSERT", 0) == 200, str(counts))
+            # The whole point. Before this, four saves of a 200-row table were
+            # 800 inserts and 600 deletes whatever had changed.
+            ok("changing one row of 200 wrote one row",
+               counts.get("UPDATE", 0) == 1, str(counts))
+            ok("removing one row deleted one row",
+               counts.get("DELETE", 0) == 1, str(counts))
+            ok("and a save with nothing changed wrote nothing",
+               counts.get("INSERT", 0) + counts.get("UPDATE", 0)
+               + counts.get("DELETE", 0) == 202, str(counts))
+            ok("the data is right afterwards", lines.get("rows") == "199",
+               str(lines))
+            ok("and the change is the one that was made",
+               lines.get("seven") == "CLOSED", str(lines))
+
+            # A save that has NOT read the table cannot know what else is in
+            # it, so it replaces the table. Stated in the module and checked
+            # here, because a rule nobody tests is a rule that drifts.
+            psql("TRUNCATE strata_write_audit")
+            blind = SCHEMA + '''
+import io       from std;
+import str      from std;
+import mem      from std;
+import postgres from std;
+
+int main() {
+    Order <- [id = 500, customer = "only", amount = 1.0, status = "OPEN"];
+    save Order to "$STRATA_TEST_DB";
+    load Order from "$STRATA_TEST_DB";
+    print(str_concat("rows: ", str(count(Order <- [id > 0]))));
+    return 0;
+}
+'''
+            out, r = build(tmp, blind, "blind")
+            ok("the no-load program builds", r.returncode == 0, r.stderr[-300:])
+            run = subprocess.run([out], cwd=tmp, capture_output=True,
+                                 text=True, env=e)
+            lines = dict(
+                (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
+                for ln in run.stdout.strip().splitlines() if ": " in ln)
+            ok("a save with no prior load replaces the table",
+               lines.get("rows") == "1", str(lines) + run.stderr[-200:])
+
+            print("\n── The connection is reused, not reopened ──────────────────────")
+            # Postgres counts the sessions ever established against a
+            # database, so this is the server's own tally rather than a
+            # stopwatch. Each psql call below is itself one session, which is
+            # why the arithmetic allows for them.
+            def sessions():
+                got = psql("select sessions from pg_stat_database "
+                           "where datname = current_database()")
+                try:
+                    return int(got.stdout.strip())
+                except ValueError:
+                    return -1
+
+            before = sessions()
+            if before < 0:
+                skip("the connection-reuse check",
+                     "this PostgreSQL does not report session counts")
+            else:
+                many = SCHEMA + '''
+import io       from std;
+import str      from std;
+import mem      from std;
+import postgres from std;
+
+int main() {
+    Order <- [id = 1, customer = "a", amount = 1.0, status = "OPEN"];
+    save Order to "$STRATA_TEST_DB";
+    for (int i = 0; i < 8; i = i + 1) {
+        load Order from "$STRATA_TEST_DB";
+        save Order to "$STRATA_TEST_DB";
+    }
+    print("did: 17");
+    return 0;
+}
+'''
+                out, r = build(tmp, many, "many")
+                ok("the repeated-io program builds", r.returncode == 0,
+                   r.stderr[-300:])
+                run = subprocess.run([out], cwd=tmp, capture_output=True,
+                                     text=True, env=e)
+                ok("it runs", run.returncode == 0,
+                   (run.stdout + run.stderr)[-200:])
+                after = sessions()
+                # before-call, the program, after-call. One session for the
+                # program means seventeen saves and loads shared it.
+                opened = after - before - 1
+                ok("seventeen saves and loads opened one connection",
+                   opened == 1, f"{opened} connections opened")
+
+            psql('DROP TABLE IF EXISTS "Order" CASCADE')
+            psql("DROP TABLE IF EXISTS strata_write_audit")
+            psql("DROP FUNCTION IF EXISTS strata_audit_fn()")
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

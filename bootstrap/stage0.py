@@ -342,6 +342,14 @@ int main(int argc, char** argv) {
         # the time. `load` uses them to skip work it has already done.
         self.emit_raw(f"static char* {name}__from = NULL;")
         self.emit_raw(f"static int64_t {name}__stamp = 0;")
+        # What the Postgres store held when this process last read or wrote
+        # it, and scratch space for what it holds now. Declared for every
+        # table and used only under STRATA_POSTGRES, because a type that is
+        # never mentioned costs nothing.
+        self.emit_raw("#ifdef STRATA_POSTGRES")
+        self.emit_raw(f"static StrataPgSnap {name}__pg_was = {{0}};")
+        self.emit_raw(f"static StrataPgSnap {name}__pg_now = {{0}};")
+        self.emit_raw("#endif")
 
     def _gen_table_io(self, name, fields):
         """Serialisers generated from the schema.
@@ -373,17 +381,38 @@ int main(int argc, char** argv) {
                     else "DOUBLE PRECISION" if ct == "strata_float" else "BIGINT")
 
         n = len(fields)
-        cols_sql = ", ".join([f'\\"{fd.name}\\" {sqltype(fd)}' for fd in fields])
+        # The first column is the table's key when it is an integer. That is
+        # the convention every `database` block in this repository already
+        # follows (`int id;` first), and it is what an upsert conflicts on and
+        # what a delete matches. A table whose first column is not an integer
+        # keeps the whole-table replace it had before, rather than the
+        # compiler guessing at a key.
+        key = (fields[0].name
+               if fields and self._c_type(fields[0].field_type) == "strata_int"
+               else None)
+        cols_sql = ", ".join(
+            [f'\\"{fd.name}\\" {sqltype(fd)}'
+             + (" PRIMARY KEY" if key and fd.name == key else "")
+             for fd in fields])
         col_list = ", ".join([f'\\"{fd.name}\\"' for fd in fields])
         placeholders = ", ".join([f"${i + 1}" for i in range(n)])
         select_sql = f'SELECT {col_list} FROM \\"{name}\\"'
         insert_sql = f'INSERT INTO \\"{name}\\" ({col_list}) VALUES ({placeholders})'
+        if key:
+            sets = ", ".join([f'\\"{fd.name}\\" = EXCLUDED.\\"{fd.name}\\"'
+                              for fd in fields if fd.name != key])
+            upsert_sql = (insert_sql + f' ON CONFLICT (\\"{key}\\") DO UPDATE SET {sets}'
+                          if sets else
+                          insert_sql + f' ON CONFLICT (\\"{key}\\") DO NOTHING')
+        else:
+            upsert_sql = insert_sql
+        delete_sql = f'DELETE FROM \\"{name}\\" WHERE \\"{key}\\" = $1' if key else ''
 
         header = "\\t".join([f"{fd.name}:{tchar(fd)}" for fd in fields])
         self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
         self.emit_raw("    path = (strata_str)strata_env_path(path);")
         self.emit_raw('    if (!path || !*path) { return 0; }')
-        self._gen_pg_save(name, fields, cols_sql, insert_sql, n)
+        self._gen_pg_save(name, fields, cols_sql, upsert_sql, delete_sql, key, n)
         self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
         self.emit_raw(f'    fprintf(f, "#strata\\t{name}\\t{header}\\n");')
         self.emit_raw(f"    for (strata_int i = 0; i < {name}__count; i++) {{")
@@ -422,7 +451,7 @@ int main(int argc, char** argv) {
         self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
-        self._gen_pg_load(name, fields, select_sql)
+        self._gen_pg_load(name, fields, select_sql, key)
         self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
         self.emit_raw("    char buf[4096];")
         self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
@@ -485,20 +514,34 @@ int main(int argc, char** argv) {
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
-    def _gen_pg_save(self, name, fields, cols_sql, insert_sql, n):
-        """The database branch of a save, guarded so it costs nothing unless
-        the program links libpq.
+    def _gen_pg_save(self, name, fields, cols_sql, upsert_sql, delete_sql,
+                     key, n):
+        """The database branch of a save.
 
-        Every value is sent as text and let Postgres cast it. Parameters
-        rather than a built-up SQL string: a customer named O'Brien is a
-        syntax error in one and a customer in the other."""
+        Only rows the store does not already have in this exact shape are
+        sent, and keys that have gone from memory are deleted. A save that
+        follows a load writes the difference; a save with no prior load
+        replaces the table, because a process that has not read it cannot know
+        what else is there."""
         self.emit_raw("#ifdef STRATA_POSTGRES")
         self.emit_raw("    if (strata_pg_is_url(path)) {")
         self.emit_raw("        void* _pg = strata_pg_open(path);")
         self.emit_raw("        if (!_pg) { return 0; }")
-        self.emit_raw(f'        if (!strata_pg_begin(_pg, "{name}", "{cols_sql}")) {{')
-        self.emit_raw("            strata_pg_close(_pg); return 0;")
+        if key:
+            self.emit_raw(f"        int _known = strata_pg_snap_describes("
+                          f"&{name}__pg_was, path);")
+        else:
+            # No integer key in the first column, so there is nothing to
+            # conflict on and nothing to match a row by. The table is
+            # replaced, as it was before. Stated in the generated C so anyone
+            # reading it knows why this one is different.
+            self.emit_raw("        int _known = 0;   /* no integer key column */")
+        self.emit_raw(f'        if (!strata_pg_begin(_pg, "{name}", "{cols_sql}", '
+                      f'"{key or ""}", !_known)) {{')
+        self.emit_raw("            strata_pg_abort(_pg); return 0;")
         self.emit_raw("        }")
+        if key:
+            self.emit_raw(f"        strata_pg_snap_clear(&{name}__pg_now);")
         self.emit_raw(f"        for (strata_int i = 0; i < {name}__count; i++) {{")
         self.emit_raw(f"            {name}* r = {name}__rows[i];")
         self.emit_raw(f"            char _b[{max(n, 1)}][48];")
@@ -512,17 +555,33 @@ int main(int argc, char** argv) {
             else:
                 self.emit_raw(f"            _v[{i}] = strata_pg_int(_b[{i}], "
                               f"(long long)r->{fd.name});")
-        self.emit_raw(f'            if (!strata_pg_insert(_pg, "{insert_sql}", {n}, _v)) {{')
-        self.emit_raw("                strata_pg_close(_pg); return 0;")
+        if key:
+            self.emit_raw(f"            uint64_t _h = strata_pg_hash({n}, _v);")
+            self.emit_raw(f"            int64_t _k = (int64_t)r->{key};")
+            self.emit_raw(f"            strata_pg_snap_put(&{name}__pg_now, _k, _h);")
+            self.emit_raw(f"            if (_known && strata_pg_snap_unchanged("
+                          f"&{name}__pg_was, _k, _h)) {{ continue; }}")
+        self.emit_raw(f'            if (!strata_pg_insert(_pg, "{upsert_sql}", {n}, _v)) {{')
+        self.emit_raw("                strata_pg_abort(_pg); return 0;")
         self.emit_raw("            }")
         self.emit_raw("        }")
+        if key:
+            self.emit_raw("        if (_known && !strata_pg_delete_gone(_pg, "
+                          f'"{delete_sql}", &{name}__pg_was, &{name}__pg_now)) {{')
+            self.emit_raw("            strata_pg_abort(_pg); return 0;")
+            self.emit_raw("        }")
         self.emit_raw('        strata_int _ok = strata_pg_exec(_pg, "COMMIT");')
+        if key:
+            self.emit_raw("        if (_ok) {")
+            self.emit_raw(f"            strata_pg_snap_adopt(&{name}__pg_was, "
+                          f"&{name}__pg_now, path);")
+            self.emit_raw("        }")
         self.emit_raw("        strata_pg_close(_pg);")
         self.emit_raw("        return _ok;")
         self.emit_raw("    }")
         self.emit_raw("#endif")
 
-    def _gen_pg_load(self, name, fields, select_sql):
+    def _gen_pg_load(self, name, fields, select_sql, key):
         """The database branch of a load.
 
         No stamp check above it applies: strata_file_stamp() returns 0 for a
@@ -535,6 +594,8 @@ int main(int argc, char** argv) {
         self.emit_raw(f'        void* _res = strata_pg_select(_pg, "{select_sql}");')
         self.emit_raw("        if (!_res) { strata_pg_close(_pg); return 0; }")
         self.emit_raw(f"        {name}__count = 0;")
+        if key:
+            self.emit_raw(f"        strata_pg_snap_clear(&{name}__pg_now);")
         self.emit_raw("        strata_int _rows = strata_pg_rows(_res);")
         self.emit_raw("        for (strata_int _i = 0; _i < _rows; _i++) {")
         self.emit_raw(f"            {name}* r = ({name}*)calloc(1, sizeof({name}));")
@@ -549,7 +610,18 @@ int main(int argc, char** argv) {
                 self.emit_raw(f"            r->{fd.name} = (strata_int)atoll({src});")
         self.emit_raw(f"            if ({name}__count < STRATA_TABLE_CAP) "
                       f"{name}__rows[{name}__count++] = r;")
+        # What the table held when it was read, so the next save can tell
+        # which rows actually changed.
+        if key:
+            self.emit_raw(f"            const char* _v[{max(len(fields), 1)}];")
+            for i in range(len(fields)):
+                self.emit_raw(f"            _v[{i}] = strata_pg_value(_res, _i, {i});")
+            self.emit_raw(f"            strata_pg_snap_put(&{name}__pg_now, "
+                          f"(int64_t)r->{key}, strata_pg_hash({len(fields)}, _v));")
         self.emit_raw("        }")
+        if key:
+            self.emit_raw(f"        strata_pg_snap_adopt(&{name}__pg_was, "
+                          f"&{name}__pg_now, path);")
         self.emit_raw("        strata_pg_clear(_res);")
         self.emit_raw("        strata_pg_close(_pg);")
         self.emit_raw("        return 1;")
