@@ -135,6 +135,14 @@ jobs:
     - name: Journey — Operate It
       run: python3 test_suite/journey_operate.py
 
+    # Could somebody else use this? Installs the toolchain into a throwaway
+    # prefix, builds a project from a directory that is neither the repository
+    # nor the install, then deletes the source tree and builds again. Also
+    # checks the editor extension's diagnostic parser against output the
+    # compiler produces during the run rather than a pasted sample.
+    - name: Journey — Somebody Else Installs It
+      run: python3 test_suite/journey_install.py
+
     # What a developer runs before deciding whether to keep going: every
     # command the generated README offers, against a project `strata new` just
     # made, plus `strata check` over this repository's own sources.

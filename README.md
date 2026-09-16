@@ -363,6 +363,46 @@ Defined in `ERROR_TAXONOMY.json`, which is the contract repair agents consume.
 
 ## 3. Toolchain
 
+### Installing it
+
+```
+git clone https://github.com/prabathkumar/strata-core
+cd strata-core
+tools/install.sh
+```
+
+That copies a self-contained toolchain into `~/.strata` and puts a `strata`
+command in `~/.local/bin`. `--prefix` and `--bindir` move both; `--uninstall`
+removes them. The installer checks for a C compiler before it copies anything —
+Strata compiles to C, so a machine without one cannot build — and finishes by
+creating and building a throwaway project outside the source tree. If that
+fails it says so and exits non-zero, rather than printing "installed" and
+leaving the first developer to find out.
+
+The install does not point back at the checkout. Delete the clone afterwards
+and the toolchain keeps working; `test_suite/journey_install.py` deletes it on
+purpose and builds again to prove it.
+
+### Editing it
+
+`editor/vscode-strata` is a VS Code extension: syntax highlighting for `.sta`,
+and the compiler's own diagnostics underlined where they happened, as you
+type. It is not a language server. `strata check` is fast and is the same
+check CI runs, so the extension runs the real compiler rather than
+reimplementing the rules — a second implementation would be the first thing to
+drift out of step with the first. If the editor and the build disagree, the
+extension is wrong.
+
+Inside a query, a bare name is a column rather than a variable, and the
+grammar colours it differently. That is the difference between reading
+`[token == token]` as a comparison and seeing it for the mistake it is.
+
+```
+cp -R editor/vscode-strata ~/.vscode/extensions/strata
+```
+
+### Commands
+
 ```
 strata build <file.sta>          compile to a native binary
 strata build <file.sta> --json   compile, emitting diagnostics as JSON

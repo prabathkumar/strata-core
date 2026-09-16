@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### Somebody else can install it
+
+`tools/install.sh` copies a self-contained toolchain into `~/.strata` and puts
+a `strata` on `~/.local/bin`. Until now, using Strata meant cloning the
+repository and running `./bin/strata` from inside it — fine for whoever wrote
+it, and not a thing you can ask a team to do: no command on their machine, no
+version to pin in a Dockerfile, no way to have two versions on one box.
+
+The install does not point back at the checkout. `journey_install.py` deletes
+the source tree it installed from and builds a project again, because an
+install that quietly depends on the clone is an install that breaks the first
+time somebody tidies up.
+
+The installer checks for a C compiler before copying anything, and finishes by
+creating and building a throwaway project outside the source tree. If that
+fails it exits non-zero instead of printing "installed".
+
+Three things that check found, in the order it found them:
+
+  - `strata new` had an unquoted heredoc delimiter, so bash ran the backticked
+    `` `src/schema.sta` `` in the README template as a command. Every project
+    ever created printed an error and got a README with its backticks eaten.
+  - The first installer shipped `fmt.sta` but not the compiler's other Strata
+    sources, so `strata fmt` on an installed toolchain could not build its own
+    formatter.
+  - `strata fmt` cached that formatter under the install root, which a user
+    who did not run the installer cannot write to. It falls back to the user's
+    cache directory now.
+
+### The editor shows what the compiler knows
+
+`editor/vscode-strata`: syntax highlighting for `.sta`, and the compiler's
+diagnostics underlined where they happened, as you type.
+
+It is not a language server, on purpose. `strata check` is fast and is the
+same check CI runs, so the extension runs the real compiler rather than
+reimplementing the rules in JavaScript — a second implementation would be the
+first thing to drift out of step with the first. If the editor and the build
+disagree, the extension is wrong.
+
+Inside a query a bare name is a column, not a variable, and the grammar
+colours it differently. That is the difference between reading
+`[token == token]` as a comparison and seeing it for the bug it is. E007 is
+painted as information rather than an error, because an editor that paints
+advisories red teaches people to ignore red.
+
+The parser that turns compiler output into diagnostics is a separate file with
+no dependency on the editor API, so it is tested by running node — against
+output the compiler produces during the test run, not a pasted sample.
+
+### The formatting check runs before the commit, not after the email
+
+Commit `f424196` went up with an unformatted `std/metrics.sta` and turned CI
+red. Eighteen test suites had passed first, because none of them check that
+the files in the repository are formatted — `test_suite/fmt.py` checks that
+formatting preserves meaning, which is a different question.
+
+`tools/git_checkin.sh` now refuses a commit whose staged `.sta` files are not
+canonically formatted, and names them. A check that only exists in CI is a
+check that finds things after somebody has already been emailed about it.
+
 ### A service can be asked how it is doing
 
 Until now a Strata service printed one line per request and nothing else. If

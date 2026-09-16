@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Commit and push from an unattended session.
 #
+# Refuses a commit whose .sta files are not canonically formatted, which is the
+# check CI runs and the one that is cheapest to fail locally.
+#
 # Two things make plain `git commit` fail when this repo is reached through the
 # Cowork device bridge:
 #
@@ -56,6 +59,29 @@ if [ -z "$(git diff --cached --name-only)" ]; then
 fi
 
 echo "[checkin] staging $(git diff --cached --name-only | wc -l | tr -d ' ') file(s)"
+
+# The same formatting check CI runs, before the commit rather than after the
+# email. Commit f424196 went up with an unformatted std/metrics.sta and turned
+# CI red; eighteen test suites had passed, because none of them check that the
+# files in the repository are formatted -- test_suite/fmt.py checks that
+# formatting preserves meaning, which is a different question. A check that
+# only exists in CI is a check that finds things too late.
+#
+# --no-fmt skips it, for a commit that is deliberately not formatted.
+if [ "${SKIP_FMT:-0}" -ne 1 ]; then
+    fmt_files=$(git diff --cached --name-only --diff-filter=ACM \
+                | grep '\.sta$' | grep -v 'unimplemented' || true)
+    if [ -n "$fmt_files" ]; then
+        # shellcheck disable=SC2086
+        if ! ./bin/strata fmt --check $fmt_files >/tmp/fmt_check.out 2>&1; then
+            echo "[checkin] COMMIT REFUSED — these are not canonically formatted:" >&2
+            cat /tmp/fmt_check.out >&2
+            echo "[checkin] run: ./bin/strata fmt $(echo $fmt_files | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[checkin] formatting checked on $(echo "$fmt_files" | wc -l | tr -d ' ') .sta file(s)"
+    fi
+fi
 
 park_locks
 if ! git_q commit -F "$MSG_FILE" 2>&1 | grep -v "unable to unlink" | grep -v '^$'; then

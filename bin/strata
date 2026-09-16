@@ -237,8 +237,12 @@ verify "the value of everything is the sum of the prices" {
     assert sum(all.price) == 10.00;
 }
 STA
-    cat > "$name/README.md" << MD
-# $name
+    # Quoted delimiter. Unquoted, bash treated the backticked `src/schema.sta`
+    # below as a command to run: every `strata new` printed an error, and the
+    # README it wrote had the backticks evaluated away. The name is put in
+    # afterwards rather than by the shell.
+    cat > "$name/README.md" << 'MD'
+# PROJECT_NAME
 
     strata build      compile it
     strata run        compile and run it
@@ -251,6 +255,8 @@ STA
 aggregate and page that used it fails to build — that contract is the reason
 this language exists.
 MD
+    awk -v n="$name" '{gsub(/PROJECT_NAME/, n); print}' "$name/README.md" \
+        > "$name/README.md.tmp" && mv "$name/README.md.tmp" "$name/README.md"
     cat > "$name/src/main.sta" << STA
 import io     from std;
 import str    from std;
@@ -339,10 +345,20 @@ cmd_fmt() {
         echo "usage: strata fmt <file.sta>... [--check]" >&2; return 2
     fi
 
-    local bin="$ROOT/build/strata-fmt"
+    # The formatter is itself a Strata program, built on first use and cached.
+    # An installed toolchain may sit somewhere the user cannot write --
+    # /usr/local, or a read-only image layer -- so the cache goes beside the
+    # install when that is writable and in the user's cache directory when it
+    # is not. A formatter that only works for whoever ran the installer is not
+    # a formatter.
+    local cache="$ROOT/build"
+    if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+        cache="${XDG_CACHE_HOME:-$HOME/.cache}/strata"
+    fi
+    local bin="$cache/strata-fmt"
     if [ ! -x "$bin" ] || [ "$ROOT/compiler/fmt.sta" -nt "$bin" ] \
        || [ "$ROOT/compiler/fmt_cli.sta" -nt "$bin" ]; then
-        mkdir -p "$ROOT/build"
+        mkdir -p "$cache"
         python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/fmt_cli.sta" \
             -o "$bin" >/dev/null || { echo "could not build the formatter" >&2; return 1; }
     fi

@@ -1,0 +1,44 @@
+{
+  "name": "strata",
+  "displayName": "Strata",
+  "description": "Syntax highlighting and compiler diagnostics for the Strata language.",
+  "version": "0.4.0",
+  "publisher": "strata",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:strata"],
+  "contributes": {
+    "languages": [{
+      "id": "strata",
+      "aliases": ["Strata", "strata"],
+      "extensions": [".sta"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "strata",
+      "scopeName": "source.strata",
+      "path": "./syntaxes/strata.tmLanguage.json"
+    }],
+    "configuration": {
+      "title": "Strata",
+      "properties": {
+        "strata.toolchainPath": {
+          "type": "string",
+          "default": "strata",
+          "description": "Path to the strata command. The default assumes it is on PATH, which is what tools/install.sh arranges."
+        },
+        "strata.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run strata check when a .sta file is saved and show what it reports."
+        },
+        "strata.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also check while typing, a moment after you stop."
+        }
+      }
+    }
+  }
+}

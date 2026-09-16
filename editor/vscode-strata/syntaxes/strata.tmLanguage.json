@@ -1,0 +1,130 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Strata",
+  "scopeName": "source.strata",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#native" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#query" },
+    { "include": "#numbers" },
+    { "include": "#calls" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.strata", "match": "//.*$" },
+        { "name": "comment.block.strata", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "native": {
+      "comment": "A native block is C pasted through the compiler. Marking it as embedded stops it being coloured as broken Strata.",
+      "name": "meta.embedded.block.c.strata",
+      "begin": "\\b(native)\\s*\"",
+      "beginCaptures": { "1": { "name": "keyword.other.native.strata" } },
+      "end": "\"",
+      "patterns": [{ "include": "source.c" }]
+    },
+    "strings": {
+      "name": "string.quoted.double.strata",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.strata", "match": "\\\\." }]
+    },
+    "declarations": {
+      "comment": "The block forms that make a Strata file readable at a glance: the tier a thing belongs to is the first word on the line.",
+      "patterns": [
+        {
+          "match": "\\b(database|protocol|model|report|layout|stream)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.tier.strata" },
+            "2": { "name": "entity.name.type.strata" }
+          }
+        },
+        {
+          "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.strata" },
+            "2": { "name": "entity.name.function.strata" }
+          }
+        },
+        {
+          "match": "\\b(const)\\s+(int|float|str|bool)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.strata" },
+            "2": { "name": "storage.type.strata" },
+            "3": { "name": "variable.other.constant.strata" }
+          }
+        },
+        {
+          "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_.]*)\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.strata" },
+            "2": { "name": "entity.name.namespace.strata" },
+            "3": { "name": "keyword.control.import.strata" },
+            "4": { "name": "entity.name.namespace.strata" }
+          }
+        },
+        {
+          "match": "\\b(verify)\\s+(\")",
+          "captures": {
+            "1": { "name": "keyword.declaration.verify.strata" },
+            "2": { "name": "string.quoted.double.strata" }
+          }
+        },
+        {
+          "match": "\\b(foreign)\\s+(\"[^\"]*\")(?:\\s+(link)\\s+(\"[^\"]*\"))?",
+          "captures": {
+            "1": { "name": "keyword.other.foreign.strata" },
+            "2": { "name": "string.quoted.double.strata" },
+            "3": { "name": "keyword.other.foreign.strata" },
+            "4": { "name": "string.quoted.double.strata" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.strata", "match": "\\b(if|else|while|for|in|return|break|continue)\\b" },
+        { "name": "keyword.other.strata", "match": "\\b(assert|render|predict|save|load|delete|to|import|from|const|foreign|native)\\b" },
+        { "name": "constant.language.strata", "match": "\\b(true|false)\\b" },
+        { "name": "keyword.operator.strata", "match": "(<-|->|==|!=|<=|>=|&&|\\|\\||[-+*/%<>=!&])" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.strata", "match": "\\b(int|float|str|bool|void|list|tensor)\\b" },
+        { "name": "entity.name.type.strata", "match": "\\b(StringBuilder|[A-Z][A-Za-z0-9_]*)\\b" }
+      ]
+    },
+    "query": {
+      "comment": "Inside [ ... ] after <- a bare name is a COLUMN, not a variable. Colouring it differently is the difference between reading `token == token` as a comparison and reading it as the bug it is.",
+      "begin": "(<-)\\s*(\\[)",
+      "beginCaptures": {
+        "1": { "name": "keyword.operator.query.strata" },
+        "2": { "name": "punctuation.section.brackets.begin.strata" }
+      },
+      "end": "\\]",
+      "endCaptures": { "0": { "name": "punctuation.section.brackets.end.strata" } },
+      "patterns": [
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "name": "keyword.operator.strata", "match": "(==|!=|<=|>=|&&|\\|\\||[<>=])" },
+        { "name": "variable.other.column.strata", "match": "\\b[a-z_][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.float.strata", "match": "\\b\\d+\\.\\d+\\b" },
+        { "name": "constant.numeric.integer.strata", "match": "\\b\\d+\\b" }
+      ]
+    },
+    "calls": {
+      "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.strata" } }
+    }
+  }
+}
