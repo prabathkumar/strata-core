@@ -367,8 +367,23 @@ int main(int argc, char** argv) {
         SCALARS = ("strata_int", "strata_float", "strata_str")
         fields = [fd for fd in fields if self._c_type(fd.field_type) in SCALARS]
 
+        def sqltype(fd):
+            ct = self._c_type(fd.field_type)
+            return ("TEXT" if ct == "strata_str"
+                    else "DOUBLE PRECISION" if ct == "strata_float" else "BIGINT")
+
+        n = len(fields)
+        cols_sql = ", ".join([f'\\"{fd.name}\\" {sqltype(fd)}' for fd in fields])
+        col_list = ", ".join([f'\\"{fd.name}\\"' for fd in fields])
+        placeholders = ", ".join([f"${i + 1}" for i in range(n)])
+        select_sql = f'SELECT {col_list} FROM \\"{name}\\"'
+        insert_sql = f'INSERT INTO \\"{name}\\" ({col_list}) VALUES ({placeholders})'
+
         header = "\\t".join([f"{fd.name}:{tchar(fd)}" for fd in fields])
         self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
+        self.emit_raw("    path = (strata_str)strata_env_path(path);")
+        self.emit_raw('    if (!path || !*path) { return 0; }')
+        self._gen_pg_save(name, fields, cols_sql, insert_sql, n)
         self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
         self.emit_raw(f'    fprintf(f, "#strata\\t{name}\\t{header}\\n");')
         self.emit_raw(f"    for (strata_int i = 0; i < {name}__count; i++) {{")
@@ -395,6 +410,8 @@ int main(int argc, char** argv) {
         self.emit_raw("}")
 
         self.emit_raw(f"static strata_int {name}__load(strata_str path) {{")
+        self.emit_raw("    path = (strata_str)strata_env_path(path);")
+        self.emit_raw('    if (!path || !*path) { return 0; }')
         # Already loaded, from the same file, and the file has not changed
         # since: there is nothing to do. A service that forks per request
         # inherits the parent's tables, so this turns the reload on every
@@ -405,6 +422,7 @@ int main(int argc, char** argv) {
         self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
+        self._gen_pg_load(name, fields, select_sql)
         self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
         self.emit_raw("    char buf[4096];")
         self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
@@ -466,6 +484,77 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
         self.emit_raw("    return 1;")
         self.emit_raw("}")
+
+    def _gen_pg_save(self, name, fields, cols_sql, insert_sql, n):
+        """The database branch of a save, guarded so it costs nothing unless
+        the program links libpq.
+
+        Every value is sent as text and let Postgres cast it. Parameters
+        rather than a built-up SQL string: a customer named O'Brien is a
+        syntax error in one and a customer in the other."""
+        self.emit_raw("#ifdef STRATA_POSTGRES")
+        self.emit_raw("    if (strata_pg_is_url(path)) {")
+        self.emit_raw("        void* _pg = strata_pg_open(path);")
+        self.emit_raw("        if (!_pg) { return 0; }")
+        self.emit_raw(f'        if (!strata_pg_begin(_pg, "{name}", "{cols_sql}")) {{')
+        self.emit_raw("            strata_pg_close(_pg); return 0;")
+        self.emit_raw("        }")
+        self.emit_raw(f"        for (strata_int i = 0; i < {name}__count; i++) {{")
+        self.emit_raw(f"            {name}* r = {name}__rows[i];")
+        self.emit_raw(f"            char _b[{max(n, 1)}][48];")
+        self.emit_raw(f"            const char* _v[{max(n, 1)}];")
+        for i, fd in enumerate(fields):
+            ct = self._c_type(fd.field_type)
+            if ct == "strata_str":
+                self.emit_raw(f'            _v[{i}] = r->{fd.name} ? r->{fd.name} : "";')
+            elif ct == "strata_float":
+                self.emit_raw(f"            _v[{i}] = strata_pg_float(_b[{i}], r->{fd.name});")
+            else:
+                self.emit_raw(f"            _v[{i}] = strata_pg_int(_b[{i}], "
+                              f"(long long)r->{fd.name});")
+        self.emit_raw(f'            if (!strata_pg_insert(_pg, "{insert_sql}", {n}, _v)) {{')
+        self.emit_raw("                strata_pg_close(_pg); return 0;")
+        self.emit_raw("            }")
+        self.emit_raw("        }")
+        self.emit_raw('        strata_int _ok = strata_pg_exec(_pg, "COMMIT");')
+        self.emit_raw("        strata_pg_close(_pg);")
+        self.emit_raw("        return _ok;")
+        self.emit_raw("    }")
+        self.emit_raw("#endif")
+
+    def _gen_pg_load(self, name, fields, select_sql):
+        """The database branch of a load.
+
+        No stamp check above it applies: strata_file_stamp() returns 0 for a
+        URL, so the skip never fires and the table is read every time. A file
+        has a modification time to compare and a query does not."""
+        self.emit_raw("#ifdef STRATA_POSTGRES")
+        self.emit_raw("    if (strata_pg_is_url(path)) {")
+        self.emit_raw("        void* _pg = strata_pg_open(path);")
+        self.emit_raw("        if (!_pg) { return 0; }")
+        self.emit_raw(f'        void* _res = strata_pg_select(_pg, "{select_sql}");')
+        self.emit_raw("        if (!_res) { strata_pg_close(_pg); return 0; }")
+        self.emit_raw(f"        {name}__count = 0;")
+        self.emit_raw("        strata_int _rows = strata_pg_rows(_res);")
+        self.emit_raw("        for (strata_int _i = 0; _i < _rows; _i++) {")
+        self.emit_raw(f"            {name}* r = ({name}*)calloc(1, sizeof({name}));")
+        for i, fd in enumerate(fields):
+            ct = self._c_type(fd.field_type)
+            src = f"strata_pg_value(_res, _i, {i})"
+            if ct == "strata_str":
+                self.emit_raw(f"            r->{fd.name} = strata_dup({src});")
+            elif ct == "strata_float":
+                self.emit_raw(f"            r->{fd.name} = strtod({src}, NULL);")
+            else:
+                self.emit_raw(f"            r->{fd.name} = (strata_int)atoll({src});")
+        self.emit_raw(f"            if ({name}__count < STRATA_TABLE_CAP) "
+                      f"{name}__rows[{name}__count++] = r;")
+        self.emit_raw("        }")
+        self.emit_raw("        strata_pg_clear(_res);")
+        self.emit_raw("        strata_pg_close(_pg);")
+        self.emit_raw("        return 1;")
+        self.emit_raw("    }")
+        self.emit_raw("#endif")
 
     def _gen_struct(self, name, fields):
         self.emit_raw(f"\nstruct {name} {{")
@@ -1397,6 +1486,15 @@ def _resolve_module(imp, search_root, app_root=None):
             return cand
     return None
 
+def link_flags_libs(link_flags):
+    """The library names inside a list of -l flags.
+
+    `link_flags` is what the foreign declarations asked for, already formatted
+    for the compiler. This reads them back so the build can react to WHAT is
+    being linked, not just pass it along."""
+    return [f[2:] for f in link_flags if f.startswith("-l")]
+
+
 def resolve_imports(ast, source_path, verbose=False):
     """Transitively parse every locally-resolvable import.
 
@@ -1621,6 +1719,27 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
                    "-Werror=int-conversion",
                    "-Werror=incompatible-pointer-types",
                    "-Werror=return-type"]
+    # Linking libpq is what turns the Postgres table backend on. The flag is
+    # derived from the program's own `foreign ... link "pq"` -- which comes
+    # from importing `postgres from std` -- so no program that does not ask
+    # for a database carries a libpq dependency or the code that uses it.
+    #
+    # pg_config is asked where the headers and libraries are rather than
+    # guessing /usr/include/postgresql: the answer differs between Debian,
+    # Red Hat and Homebrew, and a hardcoded path is a build that works on the
+    # machine it was written on.
+    if any(l == "pq" for l in link_flags_libs(link_flags)):
+        portability = portability + ["-DSTRATA_POSTGRES"]
+        for flag, arg in (("-I", "--includedir"), ("-L", "--libdir")):
+            try:
+                d = subprocess.run(["pg_config", arg], capture_output=True,
+                                   text=True).stdout.strip()
+            except FileNotFoundError:
+                d = ""
+            if d:
+                portability = portability + [flag + d]
+        # Debian keeps libpq-fe.h in a subdirectory of the include dir.
+        portability = portability + ["-I/usr/include/postgresql"]
     if target == "wasm":
         flags = ([cc,"-Oz","--target=wasm32","-nostdlib",
                   "-Wl,--no-entry","-Wl,--strip-all",

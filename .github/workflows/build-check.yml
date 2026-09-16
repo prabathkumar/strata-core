@@ -11,6 +11,24 @@ jobs:
     name: Execute Core Architectural Verification Passes
     runs-on: ubuntu-latest
 
+    # A real PostgreSQL for the database journey. Without one that journey
+    # skips its database half, and a suite that reports OK having done nothing
+    # is worse than no suite -- so CI provides the database rather than
+    # letting the skip become the normal result.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: strata
+          POSTGRES_DB: strata_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - name: Checkout Code Repository
       uses: actions/checkout@v4
@@ -22,6 +40,12 @@ jobs:
 
     - name: Initialize Foundation Environment Shell
       run: chmod +x bin/strata
+
+    # std/postgres.sta declares `foreign "libpq-fe.h"`, so the headers must be
+    # present before anything compiles the standard library -- not only before
+    # the database journey, which runs near the end.
+    - name: Install The PostgreSQL Client Headers
+      run: sudo apt-get update && sudo apt-get install -y libpq-dev
 
     # The conformance suite is the compiler's own regression gate: E001-E006
     # plus end-to-end compile-and-run. It exits non-zero on any failure.
@@ -142,6 +166,15 @@ jobs:
     # compiler produces during the run rather than a pasted sample.
     - name: Journey — Somebody Else Installs It
       run: python3 test_suite/journey_install.py
+
+    # A table in a real database rather than a tab-separated file: the same
+    # schema, the same queries, the same pages, a different path. Also checks
+    # that a program which does NOT import the module gains no libpq
+    # dependency, which is the whole basis of the design.
+    - name: Journey — A Table In PostgreSQL
+      env:
+        STRATA_TEST_DB: postgres://postgres:strata@127.0.0.1:5432/strata_test
+      run: python3 test_suite/journey_postgres.py
 
     # What a developer runs before deciding whether to keep going: every
     # command the generated README offers, against a project `strata new` just

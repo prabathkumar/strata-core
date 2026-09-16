@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### A table can live in PostgreSQL
+
+Strata stored data in tab-separated files. That is honest for one small
+service on one machine, and it is the first thing anyone evaluating the
+language asks about, so the answer could not stay "files".
+
+Importing one module is the whole switch:
+
+```
+import postgres from std;
+...
+save Order to "data/orders.tsv";      // a file
+save Order to "$DATABASE_URL";        // a table in PostgreSQL
+```
+
+The path decides which store is used. The schema, the queries, the aggregates
+and the pages are untouched, and the compiler still checks every column name
+against the `database` block — which is the property the whole language is
+built around, now holding across two different stores.
+
+Three decisions worth stating rather than leaving to be inferred:
+
+**No new syntax.** A program moves between a file and a database by editing a
+string. Adding `database Order backed by postgres { ... }` would have made the
+storage part of the schema, and then moving a table would mean changing the
+declaration every query is checked against.
+
+**`$NAME` in a path is an environment variable.** Without it the only path a
+program could give was a string literal, so a Postgres URL — password included
+— would be compiled into the binary and committed. It applies to file paths
+too.
+
+**Postgres is compiled in only when asked for.** Importing the module is what
+links libpq, and linking libpq is what defines `STRATA_POSTGRES`, which is
+what turns on the database branch inside every generated `save` and `load`. A
+program that does not import it carries no libpq dependency and no dead code.
+`journey_postgres.py` runs `ldd` on both kinds of binary rather than asserting
+this from the source.
+
+Values are sent as parameters, not concatenated into SQL. A customer called
+O'Brien is a customer.
+
+### What this is not
+
+A save replaces the whole table inside one transaction; a load reads all of
+it. That is exactly what `save` and `load` have always meant in Strata, and
+keeping the meaning identical across stores matters more than the cost — but
+it is right for thousands of rows, not millions. Per-row writes are a language
+change, not a driver change. Each save or load opens its own connection; there
+is no pool. And the load-skip added earlier does not apply to a database,
+because a file has a modification time to compare against and a query does
+not.
+
+CI now runs a real PostgreSQL 16 as a service container. The journey skips its
+database half when `STRATA_TEST_DB` is unset rather than passing quietly, so
+the skip cannot become the normal result without somebody noticing.
+
 ### Somebody else can install it
 
 `tools/install.sh` copies a self-contained toolchain into `~/.strata` and puts

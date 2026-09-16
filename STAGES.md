@@ -152,7 +152,11 @@ step fails if any of it returns.
 4. Metrics are per process and in memory: they start at zero when the service
    restarts, and two copies of the service behind a load balancer each report
    their own. There is nothing that stores or graphs them.
-5. The lockout is per account, not per source: it stops a password guess and
+5. A Postgres-backed table is read in full on every load and written in full
+   on every save, and each one opens its own connection. That is right for
+   thousands of rows and wrong for millions. Per-row writes are a language
+   change, not a driver change.
+6. The lockout is per account, not per source: it stops a password guess and
    also lets someone lock an operator out on purpose.
-6. The Kubernetes manifest under `deploy/` has never been applied to
+7. The Kubernetes manifest under `deploy/` has never been applied to
    anything.

@@ -32,6 +32,29 @@ COMPILER = os.path.join(ROOT, "bootstrap", "stage0.py")
 # A call into each module, so the link is actually exercised rather than just
 # the declaration being emitted. A module with no entry here is still checked
 # for compiling; it is just not linked against.
+def has_libpq():
+    """Whether this machine can compile against libpq.
+
+    std/postgres.sta declares `foreign "libpq-fe.h"`, so compiling it needs
+    the PostgreSQL client headers. A developer without them should be told the
+    module was skipped, not handed a build error for a module they are not
+    using. CI installs them, so the skip never becomes the normal result
+    there.
+    """
+    import subprocess as sp
+    for d in ("/usr/include/postgresql", "/usr/include", "/usr/local/include"):
+        if os.path.exists(os.path.join(d, "libpq-fe.h")):
+            return True
+    try:
+        d = sp.run(["pg_config", "--includedir"], capture_output=True,
+                   text=True).stdout.strip()
+        return bool(d) and os.path.exists(os.path.join(d, "libpq-fe.h"))
+    except FileNotFoundError:
+        return False
+
+
+NEEDS_LIBPQ = {"postgres"}
+
 SMOKE = {
     "io":        'print("x"); print_int(1);',
     "core":      'print_line("x"); print_raw(convert_int_to_str(7));',
@@ -39,6 +62,8 @@ SMOKE = {
     "mem":       'print(str_concat(str_slice("abcdef", 1, 3), str(str_len("xy"))));',
     "ml":        'print(str(verify_model_dimensions(4, 2)));',
     "simd_math": 'print(str(verify_vector_alignment(8)));',
+    "postgres":  'print(str(is_database_url("postgres://x/y"))); '
+                 'print(resolve_env_path("plain"));',
     "metrics":   'int p = metrics_start(); metrics_record(p, 200, 3); '
                  'metrics_record(p, 500, 1500); metrics_refused(p); '
                  'print(metrics_render(p));',
@@ -85,13 +110,20 @@ if not modules:
     print("  FAIL  no modules found in std/")
     sys.exit(1)
 
+LIBPQ = has_libpq()
+
 for m in modules:
+    if m in NEEDS_LIBPQ and not LIBPQ:
+        print(f"  SKIP  {m} — the PostgreSQL client headers are not installed")
+        continue
     good, why = compiles(os.path.join(STD, m + ".sta"))
     ok(f"{m} type-checks", good, why)
 
 print("\n── Linking against each module ──────────────────────────────────")
 
 for m in modules:
+    if m in NEEDS_LIBPQ and not LIBPQ:
+        continue
     body = SMOKE.get(m)
     if body is None:
         print(f"  SKIP  {m} — no smoke call defined")

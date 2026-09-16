@@ -1,0 +1,57 @@
+// Tables that live in PostgreSQL.
+//
+// Importing this module is the whole of the switch. It links libpq, which
+// makes the compiler define STRATA_POSTGRES, which turns on the database
+// branch inside every generated `save` and `load`. A program that does not
+// import it has no libpq dependency and no dead code.
+//
+// After that, the path decides:
+//
+//     save Order to "data/orders.tsv";                  // a file
+//     save Order to "postgres://app:pw@db:5432/sales";  // a table
+//
+// Nothing else in the program changes -- not the schema, not the queries, not
+// the pages. That is the point: a service written against files can be moved
+// onto a real database by editing a string, and the compiler still checks
+// every column name against the schema.
+//
+// What this is not, stated plainly rather than discovered later:
+//
+//   - A save replaces the whole table inside one transaction, and a load
+//     reads all of it. That is what `save` and `load` have always meant in
+//     Strata, and it is right for tables of thousands of rows, not millions.
+//     Per-row writes are a language change, not a driver change.
+//   - Each save or load opens its own connection. There is no pool.
+//   - The cached-load optimisation does not apply: a file has a modification
+//     time to compare, a query does not, so a Postgres table is re-read every
+//     time it is loaded.
+
+import io  from std;
+import str from std;
+
+foreign "libpq-fe.h" link "pq" { }
+
+// A path beginning with `$` names an environment variable holding the real
+// one -- the same rule `save` and `load` apply, exposed so a program can
+// report where its data actually is at startup.
+str resolve_env_path(str path) {
+    native "
+    if (!$path || $path[0] != '$') return $path;
+    const char* v = getenv($path + 1);
+    return (strata_str)(v ? v : \"\");
+    ";
+}
+
+// Whether a path names a database rather than a file. The generated code
+// makes this decision itself; this is here so a program can ask the same
+// question -- for a startup message that says where the data actually is.
+int is_database_url(str raw) {
+    // A `$NAME` path is resolved the same way `save` and `load` resolve it,
+    // so asking the question gives the same answer the store will act on.
+    str path = resolve_env_path(raw);
+    if (str_len(path) < 11) { return 0; }
+    if (str_eq(str_slice(path, 0, 11), "postgres://") == 1) { return 1; }
+    if (str_len(path) < 13) { return 0; }
+    if (str_eq(str_slice(path, 0, 13), "postgresql://") == 1) { return 1; }
+    return 0;
+}

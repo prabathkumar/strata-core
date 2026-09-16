@@ -401,6 +401,36 @@ grammar colours it differently. That is the difference between reading
 cp -R editor/vscode-strata ~/.vscode/extensions/strata
 ```
 
+### Where the data lives
+
+A `database` block is stored in a tab-separated file by default. Importing one
+module moves it into PostgreSQL, and nothing else in the program changes:
+
+```
+import postgres from std;
+...
+save Order to "data/orders.tsv";      // a file
+save Order to "$DATABASE_URL";        // a table in PostgreSQL
+```
+
+The path decides. A path beginning with `$` names an environment variable, so
+the URL and its password are supplied at deploy time rather than compiled into
+the binary. The schema, the queries, the aggregates and the pages are
+untouched, and the compiler still checks every column name against the
+`database` block.
+
+Importing the module is also what links libpq. A program that does not import
+it has no libpq dependency at all — `journey_postgres.py` checks the binary's
+linked libraries to make sure, because "it should not be linked" is a claim
+and `ldd` is evidence.
+
+The honest limits, before anyone finds them the hard way: a save replaces the
+whole table inside one transaction and a load reads all of it — which is what
+`save` and `load` have always meant in Strata, and is right for thousands of
+rows, not millions. Each one opens its own connection; there is no pool. And
+the cached-load optimisation does not apply, because a file has a modification
+time to compare and a query does not.
+
 ### Commands
 
 ```
@@ -560,7 +590,7 @@ what runs and what is planned is unambiguous.
 | `E007` / `E008` | E007 is the first advisory: an import with no local checkout is reported without stopping the build. E008 catches a bare name inside a query that is also a variable in scope — the column wins silently, so `Session <- [token == token]` compares the column with itself and matches every row. |
 | Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. `apps/orders` adds a CSRF token on every form and every write, a five-strike account lockout that answers identically for a locked account whatever was typed, and a 64-connection cap. Still no password policy, no reset flow, and the lockout is per account rather than per source — so it also lets someone lock an operator out on purpose. |
 | Formatter (`strata fmt`) | **Canonical indentation.** Written in Strata. Re-indents by brace depth, strips trailing whitespace, collapses blank runs, ends the file with one newline. It rewrites only leading whitespace, so comments survive and the inside of a `native` block is byte-identical — the lexer discards comments, so anything reprinting from tokens would delete them. It does **not** re-wrap lines, normalise spacing around operators, or sort anything. Two properties are tested over every file in the repo: the syntax tree is unchanged, and formatting is idempotent. CI fails if any tracked source is not canonical. |
-| Standard library | **Thirteen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `cli`, `json`, `http`, `auth`, `metrics`, `ml`, `simd_math`, `telemetry`, `testing`. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
+| Standard library | **Fourteen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `cli`, `json`, `http`, `auth`, `metrics`, `postgres`, `ml`, `simd_math`, `telemetry`, `testing`. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
 | Migration tooling (Java/C# → Strata) | Direction, not yet a project. |
 
 ### Measured, on a 4-core development machine

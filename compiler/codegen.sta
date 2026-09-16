@@ -735,11 +735,32 @@ str gen_call(Gen &g, Node e) {
 // ── Native block substitution ────────────────────────────────────────────────
 // `$name` in a native block refers to a Strata binding; the sigil is dropped.
 
+// A `$` is the sigil only when a name follows it. A bare `$` -- in a character
+// literal like '$', or in a SQL `$1` placeholder -- is text.
+//
+// This used to drop every `$` in a native block, while the Python oracle has
+// always substituted `$name` and left the rest. The two agreed for as long as
+// no native block contained a bare `$`; the first one that did produced
+// `path[0] != ''` here and `path[0] != '$'` there, which is a compiler that
+// generates two different programs from one source. The differential is what
+// found it.
+int is_name_char(int c) {
+    if (c >= 97) { if (c <= 122) { return 1; } }
+    if (c >= 65) { if (c <= 90) { return 1; } }
+    if (c == 95) { return 1; }
+    return 0;
+}
+
 str subst_native(str code) {
     StringBuilder sb = sb_new();
     int n = str_len(code);
     for (int i = 0; i < n; i = i + 1) {
-        if (code[i] != 36) { sb_append(&sb, char_str(code[i])); }
+        int keep = 1;
+        if (code[i] == 36) {
+            int j = i + 1;
+            if (j < n) { if (is_name_char(code[j]) == 1) { keep = 0; } }
+        }
+        if (keep == 1) { sb_append(&sb, char_str(code[i])); }
     }
     return sb_to_str(&sb);
 }
@@ -1151,6 +1172,132 @@ int is_scalar_col(Gen &g, Node fd) {
     return 0;
 }
 
+// The SQL type a column becomes in a Postgres-backed table.
+str col_sqltype(Gen &g, Node fd) {
+    str ct = c_type(&g, fd.c1);
+    if (str_eq(ct, "strata_str") == 1) { return "TEXT"; }
+    if (str_eq(ct, "strata_float") == 1) { return "DOUBLE PRECISION"; }
+    return "BIGINT";
+}
+
+// The database branch of a save, guarded so it costs nothing unless the
+// program links libpq. Values go as text parameters and Postgres casts them;
+// parameters rather than a built-up string, because a customer named O'Brien
+// is a syntax error in one and a customer in the other.
+def gen_pg_save(Gen &g, str name, NodeVec fs, str cols_sql, str insert_sql) {
+    int n = fs.len;
+    emit_raw(&g, "#ifdef STRATA_POSTGRES");
+    emit_raw(&g, "    if (strata_pg_is_url(path)) {");
+    emit_raw(&g, "        void* _pg = strata_pg_open(path);");
+    emit_raw(&g, "        if (!_pg) { return 0; }");
+    StringBuilder bg = sb_new();
+    sb_append(&bg, "        if (!strata_pg_begin(_pg, \""); sb_append(&bg, name);
+    sb_append(&bg, "\", \""); sb_append(&bg, cols_sql); sb_append(&bg, "\")) {");
+    emit_raw(&g, sb_to_str(&bg));
+    emit_raw(&g, "            strata_pg_close(_pg); return 0;");
+    emit_raw(&g, "        }");
+    StringBuilder lp = sb_new();
+    sb_append(&lp, "        for (strata_int i = 0; i < "); sb_append(&lp, name);
+    sb_append(&lp, "__count; i++) {");
+    emit_raw(&g, sb_to_str(&lp));
+    StringBuilder rr = sb_new();
+    sb_append(&rr, "            "); sb_append(&rr, name); sb_append(&rr, "* r = ");
+    sb_append(&rr, name); sb_append(&rr, "__rows[i];");
+    emit_raw(&g, sb_to_str(&rr));
+    int cap = n;
+    if (cap < 1) { cap = 1; }
+    StringBuilder bb = sb_new();
+    sb_append(&bb, "            char _b["); sb_append(&bb, str(cap)); sb_append(&bb, "][48];");
+    emit_raw(&g, sb_to_str(&bb));
+    StringBuilder vv = sb_new();
+    sb_append(&vv, "            const char* _v["); sb_append(&vv, str(cap)); sb_append(&vv, "];");
+    emit_raw(&g, sb_to_str(&vv));
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        str ct = c_type(&g, fd.c1);
+        StringBuilder w = sb_new();
+        sb_append(&w, "            _v["); sb_append(&w, str(i)); sb_append(&w, "] = ");
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&w, "r->"); sb_append(&w, fd.s1); sb_append(&w, " ? r->");
+            sb_append(&w, fd.s1); sb_append(&w, " : \"\";");
+        }
+        if (str_eq(ct, "strata_float") == 1) {
+            sb_append(&w, "strata_pg_float(_b["); sb_append(&w, str(i));
+            sb_append(&w, "], r->"); sb_append(&w, fd.s1); sb_append(&w, ");");
+        }
+        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
+                sb_append(&w, "strata_pg_int(_b["); sb_append(&w, str(i));
+                sb_append(&w, "], (long long)r->"); sb_append(&w, fd.s1); sb_append(&w, ");");
+            } }
+        emit_raw(&g, sb_to_str(&w));
+    }
+    StringBuilder ins = sb_new();
+    sb_append(&ins, "            if (!strata_pg_insert(_pg, \"");
+    sb_append(&ins, insert_sql); sb_append(&ins, "\", "); sb_append(&ins, str(n));
+    sb_append(&ins, ", _v)) {");
+    emit_raw(&g, sb_to_str(&ins));
+    emit_raw(&g, "                strata_pg_close(_pg); return 0;");
+    emit_raw(&g, "            }");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "        strata_int _ok = strata_pg_exec(_pg, \"COMMIT\");");
+    emit_raw(&g, "        strata_pg_close(_pg);");
+    emit_raw(&g, "        return _ok;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "#endif");
+}
+
+// The database branch of a load. No stamp check applies above it:
+// strata_file_stamp() returns 0 for a URL, so the skip never fires and the
+// table is read every time. A file has a modification time to compare against
+// and a query does not.
+def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql) {
+    int n = fs.len;
+    emit_raw(&g, "#ifdef STRATA_POSTGRES");
+    emit_raw(&g, "    if (strata_pg_is_url(path)) {");
+    emit_raw(&g, "        void* _pg = strata_pg_open(path);");
+    emit_raw(&g, "        if (!_pg) { return 0; }");
+    StringBuilder sl = sb_new();
+    sb_append(&sl, "        void* _res = strata_pg_select(_pg, \"");
+    sb_append(&sl, select_sql); sb_append(&sl, "\");");
+    emit_raw(&g, sb_to_str(&sl));
+    emit_raw(&g, "        if (!_res) { strata_pg_close(_pg); return 0; }");
+    StringBuilder z = sb_new();
+    sb_append(&z, "        "); sb_append(&z, name); sb_append(&z, "__count = 0;");
+    emit_raw(&g, sb_to_str(&z));
+    emit_raw(&g, "        strata_int _rows = strata_pg_rows(_res);");
+    emit_raw(&g, "        for (strata_int _i = 0; _i < _rows; _i++) {");
+    StringBuilder al = sb_new();
+    sb_append(&al, "            "); sb_append(&al, name); sb_append(&al, "* r = (");
+    sb_append(&al, name); sb_append(&al, "*)calloc(1, sizeof("); sb_append(&al, name);
+    sb_append(&al, "));");
+    emit_raw(&g, sb_to_str(&al));
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        str ct = c_type(&g, fd.c1);
+        StringBuilder w = sb_new();
+        sb_append(&w, "            r->"); sb_append(&w, fd.s1); sb_append(&w, " = ");
+        if (str_eq(ct, "strata_str") == 1) { sb_append(&w, "strata_dup("); }
+        if (str_eq(ct, "strata_float") == 1) { sb_append(&w, "strtod("); }
+        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
+                sb_append(&w, "(strata_int)atoll("); } }
+        sb_append(&w, "strata_pg_value(_res, _i, "); sb_append(&w, str(i)); sb_append(&w, ")");
+        if (str_eq(ct, "strata_float") == 1) { sb_append(&w, ", NULL"); }
+        sb_append(&w, ");");
+        emit_raw(&g, sb_to_str(&w));
+    }
+    StringBuilder ps = sb_new();
+    sb_append(&ps, "            if ("); sb_append(&ps, name);
+    sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
+    sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
+    emit_raw(&g, sb_to_str(&ps));
+    emit_raw(&g, "        }");
+    emit_raw(&g, "        strata_pg_clear(_res);");
+    emit_raw(&g, "        strata_pg_close(_pg);");
+    emit_raw(&g, "        return 1;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "#endif");
+}
+
 def gen_table_io(Gen &g, str name, int fields_vec) {
     NodeVec all_cols = nv_at(fields_vec);
     NodeVec fs = nv_new();
@@ -1161,10 +1308,39 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     }
     int n = fs.len;
 
+    // The SQL the Postgres branches use, built once from the same column list
+    // the file format uses, so the two stores cannot describe different
+    // schemas.
+    StringBuilder cs = sb_new();
+    StringBuilder cl = sb_new();
+    StringBuilder ph = sb_new();
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (i > 0) { sb_append(&cs, ", "); sb_append(&cl, ", "); sb_append(&ph, ", "); }
+        sb_append(&cs, "\\\""); sb_append(&cs, fd.s1); sb_append(&cs, "\\\" ");
+        sb_append(&cs, col_sqltype(&g, fd));
+        sb_append(&cl, "\\\""); sb_append(&cl, fd.s1); sb_append(&cl, "\\\"");
+        sb_append(&ph, "$"); sb_append(&ph, str(i + 1));
+    }
+    str cols_sql = sb_to_str(&cs);
+    str col_list = sb_to_str(&cl);
+    StringBuilder sel = sb_new();
+    sb_append(&sel, "SELECT "); sb_append(&sel, col_list);
+    sb_append(&sel, " FROM \\\""); sb_append(&sel, name); sb_append(&sel, "\\\"");
+    str select_sql = sb_to_str(&sel);
+    StringBuilder ins = sb_new();
+    sb_append(&ins, "INSERT INTO \\\""); sb_append(&ins, name);
+    sb_append(&ins, "\\\" ("); sb_append(&ins, col_list); sb_append(&ins, ") VALUES (");
+    sb_append(&ins, sb_to_str(&ph)); sb_append(&ins, ")");
+    str insert_sql = sb_to_str(&ins);
+
     StringBuilder a = sb_new();
     sb_append(&a, "static strata_int "); sb_append(&a, name);
     sb_append(&a, "__save(strata_str path) {");
     emit_raw(&g, sb_to_str(&a));
+    emit_raw(&g, "    path = (strata_str)strata_env_path(path);");
+    emit_raw(&g, "    if (!path || !*path) { return 0; }");
+    gen_pg_save(&g, name, fs, cols_sql, insert_sql);
     emit_raw(&g, "    FILE* f = fopen(path, \"w\"); if (!f) return 0;");
 
     StringBuilder hd = sb_new();
@@ -1225,6 +1401,8 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&b, "static strata_int "); sb_append(&b, name);
     sb_append(&b, "__load(strata_str path) {");
     emit_raw(&g, sb_to_str(&b));
+    emit_raw(&g, "    path = (strata_str)strata_env_path(path);");
+    emit_raw(&g, "    if (!path || !*path) { return 0; }");
     // Already loaded, from the same file, and the file has not changed since:
     // there is nothing to do.
     emit_raw(&g, "    int64_t _stamp = strata_file_stamp(path);");
@@ -1239,6 +1417,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&sk2));
     emit_raw(&g, "        return 1;");
     emit_raw(&g, "    }");
+    gen_pg_load(&g, name, fs, select_sql);
     emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
     emit_raw(&g, "    char buf[4096];");
     emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");

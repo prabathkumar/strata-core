@@ -497,3 +497,124 @@ static strata_int strata_run(void) {
     }
     return delivered;
 }
+
+/* A path that starts with '$' names an environment variable holding the real
+ * one. `save Order to "$DATABASE_URL";` is how a service is pointed at its
+ * database at deploy time instead of at compile time.
+ *
+ * Without this the only path a program could give was a string literal, so a
+ * Postgres URL -- password included -- would be compiled into the binary and
+ * committed to source control. An unset variable is an error the caller
+ * reports, not an empty path silently opened. */
+static const char* strata_env_path(const char* path) {
+    if (!path || path[0] != '$') return path;
+    const char* v = getenv(path + 1);
+    if (!v || !*v) {
+        fprintf(stderr, "[strata] %s is not set; nothing to read or write\n", path + 1);
+        return "";
+    }
+    return v;
+}
+
+/* ── A table backed by PostgreSQL ────────────────────────────────────────────
+ *
+ * Compiled in only when the program links libpq, which happens when it
+ * imports `postgres from std`. Every other program is untouched: the branches
+ * below vanish at the preprocessor and no libpq dependency is introduced.
+ *
+ * The rule the language exposes is that the PATH decides the store.
+ * `save Order to "orders.tsv"` writes a file; `save Order to
+ * "postgres://user:pass@host/db"` writes a table. No new syntax, and a
+ * program moves from one to the other by changing a string.
+ *
+ * Whole-table semantics are kept exactly as the file store has them: a save
+ * replaces the table's contents inside one transaction, and a load reads all
+ * of it. That is what `save` has always meant in Strata, and changing the
+ * meaning depending on the backend would be worse than the cost. It is also
+ * the honest limit of this backend — see the note in README. */
+#ifdef STRATA_POSTGRES
+#include <libpq-fe.h>
+
+static int strata_pg_is_url(const char* path) {
+    return path && (strncmp(path, "postgres://", 11) == 0
+                 || strncmp(path, "postgresql://", 13) == 0);
+}
+
+static void* strata_pg_open(const char* url) {
+    PGconn* c = PQconnectdb(url);
+    if (PQstatus(c) != CONNECTION_OK) {
+        fprintf(stderr, "[strata] postgres: %s", PQerrorMessage(c));
+        PQfinish(c);
+        return NULL;
+    }
+    /* CREATE TABLE IF NOT EXISTS prints a NOTICE every time the table is
+     * already there, which is every save after the first. A service whose
+     * normal operation writes a notice to the log teaches people to ignore
+     * the log. */
+    PQclear(PQexec(c, "SET client_min_messages TO WARNING"));
+    return (void*)c;
+}
+
+static void strata_pg_close(void* c) { if (c) PQfinish((PGconn*)c); }
+
+static int strata_pg_exec(void* c, const char* sql) {
+    PGresult* r = PQexec((PGconn*)c, sql);
+    ExecStatusType st = PQresultStatus(r);
+    int ok = (st == PGRES_COMMAND_OK || st == PGRES_TUPLES_OK);
+    if (!ok) fprintf(stderr, "[strata] postgres: %s", PQerrorMessage((PGconn*)c));
+    PQclear(r);
+    return ok;
+}
+
+/* Create the table if it is not there, then empty it, inside a transaction
+ * that the caller commits. A reader sees either the old contents or the new
+ * ones and never the empty middle. */
+static int strata_pg_begin(void* c, const char* table, const char* columns) {
+    char sql[4096];
+    if (!strata_pg_exec(c, "BEGIN")) return 0;
+    snprintf(sql, sizeof(sql),
+             "CREATE TABLE IF NOT EXISTS \"%s\" (%s)", table, columns);
+    if (!strata_pg_exec(c, sql)) return 0;
+    snprintf(sql, sizeof(sql), "DELETE FROM \"%s\"", table);
+    return strata_pg_exec(c, sql);
+}
+
+static int strata_pg_insert(void* c, const char* sql, int n, const char** vals) {
+    PGresult* r = PQexecParams((PGconn*)c, sql, n, NULL, vals, NULL, NULL, 0);
+    int ok = (PQresultStatus(r) == PGRES_COMMAND_OK);
+    if (!ok) fprintf(stderr, "[strata] postgres: %s", PQerrorMessage((PGconn*)c));
+    PQclear(r);
+    return ok;
+}
+
+static void* strata_pg_select(void* c, const char* sql) {
+    PGresult* r = PQexec((PGconn*)c, sql);
+    if (PQresultStatus(r) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "[strata] postgres: %s", PQerrorMessage((PGconn*)c));
+        PQclear(r);
+        return NULL;
+    }
+    return (void*)r;
+}
+
+static strata_int strata_pg_rows(void* r) { return (strata_int)PQntuples((PGresult*)r); }
+
+/* NULL reads back as the column's zero value rather than crashing the
+ * service. A row written by something other than Strata is still a row. */
+static const char* strata_pg_value(void* r, strata_int row, int col) {
+    if (PQgetisnull((PGresult*)r, (int)row, col)) return "";
+    return PQgetvalue((PGresult*)r, (int)row, col);
+}
+
+static void strata_pg_clear(void* r) { if (r) PQclear((PGresult*)r); }
+
+static const char* strata_pg_int(char* buf, long long v) {
+    snprintf(buf, 48, "%lld", v);
+    return buf;
+}
+
+static const char* strata_pg_float(char* buf, double v) {
+    snprintf(buf, 48, "%.17g", v);
+    return buf;
+}
+#endif
