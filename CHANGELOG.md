@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### A service can be asked how it is doing
+
+Until now a Strata service printed one line per request and nothing else. If
+it was slow, or answering some requests wrongly, or turning people away, the
+only way to find out was to read every line as it went past. That is not
+something anyone can run a business on.
+
+`std/metrics.sta` is new: counters for requests answered, split by outcome,
+how long they took in buckets, the slowest one seen, connections refused, and
+uptime. The orders service answers two pages from them, neither of which needs
+a sign-in:
+
+    /health    ok, uptime, request count
+    /metrics   the counters, one `name value` per line
+
+The format is what Prometheus scrapes and also what a person can read over
+someone's shoulder, which is why it was picked over JSON.
+
+The interesting part is where the counters live. The service forks a process
+for every connection, so a counter in an ordinary variable would be added to
+by a child that then exits — every reading would be zero. These live in a page
+of memory mapped `MAP_SHARED` before the first fork, so every child adds to the
+same numbers. The additions are atomic: without that, two children finishing
+at the same instant lose one of the two counts, rarely enough to look correct
+in testing and wrong in production.
+
+Connections refused because every slot was taken are counted separately from
+5xx responses. One is running out of capacity, the other is a handler getting
+something wrong, and a single number for both hides the first behind the
+second.
+
+If the shared page cannot be mapped, every call returns zero and the service
+carries on serving. A watcher that can take the service down with it is worse
+than no watcher.
+
+### Failed requests are written where someone will find them
+
+A request that returns 400 or worse now also writes one line to stderr:
+
+    ERROR ts=1789461532 method=POST path=/orders status=403 took_ms=4
+
+stdout is a stream somebody watches; stderr is where a container runtime, a log
+collector and a person reading a crash all look first. A failure buried in a
+thousand successful lines is a failure nobody finds. `key=value` because a log
+search can filter on it without anyone writing a parser, and it still reads
+fine without one.
+
+`journey_operate` grew from 23 checks to 34. Among them: the counters keep
+climbing across the process that did the work, the latency buckets add up to
+the total, a refused write produces a failure line, and a request that worked
+produces none.
+
+### What this still is not
+
+The counters are in memory in one process tree. They start at zero when the
+service restarts, and two copies behind a load balancer each report their own.
+Nothing stores or graphs them. That is a scrape target, not a monitoring
+system, and it is stated here rather than discovered later.
+
 ### A table no longer re-reads a file it has already read
 
 `load` used to open, parse and rebuild the whole table every time it was

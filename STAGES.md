@@ -98,7 +98,9 @@ protection was not real.
 
 Not done at this stage: no metrics, no log for anything but requests, nothing
 prunes an expired session, and the lockout is per account rather than per
-source, so it cannot tell a forgetful operator from an attacker.
+source, so it cannot tell a forgetful operator from an attacker. (Metrics and
+a failure log were added afterwards; the note stands as what was true when
+the stage closed.)
 
 ### Stage 9, closed 14 September 2026
 
@@ -147,7 +149,9 @@ step fails if any of it returns.
    the clock or the metadata lags.
 3. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-4. No metrics, and no log of anything but requests.
+4. Metrics are per process and in memory: they start at zero when the service
+   restarts, and two copies of the service behind a load balancer each report
+   their own. There is nothing that stores or graphs them.
 5. The lockout is per account, not per source: it stops a password guess and
    also lets someone lock an operator out on purpose.
 6. The Kubernetes manifest under `deploy/` has never been applied to

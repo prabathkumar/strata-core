@@ -1,0 +1,198 @@
+// What the service can tell you about itself.
+//
+// A service that forks a process per connection cannot keep counters in a
+// variable: the child that served the request exits, and whatever it counted
+// goes with it. These counters live in a page of memory mapped MAP_SHARED
+// before the first fork, so every child adds to the same numbers and the
+// parent can read the total.
+//
+// The increments are atomic. Without that, two children finishing at the same
+// instant lose one of the two counts — rarely enough that it looks correct in
+// testing and wrong in production, which is the worst kind of wrong.
+//
+// There are no levels, no sampling and no configuration. The whole surface is
+// a counter set and a page that prints it.
+
+import str from std;
+import io  from std;
+
+foreign "sys/mman.h" link "" { }
+foreign "string.h"   link "" { }
+foreign "time.h"     link "" { }
+
+// Which number lives where. Named rather than numbered at the call sites,
+// because `metrics_add(p, 4, 1)` tells a reader nothing.
+const int M_TOTAL    = 0;
+const int M_2XX      = 1;
+const int M_3XX      = 2;
+const int M_4XX      = 3;
+const int M_5XX      = 4;
+const int M_SUM_MS   = 5;
+const int M_MAX_MS   = 6;
+const int M_UNDER_1  = 7;
+const int M_UNDER_10 = 8;
+const int M_UNDER_100 = 9;
+const int M_UNDER_1000 = 10;
+const int M_SLOWER   = 11;
+const int M_STARTED  = 12;
+const int M_REFUSED  = 13;
+
+// The shared page, created on first use and remembered afterwards. Returned
+// as a plain integer because that is what crosses back into Strata; every
+// function below takes it as its first argument rather than reaching for a
+// global, so there is exactly one place the mapping is made.
+//
+// 0 means the mapping failed. Every caller checks, and a service whose
+// counters could not be created still serves pages — metrics are for the
+// people watching, and a watcher that takes the service down with it is worse
+// than no watcher.
+int metrics_open() {
+    native "
+    static int64_t* page = NULL;
+    if (page == NULL) {
+        void* m = mmap(NULL, sizeof(int64_t) * 32, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) { return 0; }
+        page = (int64_t*)m;
+        memset(page, 0, sizeof(int64_t) * 32);
+    }
+    return (int64_t)(intptr_t)page;
+    ";
+}
+
+int metrics_add(int page, int slot, int by) {
+    native "
+    int64_t* p = (int64_t*)(intptr_t)$page;
+    if (p == NULL) { return 0; }
+    if ($slot < 0) { return 0; }
+    if ($slot >= 32) { return 0; }
+    __sync_fetch_and_add(&p[$slot], (int64_t)$by);
+    return 1;
+    ";
+}
+
+int metrics_get(int page, int slot) {
+    native "
+    int64_t* p = (int64_t*)(intptr_t)$page;
+    if (p == NULL) { return 0; }
+    if ($slot < 0) { return 0; }
+    if ($slot >= 32) { return 0; }
+    return __sync_fetch_and_add(&p[$slot], 0);
+    ";
+}
+
+int metrics_set(int page, int slot, int value) {
+    native "
+    int64_t* p = (int64_t*)(intptr_t)$page;
+    if (p == NULL) { return 0; }
+    if ($slot < 0) { return 0; }
+    if ($slot >= 32) { return 0; }
+    p[$slot] = (int64_t)$value;
+    return 1;
+    ";
+}
+
+// Raise a slot to `value` if `value` is larger, and leave it alone otherwise.
+// A read-then-write would lose a slower request that landed in between, which
+// is exactly the request worth knowing about.
+int metrics_raise(int page, int slot, int value) {
+    native "
+    int64_t* p = (int64_t*)(intptr_t)$page;
+    if (p == NULL) { return 0; }
+    if ($slot < 0) { return 0; }
+    if ($slot >= 32) { return 0; }
+    for (;;) {
+        int64_t cur = __sync_fetch_and_add(&p[$slot], 0);
+        if ((int64_t)$value <= cur) { return 0; }
+        if (__sync_bool_compare_and_swap(&p[$slot], cur, (int64_t)$value)) { return 1; }
+    }
+    ";
+}
+
+int metrics_now_seconds() { native "return (int64_t)time(NULL);"; }
+
+// Called once, in the parent, before any connection is accepted. The start
+// time is recorded here rather than on first request, so uptime means what a
+// person means by it.
+int metrics_start() {
+    int page = metrics_open();
+    if (page == 0) { return 0; }
+    metrics_set(page, M_STARTED, metrics_now_seconds());
+    return page;
+}
+
+// One finished request. Buckets rather than a stored list of timings: a
+// service under load cannot keep every duration, and a bucket count answers
+// "is anything slow" without pretending to a precision it does not have.
+int metrics_record(int page, int status, int took_ms) {
+    if (page == 0) { return 0; }
+    metrics_add(page, M_TOTAL, 1);
+    if (status >= 500) { metrics_add(page, M_5XX, 1); }
+    else { if (status >= 400) { metrics_add(page, M_4XX, 1); }
+    else { if (status >= 300) { metrics_add(page, M_3XX, 1); }
+    else { if (status >= 200) { metrics_add(page, M_2XX, 1); } } } }
+    metrics_add(page, M_SUM_MS, took_ms);
+    metrics_raise(page, M_MAX_MS, took_ms);
+    if (took_ms < 1) { metrics_add(page, M_UNDER_1, 1); }
+    else { if (took_ms < 10) { metrics_add(page, M_UNDER_10, 1); }
+    else { if (took_ms < 100) { metrics_add(page, M_UNDER_100, 1); }
+    else { if (took_ms < 1000) { metrics_add(page, M_UNDER_1000, 1); }
+    else { metrics_add(page, M_SLOWER, 1); } } } }
+    return 1;
+}
+
+// A connection turned away because every slot was taken. Counted apart from
+// the 5xx above: those are requests the service tried and failed, this is a
+// request it never started, and confusing the two hides a capacity problem
+// behind what looks like a bug.
+int metrics_refused(int page) {
+    if (page == 0) { return 0; }
+    metrics_add(page, M_REFUSED, 1);
+    return 1;
+}
+
+int metrics_uptime_seconds(int page) {
+    if (page == 0) { return 0; }
+    int started = metrics_get(page, M_STARTED);
+    if (started == 0) { return 0; }
+    return metrics_now_seconds() - started;
+}
+
+// Helper: one `name value` line.
+str metric_line(str name, int value) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, name);
+    sb_append(&sb, " ");
+    sb_append(&sb, str(value));
+    sb_append(&sb, "\n");
+    return sb_to_str(&sb);
+}
+
+// The counters as plain text, one `name value` per line. This is the format
+// Prometheus scrapes and also the format a person can read over someone's
+// shoulder, which is why it was chosen over JSON.
+str metrics_render(int page) {
+    StringBuilder sb = sb_new();
+    if (page == 0) {
+        sb_append(&sb, "# counters unavailable: the shared page could not be mapped\n");
+        return sb_to_str(&sb);
+    }
+    sb_append(&sb, "# requests answered, by outcome\n");
+    sb_append(&sb, metric_line("strata_requests_total", metrics_get(page, M_TOTAL)));
+    sb_append(&sb, metric_line("strata_requests_2xx", metrics_get(page, M_2XX)));
+    sb_append(&sb, metric_line("strata_requests_3xx", metrics_get(page, M_3XX)));
+    sb_append(&sb, metric_line("strata_requests_4xx", metrics_get(page, M_4XX)));
+    sb_append(&sb, metric_line("strata_requests_5xx", metrics_get(page, M_5XX)));
+    sb_append(&sb, metric_line("strata_connections_refused", metrics_get(page, M_REFUSED)));
+    sb_append(&sb, "# how long they took\n");
+    sb_append(&sb, metric_line("strata_request_ms_sum", metrics_get(page, M_SUM_MS)));
+    sb_append(&sb, metric_line("strata_request_ms_max", metrics_get(page, M_MAX_MS)));
+    sb_append(&sb, metric_line("strata_request_ms_bucket_1", metrics_get(page, M_UNDER_1)));
+    sb_append(&sb, metric_line("strata_request_ms_bucket_10", metrics_get(page, M_UNDER_10)));
+    sb_append(&sb, metric_line("strata_request_ms_bucket_100", metrics_get(page, M_UNDER_100)));
+    sb_append(&sb, metric_line("strata_request_ms_bucket_1000", metrics_get(page, M_UNDER_1000)));
+    sb_append(&sb, metric_line("strata_request_ms_bucket_slower", metrics_get(page, M_SLOWER)));
+    sb_append(&sb, "# and how long it has been up\n");
+    sb_append(&sb, metric_line("strata_uptime_seconds", metrics_uptime_seconds(page)));
+    return sb_to_str(&sb);
+}

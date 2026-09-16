@@ -148,7 +148,10 @@ else:
                     break
                 except Exception:
                     continue
-            ok("the binary it produced serves", body.strip() == "ok", repr(body[:80]))
+            # /health leads with "ok" and then reports uptime and a request
+            # count, so this checks the first line rather than the whole body.
+            ok("the binary it produced serves",
+               body.splitlines()[:1] == ["ok"], repr(body[:80]))
 
             # Not urlopen: it follows the 303 to /login and reports 200, which
             # would make "protected" indistinguishable from "wide open".

@@ -149,6 +149,42 @@ def log_request(str method, str path, int status, int took_ms) {
     print(sb_to_str(&sb));
 }
 
+// A request that did not work, on stderr, with the fields a person needs to
+// find it again: when it happened, what was asked, what went wrong, how long
+// it took before it gave up.
+//
+//     ERROR ts=1757900000 method=POST path=/orders status=403 took_ms=2
+//
+// Separate from the request log on purpose. stdout is a stream somebody
+// watches; stderr is what a container runtime, a log collector and a person
+// reading a crash all look at first, and a failure buried in a thousand
+// successful lines is a failure nobody finds. The shape is key=value because
+// that is what a log search can filter on without a parser being written for
+// it, and it is still readable without one.
+def log_failure(str method, str path, int status, int took_ms) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "ERROR ts=");
+    sb_append(&sb, str(now_seconds_utc()));
+    sb_append(&sb, " method=");
+    sb_append(&sb, method);
+    sb_append(&sb, " path=");
+    sb_append(&sb, path);
+    sb_append(&sb, " status=");
+    sb_append(&sb, str(status));
+    sb_append(&sb, " took_ms=");
+    sb_append(&sb, str(took_ms));
+    eprint(sb_to_str(&sb));
+}
+
+// Seconds since the epoch. Named apart from the app's own `now_seconds` so a
+// service that defines one does not collide with this.
+int now_seconds_utc() {
+    native "
+    struct timeval tv; gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec;
+    ";
+}
+
 // 503, for a request arriving when every connection slot is taken.
 int http_too_busy(int conn) {
     return http_respond(conn, 503, "text/html; charset=utf-8",

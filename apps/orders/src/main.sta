@@ -10,6 +10,7 @@ import str    from std;
 import mem    from std;
 import http   from std;
 import auth   from std;
+import metrics from std;
 import schema from app;
 import rules  from app;
 import views  from app;
@@ -180,8 +181,23 @@ int handle(int conn, str request) {
     int user   = current_user(request);
 
     // Open to everyone.
+    // Two pages the service answers about itself. Neither needs a session:
+    // whatever is watching this service is not a person with a password, and
+    // a health check that can fail because a cookie expired is a health check
+    // that lies. Neither reads the business tables either, so they keep
+    // answering when the data is what is broken — which is when they matter.
     if (str_eq(path, "/health") == 1) {
-        return http_respond(conn, 200, "text/plain", "ok");
+        int hp = metrics_open();
+        StringBuilder hb = sb_new();
+        sb_append(&hb, "ok\nuptime_seconds ");
+        sb_append(&hb, str(metrics_uptime_seconds(hp)));
+        sb_append(&hb, "\nrequests ");
+        sb_append(&hb, str(metrics_get(hp, M_TOTAL)));
+        sb_append(&hb, "\n");
+        return http_respond(conn, 200, "text/plain", sb_to_str(&hb));
+    }
+    if (str_eq(path, "/metrics") == 1) {
+        return http_respond(conn, 200, "text/plain", metrics_render(metrics_open()));
     }
     if (str_eq(path, "/login") == 1) {
         if (str_eq(method, "POST") == 1) { return do_login(conn, body); }
@@ -232,7 +248,9 @@ int serve(int conn) {
     str request = http_read_request(conn);
     if (str_len(request) == 0) {
         int code = http_request_timeout(conn);
-        log_request("-", "-", code, now_millis() - started);
+        int took = now_millis() - started;
+        log_request("-", "-", code, took);
+        metrics_record(metrics_open(), code, took);
         http_close(conn);
         return 1;
     }
@@ -251,8 +269,18 @@ int serve(int conn) {
     unlock(lock);
     // Logged after the work, with what the handler actually returned. A log
     // line written before the handler runs is a log of intentions.
-    log_request(http_method(request), http_path(request), status,
-    now_millis() - started);
+    int took = now_millis() - started;
+    log_request(http_method(request), http_path(request), status, took);
+    // The counters live in a page mapped before the first fork, so this child
+    // is adding to the same numbers the parent will serve on /metrics. A
+    // counter in an ordinary variable would leave with this process.
+    metrics_record(metrics_open(), status, took);
+    // A request that failed says so in its own line, with enough to find it
+    // again. The one-line-per-request log above is for watching; this is for
+    // the morning after, when somebody has a timestamp and a complaint.
+    if (status >= 400) {
+        log_failure(http_method(request), http_path(request), status, took);
+    }
     http_close(conn);
     return 1;
 }
@@ -260,6 +288,11 @@ int serve(int conn) {
 int main() {
     load_all();
     seed_if_empty();
+
+    // Before the first fork, so every child inherits the same shared page.
+    // Started here rather than lazily: a counter created on first use has no
+    // start time, and uptime is the first thing anyone asks.
+    metrics_start();
 
     int fd = http_listen(8080);
     if (fd < 0) { eprint("could not bind port 8080"); return 1; }
@@ -289,6 +322,11 @@ int main() {
         if (live >= MAX_CONNECTIONS) {
             http_too_busy(conn);
             log_request("-", "-", 503, 0);
+            // Counted apart from the 5xx: this is a connection the service
+            // never started, not a request it got wrong. Reading them as the
+            // same number hides running out of capacity behind what looks
+            // like a bug in a handler.
+            metrics_refused(metrics_open());
             http_close(conn);
             continue;
         }
