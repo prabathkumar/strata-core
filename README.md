@@ -442,10 +442,30 @@ The connection is opened once per process and reused, and the process id is
 part of its identity: a service that forks per request would otherwise have
 parent and child talking down the same socket.
 
-The remaining limits: a load still reads the whole table, there is no
-connection pool beyond the one handle, and the cached-load optimisation does
-not apply, because a file has a modification time to compare and a query does
-not.
+A load can fetch part of a table, written the way every other query in the
+language is written:
+
+```
+load Order from "$DATABASE_URL" <- [status == "OPEN" && region == "apac"];
+```
+
+Against a database that becomes a `WHERE` clause and only the matching rows
+cross the wire. Against a file the rows are read and then dropped, which is
+the same answer by a slower road — and that is the point: the program means
+the same thing either way.
+
+Only the conditions that mean the same thing in both places are translated:
+comparisons between a column and an integer or string literal, joined by `&&`
+and `||`. Anything else — a function call, arithmetic, a float literal —
+loads the table and filters in memory, exactly as before. A WHERE clause that
+was subtly wrong would silently return the wrong rows, so the rule is to
+translate what is certain and decline the rest. `save` takes no filter: a
+partial save would mean the store no longer matches memory, which is the one
+thing `save` promises.
+
+The remaining limits: there is no connection pool beyond one handle per
+process, and the cached-load optimisation does not apply to a database,
+because a file has a modification time to compare and a query does not.
 
 ### Commands
 

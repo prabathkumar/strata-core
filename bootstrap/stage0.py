@@ -332,12 +332,80 @@ int main(int argc, char** argv) {
             self._gen_foreign(decl)
 
 
+    def _sql_where(self, expr, schema):
+        """A query condition as SQL, or None when it cannot be expressed.
+
+        Only the shapes that mean the same thing in both places are
+        translated: comparisons between a column and a literal, and `&&`/`||`
+        joining them. Anything else -- a function call, a parameter, arithmetic
+        -- returns None, and the caller loads the table and filters in memory
+        exactly as before. A wrong WHERE clause would silently return the wrong
+        rows, so the rule is translate what is certain and decline the rest.
+        """
+        cols = self.schemas.get(schema, [])
+
+        def go(e):
+            if isinstance(e, BinaryExpr):
+                if e.op in ("&&", "||"):
+                    l, r = go(e.left), go(e.right)
+                    if l is None or r is None:
+                        return None
+                    return f"({l} {'AND' if e.op == '&&' else 'OR'} {r})"
+                if e.op in ("==", "!=", "<", ">", "<=", ">="):
+                    col = lit = None
+                    for a, b in ((e.left, e.right), (e.right, e.left)):
+                        if isinstance(a, Identifier) and a.name in cols:
+                            col, lit = a, b
+                            break
+                    if col is None:
+                        return None
+                    flip = col is e.right
+                    v = self._sql_literal(lit)
+                    if v is None:
+                        return None
+                    op = {"==": "=", "!=": "<>"}.get(e.op, e.op)
+                    if flip:
+                        op = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(op, op)
+                    return f'(\\"{col.name}\\" {op} {v})'
+            return None
+
+        return go(expr)
+
+    def _sql_literal(self, e):
+        """A literal as SQL, or None if it is not a literal.
+
+        Strings are escaped by doubling the quote, which is the whole of SQL
+        string escaping -- and this only ever sees a literal from the program's
+        own source, never anything a user typed."""
+        if isinstance(e, IntLiteral):
+            return str(e.value)
+        # Floats are deliberately not translated. This generator holds the
+        # parsed number and the one written in Strata holds the text it was
+        # written as, and there is no representation both are guaranteed to
+        # print identically -- `1.50` and `1.5` are the same number and
+        # different strings. A float comparison falls back to loading the
+        # table and filtering in memory, which is the same answer.
+        if isinstance(e, StrLiteral):
+            return "'" + str(e.value).replace("'", "''") + "'"
+        return None
+
+    def _gen_table_push(self, name, indent):
+        """Append a row, growing the table if it is full.
+
+        This used to be `if (count < CAP) rows[count++] = r;` -- a row past
+        the end was dropped without a word."""
+        self.emit_raw(f"{indent}if (!strata_table_room((void***)&{name}__rows, "
+                      f"&{name}__cap, {name}__count + 1)) "
+                      f'strata_table_full("{name}");')
+        self.emit_raw(f"{indent}{name}__rows[{name}__count++] = r;")
+
     def _gen_table_storage(self, name):
         """Backing store for a database block.
 
         Emitted after the struct so the row type is complete."""
-        self.emit_raw(f"static {name}* {name}__rows[STRATA_TABLE_CAP];")
+        self.emit_raw(f"static {name}** {name}__rows = NULL;")
         self.emit_raw(f"static strata_int {name}__count = 0;")
+        self.emit_raw(f"static strata_int {name}__cap = 0;")
         # Which file this table was last read from, and that file's identity at
         # the time. `load` uses them to skip work it has already done.
         self.emit_raw(f"static char* {name}__from = NULL;")
@@ -438,7 +506,8 @@ int main(int argc, char** argv) {
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
-        self.emit_raw(f"static strata_int {name}__load(strata_str path) {{")
+        self.emit_raw(f"static strata_int {name}__load(strata_str path, "
+                      f"strata_str _where) {{")
         self.emit_raw("    path = (strata_str)strata_env_path(path);")
         self.emit_raw('    if (!path || !*path) { return 0; }')
         # Already loaded, from the same file, and the file has not changed
@@ -447,7 +516,10 @@ int main(int argc, char** argv) {
         # request into a stat() — including on the requests that never touch
         # the table.
         self.emit_raw(f"    int64_t _stamp = strata_file_stamp(path);")
-        self.emit_raw(f"    if (_stamp != 0 && _stamp == {name}__stamp")
+        # A filtered load asks for a different set of rows, so the table it
+        # already holds is not the answer even when the file has not changed.
+        self.emit_raw(f"    if ((!_where || !*_where) && _stamp != 0 "
+                      f"&& _stamp == {name}__stamp")
         self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
@@ -504,8 +576,7 @@ int main(int argc, char** argv) {
         self.emit_raw("            }")
         self.emit_raw("        }")
         self.emit_raw("        if (_eof) { free(r); break; }")
-        self.emit_raw(f"        if ({name}__count < STRATA_TABLE_CAP) "
-                      f"{name}__rows[{name}__count++] = r;")
+        self._gen_table_push(name, "        ")
         self.emit_raw("    }")
         self.emit_raw("    fclose(f);")
         self.emit_raw(f"    free({name}__from);")
@@ -591,7 +662,14 @@ int main(int argc, char** argv) {
         self.emit_raw("    if (strata_pg_is_url(path)) {")
         self.emit_raw("        void* _pg = strata_pg_open(path);")
         self.emit_raw("        if (!_pg) { return 0; }")
-        self.emit_raw(f'        void* _res = strata_pg_select(_pg, "{select_sql}");')
+        # The WHERE the caller translated, if any. Appended here rather than
+        # baked into select_sql, because the same __load serves every call
+        # site and each may ask for something different.
+        self.emit_raw(f'        char _q[2048];')
+        self.emit_raw(f'        snprintf(_q, sizeof(_q), "{select_sql}%s%s",')
+        self.emit_raw('                 (_where && *_where) ? " WHERE " : "",')
+        self.emit_raw('                 (_where && *_where) ? _where : "");')
+        self.emit_raw("        void* _res = strata_pg_select(_pg, _q);")
         self.emit_raw("        if (!_res) { strata_pg_close(_pg); return 0; }")
         self.emit_raw(f"        {name}__count = 0;")
         if key:
@@ -608,8 +686,7 @@ int main(int argc, char** argv) {
                 self.emit_raw(f"            r->{fd.name} = strtod({src}, NULL);")
             else:
                 self.emit_raw(f"            r->{fd.name} = (strata_int)atoll({src});")
-        self.emit_raw(f"            if ({name}__count < STRATA_TABLE_CAP) "
-                      f"{name}__rows[{name}__count++] = r;")
+        self._gen_table_push(name, "            ")
         # What the table held when it was read, so the next save can tell
         # which rows actually changed.
         if key:
@@ -620,6 +697,10 @@ int main(int argc, char** argv) {
                           f"(int64_t)r->{key}, strata_pg_hash({len(fields)}, _v));")
         self.emit_raw("        }")
         if key:
+            # A filtered load has seen part of the table, so the snapshot
+            # describes part of it. That is still exactly right for the next
+            # save: a row never read is never deleted, because delete only
+            # touches keys that WERE read and have since gone.
             self.emit_raw(f"        strata_pg_snap_adopt(&{name}__pg_was, "
                           f"&{name}__pg_now, path);")
         self.emit_raw("        strata_pg_clear(_res);")
@@ -1075,7 +1156,44 @@ int main(int argc, char** argv) {
             self.emit(f'printf("%s\\n",(strata_str)({val}));')
         elif isinstance(stmt, TableIOStmt):
             fn = "__save" if stmt.op == "save" else "__load"
-            self.emit(f'{stmt.table}{fn}("{stmt.path}");')
+            where = ""
+            if stmt.op == "load" and getattr(stmt, "cond", None) is not None:
+                if stmt.table in self.schemas:
+                    self._validate_query_columns(stmt.cond, stmt.table, stmt.line)
+                where = self._sql_where(stmt.cond, stmt.table) or ""
+            if fn == "__load":
+                self.emit(f'{stmt.table}{fn}("{stmt.path}", "{where}");')
+            else:
+                self.emit(f'{stmt.table}{fn}("{stmt.path}");')
+            if stmt.op == "load" and getattr(stmt, "cond", None) is not None:
+                # The database has already applied the WHERE when it could be
+                # translated. This pass is what makes the two stores agree:
+                # a file has no WHERE, and a condition SQL could not express
+                # is filtered here for both.
+                t = stmt.table
+                self.emit("{")
+                self.indent += 1
+                self.emit("strata_int _kept = 0;")
+                self.emit(f"for (strata_int _i = 0; _i < {t}__count; _i++) {{")
+                self.indent += 1
+                self.emit(f"{t}* _row = {t}__rows[_i];")
+                prev = self.query_row_type
+                self.query_row_type = t
+                cond = self._gen_expr(stmt.cond, param_names)
+                self.query_row_type = prev
+                self.emit(f"if ({cond}) {{ {t}__rows[_kept++] = _row; }}")
+                self.emit("else { free(_row); }")
+                self.indent -= 1
+                self.emit("}")
+                self.emit(f"{t}__count = _kept;")
+                # What is in memory is no longer the whole file, so the
+                # load-skip must not treat it as though it were. Without
+                # this, a filtered load followed by a plain one returned the
+                # filtered rows: the file had not changed, so the plain load
+                # decided it had nothing to do.
+                self.emit(f"{t}__stamp = 0;")
+                self.indent -= 1
+                self.emit("}")
         elif isinstance(stmt, RenderStmt):
             self.emit(f'{{ FILE* _f=fopen("{stmt.path}","w"); if(_f){{ '
                       f'{stmt.report}_render(_f); fclose(_f); }} }}')
@@ -1197,8 +1315,10 @@ int main(int argc, char** argv) {
         self.emit(f"{stmt.target}* _r = ({stmt.target}*)calloc(1, sizeof({stmt.target}));")
         for col, v in stmt.assignments:
             self.emit(f"_r->{col} = {self._gen_expr(v, param_names)};")
-        self.emit(f"if ({stmt.target}__count < STRATA_TABLE_CAP) "
-                  f"{stmt.target}__rows[{stmt.target}__count++] = _r;")
+        t = stmt.target
+        self.emit(f"if (!strata_table_room((void***)&{t}__rows, &{t}__cap, "
+                  f'{t}__count + 1)) strata_table_full("{t}");')
+        self.emit(f"{t}__rows[{t}__count++] = _r;")
         self.indent -= 1
         self.emit("}")
 

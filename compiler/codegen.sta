@@ -773,6 +773,97 @@ def gen_block(Gen &g, int vec_p) {
     for (int i = 0; i < n; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
 }
 
+// A literal as SQL, or "" when the node is not a literal. Strings are escaped
+// by doubling the quote, which is the whole of SQL string escaping -- and this
+// only ever sees a literal from the program's own source.
+str sql_literal(Node e) {
+    if (e.kind == 50) { return str(e.i1); }             // IntLiteral
+    // FloatLiteral (51) is deliberately absent: the oracle holds the parsed
+    // number and this holds the text it was written as, and there is no
+    // representation both are guaranteed to print identically. A float
+    // comparison falls back to filtering in memory.
+    if (e.kind == 52) {                                 // StrLiteral
+        StringBuilder q = sb_new();
+        sb_append(&q, "'");
+        int n = str_len(e.s1);
+        for (int i = 0; i < n; i = i + 1) {
+            if (e.s1[i] == 39) { sb_append(&q, "'"); }
+            sb_append(&q, char_str(e.s1[i]));
+        }
+        sb_append(&q, "'");
+        return sb_to_str(&q);
+    }
+    return "";
+}
+
+str sql_flip_op(str op) {
+    if (str_eq(op, "<") == 1) { return ">"; }
+    if (str_eq(op, ">") == 1) { return "<"; }
+    if (str_eq(op, "<=") == 1) { return ">="; }
+    if (str_eq(op, ">=") == 1) { return "<="; }
+    return op;
+}
+
+// A query condition as SQL, or "" when it cannot be expressed.
+//
+// Only the shapes that mean the same thing in both places are translated:
+// comparisons between a column and a literal, and && / || joining them.
+// Anything else returns "", and the caller loads the table and filters in
+// memory exactly as before. A wrong WHERE clause would silently return the
+// wrong rows, so the rule is to translate what is certain and decline the
+// rest.
+str sql_where(Gen &g, Node e, str table) {
+    if (e.kind != 40) { return ""; }                    // BinaryExpr
+    Node l = node_at(e.c1);
+    Node r = node_at(e.c2);
+    if (str_eq(e.s1, "&&") == 1) { return sql_join(&g, l, r, "AND", table); }
+    if (str_eq(e.s1, "||") == 1) { return sql_join(&g, l, r, "OR", table); }
+
+    int cmp = 0;
+    if (str_eq(e.s1, "==") == 1) { cmp = 1; }
+    if (str_eq(e.s1, "!=") == 1) { cmp = 1; }
+    if (str_eq(e.s1, "<") == 1) { cmp = 1; }
+    if (str_eq(e.s1, ">") == 1) { cmp = 1; }
+    if (str_eq(e.s1, "<=") == 1) { cmp = 1; }
+    if (str_eq(e.s1, ">=") == 1) { cmp = 1; }
+    if (cmp == 0) { return ""; }
+
+    str col = "";
+    str lit = "";
+    int flipped = 0;
+    if (l.kind == 54) { if (schema_has_column(&g, table, l.s1) == 1) {
+            col = l.s1; lit = sql_literal(r); } }
+    if (str_len(col) == 0) {
+        if (r.kind == 54) { if (schema_has_column(&g, table, r.s1) == 1) {
+                col = r.s1; lit = sql_literal(l); flipped = 1; } }
+    }
+    if (str_len(col) == 0) { return ""; }
+    if (str_len(lit) == 0) { return ""; }
+
+    str op = e.s1;
+    if (str_eq(op, "==") == 1) { op = "="; }
+    if (str_eq(op, "!=") == 1) { op = "<>"; }
+    if (flipped == 1) { op = sql_flip_op(op); }
+
+    StringBuilder out = sb_new();
+    sb_append(&out, "(\\\""); sb_append(&out, col); sb_append(&out, "\\\" ");
+    sb_append(&out, op); sb_append(&out, " "); sb_append(&out, lit);
+    sb_append(&out, ")");
+    return sb_to_str(&out);
+}
+
+str sql_join(Gen &g, Node l, Node r, str word, str table) {
+    str a = sql_where(&g, l, table);
+    if (str_len(a) == 0) { return ""; }
+    str b = sql_where(&g, r, table);
+    if (str_len(b) == 0) { return ""; }
+    StringBuilder out = sb_new();
+    sb_append(&out, "("); sb_append(&out, a); sb_append(&out, " ");
+    sb_append(&out, word); sb_append(&out, " "); sb_append(&out, b);
+    sb_append(&out, ")");
+    return sb_to_str(&out);
+}
+
 def gen_stmt(Gen &g, Node st) {
     int k = st.kind;
 
@@ -886,12 +977,62 @@ def gen_stmt(Gen &g, Node st) {
     }
 
     if (k == 75) {                                    // save / load
+        str where = "";
+        if (st.c1 >= 0) { if (str_eq(st.s1, "save") == 0) {
+                where = sql_where(&g, node_at(st.c1), st.s2); } }
         StringBuilder sb = sb_new();
         sb_append(&sb, st.s2);
-        if (str_eq(st.s1, "save") == 1) { sb_append(&sb, "__save(\""); }
-        if (str_eq(st.s1, "save") == 0) { sb_append(&sb, "__load(\""); }
-        sb_append(&sb, st.s3); sb_append(&sb, "\");");
+        if (str_eq(st.s1, "save") == 1) {
+            sb_append(&sb, "__save(\""); sb_append(&sb, st.s3);
+            sb_append(&sb, "\");");
+        }
+        if (str_eq(st.s1, "save") == 0) {
+            sb_append(&sb, "__load(\""); sb_append(&sb, st.s3);
+            sb_append(&sb, "\", \""); sb_append(&sb, where); sb_append(&sb, "\");");
+        }
         cg_emit(&g, sb_to_str(&sb));
+        if (st.c1 >= 0) { if (str_eq(st.s1, "save") == 0) {
+                // The database has already applied the WHERE when it could be
+                // translated. This pass is what makes the two stores agree: a
+                // file has no WHERE, and a condition SQL could not express is
+                // filtered here for both.
+                cg_emit(&g, "{");
+                g.indent = g.indent + 1;
+                cg_emit(&g, "strata_int _kept = 0;");
+                StringBuilder lp = sb_new();
+                sb_append(&lp, "for (strata_int _i = 0; _i < "); sb_append(&lp, st.s2);
+                sb_append(&lp, "__count; _i++) {");
+                cg_emit(&g, sb_to_str(&lp));
+                g.indent = g.indent + 1;
+                StringBuilder rw = sb_new();
+                sb_append(&rw, st.s2); sb_append(&rw, "* _row = ");
+                sb_append(&rw, st.s2); sb_append(&rw, "__rows[_i];");
+                cg_emit(&g, sb_to_str(&rw));
+                str prev = g.query_row;
+                g.query_row = st.s2;
+                str cond = gen_expr(&g, st.c1);
+                g.query_row = prev;
+                StringBuilder ke = sb_new();
+                sb_append(&ke, "if ("); sb_append(&ke, cond); sb_append(&ke, ") { ");
+                sb_append(&ke, st.s2); sb_append(&ke, "__rows[_kept++] = _row; }");
+                cg_emit(&g, sb_to_str(&ke));
+                cg_emit(&g, "else { free(_row); }");
+                g.indent = g.indent - 1;
+                cg_emit(&g, "}");
+                StringBuilder ct = sb_new();
+                sb_append(&ct, st.s2); sb_append(&ct, "__count = _kept;");
+                cg_emit(&g, sb_to_str(&ct));
+                // What is in memory is no longer the whole file, so the
+                // load-skip must not treat it as though it were. Without
+                // this, a filtered load followed by a plain one returned the
+                // filtered rows: the file had not changed, so the plain load
+                // decided it had nothing to do.
+                StringBuilder iv = sb_new();
+                sb_append(&iv, st.s2); sb_append(&iv, "__stamp = 0;");
+                cg_emit(&g, sb_to_str(&iv));
+                g.indent = g.indent - 1;
+                cg_emit(&g, "}");
+            } }
         return;
     }
 
@@ -960,11 +1101,9 @@ def gen_stmt(Gen &g, Node st) {
             sb_append(&set, ";");
             cg_emit(&g, sb_to_str(&set));
         }
-        StringBuilder push = sb_new();
-        sb_append(&push, "if ("); sb_append(&push, st.s1);
-        sb_append(&push, "__count < STRATA_TABLE_CAP) "); sb_append(&push, st.s1);
-        sb_append(&push, "__rows["); sb_append(&push, st.s1); sb_append(&push, "__count++] = _r;");
-        cg_emit(&g, sb_to_str(&push));
+        StringBuilder ind = sb_new();
+        for (int _i = 0; _i < g.indent; _i = _i + 1) { sb_append(&ind, "    "); }
+        gen_table_push(&g, st.s1, sb_to_str(&ind), "_r");
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
         return;
@@ -1308,10 +1447,17 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
     emit_raw(&g, "    if (strata_pg_is_url(path)) {");
     emit_raw(&g, "        void* _pg = strata_pg_open(path);");
     emit_raw(&g, "        if (!_pg) { return 0; }");
+    // The WHERE the caller translated, if any. Appended here rather than
+    // baked into select_sql, because the same __load serves every call site
+    // and each may ask for something different.
+    emit_raw(&g, "        char _q[2048];");
     StringBuilder sl = sb_new();
-    sb_append(&sl, "        void* _res = strata_pg_select(_pg, \"");
-    sb_append(&sl, select_sql); sb_append(&sl, "\");");
+    sb_append(&sl, "        snprintf(_q, sizeof(_q), \"");
+    sb_append(&sl, select_sql); sb_append(&sl, "%s%s\",");
     emit_raw(&g, sb_to_str(&sl));
+    emit_raw(&g, "                 (_where && *_where) ? \" WHERE \" : \"\",");
+    emit_raw(&g, "                 (_where && *_where) ? _where : \"\");");
+    emit_raw(&g, "        void* _res = strata_pg_select(_pg, _q);");
     emit_raw(&g, "        if (!_res) { strata_pg_close(_pg); return 0; }");
     StringBuilder z = sb_new();
     sb_append(&z, "        "); sb_append(&z, name); sb_append(&z, "__count = 0;");
@@ -1343,11 +1489,7 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
         sb_append(&w, ");");
         emit_raw(&g, sb_to_str(&w));
     }
-    StringBuilder ps = sb_new();
-    sb_append(&ps, "            if ("); sb_append(&ps, name);
-    sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
-    sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
-    emit_raw(&g, sb_to_str(&ps));
+    gen_table_push(&g, name, "            ", "r");
     // What the table held when it was read, so the next save can tell which
     // rows actually changed.
     if (str_len(key) > 0) {
@@ -1522,16 +1664,18 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
 
     StringBuilder b = sb_new();
     sb_append(&b, "static strata_int "); sb_append(&b, name);
-    sb_append(&b, "__load(strata_str path) {");
+    sb_append(&b, "__load(strata_str path, strata_str _where) {");
     emit_raw(&g, sb_to_str(&b));
     emit_raw(&g, "    path = (strata_str)strata_env_path(path);");
     emit_raw(&g, "    if (!path || !*path) { return 0; }");
     // Already loaded, from the same file, and the file has not changed since:
     // there is nothing to do.
     emit_raw(&g, "    int64_t _stamp = strata_file_stamp(path);");
+    // A filtered load asks for a different set of rows, so the table it
+    // already holds is not the answer even when the file has not changed.
     StringBuilder sk = sb_new();
-    sb_append(&sk, "    if (_stamp != 0 && _stamp == "); sb_append(&sk, name);
-    sb_append(&sk, "__stamp");
+    sb_append(&sk, "    if ((!_where || !*_where) && _stamp != 0 && _stamp == ");
+    sb_append(&sk, name); sb_append(&sk, "__stamp");
     emit_raw(&g, sb_to_str(&sk));
     StringBuilder sk2 = sb_new();
     sb_append(&sk2, "        && "); sb_append(&sk2, name);
@@ -1625,11 +1769,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "            }");
     emit_raw(&g, "        }");
     emit_raw(&g, "        if (_eof) { free(r); break; }");
-    StringBuilder ps = sb_new();
-    sb_append(&ps, "        if ("); sb_append(&ps, name);
-    sb_append(&ps, "__count < STRATA_TABLE_CAP) "); sb_append(&ps, name);
-    sb_append(&ps, "__rows["); sb_append(&ps, name); sb_append(&ps, "__count++] = r;");
-    emit_raw(&g, sb_to_str(&ps));
+    gen_table_push(&g, name, "        ", "r");
     emit_raw(&g, "    }");
     emit_raw(&g, "    fclose(f);");
     StringBuilder ft3 = sb_new();
@@ -1647,16 +1787,38 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "}");
 }
 
+// Append a row, growing the table if it is full. This used to be
+// `if (count < CAP) rows[count++] = r;` -- a row past the end was dropped
+// without a word, so a program asked to store five thousand rows held four
+// thousand and ninety-six and said nothing about the rest.
+def gen_table_push(Gen &g, str name, str indent, str row) {
+    StringBuilder a = sb_new();
+    sb_append(&a, indent); sb_append(&a, "if (!strata_table_room((void***)&");
+    sb_append(&a, name); sb_append(&a, "__rows, &"); sb_append(&a, name);
+    sb_append(&a, "__cap, "); sb_append(&a, name);
+    sb_append(&a, "__count + 1)) strata_table_full(\""); sb_append(&a, name);
+    sb_append(&a, "\");");
+    emit_raw(&g, sb_to_str(&a));
+    StringBuilder b = sb_new();
+    sb_append(&b, indent); sb_append(&b, name); sb_append(&b, "__rows[");
+    sb_append(&b, name); sb_append(&b, "__count++] = "); sb_append(&b, row);
+    sb_append(&b, ";");
+    emit_raw(&g, sb_to_str(&b));
+}
+
 def gen_table_storage(Gen &g, str name) {
     // Backing store for a database block, emitted after the struct so the row
     // type is complete.
     StringBuilder a = sb_new();
-    sb_append(&a, "static "); sb_append(&a, name); sb_append(&a, "* ");
-    sb_append(&a, name); sb_append(&a, "__rows[STRATA_TABLE_CAP];");
+    sb_append(&a, "static "); sb_append(&a, name); sb_append(&a, "** ");
+    sb_append(&a, name); sb_append(&a, "__rows = NULL;");
     emit_raw(&g, sb_to_str(&a));
     StringBuilder b = sb_new();
     sb_append(&b, "static strata_int "); sb_append(&b, name); sb_append(&b, "__count = 0;");
     emit_raw(&g, sb_to_str(&b));
+    StringBuilder bc = sb_new();
+    sb_append(&bc, "static strata_int "); sb_append(&bc, name); sb_append(&bc, "__cap = 0;");
+    emit_raw(&g, sb_to_str(&bc));
     // Which file this table was last read from, and that file's identity at
     // the time. `load` uses them to skip work it has already done.
     StringBuilder c = sb_new();

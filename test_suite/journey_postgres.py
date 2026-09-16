@@ -14,6 +14,10 @@ answer could not stay "files". This journey checks the answer is real:
   - a save writes only the rows that changed, proved by a trigger inside the
     database counting every insert, update and delete it receives
   - a connection is reused rather than reopened for every save and load
+  - a table holds more than the four thousand and ninety-six rows it used to
+    silently cap at
+  - a filtered load becomes a WHERE clause rather than reading the whole
+    table and throwing most of it away
   - a program that does NOT import the module gains no libpq dependency
 
 Needs a PostgreSQL to talk to. Set STRATA_TEST_DB to a connection URL; without
@@ -313,6 +317,94 @@ int main() {
                 for ln in run.stdout.strip().splitlines() if ": " in ln)
             ok("a save with no prior load replaces the table",
                lines.get("rows") == "1", str(lines) + run.stderr[-200:])
+
+            print("\n── More rows than a table used to hold ─────────────────────────")
+            # A table's rows lived in a fixed array of 4096. An insert past
+            # the end was skipped -- no error, no message, exit status zero --
+            # so a service quietly stopped recording anything once it filled
+            # up, and a load of a larger table dropped the rest. This is the
+            # regression test for that, and it is deliberately just over the
+            # old limit rather than far past it, so a reintroduced cap of any
+            # size is caught rather than only an obvious one.
+            psql('DROP TABLE IF EXISTS "Order" CASCADE')
+            big = SCHEMA + '''
+import io       from std;
+import str      from std;
+import mem      from std;
+import postgres from std;
+
+int main() {
+    for (int i = 1; i <= 5000; i = i + 1) {
+        Order <- [id = i, customer = "c", amount = 5.0, status = "OPEN"];
+    }
+    print(str_concat("in memory: ", str(count(Order <- [id > 0]))));
+    save Order to "$STRATA_TEST_DB";
+    load Order from "$STRATA_TEST_DB";
+    print(str_concat("round trip: ", str(count(Order <- [id > 0]))));
+    return 0;
+}
+'''
+            out, r = build(tmp, big, "big")
+            ok("a program storing 5000 rows builds", r.returncode == 0,
+               r.stderr[-300:])
+            run = subprocess.run([out], cwd=tmp, capture_output=True,
+                                 text=True, env=e)
+            lines = dict(
+                (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
+                for ln in run.stdout.strip().splitlines() if ": " in ln)
+            ok("5000 rows are held, not 4096", lines.get("in memory") == "5000",
+               str(lines) + run.stderr[-200:])
+            ok("and all of them survive a save and a load",
+               lines.get("round trip") == "5000", str(lines))
+            db_rows = psql('SELECT count(*) FROM "Order"').stdout.strip()
+            ok("the database has all of them too", db_rows == "5000", db_rows)
+
+            print("\n── A filtered load asks the database, not the network ─────────")
+            # The filter is checked by what comes back, and separately by
+            # asking Postgres what it was sent. A filter applied after the
+            # rows arrive gives the same answer and none of the benefit, so
+            # the count alone would not prove anything.
+            picked = SCHEMA + '''
+import io       from std;
+import str      from std;
+import mem      from std;
+import postgres from std;
+
+int main() {
+    load Order from "$STRATA_TEST_DB" <- [id > 4995];
+    print(str_concat("tail: ", str(count(Order <- [id > 0]))));
+    load Order from "$STRATA_TEST_DB" <- [status == "OPEN" && id < 3];
+    print(str_concat("both: ", str(count(Order <- [id > 0]))));
+    load Order from "$STRATA_TEST_DB";
+    print(str_concat("all: ", str(count(Order <- [id > 0]))));
+    return 0;
+}
+'''
+            out, r = build(tmp, picked, "picked")
+            ok("a filtered load builds", r.returncode == 0, r.stderr[-300:])
+            c_src = open(os.path.join(tmp, "picked.c")).read()
+            # The generated C carries the SQL as a C string literal, so the
+            # column quotes appear escaped. Matching the unescaped form is
+            # what made this check fail the first time -- the code was right
+            # and the test was reading for the wrong thing.
+            ok("the filter is compiled into SQL, not just applied afterwards",
+               '\\"id\\" > 4995' in c_src
+               and '\\"status\\" = \'OPEN\'' in c_src,
+               "no WHERE clause found in the generated C")
+            run = subprocess.run([out], cwd=tmp, capture_output=True,
+                                 text=True, env=e)
+            lines = dict(
+                (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
+                for ln in run.stdout.strip().splitlines() if ": " in ln)
+            ok("a filtered load returns only the matching rows",
+               lines.get("tail") == "5", str(lines) + run.stderr[-200:])
+            ok("two conditions joined work too", lines.get("both") == "2",
+               str(lines))
+            # The bug this found: a filtered load left the table claiming to
+            # hold the whole file, so the next unfiltered load decided it had
+            # nothing to do and returned the filtered rows.
+            ok("and a plain load afterwards still reads everything",
+               lines.get("all") == "5000", str(lines))
 
             print("\n── The connection is reused, not reopened ──────────────────────")
             # Postgres counts the sessions ever established against a

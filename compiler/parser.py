@@ -352,8 +352,17 @@ class TableIOStmt(Node):
     op: str          # "save" | "load"
     table: str
     path: str
-    def to_dict(self): return {"node":"TableIOStmt","op":self.op,
-                               "table":self.table,"path":self.path}
+    # `load T from "p" <- [cond];` — the same query syntax the language
+    # already uses, so a load can fetch part of a table instead of all of it.
+    # None when the whole table is meant, which keeps every existing program
+    # and every existing AST unchanged.
+    cond: object = None
+    def to_dict(self):
+        d = {"node":"TableIOStmt","op":self.op,
+             "table":self.table,"path":self.path}
+        if self.cond is not None:
+            d["cond"] = self.cond.to_dict()
+        return d
 
 @dataclass
 class ForeignDecl(Node):
@@ -929,8 +938,18 @@ class Parser:
             table = self._consume(TT.IDENT).value
             self._consume_word("to" if op == "save" else "from")
             path = self._consume(TT.STR_LIT).value
+            # An optional filter, written the way every other query in the
+            # language is written. `save T to "p" <- [...]` is not accepted:
+            # a partial save would mean the store no longer matches memory,
+            # which is the one thing `save` promises.
+            cond = None
+            if op == "load" and self._check(TT.ARROW_L):
+                self._advance()
+                self._consume(TT.L_BRACKET)
+                cond = self._parse_expr()
+                self._consume(TT.R_BRACKET)
             self._consume(TT.SEMICOLON)
-            return TableIOStmt(t.line, t.col, op, table, path)
+            return TableIOStmt(t.line, t.col, op, table, path, cond)
 
         if self._check(TT.KW_VERIFY):
             return self._parse_verify()

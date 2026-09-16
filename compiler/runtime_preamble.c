@@ -137,7 +137,41 @@ static void sb_append_line_f(SB* s, const char* t) {
    deliberately the simplest thing that makes the cross-tier contract
    observable end to end — there is no persistence, no index and no
    transaction. */
+/* A table's rows used to live in a fixed array of this size. An insert past
+ * the end was skipped -- no error, no message, exit status zero -- so a
+ * service quietly stopped recording anything once it had four thousand rows,
+ * and a load of a larger file dropped the remainder on the floor. A program
+ * asked to store five thousand rows held four thousand and ninety-six and
+ * said nothing about the other nine hundred and four.
+ *
+ * Tables grow now. The constant is the FIRST allocation, not the limit. */
 #define STRATA_TABLE_CAP 4096
+
+/* Make room for `need` rows, growing by doubling. Returns 0 only when the
+ * machine is out of memory. */
+static int strata_table_room(void*** rows, strata_int* cap, strata_int need) {
+    if (need <= *cap) return 1;
+    strata_int want = *cap ? *cap : STRATA_TABLE_CAP;
+    while (want < need) {
+        if (want > (strata_int)1 << 40) return 0;   /* refuse to overflow */
+        want *= 2;
+    }
+    void** grown = (void**)realloc(*rows, (size_t)want * sizeof(void*));
+    if (!grown) return 0;
+    *rows = grown;
+    *cap = want;
+    return 1;
+}
+
+/* Out of memory with a row in hand. There is no honest way to carry on: the
+ * caller asked for the row to be stored and it is not stored, and returning
+ * quietly is the bug this replaced. */
+static void strata_table_full(const char* table) {
+    fprintf(stderr, "[strata] out of memory storing a row in %s; "
+                    "the row was not stored and cannot be\n", table);
+    fflush(stderr);
+    exit(70);   /* EX_SOFTWARE */
+}
 
 /* ── Lists ────────────────────────────────────────────────────────────────
    A list value is a pointer to its first element, with its element COUNT in

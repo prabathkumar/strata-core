@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### A table stopped storing rows at 4,096 and said nothing
+
+Every `database` block kept its rows in a fixed array of 4,096. An insert past
+the end was skipped — no error, no message, exit status zero — and a load of a
+larger file dropped the remainder on the floor. A program asked to store five
+thousand rows held four thousand and ninety-six and reported success.
+
+This was data loss with no symptom. A service would run correctly for months
+and then quietly stop recording anything, and the first anyone would know is a
+customer asking where their order went. It also made the PostgreSQL backend
+largely pointless: connecting to a database is not much use if the program can
+only ever see four thousand rows of it.
+
+Tables grow now, by doubling, and the only limit is memory. Running out of
+memory with a row in hand stops the program with a message naming the table,
+because the caller asked for the row to be stored and it is not stored, and
+returning quietly is the bug this replaces.
+
+Three conformance tests cover it, deliberately just over the old limit so that
+a reintroduced cap of any size is caught rather than only an obvious one.
+
+### A load can fetch part of a table
+
+```
+load Order from "$DATABASE_URL" <- [status == "OPEN" && region == "apac"];
+```
+
+The same query syntax the language already uses, now allowed on a load.
+Against a database it becomes a `WHERE` clause and only matching rows cross
+the wire; against a file the rows are read and then dropped. The program means
+the same thing either way, which is the property worth protecting.
+
+Only conditions that mean the same thing in both places are translated:
+comparisons between a column and an integer or string literal, joined by `&&`
+and `||`. Anything else falls back to loading and filtering in memory. Float
+literals are declined on purpose — this generator holds the parsed number and
+the one written in Strata holds the text it was written as, and there is no
+representation both are guaranteed to print identically, so `1.50` and `1.5`
+would have been two different WHERE clauses from one source file.
+
+`save` takes no filter. A partial save would mean the store no longer matches
+memory, which is the one thing `save` promises.
+
+Found while building it, by a fixture written specifically so the differential
+would cover the new syntax: a filtered load left the table claiming to hold
+the whole file, so the next unfiltered load decided it had nothing to do and
+returned the filtered rows. The stamp is cleared after a filtered load now.
+
 ### A save writes only what changed
 
 A save emptied the Postgres table and wrote every row back. Change one order

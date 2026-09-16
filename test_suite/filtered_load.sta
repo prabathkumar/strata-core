@@ -1,0 +1,44 @@
+// A load that fetches part of a table.
+//
+// Here so the code generator differential covers the filtered form: without a
+// source that uses it, both generators agree about syntax neither is asked to
+// emit.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+database Ticket {
+    int   id;
+    str   queue;
+    float hours;
+    str   state;
+}
+
+int main() {
+    Ticket <- [id = 1, queue = "ops",     hours = 1.5, state = "OPEN"];
+    Ticket <- [id = 2, queue = "billing", hours = 4.0, state = "CLOSED"];
+    Ticket <- [id = 3, queue = "ops",     hours = 0.5, state = "OPEN"];
+    save Ticket to "tickets.tsv";
+
+    // Translatable: a column against a literal.
+    load Ticket from "tickets.tsv" <- [state == "OPEN"];
+    print(str_concat("open: ", str(count(Ticket <- [id > 0]))));
+
+    // Translatable: two of them joined.
+    load Ticket from "tickets.tsv" <- [state == "OPEN" && queue == "ops"];
+    print(str_concat("open ops: ", str(count(Ticket <- [id > 0]))));
+
+    // The literal on the left, which has to flip the comparison.
+    load Ticket from "tickets.tsv" <- [2 < id];
+    print(str_concat("id above two: ", str(count(Ticket <- [id > 0]))));
+
+    // Not translatable to SQL -- the whole table is read and the filter is
+    // applied in memory, which is the same answer by a slower road.
+    load Ticket from "tickets.tsv" <- [hours > 0.4 + 0.1];
+    print(str_concat("over half an hour: ", str(count(Ticket <- [id > 0]))));
+
+    load Ticket from "tickets.tsv";
+    print(str_concat("all: ", str(count(Ticket <- [id > 0]))));
+    return 0;
+}

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # STRATA — Conformance Test Suite — E001-E006 + End-to-End
+import shutil
 import sys, os, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.lexer import Lexer, LexError
@@ -132,16 +133,23 @@ def compile_render(name, source, expected):
 
 
 def compile_run(name, source, expected):
+    """Compile and run, in a scratch directory of its own.
+
+    The scratch directory is not a detail. Programs used to run here, in the
+    repository, so the first test that saved a table left its .tsv in the
+    working tree -- and a file left behind is a file the next run reads."""
     global PASS, FAIL
     with tempfile.NamedTemporaryFile(suffix=".sta", mode="w", delete=False) as f:
         f.write(source); sta = f.name
     out = sta.replace(".sta", "")
+    scratch = tempfile.mkdtemp()
     try:
         r = subprocess.run(["python3", "bootstrap/stage0.py", sta, "-o", out],
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(f"  FAIL  {name} — compile: {r.stderr[:60]}"); FAIL += 1; return
-        r2 = subprocess.run([out], capture_output=True, text=True, timeout=5)
+        r2 = subprocess.run([out], capture_output=True, text=True, timeout=5,
+                            cwd=scratch)
         got = r2.stdout.strip()
         if got == expected.strip():
             print(f"  PASS  {name} — {got!r}"); PASS += 1
@@ -150,6 +158,7 @@ def compile_run(name, source, expected):
     except Exception as e:
         print(f"  FAIL  {name} — {e}"); FAIL += 1
     finally:
+        shutil.rmtree(scratch, ignore_errors=True)
         for p in [sta, out, sta.replace(".sta",".c")]:
             if os.path.exists(p): os.unlink(p)
 
@@ -938,6 +947,39 @@ compile_run("two_results_do_not_alias",
 compile_run("a_wrong_password_is_rejected",
     'import io from std;\nimport str from std;\nimport mem from std;\nimport auth from std;\nint main() { str h = hash_password("right"); print(strata_concat(str(password_matches("right", h)), str(password_matches("wrong", h)))); return 0; }',
     "10")
+
+# A table's rows used to live in a fixed array of 4096. An insert past the end
+# was skipped -- no error, no message, exit status zero -- so a program asked
+# to store five thousand rows held four thousand and ninety-six and said
+# nothing about the other nine hundred and four. Kept here, in the file-backed
+# suite, so the fix is proved without needing a database.
+compile_run("a_table_holds_more_than_four_thousand_rows",
+    'import io from std;\nimport str from std;\nimport mem from std;\n'
+    'database Row { int id; str name; }\n'
+    'int main() { for (int i = 1; i <= 5000; i = i + 1) '
+    '{ Row <- [id = i, name = "x"]; } '
+    'print(str(count(Row <- [id > 0]))); return 0; }',
+    "5000")
+
+compile_run("and_keeps_them_all_through_a_save_and_a_load",
+    'import io from std;\nimport str from std;\nimport mem from std;\n'
+    'database Row { int id; str name; }\n'
+    'int main() { for (int i = 1; i <= 5000; i = i + 1) '
+    '{ Row <- [id = i, name = "x"]; } '
+    'save Row to "rows.tsv"; load Row from "rows.tsv"; '
+    'print(str(count(Row <- [id > 0]))); return 0; }',
+    "5000")
+
+# A filtered load against a file has no WHERE to push down, so the rows are
+# read and then dropped. The answer must be the same as the database's.
+compile_run("a_filtered_load_from_a_file_gives_the_same_answer",
+    'import io from std;\nimport str from std;\nimport mem from std;\n'
+    'database Row { int id; str tag; }\n'
+    'int main() { Row <- [id = 1, tag = "keep"]; Row <- [id = 2, tag = "drop"]; '
+    'Row <- [id = 3, tag = "keep"]; save Row to "f.tsv"; '
+    'load Row from "f.tsv" <- [tag == "keep"]; '
+    'print(str(count(Row <- [id > 0]))); return 0; }',
+    "2")
 
 total = PASS + FAIL
 print(f"\n{'='*60}")

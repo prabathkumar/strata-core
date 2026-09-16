@@ -318,6 +318,9 @@ str node_json(Node n) {
         jfield(&sb, "op", jstr(n.s1));
         jfield(&sb, "table", jstr(n.s2));
         jfield(&sb, "path", jstr(n.s3));
+        // Absent when the whole table is meant, so every program written
+        // before the filter existed produces exactly the tree it did before.
+        if (n.c1 >= 0) { jfield(&sb, "cond", node_json(node_at(n.c1))); }
     }
     if (k == 76) {
         jfield(&sb, "table", jstr(n.s1));
@@ -991,8 +994,23 @@ Node parse_statement(P &p) {
                 // was right and the syntax-tree differential never saw it.
                 if (is_save == 0) { p_expect(&p, 22); }
                 Token path = p_advance(&p);
-                p_expect(&p, 56);
+                // An optional filter, written the way every other query in
+                // the language is written: `load T from "p" <- [cond];`. A
+                // save takes none -- a partial save would mean the store no
+                // longer matches memory, which is the one thing save
+                // promises.
                 Node n = node_new(75);
+                n.c1 = -1;
+                if (is_save == 0) {
+                    if (p_kind(&p, 0) == 76) {
+                        p_advance(&p);
+                        p_expect(&p, 54);
+                        Node lcond = parse_expr(&p);
+                        n.c1 = node_ptr(lcond);
+                        p_expect(&p, 55);
+                    }
+                }
+                p_expect(&p, 56);
                 n.s1 = op.value; n.s2 = table.value; n.s3 = path.value;
                 n_pos(n, op);
                 return n;
