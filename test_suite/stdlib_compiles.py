@@ -64,6 +64,9 @@ SMOKE = {
     "simd_math": 'print(str(verify_vector_alignment(8)));',
     "postgres":  'print(str(is_database_url("postgres://x/y"))); '
                  'print(resolve_env_path("plain"));',
+    "ui":        'ui_begin(); ui_rect(0, 0, 10, 10, 255); '
+                 'ui_text(1, 1, "hi", 0, 1); ui_touch(0, 0, 10, 10, "tap"); '
+                 'print(ui_hit(5, 5));',
     "metrics":   'int p = metrics_start(); metrics_record(p, 200, 3); '
                  'metrics_record(p, 500, 1500); metrics_refused(p); '
                  'print(metrics_render(p));',

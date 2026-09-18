@@ -176,6 +176,16 @@ jobs:
         STRATA_TEST_DB: postgres://postgres:strata@127.0.0.1:5432/strata_test
       run: python3 test_suite/journey_postgres.py
 
+    # The same rules on the server and on a phone's processor, and a screen
+    # Strata draws itself. The cross-compiler and emulator are installed so
+    # the ARM half runs rather than skipping -- a suite that reports OK having
+    # done nothing is worse than no suite.
+    - name: Install An ARM64 Cross-Compiler And Emulator
+      run: sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+
+    - name: Journey — One Language, Server And Phone
+      run: python3 test_suite/journey_mobile.py
+
     # What a developer runs before deciding whether to keep going: every
     # command the generated README offers, against a project `strata new` just
     # made, plus `strata check` over this repository's own sources.

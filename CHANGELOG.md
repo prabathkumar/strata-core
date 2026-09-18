@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### The same rules run on the server and on a phone
+
+The rules compile for a phone's processor, and — run under emulation — give
+byte-identical answers to the server build. That is the check worth having:
+"it compiles for ARM" and "it gives the same answers on ARM" are different
+statements and only the second one matters.
+
+One definition of "an order over 1000 gets 5% off", running on the server, the
+website and the handset. The classic source of "the app says one price, the
+site says another" is not a bug in either — it is the same rule implemented
+twice. There is only one implementation here.
+
+### A phone screen, described in Strata and drawn by Strata
+
+`std/ui.sta`. A screen is an ordinary Strata table of things to draw:
+rectangles, runs of text, regions that answer to a finger. Being a table means
+the host can read a screen with the same queries as any other data, and
+`strata test` can assert what a screen contains with no phone anywhere near it.
+
+`apps/orders_mobile` is the orders list, against the same `Order` table the web
+service uses. `journey_mobile.py` asserts the display list, where taps land —
+including that a tap on nothing is nothing — and the actual pixels of the
+painted image.
+
+**Screens are drawn, not borrowed**, and that is the decision the whole thing
+rests on. Asking each platform for its own widgets means two binding layers of
+thousands of functions each, sharing nothing, one of them (Apple's) not
+designed to be driven from C at all: two projects that never finish and never
+quite match. Painting means one implementation plus a shell per platform small
+enough to read in a sitting. It is what Flutter does, and why a Flutter screen
+looks the same on both.
+
+The rasteriser is a `native` block rather than a compiler target. A new output
+target has to be written twice, once in each code generator, and kept
+byte-identical — the right price for a language feature and the wrong one for
+finding out whether an idea works.
+
+### What has not happened
+
+Nothing has run on a handset. `apps/orders_mobile/android/` holds 96 lines of
+Kotlin that open a canvas, paint the display list and forward taps; it is
+written against the documented APIs and has never been built with the Android
+SDK. Reviewed design, not tested code, and its README says so. iOS has no
+shell at all.
+
+One screen is not an app. Scrolling lists, text input, keyboards, navigation
+and a layout engine are all missing, and that is the work that turns this into
+something a business app can be built with.
+
+### A colour that was wrong
+
+The language has no hex literal, so every colour in the mobile app is a
+hand-converted decimal. The first one was wrong — `0x1F4E62` became `2050146`
+rather than `2051682` — and the screen rendered green instead of teal. The
+pixel check in `journey_mobile.py` caught it; nobody looking at the picture
+did. Hex literals are now on the roadmap.
+
 ### A failed save used to look exactly like a successful one
 
 `save` and `load` were statements with no value. The machinery underneath has

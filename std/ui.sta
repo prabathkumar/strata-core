@@ -1,0 +1,254 @@
+// Screens, drawn rather than borrowed.
+//
+// A phone has two ways to show a list: ask the platform for its own list
+// widget, or paint one. Asking means two entirely separate binding layers --
+// thousands of functions each, for Apple's toolkit and Google's, which share
+// nothing -- and one of those toolkits is not designed to be driven from C at
+// all. That is two projects that never finish and never quite match.
+//
+// Painting means one implementation, plus a shell per platform small enough to
+// read in a sitting: open a window, hand over a canvas, forward the taps. It
+// is what Flutter does, and it is why a Flutter screen looks the same on both.
+//
+// So a screen here is a list of things to draw. `UIItem` is an ordinary
+// Strata table, which means the host can read a screen with the same queries
+// as any other data, and `strata test` can assert what a screen contains
+// without a phone anywhere near it.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+// One thing to draw. Kinds: 0 a filled rectangle, 1 a run of text, 2 a region
+// that answers to a finger.
+database UIItem {
+    int id;
+    int kind;
+    int x;
+    int y;
+    int w;
+    int h;
+    int colour;     // 0xRRGGBB
+    int scale;      // text size multiplier; 1 is the 8-pixel font
+    str text;
+    str action;     // what a tap on this region means, for kind 2
+}
+
+const int UI_RECT  = 0;
+const int UI_TEXT  = 1;
+const int UI_TOUCH = 2;
+
+// The 8-pixel font is fixed width, so a string's width is arithmetic rather
+// than a measurement. Layout that cannot be measured cannot be tested.
+const int UI_GLYPH_W = 8;
+const int UI_GLYPH_H = 8;
+
+int ui_text_width(str s, int scale) { return str_len(s) * UI_GLYPH_W * scale; }
+int ui_text_height(int scale)       { return UI_GLYPH_H * scale; }
+
+int ui_next_id() {
+    list[UIItem] all = UIItem <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// Start a screen. Everything drawn before is discarded, which is what makes a
+// redraw a redraw rather than an accumulation.
+int ui_begin() {
+    delete UIItem <- [id > 0];
+    return 1;
+}
+
+int ui_rect(int x, int y, int w, int h, int colour) {
+    UIItem <- [id = ui_next_id(), kind = UI_RECT, x = x, y = y, w = w, h = h,
+    colour = colour, scale = 1, text = "", action = ""];
+    return 1;
+}
+
+int ui_text(int x, int y, str s, int colour, int scale) {
+    UIItem <- [id = ui_next_id(), kind = UI_TEXT, x = x, y = y,
+    w = ui_text_width(s, scale), h = ui_text_height(scale),
+    colour = colour, scale = scale, text = s, action = ""];
+    return 1;
+}
+
+// A region that answers to a finger. Drawn by whatever was drawn before it;
+// this only records what a tap there means.
+int ui_touch(int x, int y, int w, int h, str action) {
+    UIItem <- [id = ui_next_id(), kind = UI_TOUCH, x = x, y = y, w = w, h = h,
+    colour = 0, scale = 1, text = "", action = action];
+    return 1;
+}
+
+// A button: a filled rectangle, a centred label, and a region that answers.
+int ui_button(int x, int y, int w, int h, str label, str action,
+int fill, int ink) {
+    ui_rect(x, y, w, h, fill);
+    int tw = ui_text_width(label, 2);
+    int th = ui_text_height(2);
+    ui_text(x + (w - tw) / 2, y + (h - th) / 2, label, ink, 2);
+    ui_touch(x, y, w, h, action);
+    return 1;
+}
+
+// What a tap at this point means, or "" for nothing. Later items win, so a
+// button drawn over a panel answers before the panel does.
+str ui_hit(int px, int py) {
+    str found = "";
+    list[UIItem] all = UIItem <- [kind == UI_TOUCH];
+    for it in all {
+        if (px >= it.x) { if (px < it.x + it.w) {
+                if (py >= it.y) { if (py < it.y + it.h) { found = it.action; } } } }
+    }
+    return found;
+}
+
+// ── Painting it ──────────────────────────────────────────────────────────────
+//
+// The rasteriser is one `native` block rather than a compiler change: a new
+// output target would have to be written twice, once in each code generator,
+// and kept byte-identical -- which is the right price to pay for a language
+// feature and the wrong one for finding out whether an idea works.
+//
+// It writes a BMP, which is a header and the pixels. A phone never uses this:
+// the Android and iOS shells read the same UIItem rows and paint with the
+// platform's own canvas. This is here so a screen can be looked at, and
+// regression-tested, on a machine with no phone attached.
+
+int ui_paint_bmp(str path, int width, int height, int background) {
+    native "
+    /* A fixed-width 8x8 font, ASCII 32..126. Enough to read a business
+     * screen; deliberately not a typography project. */
+    static const unsigned char FONT[95][8] = {
+        {0,0,0,0,0,0,0,0},{24,24,24,24,0,0,24,0},{54,54,20,0,0,0,0,0},
+        {54,54,127,54,127,54,54,0},{12,63,104,62,11,126,24,0},
+        {96,102,12,24,48,102,6,0},{56,108,56,118,108,108,54,0},
+        {24,24,48,0,0,0,0,0},{12,24,48,48,48,24,12,0},
+        {48,24,12,12,12,24,48,0},{0,54,28,127,28,54,0,0},
+        {0,24,24,126,24,24,0,0},{0,0,0,0,0,24,24,48},
+        {0,0,0,126,0,0,0,0},{0,0,0,0,0,24,24,0},
+        {3,6,12,24,48,96,64,0},
+        {60,102,110,118,102,102,60,0},{24,56,24,24,24,24,126,0},
+        {60,102,6,12,24,48,126,0},{60,102,6,28,6,102,60,0},
+        {12,28,60,108,127,12,12,0},{126,96,124,6,6,102,60,0},
+        {28,48,96,124,102,102,60,0},{126,102,6,12,24,24,24,0},
+        {60,102,102,60,102,102,60,0},{60,102,102,62,6,12,56,0},
+        {0,24,24,0,0,24,24,0},{0,24,24,0,0,24,24,48},
+        {12,24,48,96,48,24,12,0},{0,0,126,0,126,0,0,0},
+        {48,24,12,6,12,24,48,0},{60,102,6,12,24,0,24,0},
+        {60,102,110,110,96,98,60,0},
+        {24,60,102,102,126,102,102,0},{124,102,102,124,102,102,124,0},
+        {60,102,96,96,96,102,60,0},{120,108,102,102,102,108,120,0},
+        {126,96,96,120,96,96,126,0},{126,96,96,120,96,96,96,0},
+        {60,102,96,110,102,102,62,0},{102,102,102,126,102,102,102,0},
+        {126,24,24,24,24,24,126,0},{30,12,12,12,12,108,56,0},
+        {102,108,120,112,120,108,102,0},{96,96,96,96,96,96,126,0},
+        {99,119,127,107,99,99,99,0},{102,118,126,126,110,102,102,0},
+        {60,102,102,102,102,102,60,0},{124,102,102,124,96,96,96,0},
+        {60,102,102,102,102,60,14,0},{124,102,102,124,120,108,102,0},
+        {60,102,96,60,6,102,60,0},{126,24,24,24,24,24,24,0},
+        {102,102,102,102,102,102,60,0},{102,102,102,102,102,60,24,0},
+        {99,99,99,107,127,119,99,0},{102,102,60,24,60,102,102,0},
+        {102,102,102,60,24,24,24,0},{126,6,12,24,48,96,126,0},
+        {60,48,48,48,48,48,60,0},{64,96,48,24,12,6,3,0},
+        {60,12,12,12,12,12,60,0},{24,60,102,0,0,0,0,0},
+        {0,0,0,0,0,0,0,255},{48,24,0,0,0,0,0,0},
+        {0,0,60,6,62,102,62,0},{96,96,124,102,102,102,124,0},
+        {0,0,60,102,96,102,60,0},{6,6,62,102,102,102,62,0},
+        {0,0,60,102,126,96,60,0},{28,48,124,48,48,48,48,0},
+        {0,0,62,102,102,62,6,60},{96,96,124,102,102,102,102,0},
+        {24,0,56,24,24,24,60,0},{12,0,12,12,12,12,12,56},
+        {96,96,102,108,120,108,102,0},{56,24,24,24,24,24,60,0},
+        {0,0,102,127,127,107,99,0},{0,0,124,102,102,102,102,0},
+        {0,0,60,102,102,102,60,0},{0,0,124,102,102,124,96,96},
+        {0,0,62,102,102,62,6,6},{0,0,124,102,96,96,96,0},
+        {0,0,62,96,60,6,124,0},{48,48,124,48,48,48,28,0},
+        {0,0,102,102,102,102,62,0},{0,0,102,102,102,60,24,0},
+        {0,0,99,107,127,127,54,0},{0,0,102,60,24,60,102,0},
+        {0,0,102,102,102,62,6,60},{0,0,126,12,24,48,126,0},
+        {14,24,24,112,24,24,14,0},{24,24,24,24,24,24,24,0},
+        {112,24,24,14,24,24,112,0},{0,0,59,110,0,0,0,0},
+        {0,0,0,0,0,0,0,0}
+    };
+
+    if ($width <= 0 || $height <= 0 || $width > 4096 || $height > 4096) return 0;
+    long npix = (long)$width * (long)$height;
+    unsigned char* px = (unsigned char*)malloc((size_t)npix * 3);
+    if (!px) return 0;
+    for (long i = 0; i < npix; i++) {
+        px[i*3+0] = (unsigned char)(($background)       & 0xFF);  /* B */
+        px[i*3+1] = (unsigned char)(($background >> 8)  & 0xFF);  /* G */
+        px[i*3+2] = (unsigned char)(($background >> 16) & 0xFF);  /* R */
+    }
+
+    for (strata_int i = 0; i < UIItem__count; i++) {
+        UIItem* it = UIItem__rows[i];
+        int r = (int)((it->colour >> 16) & 0xFF);
+        int g = (int)((it->colour >> 8) & 0xFF);
+        int b = (int)(it->colour & 0xFF);
+        if (it->kind == 0) {
+            for (int yy = (int)it->y; yy < (int)(it->y + it->h); yy++) {
+                if (yy < 0 || yy >= $height) continue;
+                for (int xx = (int)it->x; xx < (int)(it->x + it->w); xx++) {
+                    if (xx < 0 || xx >= $width) continue;
+                    long o = ((long)yy * $width + xx) * 3;
+                    px[o+0] = (unsigned char)b; px[o+1] = (unsigned char)g;
+                    px[o+2] = (unsigned char)r;
+                }
+            }
+        } else if (it->kind == 1 && it->text) {
+            int sc = (int)it->scale; if (sc < 1) sc = 1;
+            for (const char* p = it->text; *p; p++) {
+                int ch = (unsigned char)*p;
+                if (ch < 32 || ch > 126) ch = 32;
+                const unsigned char* gl = FONT[ch - 32];
+                int gx = (int)it->x + (int)(p - it->text) * 8 * sc;
+                for (int row = 0; row < 8; row++) {
+                    for (int col = 0; col < 8; col++) {
+                        if (!((gl[row] >> (7 - col)) & 1)) continue;
+                        for (int sy = 0; sy < sc; sy++) {
+                            for (int sx = 0; sx < sc; sx++) {
+                                int xx = gx + col * sc + sx;
+                                int yy = (int)it->y + row * sc + sy;
+                                if (xx < 0 || xx >= $width || yy < 0 || yy >= $height) continue;
+                                long o = ((long)yy * $width + xx) * 3;
+                                px[o+0] = (unsigned char)b; px[o+1] = (unsigned char)g;
+                                px[o+2] = (unsigned char)r;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* BMP rows are bottom-up and padded to four bytes. */
+    int pad = (4 - (($width * 3) % 4)) % 4;
+    long datasize = ((long)$width * 3 + pad) * $height;
+    FILE* f = fopen($path, \"wb\");
+    if (!f) { free(px); return 0; }
+    unsigned char hdr[54];
+    memset(hdr, 0, sizeof(hdr));
+    hdr[0]='B'; hdr[1]='M';
+    long total = 54 + datasize;
+    hdr[2]=(unsigned char)(total&0xFF); hdr[3]=(unsigned char)((total>>8)&0xFF);
+    hdr[4]=(unsigned char)((total>>16)&0xFF); hdr[5]=(unsigned char)((total>>24)&0xFF);
+    hdr[10]=54; hdr[14]=40;
+    hdr[18]=(unsigned char)($width&0xFF); hdr[19]=(unsigned char)(($width>>8)&0xFF);
+    hdr[20]=(unsigned char)(($width>>16)&0xFF); hdr[21]=(unsigned char)(($width>>24)&0xFF);
+    hdr[22]=(unsigned char)($height&0xFF); hdr[23]=(unsigned char)(($height>>8)&0xFF);
+    hdr[24]=(unsigned char)(($height>>16)&0xFF); hdr[25]=(unsigned char)(($height>>24)&0xFF);
+    hdr[26]=1; hdr[28]=24;
+    hdr[34]=(unsigned char)(datasize&0xFF); hdr[35]=(unsigned char)((datasize>>8)&0xFF);
+    hdr[36]=(unsigned char)((datasize>>16)&0xFF); hdr[37]=(unsigned char)((datasize>>24)&0xFF);
+    fwrite(hdr, 1, 54, f);
+    unsigned char zero[3] = {0,0,0};
+    for (int y = $height - 1; y >= 0; y--) {
+        fwrite(px + (long)y * $width * 3, 1, (size_t)$width * 3, f);
+        if (pad) fwrite(zero, 1, (size_t)pad, f);
+    }
+    fclose(f);
+    free(px);
+    return 1;
+    ";
+}

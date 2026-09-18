@@ -1,0 +1,37 @@
+// Draws the orders screen and writes it to an image.
+//
+// A phone never runs this file: the Android and iOS shells call
+// draw_orders_screen() and paint the rows themselves. This exists so the
+// screen can be looked at, and regression-tested, on a machine with no phone
+// attached -- which is the difference between a UI you can review and one you
+// can only demo.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import ui     from std;
+import screen from app;
+
+int main() {
+    load Order from "data/orders.tsv";
+    if (count(Order <- [id > 0]) == 0) {
+        Order <- [id = 1, customer = "Acme Bhd",     region = "apac", amount = 1250.50, status = "OPEN"];
+        Order <- [id = 2, customer = "Globex",       region = "emea", amount =  340.00, status = "OPEN"];
+        Order <- [id = 3, customer = "Initech",      region = "amer", amount =  980.75, status = "CLOSED"];
+        Order <- [id = 4, customer = "Neuron Sdn",   region = "apac", amount = 4820.00, status = "OPEN"];
+    }
+    draw_orders_screen();
+
+    list[UIItem] drawn = UIItem <- [id > 0];
+    print(str_concat("things to draw: ", str(count(drawn))));
+    print(str_concat("tap at 200,140 means: ", ui_hit(200, 140)));
+    print(str_concat("tap at 200,690 means: ", ui_hit(200, 690)));
+    print(str_concat("tap on empty space means: '", str_concat(ui_hit(5, 400), "'")));
+
+    if (ui_paint_bmp("screen.bmp", SCREEN_W, SCREEN_H, PAPER)) {
+        print("painted screen.bmp");
+        return 0;
+    }
+    print("could not paint the screen");
+    return 1;
+}

@@ -1,0 +1,84 @@
+// The orders screen, on a phone.
+//
+// Written in Strata, drawn by Strata. The same `Order` table the web service
+// uses, the same queries, the same rules module -- the app and the website
+// cannot disagree about what an order is, because there is only one
+// description of one.
+//
+// Nothing here knows whether it is running on a phone, in a test, or on a
+// build machine. It produces a list of things to draw; who paints them is the
+// host's business.
+
+import io  from std;
+import str from std;
+import mem from std;
+import ui  from std;
+
+database Order {
+    int   id;
+    str   customer;
+    str   region;
+    float amount;
+    str   status;
+}
+
+// A phone screen in device-independent pixels. 411x731 is a common Android
+// size; the host scales.
+const int SCREEN_W = 411;
+const int SCREEN_H = 731;
+
+const int INK      = 1710618;    // 0x1A1A1A near-black
+const int MUTED    = 7697781;    // 0x757575 grey
+const int PAPER    = 15790320;   // 0xF0F0F0 page
+// Written as decimals because the language has no hex literals yet, so every
+// colour here is a hand conversion — and the first one was wrong, which the
+// pixel check in journey_mobile.py caught.
+const int BAR      = 2051682;    // 0x1F4E62 deep teal
+const int BAR_INK  = 16777215;   // 0xFFFFFF
+const int CARD     = 16777215;   // 0xFFFFFF card
+const int LINE     = 14803425;   // 0xE1E1E1 hairline
+const int ACCENT   = 2051682;   // 0x1F4E62
+
+int draw_orders_screen() {
+    ui_begin();
+
+    // Title bar.
+    ui_rect(0, 0, SCREEN_W, 64, BAR);
+    ui_text(16, 24, "ORDERS", BAR_INK, 2);
+
+    list[Order] open_ones = Order <- [status == "OPEN"];
+    StringBuilder hdr = sb_new();
+    sb_append(&hdr, str(count(open_ones)));
+    sb_append(&hdr, " OPEN");
+    ui_text(SCREEN_W - ui_text_width(sb_to_str(&hdr), 1) - 16, 32,
+    sb_to_str(&hdr), BAR_INK, 1);
+
+    int y = 80;
+    list[Order] all = Order <- [id > 0];
+    for row in all {
+        ui_rect(12, y, SCREEN_W - 24, 72, CARD);
+        ui_rect(12, y + 71, SCREEN_W - 24, 1, LINE);
+        ui_text(24, y + 14, row.customer, INK, 2);
+
+        StringBuilder meta = sb_new();
+        sb_append(&meta, row.region);
+        sb_append(&meta, "   ");
+        sb_append(&meta, row.status);
+        ui_text(24, y + 44, sb_to_str(&meta), MUTED, 1);
+
+        StringBuilder money = sb_new();
+        sb_append(&money, str(row.amount));
+        ui_text(SCREEN_W - 24 - ui_text_width(sb_to_str(&money), 2),
+        y + 14, sb_to_str(&money), ACCENT, 2);
+
+        StringBuilder act = sb_new();
+        sb_append(&act, "open:");
+        sb_append(&act, str(row.id));
+        ui_touch(12, y, SCREEN_W - 24, 72, sb_to_str(&act));
+        y = y + 80;
+    }
+
+    ui_button(12, SCREEN_H - 76, SCREEN_W - 24, 56, "NEW ORDER", "new",
+    ACCENT, BAR_INK);
+    return 1;
+}

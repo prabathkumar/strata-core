@@ -21,3 +21,8 @@ COMMIT_MSG.txt
 
 # A nested clone lived here; git re-adds it as a submodule on every `add -A`.
 strata-core/
+
+apps/orders_mobile/build/
+apps/orders_mobile/data/
+apps/orders_mobile/screen.bmp
+apps/orders_mobile/src/*.c
