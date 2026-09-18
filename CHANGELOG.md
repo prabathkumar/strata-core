@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### One screen description, two surfaces
+
+A `layout` rendered one way: HTML. Phone screens were written separately with
+the UI library. That is two ways to describe a screen — the exact split this
+language exists to remove, reappearing inside it.
+
+The same `layout` now does both. `render X(...)` gives the HTML it always did;
+`X_draw(...)` produces the same screen as things to draw, with the same
+parameters, the same queries, and one schema check covering both. Rename a
+column and the web page and the phone screen fail together, in one build.
+
+Importing `ui from std` is what makes the drawn form appear — the same rule the
+Postgres backend uses, so a program that does not ask for it carries neither
+the code nor the dependency.
+
+A column flows down; a row places its children across; a hidden field is not
+drawn, because it carries a token a browser needs and a phone does not. The two
+surfaces are **not** pixel-identical and are not meant to be: a browser has a
+layout engine and a phone screen here does not. What is shared is the
+description.
+
+### And the differential found a bug that had always been there
+
+`test_suite/layout_drawn.sta` is the first file in this repository to declare a
+`layout` and `render` it from the same file. Everything else keeps its views in
+one module and renders them from another.
+
+Doing it in one file was E002 — "'Board' is not a layout or report" — from the
+Strata type checker and fine from the Python one. Layouts and reports were
+registered as nameable when they arrived from an imported module and not when
+they were declared beside the function rendering them. Nothing had ever done
+it, so the two checkers had never disagreed about it.
+
+Fixed, and the two agree again across 112 files.
+
 ### Hex literals
 
 `0x1F4E62` is one integer, written the way the thing it describes is written

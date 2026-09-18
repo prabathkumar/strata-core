@@ -284,6 +284,23 @@ class TypeChecker:
             params=[self._resolve_type(p.param_type) for p in fn.params]
             self.functions[fn.name]=(rt,params)
             self.global_scope.define(fn.name,rt)
+        self._register_layout_draws()
+
+    def _register_layout_draws(self):
+        """`layout X` also defines `X_draw`, which draws the same screen.
+
+        A layout renders as HTML through `render X(...)`. The same description
+        draws as a phone screen through `X_draw(...)`, with the same
+        parameters. Declared here so a call to it is checked like any other
+        call rather than reported as undefined — and so the argument types are
+        checked, which is the whole reason the two tiers agree."""
+        for unit in [self.ast] + [m for _, m in getattr(self, "modules", [])]:
+            for d in unit.declarations:
+                if isinstance(d, LayoutDecl):
+                    self.functions[f"{d.name}_draw"] = (
+                        T_VOID,
+                        [self._resolve_type(p.param_type)
+                         for p in getattr(d, "params", [])])
 
     def _check_functions(self):
         for fn in self.ast.functions:

@@ -69,6 +69,14 @@ database Gen {
     // may be an element, or for a function body, where it may not.
     // `for X in xs` is the one construct that appears in both.
     int in_layout;
+    // True while a layout is being generated as a DRAWN screen rather than as
+    // HTML, so the shared loop generator knows where to send the body.
+    int in_draw;
+    // Whether this program brought in the screen-drawing module. A layout is
+    // generated twice when it did: once as HTML and once as a drawn screen.
+    // A program that does not import `ui` gets only the HTML, because the
+    // drawn version calls functions that would not be there to link against.
+    int has_ui;
 }
 
 Gen gen_new() {
@@ -2242,6 +2250,16 @@ str generate_mode(str root, str source_path, str target, int test_mode) {
     // root.
     collect_modules_from(root, dir_of(source_path), unit, &mods, &seen, &unresolved);
 
+    // Importing the screen-drawing module is what makes a layout generate its
+    // drawn form as well as its HTML. The same rule the Postgres backend
+    // uses: a program that does not ask for something carries neither the
+    // dependency nor the code.
+    int nmods = mods.len;
+    for (int i = 0; i < nmods; i = i + 1) {
+        Node m = nv_get(&mods, i);
+        if (str_eq(m.s1, "ui") == 1) { g.has_ui = 1; }
+    }
+
     // A freestanding WebAssembly build has no libc and uses its own prelude.
     StringBuilder preamble_path = sb_new();
     sb_append(&preamble_path, root);
@@ -2696,6 +2714,75 @@ def emit_fprintf(Gen &g, str literal) {
     cg_emit(&g, sb_to_str(&sb));
 }
 
+// Colours in a layout are written the way HTML writes them -- "#7ee787". The
+// drawn screen needs the number. Worked out here, at compile time, from a
+// literal; anything that is not a literal keeps the default, because a colour
+// computed at run time is not something a layout can express today and
+// guessing would be worse than ignoring.
+int hex_pair(str text, int at) {
+    int hi = 0;
+    int lo = 0;
+    int c = text[at];
+    if (c >= 48) { if (c <= 57) { hi = c - 48; } }
+    if (c >= 97) { if (c <= 102) { hi = c - 87; } }
+    if (c >= 65) { if (c <= 70) { hi = c - 55; } }
+    int d = text[at + 1];
+    if (d >= 48) { if (d <= 57) { lo = d - 48; } }
+    if (d >= 97) { if (d <= 102) { lo = d - 87; } }
+    if (d >= 65) { if (d <= 70) { lo = d - 55; } }
+    return hi * 16 + lo;
+}
+
+int layout_colour(Gen &g, Node el, str name, int fallback) {
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node p = nv_get(&props, i);
+        if (str_eq(p.s1, name) == 1) {
+            Node v = node_at(p.c1);
+            if (v.kind == 52) {
+                str text = v.s1;
+                if (str_len(text) == 7) {
+                    if (text[0] == 35) {
+                        int r = hex_pair(text, 1);
+                        int gg = hex_pair(text, 3);
+                        int b = hex_pair(text, 5);
+                        return r * 65536 + gg * 256 + b;
+                    }
+                }
+            }
+            if (v.kind == 50) { return v.i1; }
+        }
+    }
+    return fallback;
+}
+
+int layout_int(Gen &g, Node el, str name, int fallback) {
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node p = nv_get(&props, i);
+        if (str_eq(p.s1, name) == 1) {
+            Node v = node_at(p.c1);
+            if (v.kind == 50) { return v.i1; }
+        }
+    }
+    return fallback;
+}
+
+str layout_str_prop(Gen &g, Node el, str name) {
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node p = nv_get(&props, i);
+        if (str_eq(p.s1, name) == 1) {
+            Node v = node_at(p.c1);
+            if (v.kind == 52) { return v.s1; }
+        }
+    }
+    return "";
+}
+
 def gen_layout(Gen &g, Node decl) {
     StringBuilder head = sb_new();
     sb_append(&head, "\nvoid "); sb_append(&head, decl.s1);
@@ -2720,6 +2807,239 @@ def gen_layout(Gen &g, Node decl) {
     g.in_layout = 0;
     g.indent = 0;
     emit_raw(&g, "}");
+    if (g.has_ui == 1) { gen_layout_draw(&g, decl); }
+}
+
+// ── The same layout, drawn ───────────────────────────────────────────────────
+//
+// A layout was one description that rendered one way: HTML. The phone screens
+// were written separately with the UI library, so there were two ways to write
+// a screen -- which is the split this language exists to remove, reappearing
+// inside it.
+//
+// `X_draw(...)` takes the same parameters as `X_render(...)` and produces the
+// same screen as things to draw. A column flows down, a row places its
+// children across, and everything else is what it was.
+//
+// The two are not pixel-identical and are not meant to be. A browser has a
+// layout engine and a phone screen here does not; what is shared is the
+// DESCRIPTION -- the same fields, the same rows, the same queries, checked
+// against the same schema once.
+def gen_layout_draw(Gen &g, Node decl) {
+    StringBuilder head = sb_new();
+    sb_append(&head, "\nvoid "); sb_append(&head, decl.s1);
+    sb_append(&head, "_draw(");
+    NodeVec lparams = nv_at(decl.v2);
+    int nlp = lparams.len;
+    if (nlp == 0) { sb_append(&head, "void"); }
+    for (int i = 0; i < nlp; i = i + 1) {
+        Node prm = nv_get(&lparams, i);
+        if (i > 0) { sb_append(&head, ", "); }
+        sb_append(&head, c_param(&g, prm));
+        g.var_types = bind_cons(prm.s1, c_type(&g, prm.c1), g.var_types);
+    }
+    sb_append(&head, ") {");
+    emit_raw(&g, sb_to_str(&head));
+    g.indent = 1;
+    cg_emit(&g, "ui_flow(0, 0, 411, 8);");
+    g.in_layout = 1;
+    g.in_draw = 1;
+    NodeVec body = nv_at(decl.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { gen_draw_node(&g, nv_get(&body, i)); }
+    g.in_draw = 0;
+    g.in_layout = 0;
+    g.indent = 0;
+    emit_raw(&g, "}");
+}
+
+def gen_draw_node(Gen &g, Node node) {
+    if (node.kind == 71) { gen_draw_element(&g, node); return; }
+    // The same loop the HTML gets, around drawing instead of printing.
+    if (node.kind == 73) { gen_for_in(&g, node); return; }
+    gen_stmt(&g, node);
+}
+
+def gen_draw_element(Gen &g, Node el) {
+    str tag = el.s1;
+
+    // The host owns the window. Its children simply flow.
+    if (str_eq(tag, "window") == 1) { gen_draw_children(&g, el); return; }
+    if (str_eq(tag, "grid") == 1) { gen_draw_children(&g, el); return; }
+    if (str_eq(tag, "form") == 1) { gen_draw_children(&g, el); return; }
+
+    if (str_eq(tag, "column") == 1) {
+        int pad = layout_int(&g, el, "padding", 0);
+        int bg = layout_colour(&g, el, "background", 0 - 1);
+        if (bg >= 0) {
+            // A column's background is painted behind whatever it holds, so
+            // its height is not known until the children are placed. A
+            // display list that is appended to cannot go back, so it is drawn
+            // as a band from here to the bottom of the screen -- honest for a
+            // page background and wrong for a card, which is why a card
+            // should be a row.
+            StringBuilder r = sb_new();
+            sb_append(&r, "ui_rect(0, ui_flow_y(), 411, 731 - ui_flow_y(), ");
+            sb_append(&r, str(bg)); sb_append(&r, ");");
+            cg_emit(&g, sb_to_str(&r));
+        }
+        if (pad != 0) {
+            StringBuilder f = sb_new();
+            sb_append(&f, "ui_flow(ui_flow_x() + "); sb_append(&f, str(pad));
+            sb_append(&f, ", ui_flow_y() + "); sb_append(&f, str(pad));
+            sb_append(&f, ", 411 - 2 * "); sb_append(&f, str(pad));
+            sb_append(&f, ", ui_flow_gap());");
+            cg_emit(&g, sb_to_str(&f));
+        }
+        gen_draw_children(&g, el);
+        return;
+    }
+
+    if (str_eq(tag, "row") == 1) {
+        int pad = layout_int(&g, el, "padding", 0);
+        int bg = layout_colour(&g, el, "background", 0 - 1);
+        int height = 24 + 2 * pad;
+        if (bg >= 0) {
+            StringBuilder r = sb_new();
+            sb_append(&r, "ui_rect(ui_flow_x(), ui_flow_y(), ui_flow_w(), ");
+            sb_append(&r, str(height)); sb_append(&r, ", ");
+            sb_append(&r, str(bg)); sb_append(&r, ");");
+            cg_emit(&g, sb_to_str(&r));
+        }
+        // Children across, evenly: a display list appended to cannot know how
+        // wide a child will be before it is placed, so a row divides its width
+        // rather than measuring. `spacer` is what asks for the division, so a
+        // row with no spacers packs from the left.
+        NodeVec kids = nv_at(el.v2);
+        int nk = kids.len;
+        int slots = 0;
+        for (int i = 0; i < nk; i = i + 1) {
+            Node c = nv_get(&kids, i);
+            if (c.kind == 71) { if (str_eq(c.s1, "spacer") == 0) { slots = slots + 1; } }
+        }
+        if (slots < 1) { slots = 1; }
+        StringBuilder w = sb_new();
+        sb_append(&w, "{ strata_int _rw = ui_flow_w() / "); sb_append(&w, str(slots));
+        sb_append(&w, ";");
+        cg_emit(&g, sb_to_str(&w));
+        StringBuilder x = sb_new();
+        sb_append(&x, "strata_int _rx = ui_flow_x() + "); sb_append(&x, str(pad));
+        sb_append(&x, ";");
+        cg_emit(&g, sb_to_str(&x));
+        StringBuilder y = sb_new();
+        sb_append(&y, "strata_int _ry = ui_flow_y() + "); sb_append(&y, str(pad));
+        sb_append(&y, ";");
+        cg_emit(&g, sb_to_str(&y));
+        for (int i = 0; i < nk; i = i + 1) {
+            Node c = nv_get(&kids, i);
+            if (c.kind == 71) {
+                if (str_eq(c.s1, "spacer") == 0) {
+                    gen_draw_inline(&g, c, 1710618);
+                    cg_emit(&g, "_rx += _rw;");
+                }
+            }
+        }
+        cg_emit(&g, "}");
+        StringBuilder a = sb_new();
+        sb_append(&a, "ui_advance("); sb_append(&a, str(height)); sb_append(&a, ");");
+        cg_emit(&g, sb_to_str(&a));
+        return;
+    }
+
+    if (str_eq(tag, "text") == 1) {
+        int colour = layout_colour(&g, el, "color", 1710618);
+        int size = layout_int(&g, el, "size", 8);
+        int scale = size / 8;
+        if (scale < 1) { scale = 1; }
+        str value = "\"\"";
+        if (el.c1 != 0) { value = gen_expr(&g, el.c1); }
+        StringBuilder t = sb_new();
+        sb_append(&t, "ui_line("); sb_append(&t, value); sb_append(&t, ", ");
+        sb_append(&t, str(colour)); sb_append(&t, ", "); sb_append(&t, str(scale));
+        sb_append(&t, ");");
+        cg_emit(&g, sb_to_str(&t));
+        return;
+    }
+
+    if (str_eq(tag, "spacer") == 1) { cg_emit(&g, "ui_advance(8);"); return; }
+
+    if (str_eq(tag, "button") == 1) {
+        str label = "\"\"";
+        if (el.c1 != 0) { label = gen_expr(&g, el.c1); }
+        str action = layout_str_prop(&g, el, "action");
+        if (str_len(action) == 0) { action = "submit"; }
+        StringBuilder b = sb_new();
+        sb_append(&b, "ui_button(ui_flow_x(), ui_flow_y(), ui_flow_w(), 44, ");
+        sb_append(&b, label); sb_append(&b, ", \""); sb_append(&b, action);
+        sb_append(&b, "\", 0x1F4E62, 0xFFFFFF);");
+        cg_emit(&g, sb_to_str(&b));
+        cg_emit(&g, "ui_advance(44);");
+        return;
+    }
+
+    if (str_eq(tag, "field") == 1) {
+        // A hidden field is not drawn: it carries a token a browser needs and
+        // a phone does not.
+        if (str_eq(layout_str_prop(&g, el, "type"), "hidden") == 1) { return; }
+        str name = "\"\"";
+        if (el.c1 != 0) { name = gen_expr(&g, el.c1); }
+        str hint = layout_str_prop(&g, el, "placeholder");
+        StringBuilder f = sb_new();
+        sb_append(&f, "ui_input(44, "); sb_append(&f, name);
+        sb_append(&f, ", \""); sb_append(&f, hint);
+        sb_append(&f, "\", 0xFFFFFF, 1710618, 0xE1E1E1, 0xE1E1E1);");
+        cg_emit(&g, sb_to_str(&f));
+        return;
+    }
+
+    // Anything with no drawing rule still draws its children, so an unhandled
+    // wrapper loses its box and not its contents.
+    gen_draw_children(&g, el);
+}
+
+def gen_draw_children(Gen &g, Node el) {
+    NodeVec kids = nv_at(el.v2);
+    int n = kids.len;
+    for (int i = 0; i < n; i = i + 1) { gen_draw_node(&g, nv_get(&kids, i)); }
+}
+
+// One child of a row, placed at _rx/_ry rather than at the flow.
+def gen_draw_inline(Gen &g, Node el, int ink) {
+    if (str_eq(el.s1, "text") == 1) {
+        int colour = layout_colour(&g, el, "color", ink);
+        int size = layout_int(&g, el, "size", 8);
+        int scale = size / 8;
+        if (scale < 1) { scale = 1; }
+        str value = "\"\"";
+        if (el.c1 != 0) { value = gen_expr(&g, el.c1); }
+        StringBuilder t = sb_new();
+        sb_append(&t, "ui_text(_rx, _ry, "); sb_append(&t, value);
+        sb_append(&t, ", "); sb_append(&t, str(colour)); sb_append(&t, ", ");
+        sb_append(&t, str(scale)); sb_append(&t, ");");
+        cg_emit(&g, sb_to_str(&t));
+        return;
+    }
+    if (str_eq(el.s1, "button") == 1) {
+        str label = "\"\"";
+        if (el.c1 != 0) { label = gen_expr(&g, el.c1); }
+        str action = layout_str_prop(&g, el, "action");
+        if (str_len(action) == 0) { action = "submit"; }
+        StringBuilder b = sb_new();
+        sb_append(&b, "ui_button(_rx, _ry, _rw - 8, 24, "); sb_append(&b, label);
+        sb_append(&b, ", \""); sb_append(&b, action);
+        sb_append(&b, "\", 0x1F4E62, 0xFFFFFF);");
+        cg_emit(&g, sb_to_str(&b));
+        return;
+    }
+    if (str_eq(el.s1, "form") == 1) {
+        NodeVec kids = nv_at(el.v2);
+        int n = kids.len;
+        for (int i = 0; i < n; i = i + 1) {
+            Node c = nv_get(&kids, i);
+            if (c.kind == 71) { gen_draw_inline(&g, c, ink); }
+        }
+        return;
+    }
 }
 
 def gen_layout_node(Gen &g, Node node) {
@@ -2894,8 +3214,11 @@ def gen_for_in(Gen &g, Node node) {
     NodeVec body = nv_at(node.v1);
     int n = body.len;
     for (int i = 0; i < n; i = i + 1) {
-        if (g.in_layout == 1) { gen_layout_node(&g, nv_get(&body, i)); }
-        else { gen_stmt(&g, nv_get(&body, i)); }
+        // One loop, three destinations: a function body, a layout being
+        // written as HTML, and the same layout being drawn.
+        if (g.in_draw == 1) { gen_draw_node(&g, nv_get(&body, i)); }
+        else { if (g.in_layout == 1) { gen_layout_node(&g, nv_get(&body, i)); }
+            else { gen_stmt(&g, nv_get(&body, i)); } }
     }
     g.indent = g.indent - 1;
     cg_emit(&g, "}");

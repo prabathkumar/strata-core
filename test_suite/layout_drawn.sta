@@ -1,0 +1,76 @@
+// One layout, two surfaces.
+//
+// Here so the code generator differential covers the drawn form of a layout:
+// without a source that imports `ui` AND declares a layout, both generators
+// agree about code neither is asked to emit.
+//
+// A layout used to render one way, as HTML, and phone screens were written
+// separately with the UI library — two ways to describe a screen, which is
+// the split this language exists to remove, reappearing inside it. The same
+// description now does both.
+
+import io  from std;
+import str from std;
+import mem from std;
+import ui  from std;
+
+database Order {
+    int   id;
+    str   customer;
+    str   region;
+    float amount;
+    str   status;
+}
+
+layout Board(str notice) {
+    window "Orders" [width = 1100] {
+        row [padding = 12, background = "#1F4E62"] {
+            text "ORDERS" [color = "#FFFFFF", size = 16];
+            spacer;
+            text notice [color = "#FFFFFF"];
+        }
+        column [padding = 12] {
+            for O in Order <- [status == "OPEN"] {
+                row [padding = 8, background = "#FFFFFF"] {
+                    text O.customer [color = "#1A1A1A", size = 16];
+                    spacer;
+                    text str_fixed(O.amount, 2) [color = "#1F4E62", size = 16];
+                }
+            }
+            form [action = "/orders", method = "post"] {
+                field "_csrf" [type = "hidden", value = "x"];
+                field "customer" [placeholder = "customer"];
+                button "ADD ORDER" [action = "new"];
+            }
+        }
+    }
+}
+
+int main() {
+    Order <- [id = 1, customer = "Acme Bhd", region = "apac", amount = 1250.5, status = "OPEN"];
+    Order <- [id = 2, customer = "Globex",   region = "emea", amount =  340.0, status = "OPEN"];
+    Order <- [id = 3, customer = "Initech",  region = "amer", amount =  980.75, status = "CLOSED"];
+
+    // The web surface.
+    str page = render Board("2 open");
+    print(str_concat("html has the customer: ", str(str_index_of(page, "Acme Bhd") >= 0)));
+    print(str_concat("html leaves out the closed one: ",
+    str(str_index_of(page, "Initech") < 0)));
+
+    // The phone surface, from the same description.
+    ui_begin();
+    Board_draw("2 open");
+    print(str_concat("things to draw: ", str(count(UIItem <- [id > 0]))));
+    list[UIItem] labels = UIItem <- [kind == UI_TEXT];
+    int found = 0;
+    for it in labels {
+        if (str_eq(it.text, "Acme Bhd") == 1) { found = 1; }
+    }
+    print(str_concat("the screen has the customer too: ", str(found)));
+    int closed = 0;
+    for it2 in labels {
+        if (str_eq(it2.text, "Initech") == 1) { closed = 1; }
+    }
+    print(str_concat("and leaves out the closed one: ", str(closed == 0)));
+    return 0;
+}

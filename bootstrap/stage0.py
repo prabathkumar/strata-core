@@ -179,6 +179,9 @@ class CodeGen:
         # Set while generating a query condition: a bare identifier naming a
         # column of this table resolves to the row under test.
         self.query_row_type = None
+        # True while a layout is being generated as a drawn screen rather than
+        # as HTML, so the shared loop generator knows where to send the body.
+        self.in_draw = False
         self.query_depth = 0
         # Database fields by table name, for report rendering.
         self.schema_fields = {}
@@ -848,6 +851,54 @@ int main(int argc, char** argv) {
         for fn in decl.functions:
             self.func_returns[fn.name] = self._c_type(fn.return_type)
 
+    def _has_ui(self):
+        """Whether this program brought in the screen-drawing module.
+
+        A layout is generated twice when it did: once as HTML for the web, and
+        once as a drawn screen for a phone. A program that does not import `ui`
+        gets only the HTML, because the drawn version calls functions that
+        would not be there to link against.
+
+        The same rule the Postgres backend uses: importing the module is the
+        switch, and a program that does not ask for something carries neither
+        the dependency nor the code."""
+        for name, _ in self.modules:
+            if name == "ui":
+                return True
+        return False
+
+    # Colours in a layout are written the way HTML writes them -- "#7ee787".
+    # The drawn screen needs the number. Worked out here, at compile time, from
+    # a literal; anything that is not a literal keeps the default, because a
+    # colour computed at run time is not something a layout can express today
+    # and guessing would be worse than ignoring.
+    def _layout_colour(self, el, name, fallback):
+        for pr in el.props:
+            if pr.name != name:
+                continue
+            if isinstance(pr.value, StrLiteral):
+                text = str(pr.value.value).strip()
+                if text.startswith("#") and len(text) == 7:
+                    try:
+                        return int(text[1:], 16)
+                    except ValueError:
+                        return fallback
+            if isinstance(pr.value, IntLiteral):
+                return int(pr.value.value)
+        return fallback
+
+    def _layout_int(self, el, name, fallback):
+        for pr in el.props:
+            if pr.name == name and isinstance(pr.value, IntLiteral):
+                return int(pr.value.value)
+        return fallback
+
+    def _layout_str_prop(self, el, name):
+        for pr in el.props:
+            if pr.name == name and isinstance(pr.value, StrLiteral):
+                return str(pr.value.value)
+        return ""
+
     def _gen_layout(self, decl):
         """A layout becomes a function that writes HTML to a stream.
 
@@ -869,6 +920,168 @@ int main(int argc, char** argv) {
         self.in_layout = False
         self.indent = 0
         self.emit_raw("}")
+        if self._has_ui():
+            self._gen_layout_draw(decl)
+
+    # ── The same layout, drawn ───────────────────────────────────────────────
+    #
+    # A layout was one description that rendered one way: HTML. The phone
+    # screens were written separately with the UI library, so there were two
+    # ways to write a screen -- which is the split this language exists to
+    # remove, reappearing inside it.
+    #
+    # `X_draw(...)` takes the same parameters as `X_render(...)` and produces
+    # the same screen as things to draw. A column flows down, a row places its
+    # children across, and everything else is what it was.
+    #
+    # The two are not pixel-identical and are not meant to be. A browser has a
+    # layout engine and a phone screen here does not; what is shared is the
+    # DESCRIPTION -- the same fields, the same rows, the same queries, checked
+    # against the same schema once.
+    def _gen_layout_draw(self, decl):
+        params = getattr(decl, "params", [])
+        sig = ", ".join(self._c_param(p) for p in params) or "void"
+        self.emit_raw(f"\nvoid {decl.name}_draw({sig}) {{")
+        self.var_types = dict(self.var_types)
+        for p in params:
+            self.var_types[p.name] = self._c_type(p.param_type)
+        self.indent = 1
+        self.emit("ui_flow(0, 0, 411, 8);")
+        self.in_layout = True
+        self.in_draw = True
+        for st in decl.body:
+            self._gen_draw_node(st)
+        self.in_draw = False
+        self.in_layout = False
+        self.indent = 0
+        self.emit_raw("}")
+
+    def _gen_draw_node(self, node):
+        if isinstance(node, Element):
+            self._gen_draw_element(node); return
+        if isinstance(node, ForInStmt):
+            # The same loop the HTML gets, around drawing instead of printing.
+            self._gen_for_in(node); return
+        if isinstance(node, IfStmt):
+            self._gen_if(node, []); return
+        self._gen_stmt(node, [])
+
+    def _gen_draw_element(self, el):
+        INK = 0x1A1A1A
+        tag = el.tag
+
+        if tag in ("window", "grid"):
+            # The host owns the window. Its children simply flow.
+            for c in el.children:
+                self._gen_draw_node(c)
+            return
+
+        if tag == "column":
+            pad = self._layout_int(el, "padding", 0)
+            bg = self._layout_colour(el, "background", -1)
+            if bg >= 0:
+                # A column's background is painted behind whatever it holds, so
+                # its height is not known until the children are placed. The
+                # panel is drawn afterwards is impossible with a display list
+                # that is appended to, so it is drawn as a full-width band from
+                # here to the bottom of the screen -- honest for a page
+                # background and wrong for a card, which is why a card should
+                # be a row.
+                self.emit(f"ui_rect(0, ui_flow_y(), 411, 731 - ui_flow_y(), {bg});")
+            if pad:
+                self.emit(f"ui_flow(ui_flow_x() + {pad}, ui_flow_y() + {pad}, "
+                          f"411 - 2 * {pad}, ui_flow_gap());")
+            for c in el.children:
+                self._gen_draw_node(c)
+            return
+
+        if tag == "row":
+            pad = self._layout_int(el, "padding", 0)
+            bg = self._layout_colour(el, "background", -1)
+            height = 24 + 2 * pad
+            if bg >= 0:
+                self.emit(f"ui_rect(ui_flow_x(), ui_flow_y(), ui_flow_w(), "
+                          f"{height}, {bg});")
+            # Children across, evenly: a display list appended to cannot know
+            # how wide a child will be before it is placed, so a row divides
+            # its width rather than measuring. `spacer` is what asks for the
+            # division, so a row with no spacers packs from the left.
+            drawable = [c for c in el.children
+                        if isinstance(c, Element) and c.tag != "spacer"]
+            slots = max(len(drawable), 1)
+            self.emit(f"{{ strata_int _rw = ui_flow_w() / {slots};")
+            self.emit(f"strata_int _rx = ui_flow_x() + {pad};")
+            self.emit(f"strata_int _ry = ui_flow_y() + {pad};")
+            for c in drawable:
+                self._gen_draw_inline(c, INK)
+                self.emit("_rx += _rw;")
+            self.emit("}")
+            self.emit(f"ui_advance({height});")
+            return
+
+        if tag == "text":
+            colour = self._layout_colour(el, "color", INK)
+            size = self._layout_int(el, "size", 8)
+            scale = max(1, size // 8)
+            value = self._gen_expr(el.label, []) if el.label is not None else '""'
+            self.emit(f"ui_line({value}, {colour}, {scale});")
+            return
+
+        if tag == "spacer":
+            self.emit("ui_advance(8);")
+            return
+
+        if tag == "button":
+            label = self._gen_expr(el.label, []) if el.label is not None else '""'
+            action = self._layout_str_prop(el, "action") or "submit"
+            self.emit(f'ui_button(ui_flow_x(), ui_flow_y(), ui_flow_w(), 44, '
+                      f'{label}, "{action}", 0x1F4E62, 0xFFFFFF);')
+            self.emit("ui_advance(44);")
+            return
+
+        if tag == "field":
+            # A hidden field is not drawn: it carries a token a browser needs
+            # and a phone does not.
+            if self._layout_str_prop(el, "type") == "hidden":
+                return
+            name = self._gen_expr(el.label, []) if el.label is not None else '""'
+            hint = self._layout_str_prop(el, "placeholder")
+            self.emit(f'ui_input(44, {name}, "{hint}", 0xFFFFFF, {INK}, '
+                      f'0xE1E1E1, 0xE1E1E1);')
+            return
+
+        if tag == "form":
+            for c in el.children:
+                self._gen_draw_node(c)
+            return
+
+        # Anything with no drawing rule still draws its children, so an
+        # unhandled wrapper loses its box and not its contents.
+        for c in el.children:
+            self._gen_draw_node(c)
+
+    def _gen_draw_inline(self, el, ink):
+        """One child of a row, placed at _rx/_ry rather than at the flow."""
+        if el.tag == "text":
+            colour = self._layout_colour(el, "color", ink)
+            size = self._layout_int(el, "size", 8)
+            scale = max(1, size // 8)
+            value = self._gen_expr(el.label, []) if el.label is not None else '""'
+            self.emit(f"ui_text(_rx, _ry, {value}, {colour}, {scale});")
+            return
+        if el.tag == "button":
+            label = self._gen_expr(el.label, []) if el.label is not None else '""'
+            action = self._layout_str_prop(el, "action") or "submit"
+            self.emit(f'ui_button(_rx, _ry, _rw - 8, 24, {label}, "{action}", '
+                      f'0x1F4E62, 0xFFFFFF);')
+            return
+        if el.tag == "form":
+            for c in el.children:
+                if isinstance(c, Element):
+                    self._gen_draw_inline(c, ink)
+            return
+        if el.tag == "field":
+            return
 
     def _gen_layout_node(self, node):
         if isinstance(node, Element):
@@ -1007,7 +1220,11 @@ int main(int argc, char** argv) {
         self.indent += 1
         self.emit(f"{elem} {cname(node.var)} = {it}[{it}_i];")
         for st in node.body:
-            if self.in_layout:
+            # One loop, three destinations: a function body, a layout being
+            # written as HTML, and the same layout being drawn.
+            if self.in_draw:
+                self._gen_draw_node(st)
+            elif self.in_layout:
                 self._gen_layout_node(st)
             else:
                 self._gen_stmt(st, param_names)

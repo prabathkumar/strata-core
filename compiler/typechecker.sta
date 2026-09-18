@@ -402,6 +402,13 @@ def register_decls(TC &tc, Node unit) {
         if (d.kind == 5) {
             tc.models = mdl_cons(d.s1, resolve_type(d.c1), resolve_type(d.c2), tc.models);
         }
+        // A report or a layout is a name `render` can name. Imported ones were
+        // registered and local ones were not, so `render X` worked when X came
+        // from another file and was E002 when X was declared beside the
+        // function rendering it. No file in this repository did that until a
+        // test fixture did, and the type-checker differential caught it.
+        if (d.kind == 6)  { scp_define(&g, d.s1, ty_ptr(ty_new(d.s1))); }
+        if (d.kind == 70) { scp_define(&g, d.s1, ty_ptr(ty_new(d.s1))); }
         // A constant is a global name nothing may assign to. Its value is
         // checked against its declared type here, so the error lands on the
         // declaration rather than on the first use.
@@ -454,6 +461,36 @@ def register_decls(TC &tc, Node unit) {
             plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
         }
         tc.fns = fn_cons(f.s2, rt, plist, np, tc.fns);
+    }
+    register_layout_draws(&tc, unit);
+}
+
+// `layout X` also defines `X_draw`, which draws the same screen.
+//
+// A layout renders as HTML through `render X(...)`. The same description draws
+// as a phone screen through `X_draw(...)`, with the same parameters. Declared
+// here so a call to it is checked like any other call rather than reported as
+// undefined -- and so the argument types are checked, which is the whole
+// reason the two tiers agree.
+def register_layout_draws(TC &tc, Node unit) {
+    NodeVec decls = nv_at(unit.v2);
+    int nd = decls.len;
+    for (int d = 0; d < nd; d = d + 1) {
+        Node dec = nv_get(&decls, d);
+        if (dec.kind == 70) {
+            NodeVec ps = nv_at(dec.v2);
+            int plist = 0;
+            int np = ps.len;
+            for (int k = np - 1; k >= 0; k = k - 1) {
+                Node prm = nv_get(&ps, k);
+                plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
+            }
+            StringBuilder nm = sb_new();
+            sb_append(&nm, dec.s1);
+            sb_append(&nm, "_draw");
+            tc.fns = fn_cons(sb_to_str(&nm), ty_ptr(ty_new("void")), plist, np,
+            tc.fns);
+        }
     }
 }
 
