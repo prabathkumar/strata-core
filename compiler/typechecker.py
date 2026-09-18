@@ -548,6 +548,11 @@ class TypeChecker:
         if stmt.else_block: self._check_body(stmt.else_block,Scope(parent=scope))
 
     def _infer_type(self,expr,scope):
+        # Storage used as a value. `save` and `load` answer whether the store
+        # now matches memory; `delete` answers how many rows went. All three
+        # are counts or flags, so all three are int -- and saying so here is
+        # what makes `str ok = save T to "p";` the E001 it should be.
+        if isinstance(expr,(TableIOStmt,DeleteStmt)): return T_INT
         if isinstance(expr,IntLiteral): return T_INT
         if isinstance(expr,FloatLiteral): return T_FLOAT
         if isinstance(expr,StrLiteral): return T_STR

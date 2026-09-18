@@ -17,8 +17,11 @@ int load_all() {
     return 1;
 }
 
-int save_orders()   { save Order to "data/orders.tsv"; return 1; }
-int save_sessions() { save Session to "data/sessions.tsv"; return 1; }
+// These return whether the write actually happened. They used to return 1
+// unconditionally, so a handler that could not write still told the customer
+// the order was created.
+int save_orders()   { return save Order to "data/orders.tsv"; }
+int save_sessions() { return save Session to "data/sessions.tsv"; }
 
 int next_id() {
     list[Order] all = Order <- [id > 0];
@@ -98,7 +101,7 @@ int clear_failures(str who) {
     return 1;
 }
 
-int save_users() { save User to "data/users.tsv"; return 1; }
+int save_users() { return save User to "data/users.tsv"; }
 
 // The CSRF token this session's forms must carry, or "" when there is no
 // session. A form without it is not from a page this service rendered.

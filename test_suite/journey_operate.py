@@ -288,6 +288,44 @@ def main():
         ok("another session's token does not work here", code == 403,
            f"got {code}")
 
+        print("\n── A write that cannot happen is not reported as done ──────────")
+        # `save` used to be a statement with no value, so a handler could not
+        # tell a successful write from a failed one. It returned 1 whatever
+        # happened, the customer was told the order was created, and only the
+        # log knew otherwise.
+        orders_file = os.path.join(app, "data", "orders.tsv")
+        before = open(orders_file).read() if os.path.exists(orders_file) else ""
+        try:
+            # The file is replaced by a directory of the same name, so
+            # fopen(path, "w") genuinely cannot succeed. A read-only file was
+            # the first attempt and proved nothing: these tests can run as
+            # root, and root writes through a read-only bit.
+            os.remove(orders_file)
+            os.mkdir(orders_file)
+            code, body, _ = go(s1, "/orders",
+                               f"customer=ghost&region=apac&amount=1&_csrf={csrf}".encode(),
+                               "POST")
+            ok("a write that fails is answered 503, not a redirect",
+               code == 503, f"got {code}")
+            ok("and says the order was not created",
+               "not created" in body.lower(), body[:160])
+        finally:
+            if os.path.isdir(orders_file):
+                os.rmdir(orders_file)
+                open(orders_file, "w").write(before)
+
+        after = open(orders_file).read() if os.path.exists(orders_file) else ""
+        ok("nothing was written", after == before,
+           f"{len(before)} -> {len(after)} bytes")
+
+        # And the ordinary path still works, so the check above is not passing
+        # because everything is broken.
+        code, _, _ = go(s1, "/orders",
+                        f"customer=real&region=apac&amount=2&_csrf={csrf}".encode(),
+                        "POST")
+        ok("a write that can happen still succeeds", code in (200, 303),
+           f"got {code}")
+
         print("\n── Guessing a password stops working ────────────────────────────")
         guesser = session()
         codes = []

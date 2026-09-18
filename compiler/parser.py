@@ -921,35 +921,17 @@ class Parser:
         # a signed-out session was expired in place and the table grew forever.
         if self._at_word("delete") and self._peek_at(1).type == TT.IDENT \
            and self._peek_at(2).type == TT.ARROW_L:
-            self._advance()
-            table = self._consume(TT.IDENT).value
-            self._consume(TT.ARROW_L)
-            self._consume(TT.L_BRACKET)
-            cond = self._parse_expr()
-            self._consume(TT.R_BRACKET)
+            node = self._parse_storage_op()
             self._consume(TT.SEMICOLON)
-            return DeleteStmt(t.line, t.col, table, cond)
+            return node
 
         # `save T to "p";` / `load T from "p";` — contextual, so neither word
         # is taken from user code.
         if (self._at_word("save") or self._at_word("load")) \
            and self._peek_at(1).type == TT.IDENT:
-            op = self._advance().value
-            table = self._consume(TT.IDENT).value
-            self._consume_word("to" if op == "save" else "from")
-            path = self._consume(TT.STR_LIT).value
-            # An optional filter, written the way every other query in the
-            # language is written. `save T to "p" <- [...]` is not accepted:
-            # a partial save would mean the store no longer matches memory,
-            # which is the one thing `save` promises.
-            cond = None
-            if op == "load" and self._check(TT.ARROW_L):
-                self._advance()
-                self._consume(TT.L_BRACKET)
-                cond = self._parse_expr()
-                self._consume(TT.R_BRACKET)
+            node = self._parse_storage_op()
             self._consume(TT.SEMICOLON)
-            return TableIOStmt(t.line, t.col, op, table, path, cond)
+            return node
 
         if self._check(TT.KW_VERIFY):
             return self._parse_verify()
@@ -1162,6 +1144,14 @@ class Parser:
         if self._check(TT.BORROW):
             t = self._advance()
             return BorrowExpr(t.line, t.col, self._parse_primary())
+        # Storage as a value: `if (save Order to url) { ... }`. The same words
+        # in the same shapes as the statement forms, parsed by the same
+        # function, so there is one grammar rather than two that agree today.
+        if (self._at_word("save") or self._at_word("load")
+                or self._at_word("delete")) and self._peek_at(1).type == TT.IDENT:
+            node = self._parse_storage_op()
+            if node is not None:
+                return node
         return self._parse_cast()
 
     def _parse_cast(self) -> Any:
@@ -1171,6 +1161,47 @@ class Parser:
             target = self._consume(TT.IDENT).value
             return CastExpr(expr.line, expr.col, expr, target)
         return expr
+
+    def _parse_storage_op(self):
+        """`save T to "p"`, `load T from "p" [<- [cond]]`, `delete T <- [cond]`.
+
+        Shared by statement and expression position so the two cannot drift.
+        The semicolon is NOT consumed here: a statement has one and an
+        expression does not.
+
+        These were statements with no value, and a failed save therefore looked
+        exactly like a successful one. A service pointed at a database that was
+        not there logged the connection error, printed "order recorded" and
+        exited 0.
+        """
+        t = self._peek()
+        if self._at_word("delete") and self._peek_at(1).type == TT.IDENT \
+           and self._peek_at(2).type == TT.ARROW_L:
+            self._advance()
+            table = self._consume(TT.IDENT).value
+            self._consume(TT.ARROW_L)
+            self._consume(TT.L_BRACKET)
+            cond = self._parse_expr()
+            self._consume(TT.R_BRACKET)
+            return DeleteStmt(t.line, t.col, table, cond)
+        if (self._at_word("save") or self._at_word("load")) \
+           and self._peek_at(1).type == TT.IDENT:
+            op = self._advance().value
+            table = self._consume(TT.IDENT).value
+            self._consume_word("to" if op == "save" else "from")
+            path = self._consume(TT.STR_LIT).value
+            # An optional filter, written the way every other query in the
+            # language is written. `save T to "p" <- [...]` is not accepted:
+            # a partial save would mean the store no longer matches memory,
+            # which is the one thing `save` promises.
+            cond = None
+            if op == "load" and self._check(TT.ARROW_L):
+                self._advance()
+                self._consume(TT.L_BRACKET)
+                cond = self._parse_expr()
+                self._consume(TT.R_BRACKET)
+            return TableIOStmt(t.line, t.col, op, table, path, cond)
+        return None
 
     def _parse_primary(self) -> Any:
         t = self._peek()

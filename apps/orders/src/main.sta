@@ -146,7 +146,13 @@ int do_create(int conn, str body) {
     if (outcome == 2) {
         return http_bad_request(conn, "<h1>400</h1><p>amount is required</p>");
     }
-    save_orders();
+    // A write that did not happen is not a created order. Telling the
+    // customer otherwise is the worst thing this service could do, and until
+    // `save` had a value it was the only thing it could do.
+    if (save_orders() == 0) {
+        return http_respond(conn, 503, "text/html; charset=utf-8",
+        "<h1>503</h1><p>the order could not be stored and was not created</p>");
+    }
     return http_redirect(conn, "/?notice=created");
 }
 
@@ -154,7 +160,10 @@ int do_close(int conn, str body) {
     int want = str_to_int(http_form_value(body, "id"));
     if (want == 0) { return http_bad_request(conn, "<h1>400</h1><p>id is required</p>"); }
     if (close_order(want) == 1) { return http_not_found(conn); }
-    save_orders();
+    if (save_orders() == 0) {
+        return http_respond(conn, 503, "text/html; charset=utf-8",
+        "<h1>503</h1><p>the change could not be stored and was not made</p>");
+    }
     return http_redirect(conn, "/?notice=closed");
 }
 

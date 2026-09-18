@@ -475,6 +475,12 @@ int infer(TC &tc, int node_p, int scope_p) {
     Node e = node_at(node_p);
     int k = e.kind;
 
+    // Storage used as a value. `save` and `load` answer whether the store now
+    // matches memory; `delete` answers how many rows went. All three are
+    // counts or flags, so all three are int -- and saying so here is what
+    // makes `str ok = save T to "p";` the E001 it should be.
+    if (k == 75) { return ty_ptr(ty_new("int")); }
+    if (k == 76) { return ty_ptr(ty_new("int")); }
     if (k == 50) { return ty_ptr(ty_new("int")); }
     if (k == 51) { return ty_ptr(ty_new("float")); }
     if (k == 52) { return ty_ptr(ty_new("str")); }

@@ -1,0 +1,26 @@
+// Storage used as a value.
+//
+// Here so the parser and code generator differentials cover the expression
+// forms: without a source that uses them, both implementations agree about
+// syntax neither is asked to handle.
+//
+// `save` and `load` answer whether the store now matches memory. `delete`
+// answers how many rows went. Before this, all three were statements with no
+// value, and a failed save looked exactly like a successful one.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+database Row { int id; str tag; }
+
+int main() {
+    Row <- [id = 1, tag = "a"];
+    Row <- [id = 2, tag = "b"];
+    if (save Row to "e.tsv") { print("saved"); } else { print("save failed"); }
+    int gone = delete Row <- [tag == "b"];
+    print(str_concat("removed: ", str(gone)));
+    if (load Row from "nowhere/at/all.tsv") { print("loaded"); }
+    else { print("load failed"); }
+    return 0;
+}

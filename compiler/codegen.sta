@@ -474,6 +474,19 @@ int schema_has_column(Gen &g, str table, str col) {
     return 0;
 }
 
+// An expression the generator has no rule for.
+//
+// Stopping rather than emitting something. The fallback used to be the literal
+// 0: a program could compile, run, and quietly take the wrong branch. The
+// oracle raises here, so this must stop too -- a generator that carries on
+// where the other one stops is a generator that produces a different program.
+def codegen_fail(Gen &g, str message) {
+    native "
+    fprintf(stderr, \"[STRATA CODEGEN ERROR] %s\\n\", $message);
+    exit(1);
+    ";
+}
+
 str gen_expr(Gen &g, int p) {
     if (p == 0) { return "0"; }
     Node e = node_at(p);
@@ -669,6 +682,62 @@ str gen_expr(Gen &g, int p) {
     }
     if (k == 46) { return gen_query_expr(&g, e); }
 
+    // Storage as a value: 1 when it worked, 0 when it did not. The machinery
+    // underneath has always known; the language used to throw the answer away.
+    if (k == 75) {
+        if (str_eq(e.s1, "save") == 1) {
+            StringBuilder sv = sb_new();
+            sb_append(&sv, e.s2); sb_append(&sv, "__save(\""); sb_append(&sv, e.s3);
+            sb_append(&sv, "\")");
+            return sb_to_str(&sv);
+        }
+        str where = "";
+        if (e.c1 >= 0) { where = sql_where(&g, node_at(e.c1), e.s2); }
+        StringBuilder ld = sb_new();
+        sb_append(&ld, e.s2); sb_append(&ld, "__load(\""); sb_append(&ld, e.s3);
+        sb_append(&ld, "\", \""); sb_append(&ld, where); sb_append(&ld, "\")");
+        if (e.c1 < 0) { return sb_to_str(&ld); }
+        // A filtered load used as a value still has to apply the part of the
+        // filter SQL could not express, and still has to say whether the load
+        // itself worked.
+        str prev = g.query_row;
+        g.query_row = e.s2;
+        str cond = gen_expr(&g, e.c1);
+        g.query_row = prev;
+        StringBuilder fb = sb_new();
+        sb_append(&fb, "({ strata_int _lok = "); sb_append(&fb, sb_to_str(&ld));
+        sb_append(&fb, "; strata_int _kept = 0; for (strata_int _i = 0; _i < ");
+        sb_append(&fb, e.s2); sb_append(&fb, "__count; _i++) { ");
+        sb_append(&fb, e.s2); sb_append(&fb, "* _row = "); sb_append(&fb, e.s2);
+        sb_append(&fb, "__rows[_i]; if ("); sb_append(&fb, cond); sb_append(&fb, ") { ");
+        sb_append(&fb, e.s2); sb_append(&fb, "__rows[_kept++] = _row; } else { free(_row); } } ");
+        sb_append(&fb, e.s2); sb_append(&fb, "__count = _kept; ");
+        sb_append(&fb, e.s2); sb_append(&fb, "__stamp = 0; _lok; })");
+        return sb_to_str(&fb);
+    }
+    if (k == 76) {
+        // How many rows went, which is the useful answer -- a delete that
+        // matched nothing is not a failure, it is a zero.
+        if (bind_has(g.schemas, e.s1) == 0) { return "0"; }
+        str prev = g.query_row;
+        g.query_row = e.s1;
+        str cond = gen_expr(&g, e.c1);
+        g.query_row = prev;
+        StringBuilder db = sb_new();
+        sb_append(&db, "({ strata_int _kept = 0; for (strata_int _di = 0; _di < ");
+        sb_append(&db, e.s1); sb_append(&db, "__count; _di++) { ");
+        sb_append(&db, e.s1); sb_append(&db, "* _row = "); sb_append(&db, e.s1);
+        sb_append(&db, "__rows[_di]; if (!("); sb_append(&db, cond); sb_append(&db, ")) { ");
+        sb_append(&db, e.s1); sb_append(&db, "__rows[_kept++] = _row; } } strata_int _gone = ");
+        sb_append(&db, e.s1); sb_append(&db, "__count - _kept; ");
+        sb_append(&db, e.s1); sb_append(&db, "__count = _kept; _gone; })");
+        return sb_to_str(&db);
+    }
+
+    // An expression with no rule used to become the literal 0. A program could
+    // compile, run, and quietly take the wrong branch -- which is exactly what
+    // `if (save Order to url)` did before this function knew about storage.
+    codegen_fail(&g, "no code generated for this expression");
     return "0";
 }
 

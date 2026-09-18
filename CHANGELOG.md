@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### A failed save used to look exactly like a successful one
+
+`save` and `load` were statements with no value. The machinery underneath has
+always known whether the write happened — it returns success or failure — and
+the language threw the answer away.
+
+Pointed at a database that was not there, a program logged the connection
+error, printed "order recorded", and exited 0. In the orders service that
+meant a customer saw "order created", the order was nowhere, and only the log
+knew.
+
+All three storage words answer now:
+
+```
+if (save Order to url) { ... } else { ... }
+int pruned = delete Session <- [expires_at < now];
+```
+
+`save` and `load` give 1 when the store matches memory and 0 when it does not.
+`delete` gives the number of rows removed, because a delete that matched
+nothing is not a failure, it is a zero.
+
+They remain statements where the answer is not wanted, so every existing
+program is unchanged and every existing syntax tree is identical. The
+statement and expression forms are parsed by one function in each parser, so
+the two shapes cannot drift apart.
+
+`apps/orders` uses it: a create or close whose write did not happen now
+answers 503 saying the order was not created, rather than redirecting as
+though it had been. `journey_operate` proves this against a store that
+genuinely cannot be written — the first attempt used a read-only file and
+proved nothing, because these suites can run as root and root writes through
+a read-only bit.
+
+### An expression the generator had no rule for became the literal `0`
+
+Found immediately, by the change above: the first version of
+`if (save Order to url)` compiled to `if (0)`. No diagnostic, no warning — the
+branch was simply always false.
+
+Statements have raised on an unhandled node since the `for ... in` incident.
+Expressions now do the same, in both generators. `str ok = save T to "p";` is
+also E001 now, because the type checkers know these are int.
+
 ### A table stopped storing rows at 4,096 and said nothing
 
 Every `database` block kept its rows in a fixed array of 4,096. An insert past

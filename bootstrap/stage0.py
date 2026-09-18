@@ -1524,7 +1524,59 @@ int main(int argc, char** argv) {
                     f"strata_render_end({tag}f, &{tag}b); }})")
         if isinstance(expr, QueryExpr):
             return self._gen_query_expr(expr, param_names)
-        return "0"
+        if isinstance(expr, TableIOStmt):
+            # Storage as a value: 1 when it worked, 0 when it did not. The
+            # machinery underneath has always known; the language used to
+            # throw the answer away.
+            if expr.op == "save":
+                return f'{expr.table}__save("{expr.path}")'
+            where = ""
+            if getattr(expr, "cond", None) is not None:
+                if expr.table in self.schemas:
+                    self._validate_query_columns(expr.cond, expr.table, expr.line)
+                where = self._sql_where(expr.cond, expr.table) or ""
+            call = f'{expr.table}__load("{expr.path}", "{where}")'
+            if getattr(expr, "cond", None) is None:
+                return call
+            # A filtered load used as a value still has to apply the part of
+            # the filter SQL could not express, and still has to say whether
+            # the load itself worked.
+            t = expr.table
+            prev = self.query_row_type
+            self.query_row_type = t
+            cond = self._gen_expr(expr.cond, param_names)
+            self.query_row_type = prev
+            return (f"({{ strata_int _lok = {call}; strata_int _kept = 0; "
+                    f"for (strata_int _i = 0; _i < {t}__count; _i++) {{ "
+                    f"{t}* _row = {t}__rows[_i]; "
+                    f"if ({cond}) {{ {t}__rows[_kept++] = _row; }} "
+                    f"else {{ free(_row); }} }} "
+                    f"{t}__count = _kept; {t}__stamp = 0; _lok; }})")
+        if isinstance(expr, DeleteStmt):
+            # How many rows went, which is the useful answer — a delete that
+            # matched nothing is not a failure, it is a zero.
+            src = expr.table
+            if src not in self.schemas:
+                return "0"
+            self._validate_query_columns(expr.condition, src, expr.line)
+            prev = self.query_row_type
+            self.query_row_type = src
+            cond = self._gen_expr(expr.condition, param_names)
+            self.query_row_type = prev
+            return (f"({{ strata_int _kept = 0; "
+                    f"for (strata_int _di = 0; _di < {src}__count; _di++) {{ "
+                    f"{src}* _row = {src}__rows[_di]; "
+                    f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }} }} "
+                    f"strata_int _gone = {src}__count - _kept; "
+                    f"{src}__count = _kept; _gone; }})")
+        # An expression with no rule used to become the literal 0. A program
+        # could compile, run, and quietly take the wrong branch -- which is
+        # exactly what `if (save Order to url)` did before this function knew
+        # about storage. Unhandled is now a compile error, as it already was
+        # for statements.
+        raise StrataCodegenError(
+            f"no code generated for {type(expr).__name__} at line "
+            f"{getattr(expr, 'line', '?')}")
 
     def _agg_ctype(self, expr, param_names):
         """The C type sum/min/max yields: that of the values being aggregated."""

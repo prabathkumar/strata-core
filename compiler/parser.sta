@@ -965,17 +965,8 @@ Node parse_statement(P &p) {
         if (p_at_word(&p, "delete") == 1) {
             if (p_kind(&p, 1) == 4) {
                 if (p_kind(&p, 2) == 76) {          // <-
-                    Token dk = p_advance(&p);
-                    Token dtable = p_expect(&p, 4);
-                    p_expect(&p, 76);
-                    p_expect(&p, 54);
-                    Node dcond = parse_expr(&p);
-                    p_expect(&p, 55);
+                    Node dn = parse_storage_op(&p);
                     p_expect(&p, 56);
-                    Node dn = node_new(76);
-                    dn.s1 = dtable.value;
-                    dn.c1 = node_ptr(dcond);
-                    n_pos(dn, dk);
                     return dn;
                 }
             }
@@ -985,34 +976,8 @@ Node parse_statement(P &p) {
         int is_load = p_at_word(&p, "load");
         if (is_save + is_load > 0) {
             if (p_kind(&p, 1) == 4) {
-                Token op = p_advance(&p);
-                Token table = p_expect(&p, 4);
-                if (is_save == 1) { p_expect_word(&p, "to"); }
-                // `from` lexes as a keyword, not an identifier, so it is
-                // consumed by kind. Expecting it as a word printed a parse
-                // error on every file using `load` — recoverable, so the AST
-                // was right and the syntax-tree differential never saw it.
-                if (is_save == 0) { p_expect(&p, 22); }
-                Token path = p_advance(&p);
-                // An optional filter, written the way every other query in
-                // the language is written: `load T from "p" <- [cond];`. A
-                // save takes none -- a partial save would mean the store no
-                // longer matches memory, which is the one thing save
-                // promises.
-                Node n = node_new(75);
-                n.c1 = -1;
-                if (is_save == 0) {
-                    if (p_kind(&p, 0) == 76) {
-                        p_advance(&p);
-                        p_expect(&p, 54);
-                        Node lcond = parse_expr(&p);
-                        n.c1 = node_ptr(lcond);
-                        p_expect(&p, 55);
-                    }
-                }
+                Node n = parse_storage_op(&p);
                 p_expect(&p, 56);
-                n.s1 = op.value; n.s2 = table.value; n.s3 = path.value;
-                n_pos(n, op);
                 return n;
             }
         }
@@ -1165,6 +1130,68 @@ Node parse_multiplication(P &p) {
     return left;
 }
 
+// `save T to "p"`, `load T from "p" [<- [cond]]`, `delete T <- [cond]`.
+//
+// Shared by statement and expression position so the two cannot drift. The
+// semicolon is NOT consumed here: a statement has one and an expression does
+// not. Returns a node with kind 0 when the next tokens are none of these.
+//
+// These were statements with no value, and a failed save therefore looked
+// exactly like a successful one: a service pointed at a database that was not
+// there logged the connection error, printed "order recorded" and exited 0.
+Node parse_storage_op(P &p) {
+    if (p_at_word(&p, "delete") == 1) {
+        if (p_kind(&p, 1) == 4) {
+            if (p_kind(&p, 2) == 76) {
+                Token dk = p_advance(&p);
+                Token dtable = p_expect(&p, 4);
+                p_expect(&p, 76);
+                p_expect(&p, 54);
+                Node dcond = parse_expr(&p);
+                p_expect(&p, 55);
+                Node dn = node_new(76);
+                dn.s1 = dtable.value;
+                dn.c1 = node_ptr(dcond);
+                n_pos(dn, dk);
+                return dn;
+            }
+        }
+    }
+    int is_save = p_at_word(&p, "save");
+    int is_load = p_at_word(&p, "load");
+    if (is_save + is_load > 0) {
+        if (p_kind(&p, 1) == 4) {
+            Token op = p_advance(&p);
+            Token table = p_expect(&p, 4);
+            if (is_save == 1) { p_expect_word(&p, "to"); }
+            // `from` lexes as a keyword, not an identifier, so it is consumed
+            // by kind. Expecting it as a word printed a parse error on every
+            // file using `load` — recoverable, so the AST was right and the
+            // syntax-tree differential never saw it.
+            if (is_save == 0) { p_expect(&p, 22); }
+            Token path = p_advance(&p);
+            Node n = node_new(75);
+            n.c1 = -1;
+            // An optional filter, written the way every other query in the
+            // language is written. A save takes none: a partial save would
+            // mean the store no longer matches memory.
+            if (is_save == 0) {
+                if (p_kind(&p, 0) == 76) {
+                    p_advance(&p);
+                    p_expect(&p, 54);
+                    Node lcond = parse_expr(&p);
+                    p_expect(&p, 55);
+                    n.c1 = node_ptr(lcond);
+                }
+            }
+            n.s1 = op.value; n.s2 = table.value; n.s3 = path.value;
+            n_pos(n, op);
+            return n;
+        }
+    }
+    return node_new(0);
+}
+
 Node parse_unary(P &p) {
     if (p_check(&p, 69) == 1) {                // !
         Token t = p_advance(&p);
@@ -1186,6 +1213,18 @@ Node parse_unary(P &p) {
         Node n = node_new(43);
         n.c1 = node_ptr(target); n_pos(n, t);
         return n;
+    }
+    // Storage as a value: `if (save Order to url) { ... }`. The same words in
+    // the same shapes as the statement forms, parsed by the same function, so
+    // there is one grammar rather than two that agree today.
+    int sv = p_at_word(&p, "save");
+    int ld = p_at_word(&p, "load");
+    int dl = p_at_word(&p, "delete");
+    if (sv + ld + dl > 0) {
+        if (p_kind(&p, 1) == 4) {
+            Node sn = parse_storage_op(&p);
+            if (sn.kind != 0) { return sn; }
+        }
     }
     return parse_cast(&p);
 }

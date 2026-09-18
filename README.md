@@ -22,8 +22,12 @@ $ strata repair ledger.sta
 That loop is real and runs today. Most of what surrounds it does not yet — see
 [Roadmap](#roadmap), which is exhaustive and blunt.
 
-> **Status: pre-release, under active development.** The compiler works and is
-> covered by a conformance suite. Several components described under
+> **Status: pre-release, under active development.** The compiler works, is
+> self-hosting for the front end, and is covered by 22 test suites — 185
+> conformance cases plus seven end-to-end journeys that build and run real
+> services, including one against a real PostgreSQL. Two applications
+> (`apps/orders`, `apps/ledger`) are built on it. The toolchain installs as a
+> `strata` command and there is a VS Code extension. Several components described under
 > [Roadmap](#roadmap) are designed but not yet built, and are marked as such.
 > Nothing in this document is claimed to work unless it is in
 > [What works today](#what-works-today). Every code example below is compiled
@@ -249,12 +253,41 @@ int main() {
 
 Text rather than a binary format, so a table is inspectable with the tools
 everyone already has. Tabs, newlines and backslashes in string fields are
-escaped.
+escaped. The file carries a header naming each column and its type, so a table
+saved under one version of a schema loads under another.
 
-What this is not: there is no schema versioning, no migration, no locking, no
-index and no transaction. A file written under one schema will mis-parse under
-another, and two writers will corrupt it. It is enough for one process to keep
-state across restarts.
+The same three words answer, so a program can tell whether the store did what
+it was asked:
+
+```text
+import io from std;
+import str from std;
+database Booking { int id; str guest; int expires_at; }
+
+int main() {
+    Booking <- [id = 1, guest = "alpha", expires_at = 10];
+    Booking <- [id = 2, guest = "beta",  expires_at = 99];
+
+    if (save Booking to "bookings.tsv") { print("stored"); }
+    else { print("NOT stored"); }
+
+    int pruned = delete Booking <- [expires_at < 50];
+    print(str_concat("pruned: ", str(pruned)));
+    return 0;
+}
+```
+
+`save` and `load` give 1 when the store now matches memory and 0 when it does
+not; `delete` gives the number of rows that went. They were statements with no
+value, which meant a handler could not tell a successful write from a failed
+one — a service pointed at a database that was not there logged the connection
+error, told the customer the order was created, and exited 0.
+
+A load can fetch part of a table, and the same table can live in PostgreSQL
+instead of a file — see [Where the data lives](#where-the-data-lives).
+
+What this is not: there is no index, and a query is a scan. A table is held
+entirely in memory once loaded, so the working set has to fit.
 
 ### Calling existing C libraries
 
@@ -615,7 +648,8 @@ what runs and what is planned is unambiguous.
 | Queries (`Source <- [cond]`) | **An expression.** A query parses anywhere a value is expected — an argument, a function call, a comparison — not only on the right of a declaration, where it used to be the only place it parsed. It yields `list[T]` of the matching rows, and the E004 column contract holds at the query line wherever it appears. Conditions compare a column against a value; there are no joins, no ordering, no aggregation and no index — a query is a scan. |
 | Aggregation | **`sum`, `avg`, `min`, `max`, `count`.** A column is projected with `rows.column` and checked against the schema, so renaming a column fails the build at the aggregate. `sum`/`min`/`max` keep the column's own type; `avg` is float; `count` takes the rows. An empty result aggregates to zero. No `GROUP BY`, no `HAVING`, and no aggregate inside a query condition — an aggregate reads a list that already exists. |
 | Lists | A list carries its element count in the word before its data. NULL-termination cannot work, because 0 is a valid int and `""` a valid str — which is why `len([1,2,3])` used to return whatever followed the array in memory. |
-| Database persistence | **`save` / `load` to tab-separated text, with schema migration.** The file carries a header naming each column and its type, so a table saved by one version of a schema loads under another: a dropped column is skipped, a new one keeps its zero value, columns match by name rather than position, and a column whose type changed is refused rather than misread. A file written before headers existed is refused with a message saying to re-save it. Still no locking, no index, no transactions and no SQL backend — two writers will corrupt it. |
+| Database persistence | **`save` / `load` to tab-separated text or PostgreSQL, with schema migration.** The file carries a header naming each column and its type, so a table saved by one version of a schema loads under another: a dropped column is skipped, a new one keeps its zero value, columns match by name rather than position, and a column whose type changed is refused rather than misread. A file written before headers existed is refused with a message saying to re-save it. Importing `postgres from std` moves the same tables into a database, decided by the path; writes are only the rows that changed, and a load can carry a filter that becomes a `WHERE` clause. Concurrent writers to a file take a lock (`std/http.sta`); there is still no index, and a table is held in memory once loaded. |
+| Storage as a value | **`save`, `load` and `delete` answer.** `if (save Order to url)` sees a failed write; `delete` gives the number of rows removed. They were statements with no value, so a handler could not tell a failed write from a successful one and told the customer the order was created either way. `apps/orders` now answers 503 rather than redirecting when a write did not happen, and `journey_operate` proves it against a genuinely unwritable store. |
 | `model` / `predict` execution | **A stack of dense layers.** A model declares hidden layers between its input and output, each with an activation — `relu`, `sigmoid` or `none`; the output layer is linear. `predict` runs the forward pass with weights loaded from a text file, laid out layer by layer, and a file with the wrong weight count is refused rather than loaded in part. Inference only: no training, no autograd, no convolution or attention, no accelerator, no framework interop. The WebAssembly target has no libm, so `exp` is implemented in the prelude; it agrees with libm to about 1e-15 relative. |
 | `report` / `render` | **Renders.** A report runs its datasource, evaluates its metrics with `rows` bound to the result, and writes Markdown: the title, each metric, the matching rows as a table, and a row count. Metrics are type-checked (E001) and the datasource gets the E004 column contract. Metrics see `rows`, not the columns of a row — there is no aggregation, so `sum(col)` does not exist. Markdown only; no other output format, no charts, no templates. |
 | `stream` blocks | **Dispatching.** Each `stream` handler registers under its own name as a channel; `strata_publish(channel, message)` enqueues and `strata_run()` drains the queue, returning the number delivered. Handlers may publish while the queue drains. This is a cooperative single-threaded loop: no separate stacks, no preemption, no parallelism, no I/O integration. Messages to an unknown channel are dropped. |
