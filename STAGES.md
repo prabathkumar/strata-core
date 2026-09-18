@@ -141,22 +141,38 @@ step fails if any of it returns.
 
 ## All ten are closed. What is still not true
 
-1. Nothing prunes an expired session *on a schedule* — `delete` exists now and
-   sessions are pruned whenever one is created, which is not the same thing.
-2. A table is held in the process that loaded it, and reloaded only when the
+1. A table is held in the process that loaded it, and reloaded only when the
    file on disk changes. That is right for one service on one machine and
    wrong the moment a second machine writes the same file over a share where
    the clock or the metadata lags.
-3. The Claude repair backend is not gated in CI, because CI has no Claude
+2. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-4. Metrics are per process and in memory: they start at zero when the service
-   restarts, and two copies of the service behind a load balancer each report
-   their own. There is nothing that stores or graphs them.
-5. A Postgres-backed table is held entirely in memory once loaded, so the
+3. A Postgres-backed table is held entirely in memory once loaded, so the
    working set has to fit. A filtered load keeps that set small, but nothing
    streams: there is no cursor, and no connection pool beyond one handle per
    process.
-6. The lockout is per account, not per source: it stops a password guess and
-   also lets someone lock an operator out on purpose.
-7. The Kubernetes manifest under `deploy/` has never been applied to
-   anything.
+4. A lockout is counted against the pair of account and source, which stops
+   both the password guess and the trick of locking an operator out on
+   purpose. What it does not stop is one source spreading attempts across many
+   usernames — that needs a rate limit, which this is not.
+5. Nothing has run on a handset. `apps/orders_mobile/android/` is reviewed
+   design, not tested code, and iOS has no shell at all.
+6. There is no package manager, so two projects cannot share a library except
+   by copying files.
+
+### Corrected rather than deleted
+
+This list said "the Kubernetes manifest under `deploy/` has never been applied
+to anything." There is no Kubernetes manifest. It was removed by the claims
+audit above, and the `No Unbacked Claims` CI step fails if it comes back — so
+the honest-gaps list had itself gone stale, describing a file that is not
+there. Deployment is a Docker image, built and run by `journey_change`;
+orchestration is not attempted and is not claimed.
+
+It also said "sessions are pruned only when one is created, which is not a
+schedule" and "metrics start at zero when the service restarts". The first is
+fixed: the service sweeps on a clock. The second was a misunderstanding on the
+author's part — a counter is *expected* to reset, which is why monitoring
+systems read counters as rates. What was missing was the type information that
+tells a scraper so, and a process start time to make a restart readable rather
+than inferred. Both are published now.

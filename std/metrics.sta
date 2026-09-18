@@ -171,28 +171,80 @@ str metric_line(str name, int value) {
 // The counters as plain text, one `name value` per line. This is the format
 // Prometheus scrapes and also the format a person can read over someone's
 // shoulder, which is why it was chosen over JSON.
+// The counters as plain text, in the format Prometheus scrapes -- which is
+// also a format a person can read over someone's shoulder, which is why it was
+// chosen over JSON.
+//
+// `# HELP` and `# TYPE` are not decoration. Without them a scraper treats
+// every number as an untyped gauge, so a counter that resets reads as a value
+// that FELL rather than a service that restarted, and a rate computed over it
+// is wrong. A counter is declared a counter here.
+//
+// This repository used to list "counters reset when the service restarts" as a
+// shortcoming. It is not one: a counter is expected to reset, every monitoring
+// system handles it, and that is why they are read as rates rather than
+// totals. What was actually missing is how a scraper KNOWS a reset happened
+// instead of inferring it -- so the process start time is published, and two
+// copies of the service are told apart by their own start times rather than by
+// hope.
+def metric_header(StringBuilder &sb, str name, str kind, str help) {
+    sb_append(&sb, "# HELP ");
+    sb_append(&sb, name);
+    sb_append(&sb, " ");
+    sb_append(&sb, help);
+    sb_append(&sb, "\n# TYPE ");
+    sb_append(&sb, name);
+    sb_append(&sb, " ");
+    sb_append(&sb, kind);
+    sb_append(&sb, "\n");
+}
+
+def metric_one(StringBuilder &sb, str name, str kind, str help, int value) {
+    metric_header(&sb, name, kind, help);
+    sb_append(&sb, metric_line(name, value));
+}
+
 str metrics_render(int page) {
     StringBuilder sb = sb_new();
     if (page == 0) {
         sb_append(&sb, "# counters unavailable: the shared page could not be mapped\n");
         return sb_to_str(&sb);
     }
-    sb_append(&sb, "# requests answered, by outcome\n");
+
+    metric_header(&sb, "strata_requests_total", "counter",
+    "Requests answered, by outcome.");
     sb_append(&sb, metric_line("strata_requests_total", metrics_get(page, M_TOTAL)));
     sb_append(&sb, metric_line("strata_requests_2xx", metrics_get(page, M_2XX)));
     sb_append(&sb, metric_line("strata_requests_3xx", metrics_get(page, M_3XX)));
     sb_append(&sb, metric_line("strata_requests_4xx", metrics_get(page, M_4XX)));
     sb_append(&sb, metric_line("strata_requests_5xx", metrics_get(page, M_5XX)));
-    sb_append(&sb, metric_line("strata_connections_refused", metrics_get(page, M_REFUSED)));
-    sb_append(&sb, "# how long they took\n");
-    sb_append(&sb, metric_line("strata_request_ms_sum", metrics_get(page, M_SUM_MS)));
-    sb_append(&sb, metric_line("strata_request_ms_max", metrics_get(page, M_MAX_MS)));
+
+    metric_one(&sb, "strata_connections_refused", "counter",
+    "Connections turned away because every slot was taken. Capacity, not a bug.",
+    metrics_get(page, M_REFUSED));
+
+    metric_one(&sb, "strata_request_ms_sum", "counter",
+    "Total time spent answering requests, in milliseconds.",
+    metrics_get(page, M_SUM_MS));
+    metric_one(&sb, "strata_request_ms_max", "gauge",
+    "The slowest request seen since this process started.",
+    metrics_get(page, M_MAX_MS));
+
+    metric_header(&sb, "strata_request_ms_bucket", "counter",
+    "Requests by how long they took. Buckets, because a service under load cannot keep every duration.");
     sb_append(&sb, metric_line("strata_request_ms_bucket_1", metrics_get(page, M_UNDER_1)));
     sb_append(&sb, metric_line("strata_request_ms_bucket_10", metrics_get(page, M_UNDER_10)));
     sb_append(&sb, metric_line("strata_request_ms_bucket_100", metrics_get(page, M_UNDER_100)));
     sb_append(&sb, metric_line("strata_request_ms_bucket_1000", metrics_get(page, M_UNDER_1000)));
     sb_append(&sb, metric_line("strata_request_ms_bucket_slower", metrics_get(page, M_SLOWER)));
-    sb_append(&sb, "# and how long it has been up\n");
-    sb_append(&sb, metric_line("strata_uptime_seconds", metrics_uptime_seconds(page)));
+
+    metric_one(&sb, "strata_uptime_seconds", "gauge",
+    "How long this process has been up.", metrics_uptime_seconds(page));
+    // The one number that makes a reset readable rather than guessable: a
+    // scraper comparing this across two scrapes knows whether the counters it
+    // is looking at belong to the same process.
+    metric_one(&sb, "strata_process_start_seconds", "gauge",
+    "Unix time this process started. A change means the counters above restarted.",
+    metrics_get(page, M_STARTED));
     return sb_to_str(&sb);
 }

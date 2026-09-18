@@ -245,6 +245,43 @@ def main():
         ok("a request that worked writes no failure line",
            len(errs) == before_errs, str(errs[before_errs:]))
 
+        print("\n── Expired rows go on a clock, not on somebody's activity ──────")
+        # Sessions used to be pruned only when a new one was created, which is
+        # not a schedule: a service nobody signed into for a month kept every
+        # expired row for a month. The parent now sweeps on a timer, so an
+        # idle service still tidies up.
+        #
+        # An expired row is written directly into the table rather than waited
+        # for, because waiting eight hours for a session to expire is not a
+        # test.
+        sessions_file = sessions
+        before_rows = session_rows()
+        with open(sessions_file) as f:
+            head = f.readline()
+            body_rows = f.read()
+        with open(sessions_file, "w") as f:
+            f.write(head)
+            f.write(body_rows)
+            # token, user, expires_at long past, csrf
+            f.write("deadrow\t1\t1\tdeadcsrf\n")
+        ok("an expired session is on disk", session_rows() == before_rows + 1,
+           f"{before_rows} -> {session_rows()}")
+
+        # The sweep runs every SWEEP_SECONDS; give it time to come round,
+        # without touching the service, because "without touching it" is the
+        # whole point.
+        swept = False
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            time.sleep(2)
+            if "deadrow" not in open(sessions_file).read():
+                swept = True
+                break
+        ok("and the service clears it without being asked", swept,
+           "still there after 90 seconds")
+        ok("it says so in the log",
+           any(l.startswith("swept ") for l in lines), str(lines[-4:]))
+
         print("\n── A form from somewhere else is refused ────────────────────────")
         go(s1, "/login", b"username=manager&password=strata", "POST")
         code, body, _ = go(s1, "/")
@@ -351,6 +388,57 @@ def main():
         ok("an account that does not exist answers like a wrong password, "
            "not like a lockout", code == 200
            and "Wrong username or password" in body, f"got {code}")
+
+        # The hole this closes. The lockout used to be against the account, so
+        # anybody could lock an operator out of their own service by guessing
+        # wrong five times at a username they do not own.
+        #
+        # It is now against the PAIR of account and source. Proving that needs
+        # a genuinely different source, so this one binds to 127.0.0.2 — every
+        # other client in this file comes from 127.0.0.1, which is the same
+        # source as the guesser above.
+        def post_from(source_ip, path, body):
+            """One request, from a chosen local address.
+
+            Hand-written rather than urllib, because the thing being tested is
+            which address the connection comes from and urllib will not let a
+            caller choose it."""
+            c = socket.socket()
+            c.bind((source_ip, 0))
+            c.settimeout(10)
+            c.connect(("127.0.0.1", port))
+            req = (f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                   f"Content-Type: application/x-www-form-urlencoded\r\n"
+                   f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+                   ).encode() + body
+            c.sendall(req)
+            got = b""
+            while True:
+                chunk = c.recv(65536)
+                if not chunk:
+                    break
+                got += chunk
+            c.close()
+            return got.decode("utf-8", "replace")
+
+        # The guesser above locked (manager, 127.0.0.1). The operator arriving
+        # from anywhere else is unaffected. If the lockout were per account
+        # this fails; if it were per source, 127.0.0.1 is already locked and a
+        # colleague behind the same office connection would fail too.
+        reply = post_from("127.0.0.2", "/login",
+                          b"username=manager&password=strata")
+        ok("the operator is not locked out by somebody else's guessing",
+           " 303 " in reply.split("\r\n")[0] or "302" in reply.split("\r\n")[0],
+           reply.split("\r\n")[0])
+        ok("and it is a real sign-in, not a refusal",
+           "Too many attempts" not in reply and "Wrong username" not in reply,
+           reply[:200])
+
+        # And the guesser is still locked, so the fix did not simply remove
+        # the lockout.
+        code, _, _ = go(guesser, "/login",
+                        b"username=manager&password=strata", "POST")
+        ok("while the guesser is still locked out", code == 429, f"got {code}")
 
         print("\n── A flood is refused, not served ───────────────────────────────")
         # Open more connections than the service will serve at once and hold

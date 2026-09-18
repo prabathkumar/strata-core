@@ -32,18 +32,15 @@ const int BAR_H     = 64;
 const int FOOT_H    = 76;
 const int ROW_H     = 80;
 
-// Written as decimals because the language has no hex literal yet, so every
-// colour is a hand conversion — and the first one was wrong, which the pixel
-// check caught rather than a human.
-const int INK       = 1710618;    // 0x1A1A1A
-const int MUTED     = 7697781;    // 0x757575
-const int PAPER     = 15790320;   // 0xF0F0F0
-const int BAR       = 2051682;    // 0x1F4E62
-const int BAR_INK   = 16777215;   // 0xFFFFFF
-const int CARD      = 16777215;   // 0xFFFFFF
-const int LINE      = 14803425;   // 0xE1E1E1
-const int ACCENT    = 2051682;    // 0x1F4E62
-const int DANGER    = 11736620;   // 0xB3172C
+const int INK       = 0x1A1A1A;
+const int MUTED     = 0x757575;
+const int PAPER     = 0xF0F0F0;
+const int BAR       = 0x1F4E62;
+const int BAR_INK   = 0xFFFFFF;
+const int CARD      = 0xFFFFFF;
+const int LINE      = 0xE1E1E1;
+const int ACCENT    = 0x1F4E62;
+const int DANGER    = 0xB3172C;
 
 int order_count() { return count(Order <- [id > 0]); }
 

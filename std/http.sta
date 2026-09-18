@@ -52,6 +52,46 @@ int http_listen(int port) {
 
 int http_accept(int server_fd) { native "return accept($server_fd, NULL, NULL);"; }
 
+// Who is on the other end of a connection.
+//
+// Until this existed, a lockout could only be counted per account, which stops
+// a password guess and also lets anybody lock an operator out of their own
+// service on purpose -- by guessing wrong five times against a username they
+// do not own. Counting per source instead means the guesser locks themselves
+// out and everybody else carries on.
+//
+// A proxy or load balancer in front of the service makes every connection look
+// like the proxy. That is stated rather than worked around: a service behind
+// one should read the forwarded-for header, and should only trust it because
+// it knows what is in front of it.
+str http_peer_ip(int conn) {
+    native "
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    if (getpeername((int)$conn, (struct sockaddr*)&ss, &len) != 0) {
+        return strata_dup(\"\");
+    }
+    char buf[64];
+    if (ss.ss_family == AF_INET) {
+        struct sockaddr_in* a = (struct sockaddr_in*)&ss;
+        unsigned char* b = (unsigned char*)&a->sin_addr.s_addr;
+        snprintf(buf, sizeof(buf), \"%u.%u.%u.%u\", b[0], b[1], b[2], b[3]);
+        return strata_dup(buf);
+    }
+    if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6* a = (struct sockaddr_in6*)&ss;
+        unsigned char* b = (unsigned char*)a->sin6_addr.s6_addr;
+        snprintf(buf, sizeof(buf),
+                 \"%02x%02x:%02x%02x:%02x%02x:%02x%02x:\"
+                 \"%02x%02x:%02x%02x:%02x%02x:%02x%02x\",
+                 b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],
+                 b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
+        return strata_dup(buf);
+    }
+    return strata_dup(\"\");
+    ";
+}
+
 // Read a whole request: headers first, then exactly Content-Length bytes of
 // body.
 //

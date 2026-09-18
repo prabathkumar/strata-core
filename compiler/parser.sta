@@ -1243,12 +1243,42 @@ Node parse_cast(P &p) {
     return e;
 }
 
+// An integer literal's value. `0x1F4E62` is hex, anything else decimal.
+// The lexer keeps the source text and the value is worked out here, so the
+// two compilers agree by construction rather than by two pieces of arithmetic
+// happening to match.
+int lit_to_int(str text) {
+    int n = str_len(text);
+    if (n > 2) {
+        if (text[0] == 48) {
+            int x = text[1];
+            if (x == 120) { return hex_value(text, 2, n); }
+            if (x == 88) { return hex_value(text, 2, n); }
+        }
+    }
+    return str_to_int(text);
+}
+
+// `from` is a keyword, so the bound is named `start`.
+int hex_value(str text, int start, int to) {
+    int value = 0;
+    for (int i = start; i < to; i = i + 1) {
+        int c = text[i];
+        int d = 0;
+        if (c >= 48) { if (c <= 57) { d = c - 48; } }
+        if (c >= 97) { if (c <= 102) { d = c - 87; } }
+        if (c >= 65) { if (c <= 70) { d = c - 55; } }
+        value = value * 16 + d;
+    }
+    return value;
+}
+
 Node parse_primary(P &p) {
     Token t = p_peek(&p, 0);
     int k = t.kind;
 
     if (k == 1) { p_advance(&p); Node n = node_new(50);
-        n.i1 = str_to_int(t.value); n_pos(n, t); return n; }
+        n.i1 = lit_to_int(t.value); n_pos(n, t); return n; }
     if (k == 2) { p_advance(&p); Node n = node_new(51);
         n.s1 = t.value; n_pos(n, t); return n; }
     if (k == 3) { p_advance(&p); Node n = node_new(52);

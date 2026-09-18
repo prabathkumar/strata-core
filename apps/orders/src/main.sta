@@ -47,6 +47,11 @@ const int MAX_CONNECTIONS = 64;
 // How long a signed-in session lasts, and how long the service waits for a
 // client to finish sending its request.
 const int SESSION_SECONDS = 28800;
+
+// How often the service clears out what has expired. Short enough that a
+// table cannot grow unwatched, long enough that an idle service is not
+// writing files for no reason.
+const int SWEEP_SECONDS = 60;
 const int REQUEST_TIMEOUT = 5;
 
 // The signed-in user's id, or 0. A session that has expired is not a session.
@@ -84,12 +89,16 @@ int end_session(str want) {
     return 1;
 }
 
-// Sessions that have run out are removed on every write. Nothing else prunes
-// them, and a table that only grows is a service that fails in a month rather
-// than in a minute — which is worse, because nobody is watching in a month.
+// Sessions that have run out are removed, and how many went is reported.
+//
+// This used to happen only when a session was created, which is not a
+// schedule: a service nobody signed into for a month kept every expired row
+// for a month. The accept loop now calls it on a clock as well, so an idle
+// service still tidies up. A table that only grows is a service that fails in
+// a month rather than in a minute — which is worse, because nobody is
+// watching in a month.
 int prune_sessions() {
-    delete Session <- [expires_at < now_seconds()];
-    return 1;
+    return delete Session <- [expires_at < now_seconds()];
 }
 
 str cookie_header(str token) {
@@ -106,25 +115,41 @@ int do_login(int conn, str body) {
     str want_user = http_form_value(body, "username");
     str password = http_form_value(body, "password");
     int now = now_seconds();
+    // Where the attempt came from. The lockout counts against this rather than
+    // against the account, so a guesser locks themselves out instead of
+    // locking out whoever they were guessing at.
+    str from_where = http_peer_ip(conn);
+
+    prune_attempts(now);
 
     // The lockout is checked before the password, and answers the same way for
-    // a locked account whatever was typed — otherwise the lockout itself tells
+    // a locked source whatever was typed — otherwise the lockout itself tells
     // an attacker which usernames are real.
-    if (locked_for(want_user, now) > 0) {
+    if (locked_for(want_user, from_where, now) > 0) {
         return http_respond(conn, 429, "text/html; charset=utf-8",
         render LoginLocked);
     }
 
     list[User] found = User <- [username == want_user];
-    if (count(found) == 0) { return http_ok(conn, render LoginFailed); }
-    User u = found[0];
-    if (password_matches(password, u.password_hash) == 0) {
-        note_failure(want_user, now);
-        save_users();
+    if (count(found) == 0) {
+        // A name that does not exist still counts against the source.
+        // Otherwise the whole lockout is stepped around by guessing at names
+        // nobody has, and the answer is identical either way so the attempt
+        // learns nothing.
+        note_failure(want_user, from_where, now);
+        save_attempts();
         return http_ok(conn, render LoginFailed);
     }
-    clear_failures(want_user);
+    User u = found[0];
+    if (password_matches(password, u.password_hash) == 0) {
+        note_failure(want_user, from_where, now);
+        save_users();
+        save_attempts();
+        return http_ok(conn, render LoginFailed);
+    }
+    clear_failures(want_user, from_where);
     save_users();
+    save_attempts();
     return http_redirect_with(conn, "/", cookie_header(start_session(u.id)));
 }
 
@@ -323,9 +348,35 @@ int main() {
     http_set_timeout(fd, 1);
 
     int live = 0;
+    int last_sweep = now_seconds();
     while (1 == 1) {
         live = live - http_reap_finished();
         if (live < 0) { live = 0; }
+
+        // Housekeeping, on a clock rather than on somebody's activity.
+        // Expired sessions and stale lockouts used to be cleared only when a
+        // session was created — so a service nobody signed into for a month
+        // kept every expired row for a month, and the table only grew. The
+        // parent does it because it is the one process that outlives the
+        // requests, and the accept() timeout above means it comes round
+        // regularly whether or not anyone is using the service.
+        int now = now_seconds();
+        if (now - last_sweep >= SWEEP_SECONDS) {
+            last_sweep = now;
+            int lock = lock_exclusive("data/.lock");
+            load_all();
+            int gone = prune_sessions() + prune_attempts(now);
+            if (gone > 0) {
+                save_sessions();
+                save_attempts();
+                StringBuilder swept = sb_new();
+                sb_append(&swept, "swept ");
+                sb_append(&swept, str(gone));
+                sb_append(&swept, " expired row(s)");
+                print(sb_to_str(&swept));
+            }
+            unlock(lock);
+        }
         int conn = http_accept(fd);
         if (conn < 0) { continue; }
         if (live >= MAX_CONNECTIONS) {

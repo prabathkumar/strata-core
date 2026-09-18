@@ -14,6 +14,7 @@ int load_all() {
     load Order from "data/orders.tsv";
     load User from "data/users.tsv";
     load Session from "data/sessions.tsv";
+    load Attempt from "data/attempts.tsv";
     return 1;
 }
 
@@ -71,35 +72,81 @@ const int LOCKOUT_AFTER   = 5;
 const int LOCKOUT_SECONDS  = 300;
 
 // Seconds remaining on a lockout, or 0.
-int locked_for(str who, int now) {
-    list[User] found = User <- [username == who];
+//
+// The lockout is against the pair of the account guessed at and the place the
+// guessing came from — see `Attempt` in schema.sta for why neither alone
+// works. A guesser locks only their own attempts, at that one account, from
+// where they are sitting.
+//
+// The account columns `failed_logins` and `locked_until` are still on `User`
+// and still written, because an operator asking "has anyone been trying my
+// account" deserves an answer. They no longer refuse anybody.
+int locked_for(str who, str from_where, int now) {
+    list[Attempt] found = Attempt <- [username == who && source == from_where];
     if (count(found) == 0) { return 0; }
-    User u = found[0];
-    if (u.locked_until > now) { return u.locked_until - now; }
+    Attempt a = found[0];
+    if (a.locked_until > now) { return a.locked_until - now; }
     return 0;
 }
 
-// Record a failed attempt; lock the account when there have been enough.
-// Returns the number of failures now standing against it.
-int note_failure(str who, int now) {
-    list[User] found = User <- [username == who];
-    if (count(found) == 0) { return 0; }
-    User u = found[0];
-    u.failed_logins = u.failed_logins + 1;
-    if (u.failed_logins >= LOCKOUT_AFTER) {
-        u.locked_until = now + LOCKOUT_SECONDS;
-    }
-    return u.failed_logins;
+int next_attempt_id() {
+    list[Attempt] all = Attempt <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
 }
 
-int clear_failures(str who) {
+// Record a failed attempt against the pair, and against the account it aimed
+// at. Returns the number of failures now standing against the pair.
+int note_failure(str who, str from_where, int now) {
     list[User] found = User <- [username == who];
-    if (count(found) == 0) { return 0; }
-    User u = found[0];
-    u.failed_logins = 0;
-    u.locked_until = 0;
+    if (count(found) > 0) {
+        User u = found[0];
+        u.failed_logins = u.failed_logins + 1;
+        if (u.failed_logins >= LOCKOUT_AFTER) {
+            u.locked_until = now + LOCKOUT_SECONDS;
+        }
+    }
+
+    list[Attempt] seen = Attempt <- [username == who && source == from_where];
+    if (count(seen) == 0) {
+        Attempt <- [id = next_attempt_id(), source = from_where, username = who,
+        failures = 1, locked_until = 0];
+        return 1;
+    }
+    Attempt a = seen[0];
+    a.failures = a.failures + 1;
+    if (a.failures >= LOCKOUT_AFTER) {
+        a.locked_until = now + LOCKOUT_SECONDS;
+    }
+    return a.failures;
+}
+
+// A success clears the account's count and the pair's, so one wrong password
+// before the right one leaves nothing behind.
+int clear_failures(str who, str from_where) {
+    list[User] found = User <- [username == who];
+    if (count(found) > 0) {
+        User u = found[0];
+        u.failed_logins = 0;
+        u.locked_until = 0;
+    }
+    delete Attempt <- [username == who && source == from_where];
     return 1;
 }
+
+// Pairs quiet long enough are forgotten, so the table does not grow forever.
+// A table that only grows is a service that fails in a month rather than in a
+// minute, which is worse, because nobody is watching in a month.
+int prune_attempts(int now) {
+    // The bound is worked out first. Inside a query a bare name is a column,
+    // so `[locked_until < now - LOCKOUT_SECONDS]` asked for a column called
+    // `now`, and the compiler said so (E004). A plain variable reads as a
+    // variable; an expression does not.
+    int cutoff = now - LOCKOUT_SECONDS;
+    return delete Attempt <- [locked_until > 0 && locked_until < cutoff];
+}
+
+int save_attempts() { return save Attempt to "data/attempts.tsv"; }
 
 int save_users() { return save User to "data/users.tsv"; }
 

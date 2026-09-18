@@ -147,6 +147,24 @@ class Lexer:
         raise LexError("Unterminated string",sl,sc)
 
     def _number_literal(self,first,sl,sc):
+        # `0x1F4E62` is one integer written the way the thing it describes is
+        # written everywhere else. Without it a colour is a hand conversion to
+        # decimal, and the first one written in this repository was wrong --
+        # the screen rendered green instead of teal, and a pixel check caught
+        # it rather than a person.
+        #
+        # The token keeps its source text and the value is worked out when the
+        # code is generated, so both compilers agree by construction: there is
+        # no arithmetic here for the two of them to disagree about.
+        if first=='0' and not self._at_end() and self._peek() in 'xX':
+            buf=[first,self._advance()]
+            digits=0
+            while not self._at_end() and self._peek() in '0123456789abcdefABCDEF':
+                buf.append(self._advance()); digits+=1
+            if digits==0: raise LexError("A hex literal needs at least one digit",sl,sc)
+            if digits>16: raise LexError("Hex literal is too long for an int",sl,sc)
+            self._add(TT.INT_LIT,''.join(buf),sl,sc)
+            return
         buf=[first]; is_float=False
         while not self._at_end() and (self._peek().isdigit() or self._peek()=='.'):
             ch=self._advance()

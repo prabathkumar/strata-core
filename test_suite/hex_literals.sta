@@ -1,0 +1,29 @@
+// Hex integer literals.
+//
+// Here so the lexer and parser differentials cover them: without a source
+// that uses the syntax, both implementations agree about something neither is
+// asked to read.
+//
+// A colour was a hand-converted decimal before this, and the first one written
+// in this repository was wrong — 0x1F4E62 became 2050146 instead of 2051682,
+// and the screen rendered green instead of teal. A pixel check caught it; a
+// person looking at the picture did not.
+
+import io  from std;
+import str from std;
+
+const int TEAL  = 0x1F4E62;
+const int WHITE = 0xFFFFFF;
+const int NONE  = 0x0;
+
+int main() {
+    print(str(TEAL));
+    print(str(WHITE));
+    print(str(NONE));
+    print(str(0xff));            // lower case
+    print(str(0XFF));            // upper-case marker
+    print(str(0xdeadBEEF));      // mixed case
+    print(str(255));             // and decimal still means decimal
+    print(str(0x10 + 0x10));
+    return 0;
+}

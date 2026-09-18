@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### Hex literals
+
+`0x1F4E62` is one integer, written the way the thing it describes is written
+everywhere else. Every colour in the mobile app was a hand conversion to
+decimal before this, and the first one was wrong: `0x1F4E62` became `2050146`
+instead of `2051682` and the screen rendered green instead of teal. A pixel
+check caught it; a person looking at the picture did not.
+
+The lexer keeps the source text and the value is worked out at parse time, in
+one place per implementation, so the two compilers agree by construction
+rather than by two pieces of arithmetic happening to match.
+`test_suite/hex_literals.sta` exists so all three differentials cover it.
+
+### A lockout can no longer be used against your own operators
+
+It was counted against the account, so anybody could lock a manager out of the
+service by guessing wrong five times at a username they do not own.
+
+The first fix moved it to the source address, which is also wrong: everyone
+behind one office connection or a load balancer looks like a single address,
+so one careless colleague locks out the building.
+
+It is now counted against the **pair** — this account, from this place. The
+guesser locks only their own attempts. Proving that needs a genuinely
+different source, so the test binds to `127.0.0.2`, because every other client
+in that file comes from `127.0.0.1`, which is the guesser's address: if the
+lockout were per account the check fails, and if it were per source it fails
+too. Only the pair passes, and the guesser is confirmed still locked, so the
+fix did not simply remove the lockout.
+
+A username that does not exist still counts against the source, or the whole
+thing is stepped around by guessing at names nobody has.
+
+### Expired rows go on a clock, not on somebody's activity
+
+Sessions were pruned only when a new one was created. That is not a schedule:
+a service nobody signed into for a month kept every expired row for a month.
+The accept loop now sweeps every sixty seconds, so an idle service still tidies
+up — and it is the parent that does it, because it is the one process that
+outlives the requests. The test writes an expired row straight into the file
+and waits for the service to remove it unasked.
+
+### Metrics: the right fix was not the one this repository had written down
+
+The honest-gaps list said "counters start at zero when the service restarts"
+as though it were a shortcoming. It is not. A counter is *expected* to reset,
+every monitoring system handles it, and that is why counters are read as rates
+rather than totals.
+
+What was actually missing is that the output had no `# HELP` or `# TYPE`
+lines, so a scraper treats every number as an untyped gauge — and a counter
+that resets then reads as a value that FELL rather than a service that
+restarted. Types are declared now, and `strata_process_start_seconds` is
+published so a reset is readable rather than inferred, and two copies of the
+service are told apart by their own start times.
+
+### A gap that was describing a file that is not there
+
+The same list said "the Kubernetes manifest under `deploy/` has never been
+applied to anything". There is no Kubernetes manifest — the claims audit
+removed it, and the `No Unbacked Claims` CI step fails if it returns. The
+honest-gaps list had itself gone stale. Deployment is a Docker image, built and
+run by `journey_change`; orchestration is not attempted and is not claimed.
+
 ### The phone screens became an app
 
 A screen was one picture with every position worked out by hand. It now has

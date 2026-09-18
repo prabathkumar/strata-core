@@ -73,6 +73,13 @@ Lex lex_new(str source) {
 
 int is_digit(int c) { if (c >= 48) { if (c <= 57) { return 1; } } return 0; }
 
+int is_hex_digit(int c) {
+    if (is_digit(c) == 1) { return 1; }
+    if (c >= 97) { if (c <= 102) { return 1; } }      // a-f
+    if (c >= 65) { if (c <= 70) { return 1; } }       // A-F
+    return 0;
+}
+
 int is_alpha(int c) {
     if (c >= 97) { if (c <= 122) { return 1; } }
     if (c >= 65) { if (c <= 90) { return 1; } }
@@ -324,6 +331,33 @@ def scan_token(Lex &l, TokVec &out) {
 
     if (is_digit(c) == 1) {
         int start = l.pos - 1;
+        // `0x1F4E62` is one integer written the way the thing it describes is
+        // written everywhere else. The token keeps its source text and the
+        // value is worked out at code generation, so both compilers agree by
+        // construction rather than by two pieces of arithmetic matching.
+        int hex = 0;
+        if (c == 48) {
+            int nx = lex_peek(&l, 0);
+            if (nx == 120) { hex = 1; }
+            if (nx == 88) { hex = 1; }
+        }
+        if (hex == 1) {
+            int consumed_x = lex_advance(&l);
+            int digits = 0;
+            while (lex_at_end(&l) == 0) {
+                if (is_hex_digit(lex_peek(&l, 0)) == 0) { break; }
+                int consumed_h = lex_advance(&l);
+                digits = digits + 1;
+            }
+            if (digits == 0) {
+                eprint("[STRATA LEX ERROR] A hex literal needs at least one digit");
+            }
+            if (digits > 16) {
+                eprint("[STRATA LEX ERROR] Hex literal is too long for an int");
+            }
+            vec_push(&out, tok_new(1, str_slice(l.src, start, l.pos), sl, sc));
+            return;
+        }
         int is_float = 0;
         while (lex_at_end(&l) == 0) {
             int p = lex_peek(&l, 0);

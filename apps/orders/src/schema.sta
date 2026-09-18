@@ -9,6 +9,29 @@ database Order {
     str   status;              // "OPEN" or "CLOSED"
 }
 
+// Failed sign-in attempts, counted against the pair of "who was guessed at"
+// and "where from".
+//
+// Counting against the account alone stops a password guess and also hands
+// anybody a way to lock an operator out of their own service: guess wrong five
+// times at a username you do not own and the real owner is locked out.
+//
+// Counting against the source alone is no better. Everyone behind one office
+// connection, or behind a load balancer, looks like a single address, so one
+// careless colleague locks out the building.
+//
+// The pair avoids both. A guesser locks only their own attempts at that one
+// account, from where they are sitting. What it does not stop is one source
+// spreading attempts across many usernames — that needs a rate limit, which
+// this is not, and which is why the cap on connections still matters.
+database Attempt {
+    int id;
+    str source;            // the address the attempts came from
+    str username;          // the account they were aimed at
+    int failures;          // consecutive failures for this pair
+    int locked_until;      // unix time, 0 when not locked
+}
+
 database User {
     int id;
     str username;

@@ -1207,7 +1207,10 @@ class Parser:
         t = self._peek()
 
         if self._check(TT.INT_LIT):
-            self._advance(); return IntLiteral(t.line, t.col, int(t.value))
+            # base 0 so `0x1F4E62` is read as hex and everything else as
+            # decimal. The lexer kept the source text; the value is worked out
+            # here, in one place, in both parsers.
+            self._advance(); return IntLiteral(t.line, t.col, int(t.value, 0))
         if self._check(TT.FLOAT_LIT):
             self._advance(); return FloatLiteral(t.line, t.col, float(t.value))
         if self._check(TT.STR_LIT):
