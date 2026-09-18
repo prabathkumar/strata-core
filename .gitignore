@@ -26,3 +26,6 @@ apps/orders_mobile/build/
 apps/orders_mobile/data/
 apps/orders_mobile/screen.bmp
 apps/orders_mobile/src/*.c
+
+# a folder the desktop bridge creates; not part of the project
+"Claude outputs"/
