@@ -146,53 +146,84 @@ def main():
             (ln.split(": ", 1)[0], ln.split(": ", 1)[1])
             for ln in r.stdout.strip().splitlines() if ": " in ln)
 
-        drawn = int(out.get("things to draw", "0"))
-        # Four orders: a bar, its two labels, four cards each with a hairline,
-        # three texts and a touch region, and a button. The exact number is
-        # less interesting than that it is neither zero nor absurd.
-        ok("the screen has things to draw", 20 < drawn < 60, str(drawn))
+        drawn = int(out.get("list", "things to draw 0").split()[-1])
+        # Nine orders, each a card with a hairline, three runs of text and a
+        # touch region, plus the bar, its two labels and the button. The exact
+        # number matters less than that it is neither zero nor absurd.
+        ok("the screen has things to draw", 40 < drawn < 200, str(drawn))
 
         print("\n── Taps land on the right thing ────────────────────────────────")
-        ok("a tap on the first card selects the first order",
-           out.get("tap at 200,140 means") == "open:1", str(out))
-        ok("a tap on the button is the button",
-           out.get("tap at 200,690 means") == "new", str(out))
-        ok("a tap on nothing is nothing",
-           out.get("tap on empty space means") == "''", str(out))
+        ok("a tap on the first row selects the first order",
+           out.get("tap on first row") == "open:1", str(out))
 
-        print("\n── And it paints ───────────────────────────────────────────────")
-        img = os.path.join(work, "screen.bmp")
-        ok("an image was written", os.path.exists(img))
-        if os.path.exists(img):
-            data = open(img, "rb").read()
-            ok("it is a BMP", data[:2] == b"BM", repr(data[:2]))
+        print("\n── A list that scrolls ─────────────────────────────────────────")
+        ok("the list scrolled", out.get("scrolled to") == "129", str(out))
+        # The row that was at the top has moved up and out, so the same spot
+        # is now a different order. A list that looks scrolled but answers
+        # with the old row is the bug this is here for, and it is invisible
+        # in a screenshot.
+        ok("the same spot now selects a different order",
+           out.get("tap where row one was") == "open:3", str(out))
+        ok("and a tap above the list hits nothing",
+           out.get("tap above the list") == "|", str(out))
+
+        print("\n── A form that types ───────────────────────────────────────────")
+        ok("the form opened", out.get("screen now") == "new", str(out))
+        ok("typing goes into the focused box",
+           out.get("customer typed") == "Durian", str(out))
+        ok("backspace removes the last character",
+           out.get("amount typed") == "42.5", str(out))
+
+        print("\n── The form and the list are the same table ────────────────────")
+        ok("saving returns to the list",
+           out.get("screen after save") == "list", str(out))
+        ok("the order was added", out.get("orders now") == "10", str(out))
+        ok("with the amount that was typed",
+           out.get("the new order amount") == "42.50", str(out))
+
+        print("\n── And every frame paints ──────────────────────────────────────")
+        frames = ["01-list", "02-scrolled", "03-form-empty", "04-form-typed",
+                  "05-saved"]
+        for f in frames:
+            ok(f"{f} was painted",
+               os.path.exists(os.path.join(work, f + ".bmp")))
+
+        def reader(path):
+            data = open(path, "rb").read()
             w, h = struct.unpack("<ii", data[18:26])
-            ok("of the screen's size", (w, h) == (411, 731), f"{w}x{h}")
+            pad = (4 - ((w * 3) % 4)) % 4
 
-            # Pixels, not just a file. The top-left is the title bar and the
-            # middle of the page is a card, so a blank image fails here even
-            # though it would pass every check above.
             def pixel(px, py):
-                pad = (4 - ((w * 3) % 4)) % 4
                 row = h - 1 - py            # BMP rows are bottom-up
                 off = 54 + row * (w * 3 + pad) + px * 3
-                b, g, r_ = data[off], data[off + 1], data[off + 2]
-                return (r_, g, b)
+                return (data[off + 2], data[off + 1], data[off])
+            return data, w, h, pixel
 
-            ok("the title bar is painted", pixel(5, 5) == (31, 78, 98),
-               str(pixel(5, 5)))
-            ok("a card is painted white", pixel(200, 100) == (255, 255, 255),
-               str(pixel(200, 100)))
-            ok("the page behind the cards is not white",
-               pixel(200, 500) == (240, 240, 240), str(pixel(200, 500)))
-            ok("the button is painted", pixel(200, 690) == (31, 78, 98),
-               str(pixel(200, 690)))
-            # Text is drawn glyph by glyph, so somewhere in the title there
-            # must be a pixel that is neither bar nor blank.
-            title = [pixel(x, 30) for x in range(16, 120)]
-            ok("there is text on the title bar",
-               any(p == (255, 255, 255) for p in title),
-               "no white pixels found in the title")
+        data, w, h, px = reader(os.path.join(work, "01-list.bmp"))
+        ok("it is a BMP of the screen's size",
+           data[:2] == b"BM" and (w, h) == (411, 731), f"{w}x{h}")
+        ok("the title bar is painted", px(5, 5) == (31, 78, 98), str(px(5, 5)))
+        ok("a card is painted white", px(200, 100) == (255, 255, 255),
+           str(px(200, 100)))
+        ok("the button is painted", px(200, 690) == (31, 78, 98),
+           str(px(200, 690)))
+        ok("there is text on the title bar",
+           any(px(x, 30) == (255, 255, 255) for x in range(16, 120)),
+           "no white pixels in the title")
+
+        # The clip, in pixels. A scrolled row must not be painted over the
+        # title bar, so the bar has to be solid all the way across.
+        _, _, _, px2 = reader(os.path.join(work, "02-scrolled.bmp"))
+        bar = [px2(x, 40) for x in range(130, 400)]
+        ok("a scrolled row is not painted over the title bar",
+           all(p == (31, 78, 98) for p in bar),
+           "something was drawn on the bar")
+
+        _, _, _, px3 = reader(os.path.join(work, "03-form-empty.bmp"))
+        _, _, _, px4 = reader(os.path.join(work, "04-form-typed.bmp"))
+        ok("the empty form and the typed form are not the same picture",
+           any(px3(x, 137) != px4(x, 137) for x in range(24, 380)),
+           "typing changed nothing on screen")
 
         print("\n── What this does not prove ────────────────────────────────────")
         shell = os.path.join(ROOT, "apps", "orders_mobile", "android")

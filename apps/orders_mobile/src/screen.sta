@@ -1,9 +1,9 @@
-// The orders screen, on a phone.
+// The orders app, on a phone.
 //
-// Written in Strata, drawn by Strata. The same `Order` table the web service
-// uses, the same queries, the same rules module -- the app and the website
-// cannot disagree about what an order is, because there is only one
-// description of one.
+// Two screens: a list that scrolls and a form that types. Written in Strata,
+// drawn by Strata, against the same `Order` table the web service uses — so
+// the app and the website cannot disagree about what an order is, because
+// there is only one description of one.
 //
 // Nothing here knows whether it is running on a phone, in a test, or on a
 // build machine. It produces a list of things to draw; who paints them is the
@@ -23,62 +23,157 @@ database Order {
 }
 
 // A phone screen in device-independent pixels. 411x731 is a common Android
-// size; the host scales.
+// size; the host scales by one factor, because a layout needing more than one
+// will not survive the next handset.
 const int SCREEN_W = 411;
 const int SCREEN_H = 731;
 
-const int INK      = 1710618;    // 0x1A1A1A near-black
-const int MUTED    = 7697781;    // 0x757575 grey
-const int PAPER    = 15790320;   // 0xF0F0F0 page
-// Written as decimals because the language has no hex literals yet, so every
-// colour here is a hand conversion — and the first one was wrong, which the
-// pixel check in journey_mobile.py caught.
-const int BAR      = 2051682;    // 0x1F4E62 deep teal
-const int BAR_INK  = 16777215;   // 0xFFFFFF
-const int CARD     = 16777215;   // 0xFFFFFF card
-const int LINE     = 14803425;   // 0xE1E1E1 hairline
-const int ACCENT   = 2051682;   // 0x1F4E62
+const int BAR_H     = 64;
+const int FOOT_H    = 76;
+const int ROW_H     = 80;
 
-int draw_orders_screen() {
-    ui_begin();
+// Written as decimals because the language has no hex literal yet, so every
+// colour is a hand conversion — and the first one was wrong, which the pixel
+// check caught rather than a human.
+const int INK       = 1710618;    // 0x1A1A1A
+const int MUTED     = 7697781;    // 0x757575
+const int PAPER     = 15790320;   // 0xF0F0F0
+const int BAR       = 2051682;    // 0x1F4E62
+const int BAR_INK   = 16777215;   // 0xFFFFFF
+const int CARD      = 16777215;   // 0xFFFFFF
+const int LINE      = 14803425;   // 0xE1E1E1
+const int ACCENT    = 2051682;    // 0x1F4E62
+const int DANGER    = 11736620;   // 0xB3172C
 
-    // Title bar.
-    ui_rect(0, 0, SCREEN_W, 64, BAR);
+int order_count() { return count(Order <- [id > 0]); }
+
+// ── The list ─────────────────────────────────────────────────────────────────
+
+int draw_list() {
+    ui_rect(0, 0, SCREEN_W, BAR_H, BAR);
     ui_text(16, 24, "ORDERS", BAR_INK, 2);
 
     list[Order] open_ones = Order <- [status == "OPEN"];
-    StringBuilder hdr = sb_new();
-    sb_append(&hdr, str(count(open_ones)));
-    sb_append(&hdr, " OPEN");
-    ui_text(SCREEN_W - ui_text_width(sb_to_str(&hdr), 1) - 16, 32,
-    sb_to_str(&hdr), BAR_INK, 1);
+    StringBuilder tally = sb_new();
+    sb_append(&tally, str(count(open_ones)));
+    sb_append(&tally, " OPEN");
+    ui_text(SCREEN_W - ui_text_width(sb_to_str(&tally), 1) - 16, 32,
+    sb_to_str(&tally), BAR_INK, 1);
 
-    int y = 80;
+    // The window the list lives in, and how far it is scrolled. Rows are drawn
+    // at their natural place minus the scroll, and clipped to the window —
+    // both halves matter: without the clip, rows paint over the title bar and
+    // a row scrolled out of sight still answers a tap.
+    int window_top = BAR_H;
+    int window_bot = SCREEN_H - FOOT_H;
     list[Order] all = Order <- [id > 0];
+    int content_h = count(all) * ROW_H;
+    int offset = ui_scroll_by("orders.scroll", 0, content_h,
+    window_bot - window_top);
+
+    ui_clip(window_top, window_bot);
+    ui_flow(12, window_top + 8 - offset, SCREEN_W - 24, 8);
     for row in all {
-        ui_rect(12, y, SCREEN_W - 24, 72, CARD);
-        ui_rect(12, y + 71, SCREEN_W - 24, 1, LINE);
-        ui_text(24, y + 14, row.customer, INK, 2);
+        int at = ui_panel(ROW_H - 8, CARD);
+        ui_rect(12, at + ROW_H - 9, SCREEN_W - 24, 1, LINE);
+        ui_text(24, at + 14, row.customer, INK, 2);
 
         StringBuilder meta = sb_new();
         sb_append(&meta, row.region);
         sb_append(&meta, "   ");
         sb_append(&meta, row.status);
-        ui_text(24, y + 44, sb_to_str(&meta), MUTED, 1);
+        ui_text(24, at + 44, sb_to_str(&meta), MUTED, 1);
 
-        StringBuilder money = sb_new();
-        sb_append(&money, str(row.amount));
-        ui_text(SCREEN_W - 24 - ui_text_width(sb_to_str(&money), 2),
-        y + 14, sb_to_str(&money), ACCENT, 2);
+        str money = str_fixed(row.amount, 2);
+        int money_ink = ACCENT;
+        if (str_eq(row.status, "CLOSED") == 1) { money_ink = MUTED; }
+        ui_text(SCREEN_W - 24 - ui_text_width(money, 2), at + 14, money,
+        money_ink, 2);
 
         StringBuilder act = sb_new();
         sb_append(&act, "open:");
         sb_append(&act, str(row.id));
-        ui_touch(12, y, SCREEN_W - 24, 72, sb_to_str(&act));
-        y = y + 80;
+        ui_touch(12, at, SCREEN_W - 24, ROW_H - 8, sb_to_str(&act));
     }
+    ui_clip_off();
 
-    ui_button(12, SCREEN_H - 76, SCREEN_W - 24, 56, "NEW ORDER", "new",
+    ui_flow(12, SCREEN_H - FOOT_H, SCREEN_W - 24, 0);
+    ui_button(12, SCREEN_H - FOOT_H, SCREEN_W - 24, 56, "NEW ORDER", "go:new",
     ACCENT, BAR_INK);
     return 1;
+}
+
+// ── The form ─────────────────────────────────────────────────────────────────
+
+int draw_form() {
+    ui_rect(0, 0, SCREEN_W, BAR_H, BAR);
+    ui_text(16, 24, "NEW ORDER", BAR_INK, 2);
+    ui_touch(0, 0, 96, BAR_H, "go:list");
+
+    ui_flow(24, BAR_H + 24, SCREEN_W - 48, 10);
+    ui_line("CUSTOMER", MUTED, 1);
+    ui_input(52, "form.customer", "who is it for", CARD, INK, LINE, LINE);
+    ui_advance(6);
+    ui_line("REGION", MUTED, 1);
+    ui_input(52, "form.region", "apac", CARD, INK, LINE, LINE);
+    ui_advance(6);
+    ui_line("AMOUNT", MUTED, 1);
+    ui_input(52, "form.amount", "0.00", CARD, INK, LINE, LINE);
+
+    if (str_len(ui_value("form.customer")) == 0) {
+        ui_advance(10);
+        ui_line("a customer is required", DANGER, 1);
+    }
+
+    ui_button(24, SCREEN_H - FOOT_H, SCREEN_W - 48, 56, "SAVE", "save",
+    ACCENT, BAR_INK);
+    return 1;
+}
+
+int draw_screen() {
+    ui_begin();
+    if (str_eq(ui_screen_name(), "new") == 1) { return draw_form(); }
+    return draw_list();
+}
+
+// ── What a tap means ─────────────────────────────────────────────────────────
+//
+// The host reports where the finger went; this decides what it changed. It is
+// ordinary Strata, so `strata test` can drive a whole session without a phone.
+
+int on_action(str action) {
+    if (str_len(action) == 0) { return 0; }
+    if (str_eq(action, "go:new") == 1) {
+        ui_set_text("form.customer", "");
+        ui_set_text("form.region", "");
+        ui_set_text("form.amount", "");
+        ui_focus("form.customer");
+        return ui_go("new");
+    }
+    if (str_eq(action, "go:list") == 1) {
+        ui_focus("");
+        return ui_go("list");
+    }
+    if (str_eq(action, "save") == 1) {
+        str who = ui_value("form.customer");
+        if (str_len(who) == 0) { return 0; }
+        str region = ui_value("form.region");
+        if (str_len(region) == 0) { region = "apac"; }
+        Order <- [id = next_order_id(), customer = who, region = region,
+        amount = str_to_float(ui_value("form.amount")), status = "OPEN"];
+        ui_focus("");
+        return ui_go("list");
+    }
+    if (str_len(action) > 6) {
+        if (str_eq(str_slice(action, 0, 6), "focus:") == 1) {
+            return ui_focus(str_slice(action, 6, str_len(action)));
+        }
+    }
+    return 0;
+}
+
+int next_order_id() {
+    list[Order] all = Order <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
 }

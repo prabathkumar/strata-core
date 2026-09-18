@@ -30,6 +30,8 @@ database UIItem {
     int h;
     int colour;     // 0xRRGGBB
     int scale;      // text size multiplier; 1 is the 8-pixel font
+    int clip_top;   // nothing is drawn or tapped above this line
+    int clip_bot;   // or below this one; 0 and 0 means no clipping
     str text;
     str action;     // what a tap on this region means, for kind 2
 }
@@ -61,14 +63,16 @@ int ui_begin() {
 
 int ui_rect(int x, int y, int w, int h, int colour) {
     UIItem <- [id = ui_next_id(), kind = UI_RECT, x = x, y = y, w = w, h = h,
-    colour = colour, scale = 1, text = "", action = ""];
+    colour = colour, scale = 1, clip_top = ui_clip_top(), clip_bot = ui_clip_bot(),
+    text = "", action = ""];
     return 1;
 }
 
 int ui_text(int x, int y, str s, int colour, int scale) {
     UIItem <- [id = ui_next_id(), kind = UI_TEXT, x = x, y = y,
     w = ui_text_width(s, scale), h = ui_text_height(scale),
-    colour = colour, scale = scale, text = s, action = ""];
+    colour = colour, scale = scale, clip_top = ui_clip_top(),
+    clip_bot = ui_clip_bot(), text = s, action = ""];
     return 1;
 }
 
@@ -76,7 +80,8 @@ int ui_text(int x, int y, str s, int colour, int scale) {
 // this only records what a tap there means.
 int ui_touch(int x, int y, int w, int h, str action) {
     UIItem <- [id = ui_next_id(), kind = UI_TOUCH, x = x, y = y, w = w, h = h,
-    colour = 0, scale = 1, text = "", action = action];
+    colour = 0, scale = 1, clip_top = ui_clip_top(), clip_bot = ui_clip_bot(),
+    text = "", action = action];
     return 1;
 }
 
@@ -97,10 +102,228 @@ str ui_hit(int px, int py) {
     str found = "";
     list[UIItem] all = UIItem <- [kind == UI_TOUCH];
     for it in all {
-        if (px >= it.x) { if (px < it.x + it.w) {
-                if (py >= it.y) { if (py < it.y + it.h) { found = it.action; } } } }
+        // A row scrolled out of its window must not answer a tap. This is the
+        // difference between a list that scrolls and a list that looks as
+        // though it scrolls.
+        int visible = 1;
+        if (it.clip_bot > it.clip_top) {
+            if (py < it.clip_top) { visible = 0; }
+            if (py >= it.clip_bot) { visible = 0; }
+        }
+        if (visible == 1) {
+            if (px >= it.x) { if (px < it.x + it.w) {
+                    if (py >= it.y) { if (py < it.y + it.h) { found = it.action; } } } }
+        }
     }
     return found;
+}
+
+// ── The state a screen needs between frames ──────────────────────────────────
+//
+// A phone redraws constantly, so anything that survives a redraw -- where a
+// list is scrolled to, what is typed in a box, which screen is showing -- has
+// to live somewhere other than the display list, which is thrown away and
+// rebuilt each time.
+//
+// It lives in tables, like everything else. That means `strata test` can set
+// up a screen scrolled halfway down with a half-typed form and assert what it
+// draws, without a phone, an emulator or a screenshot.
+
+database UIState {
+    int id;
+    str name;
+    str value;
+    int number;
+}
+
+// A named number that survives the redraw. Absent reads as `fallback` rather
+// than zero, so a caller does not have to seed every value before using it.
+int ui_get(str key, int fallback) {
+    // `key`, not `name`: inside a query a bare name is the COLUMN, so
+    // `[name == name]` compares the column with itself and matches every row.
+    // E008 caught it the first time this was written.
+    list[UIState] found = UIState <- [name == key];
+    if (count(found) == 0) { return fallback; }
+    return found[0].number;
+}
+
+int ui_set(str key, int value) {
+    delete UIState <- [name == key];
+    UIState <- [id = ui_next_state_id(), name = key, value = "", number = value];
+    return value;
+}
+
+str ui_get_text(str key) {
+    list[UIState] found = UIState <- [name == key];
+    if (count(found) == 0) { return ""; }
+    return found[0].value;
+}
+
+int ui_set_text(str key, str text) {
+    int keep = ui_get(key, 0);
+    delete UIState <- [name == key];
+    UIState <- [id = ui_next_state_id(), name = key, value = text, number = keep];
+    return 1;
+}
+
+int ui_next_state_id() {
+    list[UIState] all = UIState <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// ── Clipping ─────────────────────────────────────────────────────────────────
+//
+// A scrolling list draws rows that run past the end of its window. Without a
+// clip they are painted over the title bar and the button, and -- worse -- a
+// row scrolled out of sight still answers a tap.
+
+int ui_clip_top() { return ui_get("__clip_top", 0); }
+int ui_clip_bot() { return ui_get("__clip_bot", 0); }
+
+int ui_clip(int top, int bottom) {
+    ui_set("__clip_top", top);
+    ui_set("__clip_bot", bottom);
+    return 1;
+}
+
+int ui_clip_off() {
+    ui_set("__clip_top", 0);
+    ui_set("__clip_bot", 0);
+    return 1;
+}
+
+// ── Vertical flow ────────────────────────────────────────────────────────────
+//
+// Screens were positioned by hand: every y worked out by the author and every
+// one of them wrong again as soon as a row changed height. A flow keeps a
+// cursor and moves it down as things are placed, which is what a layout engine
+// is before it grows opinions.
+
+int ui_flow(int x, int y, int w, int gap) {
+    ui_set("__flow_x", x);
+    ui_set("__flow_y", y);
+    ui_set("__flow_w", w);
+    ui_set("__flow_gap", gap);
+    return 1;
+}
+
+int ui_flow_y()   { return ui_get("__flow_y", 0); }
+int ui_flow_x()   { return ui_get("__flow_x", 0); }
+int ui_flow_w()   { return ui_get("__flow_w", 0); }
+int ui_flow_gap() { return ui_get("__flow_gap", 0); }
+
+// Move the cursor down past something `height` tall, plus the gap.
+int ui_advance(int height) {
+    ui_set("__flow_y", ui_flow_y() + height + ui_flow_gap());
+    return ui_flow_y();
+}
+
+// A line of text at the cursor.
+int ui_line(str s, int colour, int scale) {
+    ui_text(ui_flow_x(), ui_flow_y(), s, colour, scale);
+    ui_advance(ui_text_height(scale));
+    return 1;
+}
+
+// A full-width panel at the cursor. Returns the y it was placed at, so
+// anything drawn inside it can be positioned from there.
+int ui_panel(int height, int colour) {
+    int at = ui_flow_y();
+    ui_rect(ui_flow_x(), at, ui_flow_w(), height, colour);
+    ui_advance(height);
+    return at;
+}
+
+// ── Scrolling ────────────────────────────────────────────────────────────────
+
+// How far a named list is scrolled. Kept as state so a redraw does not lose
+// the reader's place.
+int ui_scroll_of(str list_name) { return ui_get(list_name, 0); }
+
+// Scroll a list, clamped so it cannot be dragged past either end. Content
+// shorter than its window does not scroll at all.
+int ui_scroll_by(str list_name, int delta, int content_h, int window_h) {
+    int at = ui_scroll_of(list_name) + delta;
+    int most = content_h - window_h;
+    if (most < 0) { most = 0; }
+    if (at > most) { at = most; }
+    if (at < 0) { at = 0; }
+    ui_set(list_name, at);
+    return at;
+}
+
+// ── Text fields ──────────────────────────────────────────────────────────────
+
+str ui_focused() { return ui_get_text("__focus"); }
+
+int ui_focus(str field) {
+    ui_set_text("__focus", field);
+    return 1;
+}
+
+str ui_value(str field) { return ui_get_text(field); }
+
+int ui_type(str ch) {
+    str f = ui_focused();
+    if (str_len(f) == 0) { return 0; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, ui_get_text(f));
+    sb_append(&sb, ch);
+    ui_set_text(f, sb_to_str(&sb));
+    return 1;
+}
+
+int ui_backspace() {
+    str f = ui_focused();
+    if (str_len(f) == 0) { return 0; }
+    str v = ui_get_text(f);
+    int n = str_len(v);
+    if (n == 0) { return 0; }
+    ui_set_text(f, str_slice(v, 0, n - 1));
+    return 1;
+}
+
+// A box that shows what has been typed into it, with a caret when it has the
+// keyboard. Tapping it takes the keyboard.
+int ui_input(int height, str field, str placeholder, int fill, int ink,
+int hint_ink, int edge) {
+    int at = ui_flow_y();
+    int x = ui_flow_x();
+    int w = ui_flow_w();
+    ui_rect(x, at, w, height, edge);
+    ui_rect(x + 2, at + 2, w - 4, height - 4, fill);
+
+    str v = ui_value(field);
+    int ty = at + (height - ui_text_height(2)) / 2;
+    if (str_len(v) == 0) {
+        ui_text(x + 12, ty, placeholder, hint_ink, 2);
+    }
+    if (str_len(v) > 0) {
+        ui_text(x + 12, ty, v, ink, 2);
+    }
+    if (str_eq(ui_focused(), field) == 1) {
+        ui_rect(x + 12 + ui_text_width(v, 2), ty, 2, ui_text_height(2), ink);
+    }
+    StringBuilder act = sb_new();
+    sb_append(&act, "focus:");
+    sb_append(&act, field);
+    ui_touch(x, at, w, height, sb_to_str(&act));
+    ui_advance(height);
+    return at;
+}
+
+// ── Which screen is showing ──────────────────────────────────────────────────
+
+str ui_screen_name() {
+    str s = ui_get_text("__screen");
+    if (str_len(s) == 0) { return "list"; }
+    return s;
+}
+
+int ui_go(str screen) {
+    ui_set_text("__screen", screen);
+    return 1;
 }
 
 // ── Painting it ──────────────────────────────────────────────────────────────
@@ -186,9 +409,13 @@ int ui_paint_bmp(str path, int width, int height, int background) {
         int r = (int)((it->colour >> 16) & 0xFF);
         int g = (int)((it->colour >> 8) & 0xFF);
         int b = (int)(it->colour & 0xFF);
+        int ctop = (int)it->clip_top;
+        int cbot = (int)it->clip_bot;
+        int clipped = (cbot > ctop);
         if (it->kind == 0) {
             for (int yy = (int)it->y; yy < (int)(it->y + it->h); yy++) {
                 if (yy < 0 || yy >= $height) continue;
+                if (clipped && (yy < ctop || yy >= cbot)) continue;
                 for (int xx = (int)it->x; xx < (int)(it->x + it->w); xx++) {
                     if (xx < 0 || xx >= $width) continue;
                     long o = ((long)yy * $width + xx) * 3;
@@ -211,6 +438,7 @@ int ui_paint_bmp(str path, int width, int height, int background) {
                                 int xx = gx + col * sc + sx;
                                 int yy = (int)it->y + row * sc + sy;
                                 if (xx < 0 || xx >= $width || yy < 0 || yy >= $height) continue;
+                                if (clipped && (yy < ctop || yy >= cbot)) continue;
                                 long o = ((long)yy * $width + xx) * 3;
                                 px[o+0] = (unsigned char)b; px[o+1] = (unsigned char)g;
                                 px[o+2] = (unsigned char)r;

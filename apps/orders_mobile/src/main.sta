@@ -1,10 +1,9 @@
-// Draws the orders screen and writes it to an image.
+// Drives the app through a short session and writes each frame to an image.
 //
-// A phone never runs this file: the Android and iOS shells call
-// draw_orders_screen() and paint the rows themselves. This exists so the
-// screen can be looked at, and regression-tested, on a machine with no phone
-// attached -- which is the difference between a UI you can review and one you
-// can only demo.
+// A phone never runs this file: the Android and iOS shells call draw_screen()
+// and paint the rows themselves. This exists so the screens can be looked at,
+// and regression-tested, on a machine with no phone attached — which is the
+// difference between a UI you can review and one you can only demo.
 
 import io     from std;
 import str    from std;
@@ -12,26 +11,62 @@ import mem    from std;
 import ui     from std;
 import screen from app;
 
-int main() {
-    load Order from "data/orders.tsv";
-    if (count(Order <- [id > 0]) == 0) {
-        Order <- [id = 1, customer = "Acme Bhd",     region = "apac", amount = 1250.50, status = "OPEN"];
-        Order <- [id = 2, customer = "Globex",       region = "emea", amount =  340.00, status = "OPEN"];
-        Order <- [id = 3, customer = "Initech",      region = "amer", amount =  980.75, status = "CLOSED"];
-        Order <- [id = 4, customer = "Neuron Sdn",   region = "apac", amount = 4820.00, status = "OPEN"];
-    }
-    draw_orders_screen();
-
-    list[UIItem] drawn = UIItem <- [id > 0];
-    print(str_concat("things to draw: ", str(count(drawn))));
-    print(str_concat("tap at 200,140 means: ", ui_hit(200, 140)));
-    print(str_concat("tap at 200,690 means: ", ui_hit(200, 690)));
-    print(str_concat("tap on empty space means: '", str_concat(ui_hit(5, 400), "'")));
-
-    if (ui_paint_bmp("screen.bmp", SCREEN_W, SCREEN_H, PAPER)) {
-        print("painted screen.bmp");
-        return 0;
-    }
-    print("could not paint the screen");
+int seed() {
+    Order <- [id = 1, customer = "Acme Bhd",      region = "apac", amount = 1250.50, status = "OPEN"];
+    Order <- [id = 2, customer = "Globex",        region = "emea", amount =  340.00, status = "OPEN"];
+    Order <- [id = 3, customer = "Initech",       region = "amer", amount =  980.75, status = "CLOSED"];
+    Order <- [id = 4, customer = "Neuron Sdn",    region = "apac", amount = 4820.00, status = "OPEN"];
+    Order <- [id = 5, customer = "Umbrella Corp", region = "emea", amount =   75.25, status = "OPEN"];
+    Order <- [id = 6, customer = "Soylent",       region = "amer", amount = 2010.00, status = "CLOSED"];
+    Order <- [id = 7, customer = "Stark Ind",     region = "apac", amount = 9999.99, status = "OPEN"];
+    Order <- [id = 8, customer = "Wayne Ent",     region = "amer", amount =  620.40, status = "OPEN"];
+    Order <- [id = 9, customer = "Tyrell",        region = "emea", amount = 1500.00, status = "OPEN"];
     return 1;
+}
+
+int frame(str name) {
+    draw_screen();
+    StringBuilder path = sb_new();
+    sb_append(&path, name);
+    sb_append(&path, ".bmp");
+    return ui_paint_bmp(sb_to_str(&path), SCREEN_W, SCREEN_H, PAPER);
+}
+
+int main() {
+    seed();
+
+    frame("01-list");
+    print(str_concat("list: things to draw ", str(count(UIItem <- [id > 0]))));
+    print(str_concat("tap on first row: ", ui_hit(200, 120)));
+
+    // Scroll past the fourth row and redraw. A row that has left the window
+    // must stop answering taps, which is the half of scrolling that is easy
+    // to get wrong and impossible to see in a screenshot.
+    int content = count(Order <- [id > 0]) * 80;
+    ui_scroll_by("orders.scroll", 300, content, SCREEN_H - 64 - 76);
+    frame("02-scrolled");
+    print(str_concat("scrolled to: ", str(ui_scroll_of("orders.scroll"))));
+    print(str_concat("tap where row one was: ", ui_hit(200, 120)));
+    print(str_concat("tap above the list: ", str_concat(ui_hit(200, 30), "|")));
+
+    // Open the form and type into it.
+    on_action("go:new");
+    frame("03-form-empty");
+    print(str_concat("screen now: ", ui_screen_name()));
+
+    ui_type("D"); ui_type("u"); ui_type("r"); ui_type("i"); ui_type("a"); ui_type("n");
+    on_action("focus:form.amount");
+    ui_type("4"); ui_type("2"); ui_type("."); ui_type("5"); ui_type("0");
+    ui_backspace();
+    frame("04-form-typed");
+    print(str_concat("customer typed: ", ui_value("form.customer")));
+    print(str_concat("amount typed: ", ui_value("form.amount")));
+
+    on_action("save");
+    frame("05-saved");
+    print(str_concat("screen after save: ", ui_screen_name()));
+    print(str_concat("orders now: ", str(count(Order <- [id > 0]))));
+    list[Order] added = Order <- [customer == "Durian"];
+    print(str_concat("the new order amount: ", str_fixed(added[0].amount, 2)));
+    return 0;
 }

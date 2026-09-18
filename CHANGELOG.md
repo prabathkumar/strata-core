@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### The phone screens became an app
+
+A screen was one picture with every position worked out by hand. It now has
+the pieces a business app actually needs, all in `std/ui.sta`:
+
+**A vertical flow.** A cursor that moves down as things are placed, so a
+screen is described rather than positioned. Every `y` used to be arithmetic
+the author did in their head, and wrong again the moment a row changed height.
+
+**Scrolling, with a clip.** A list is clamped at both ends and clipped to its
+window. Both halves matter: without the clip, rows are painted over the title
+bar — and, worse, a row scrolled out of sight still answers a tap. That second
+one is invisible in a screenshot, so `journey_mobile` checks it directly: after
+scrolling, the same spot on the glass selects a different order, and a tap
+above the list hits nothing.
+
+**Text input.** Boxes with a placeholder, a caret where the keyboard is
+pointed, and backspace. Tapping a box moves the keyboard to it.
+
+**Navigation.** A screen stack, so the app is a list and a form rather than a
+picture.
+
+State that has to outlive a redraw — where a list is scrolled to, what has
+been typed, which screen is showing — lives in tables like everything else.
+That is what lets `strata test` set up a half-typed form scrolled halfway down
+and assert what it draws, with no phone, no emulator and no screenshot
+comparison.
+
+`apps/orders_mobile` is now a real two-screen app against the same `Order`
+table the web service uses. `journey_mobile` drives a whole session through
+it — scroll, open the form, type, backspace, save — and checks the new order
+is in the list afterwards, because the form and the list are the same table.
+32 checks.
+
+### `str_fixed`
+
+`str(1250.50)` gives `1250.5`. That is right for a number and wrong for money:
+a price list where one row reads `1250.5` and the next `340.0` is a price list
+nobody trusts. `str_fixed(value, places)` is in `std/str.sta`, because every
+business screen needs it.
+
+### E008 earned its keep again
+
+The first version of the state helpers took a parameter called `name`, and the
+table's column is also called `name` — so `UIState <- [name == name]` compares
+the column with itself and matches every row. Every lookup would have returned
+the first piece of state regardless of what was asked for. The compiler
+refused to build it and said exactly that.
+
 ### The same rules run on the server and on a phone
 
 The rules compile for a phone's processor, and — run under emulation — give

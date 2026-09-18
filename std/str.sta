@@ -62,3 +62,21 @@ int sb_length(StringBuilder &sb) {
 str char_from_code(int c) {
     native "char _b[2]; _b[0]=(char)$c; _b[1]=0; return strata_dup(_b);";
 }
+
+// A number with a fixed number of decimal places.
+//
+// `str(1250.50)` gives "1250.5", which is the right answer for a number and
+// the wrong one for money: a price list where one row reads 1250.5 and the
+// next 340.0 is a price list nobody trusts. Every business screen needs this,
+// so it belongs here rather than in each of them.
+str str_fixed(float value, int places) {
+    native "
+    if ($places < 0) { $places = 0; }
+    if ($places > 9) { $places = 9; }
+    char fmt[8];
+    snprintf(fmt, sizeof(fmt), \"%%.%df\", (int)$places);
+    char buf[64];
+    snprintf(buf, sizeof(buf), fmt, $value);
+    return strata_dup(buf);
+    ";
+}
