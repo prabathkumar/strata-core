@@ -535,3 +535,31 @@ verified. The first was the assumption that the Docker step was too slow rather
 than never run.
 
 All eighteen suites green.
+
+## 2026-09-19 — the compiler drives its own build
+
+Five pieces, in order: the operating-system calls Strata lacked (`std/os.sta`),
+the link command, the C compiler invocation, the driver itself, and
+machine-readable diagnostics. Four differential tests now compare the two
+compilers on build decisions rather than on generated code alone.
+
+Two bugs found, neither of them in the new work:
+
+`assert_true` printed a failure and recorded nothing. A suite could print
+VERIFY FAILURE and exit 0. It was hiding a failing example —
+`examples/pipeline_testing.sta` deposited into an account it never created, and
+asserted the deposit succeeded. The application suites were unaffected: they
+use the built-in `assert`, which always counted.
+
+`json_str` escaped non-ASCII bytes as `\u00XX` of a negative number, because
+indexing a str yields signed bytes. Any non-English text in any JSON this
+compiler wrote was corrupt.
+
+A third thing, recorded and not fixed: `examples/memory_ownership.sta` builds
+and then segfaults. It is not new and no test covered it, which is its own
+finding — the example suite compiles examples without running them.
+
+Also this day: the VS Code extension published to the Marketplace as
+`prabathkumar.strata-lang` (the display name "Strata" was taken), and the
+grammar consolidated — it existed in three places, one of which was an orphan
+with a different scope name that nothing read.

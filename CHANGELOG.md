@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### The compiler drives its own build
+
+Strata now compiles a Strata program end to end without Python. `compiler/driver.sta`
+parses, type checks, generates C, writes it out, picks a C compiler, assembles
+the flags, creates the output directory, runs the build and reports. Until now
+the language could describe a program completely and still not build one: the
+last mile belonged to the bootstrap.
+
+The decisions it makes for itself are the ones that used to be configured in
+Python. Which compiler (`STRATA_CC`, else clang, gcc, cc). Which libraries to
+link, derived from the program's own `foreign ... link` declarations rather
+than from configuration. The four portability flags that stop a bug failing on
+CI's clang while building clean on an older gcc. Whether a unit is a program or
+a library. Where this distribution keeps the Postgres headers, asked of
+`pg_config` rather than guessed.
+
+`--json` came with it: each diagnostic with its taxonomy classification,
+severity, hint and remediation strategy, which is what an editor, CI and the
+repair agent read instead of scraping prose. The checker had never produced
+hints — all 38 diagnostic sites now carry the same hint the oracle does,
+character for character.
+
+Four differential tests hold the two compilers together, all in CI: the linker
+command for every file in the tree (64 agree), the exact C compiler invocation
+in native, wasm and test builds (195 agree), the finished binary compared byte
+for byte over nine programs, and the `--json` payload field by field (21 agree).
+
+Two bugs surfaced while building it, both of which had been there a while.
+`assert_true` printed a test failure without recording one, so a suite could
+print `VERIFY FAILURE` and still exit 0 — green to CI, red only to a human
+watching the screen. It was hiding a genuinely failing example. And the JSON
+escaper mangled every byte of every non-ASCII character, because indexing a
+string yields signed bytes: an em dash in a diagnostic reached the repair agent
+as garbage, and so would any non-English text in anything this compiler wrote.
+
+What remains in `bootstrap/` after this is bootstrapping — a Python lexer,
+parser and code generator that exist to be compared against, not depended on.
+
 ### The editor extension repairs your code from the lightbulb
 
 The extension was competent and ordinary: highlighting and diagnostics, like

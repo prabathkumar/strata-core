@@ -139,6 +139,18 @@ an LTS programme for a language a fortnight old. `LANGUAGE_SPECIFICATION.md`
 was rewritten against the grammar the compiler has. The `No Unbacked Claims` CI
 step fails if any of it returns.
 
+### The compiler driver, closed 19 September 2026
+
+Strata builds Strata programs without Python. The driver parses, type checks,
+generates C, picks a compiler, assembles the flags, runs the build, and reports
+diagnostics as data. Four differential tests hold it to the bootstrap: the
+linker command (64 files agree), the C compiler invocation across native, wasm
+and test builds (195 agree), the finished binary byte for byte (9 programs),
+and the `--json` payload field by field (21 cases).
+
+What is left in `bootstrap/` is a Python lexer, parser and code generator kept
+as an oracle to compare against.
+
 ## All ten are closed. What is still not true
 
 1. A table is held in the process that loaded it, and reloaded only when the
@@ -159,6 +171,12 @@ step fails if any of it returns.
    design, not tested code, and iOS has no shell at all.
 6. There is no package manager, so two projects cannot share a library except
    by copying files.
+7. `examples/memory_ownership.sta` compiles and then segfaults when run. The
+   example suite compiles examples and does not run them, which is why nothing
+   caught it — and is the more useful half of the finding.
+8. The bootstrap is still what `bin/strata` runs. The driver is proven
+   equivalent, not yet wired in as the default; switching it over is its own
+   change, with its own way of being wrong.
 
 ### Corrected rather than deleted
 
