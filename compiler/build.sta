@@ -105,3 +105,108 @@ str link_flags(str libs) {
     }
     return sb_to_str(&out);
 }
+
+// ── The C compiler ────────────────────────────────────────────────────────
+
+// Which C compiler to use. STRATA_CC pins it, so a build can be reproduced
+// against a specific toolchain rather than whichever one happens to be
+// installed; otherwise the first of clang, gcc, cc that is actually there.
+// "" when none is.
+str choose_cc() {
+    str forced = env("STRATA_CC");
+    if (str_len(forced) > 0) { return forced; }
+    if (tool_exists("clang") == 1) { return "clang"; }
+    if (tool_exists("gcc") == 1) { return "gcc"; }
+    if (tool_exists("cc") == 1) { return "cc"; }
+    return "";
+}
+
+// The flags that make the backend C compiler behave the same way whichever
+// one it is.
+//
+// C99 removed implicit declarations and clang 16+ makes them a hard error, so
+// without the first flag every program calling a symbol left to the linker
+// fails to build on clang while succeeding on gcc. The three -Werror flags go
+// the other way: gcc 11 only warns where clang 16+ and gcc 14 error, so a bug
+// that failed CI built fine on a machine with an older gcc. Together they make
+// the strict compilers' errors errors everywhere.
+str portability_flags() {
+    return "-Wno-implicit-function-declaration -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=return-type";
+}
+
+// Linking libpq is what turns the Postgres table backend on, and the flag is
+// derived from the program's own `foreign ... link "pq"` -- which comes from
+// importing `postgres from std` -- so a program that does not ask for a
+// database carries neither the dependency nor the code that uses it.
+//
+// pg_config is asked where the headers and libraries are rather than guessing
+// /usr/include/postgresql: the answer differs between Debian, Red Hat and
+// Homebrew, and a hardcoded path is a build that works on the machine it was
+// written on. The Debian subdirectory is appended anyway, because Debian keeps
+// libpq-fe.h one level below what pg_config reports.
+str postgres_flags() {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, " -DSTRATA_POSTGRES");
+    str inc = capture("pg_config --includedir 2>/dev/null");
+    if (str_len(inc) > 0) { sb_append(&sb, " -I"); sb_append(&sb, inc); }
+    str lib = capture("pg_config --libdir 2>/dev/null");
+    if (str_len(lib) > 0) { sb_append(&sb, " -L"); sb_append(&sb, lib); }
+    sb_append(&sb, " -I/usr/include/postgresql");
+    return sb_to_str(&sb);
+}
+
+// The whole command, as it will be run.
+//
+// `is_library` is a unit with no main(): a library, linked as an object file
+// rather than asked for an entry point it cannot have. In test mode the
+// generated entry point IS main(), so such a unit is a program even when its
+// source declares none.
+str cc_command(str cc, str c_path, str out_path, str target, str libs,
+int is_library) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, cc);
+
+    if (str_eq(target, "wasm") == 1) {
+        sb_append(&sb, " -Oz --target=wasm32 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export-dynamic -Wl,--allow-undefined ");
+        sb_append(&sb, portability_flags());
+        if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+        sb_append(&sb, " -o ");
+        sb_append(&sb, out_path);
+        sb_append(&sb, " ");
+        sb_append(&sb, c_path);
+        return sb_to_str(&sb);
+    }
+
+    if (is_library == 1) {
+        sb_append(&sb, " -O2 -c ");
+        sb_append(&sb, portability_flags());
+        if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+        sb_append(&sb, " -o ");
+        sb_append(&sb, out_path);
+        sb_append(&sb, " ");
+        sb_append(&sb, c_path);
+        return sb_to_str(&sb);
+    }
+
+    sb_append(&sb, " -O2 ");
+    sb_append(&sb, portability_flags());
+    if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+    sb_append(&sb, " -o ");
+    sb_append(&sb, out_path);
+    sb_append(&sb, " ");
+    sb_append(&sb, c_path);
+    sb_append(&sb, " -lm");
+    str flags = link_flags(libs);
+    if (str_len(flags) > 0) { sb_append(&sb, " "); sb_append(&sb, flags); }
+    return sb_to_str(&sb);
+}
+
+// An object file rather than a program: the output grows a .o if it has no
+// extension of its own, the way the bootstrap does it.
+str library_output(str out_path) {
+    int n = str_len(out_path);
+    if (n >= 2) {
+        if (str_eq(str_slice(out_path, n - 2, n), ".o") == 1) { return out_path; }
+    }
+    return str_concat(out_path, ".o");
+}

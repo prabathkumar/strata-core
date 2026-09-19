@@ -101,6 +101,14 @@ jobs:
     - name: Link Command Differential (Strata vs Python oracle)
       run: python3 test_suite/link_libs_diff.py
 
+    # Stage 6: the build itself. The driver assembles the C compiler command
+    # in Strata; it must be the same command, and produce the same file.
+    - name: Compiler Invocation Differential (Strata vs Python oracle)
+      run: python3 test_suite/cc_command_diff.py
+
+    - name: Driver Builds What The Bootstrap Builds
+      run: python3 test_suite/driver_build_diff.py
+
     # The proof that the bootstrap can be retired: the Strata front end,
     # rebuilt from C it generated itself, reproduces that C exactly.
     - name: Self-Hosting Fixpoint

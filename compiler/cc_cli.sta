@@ -1,0 +1,41 @@
+// STRATA COMPILER — compiler/cc_cli.sta
+//
+// Prints the C compiler command a build would run, without running it. The
+// differential test drives this: the command the bootstrap builds and the one
+// the driver builds have to be the same string.
+//
+//   cc_cli <root> <source.sta> <output> <target> <test-mode 0|1>
+
+import io     from std;
+import cli    from std;
+import mem    from std;
+import os     from std;
+import str    from std;
+import lexer  from compiler;
+import parser from compiler;
+import build  from compiler;
+import codegen from compiler;
+
+int main() {
+    str root   = arg(1);
+    str source = arg(2);
+    str out    = arg(3);
+    str target = arg(4);
+    int test_mode = 0;
+    if (str_eq(arg(5), "1") == 1) { test_mode = 1; }
+
+    str libs = collect_link_libs(root, source);
+    Node unit = parse_source(file_read(source));
+
+    int is_library = 0;
+    if (test_mode == 0) { if (has_main(unit) == 0) { is_library = 1; } }
+
+    str out_path = out;
+    if (is_library == 1) {
+        if (str_eq(target, "wasm") == 0) { out_path = library_output(out); }
+    }
+
+    str c_path = str_concat(drop_extension(source), ".c");
+    print(cc_command(choose_cc(), c_path, out_path, target, libs, is_library));
+    return 0;
+}

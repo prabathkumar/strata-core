@@ -1,0 +1,124 @@
+// STRATA COMPILER — compiler/driver.sta
+//
+// The build, end to end, in Strata: parse, type check, generate C, write it
+// out, and run the C compiler over it.
+//
+// Until now this last part belonged to bootstrap/stage0.py. The language
+// could describe a program completely and still could not build one without
+// Python standing behind it. What is left in the bootstrap after this is
+// bootstrapping -- the Python lexer, parser and code generator that exist to
+// be compared against, not to be depended on.
+//
+//   strata-build <source.sta> [-o out] [--target native|wasm] [--test] [-v]
+
+import io      from std;
+import cli     from std;
+import mem     from std;
+import os      from std;
+import str     from std;
+import lexer   from compiler;
+import parser  from compiler;
+import build   from compiler;
+import codegen from compiler;
+import typechecker from compiler;
+
+// Where the compiler's own files live: the runtime preamble and the standard
+// library. STRATA_ROOT pins it; otherwise the current directory, which is
+// what running from a checkout means.
+str install_root() {
+    str pinned = env("STRATA_ROOT");
+    if (str_len(pinned) > 0) { return pinned; }
+    return ".";
+}
+
+int build_file(str root, str source, str out, str target, int test_mode,
+int verbose) {
+    if (file_exists(source) == 0) {
+        eprint(str_concat("[STRATA ERROR] No such file: ", source));
+        return 1;
+    }
+
+    Node unit = parse_source(file_read(source));
+
+    // Type check before generating anything. Without this the error taxonomy
+    // only ever runs under `strata check`, and a type error reaches the user
+    // as a C compiler diagnostic instead of a Strata one.
+    int errors = check_unit_project(root, dir_of(source), unit);
+    if (errors > 0) { return 1; }
+
+    str c_source = generate_mode(root, source, target, test_mode);
+    str c_path = str_concat(drop_extension(source), ".c");
+    if (file_write(c_path, c_source) == 0) {
+        eprint(str_concat("[STRATA ERROR] Cannot write: ", c_path));
+        return 1;
+    }
+    if (verbose == 1) { print(str_concat("  C source: ", c_path)); }
+
+    str cc = choose_cc();
+    if (str_len(cc) == 0) {
+        eprint("[STRATA ERROR] No C compiler found.");
+        return 1;
+    }
+
+    str libs = collect_link_libs(root, source);
+    int is_library = 0;
+    if (test_mode == 0) { if (has_main(unit) == 0) { is_library = 1; } }
+    str out_path = out;
+    if (is_library == 1) {
+        if (str_eq(target, "wasm") == 0) { out_path = library_output(out); }
+    }
+
+    // The linker's complaint about a missing output directory is "cannot open
+    // output file", which reads like a permissions problem and is not one.
+    str out_dir = parent_dir(out_path);
+    if (str_len(out_dir) > 0) {
+        if (make_dir(out_dir) == 0) {
+            eprint(str_concat("[STRATA ERROR] Cannot create directory: ", out_dir));
+            return 1;
+        }
+    }
+
+    str command = cc_command(cc, c_path, out_path, target, libs, is_library);
+    if (verbose == 1) { print(str_concat("  CC: ", command)); }
+    if (run(command) != 0) {
+        eprint("[STRATA C ERROR] the C compiler rejected the generated code");
+        return 1;
+    }
+
+    if (is_library == 1) {
+        if (str_eq(target, "wasm") == 0) {
+            print(str_concat("  Object: ", out_path));
+            return 0;
+        }
+    }
+    print(str_concat("  Binary: ", out_path));
+    return 0;
+}
+
+def usage() {
+    print("strata-build <source.sta> [-o out] [--target native|wasm] [--test] [-v]");
+}
+
+int main() {
+    int n = arg_count();
+    if (n < 2) { usage(); return 1; }
+
+    str source = arg(1);
+    str out = "";
+    str target = "native";
+    int test_mode = 0;
+    int verbose = 0;
+
+    for (int i = 2; i < n; i = i + 1) {
+        str a = arg(i);
+        if (str_eq(a, "-o") == 1) { out = arg(i + 1); i = i + 1; }
+        if (str_eq(a, "--output") == 1) { out = arg(i + 1); i = i + 1; }
+        if (str_eq(a, "--target") == 1) { target = arg(i + 1); i = i + 1; }
+        if (str_eq(a, "--test") == 1) { test_mode = 1; }
+        if (str_eq(a, "-v") == 1) { verbose = 1; }
+        if (str_eq(a, "--verbose") == 1) { verbose = 1; }
+    }
+    if (str_len(out) == 0) { out = drop_extension(source); }
+
+    return build_file(install_root(), source, out, target, test_mode, verbose);
+}
