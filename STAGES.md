@@ -174,9 +174,11 @@ as an oracle to compare against.
 7. `examples/memory_ownership.sta` compiles and then segfaults when run. The
    example suite compiles examples and does not run them, which is why nothing
    caught it — and is the more useful half of the finding.
-8. The bootstrap is still what `bin/strata` runs. The driver is proven
-   equivalent, not yet wired in as the default; switching it over is its own
-   change, with its own way of being wrong.
+8. `bin/strata build` now runs the self-hosted driver, with
+   `STRATA_BOOTSTRAP=1` as the way back. The bootstrap is still what every
+   other subcommand runs -- `check`, `ast`, `lex`, `test`, `repair` and `fmt`
+   all go through Python, and `strata check` is a Python type checker
+   entirely. The build is self-hosted; the toolchain around it is not.
 
 ### Corrected rather than deleted
 

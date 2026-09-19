@@ -33,6 +33,11 @@ str install_root() {
 
 int build_file(str root, str source, str out, str target, int test_mode,
 int verbose) {
+    if (is_directory(source) == 1) {
+        eprint(str_concat("[STRATA ERROR] Not a source file, a directory: ", source));
+        eprint("  To build a project, run 'strata build' inside it.");
+        return 1;
+    }
     if (file_exists(source) == 0) {
         eprint(str_concat("[STRATA ERROR] No such file: ", source));
         return 1;

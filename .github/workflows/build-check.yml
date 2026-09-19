@@ -112,6 +112,11 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # Equivalence is not use. This is the step that says the toolchain
+    # actually reaches for the driver, and that the way back still works.
+    - name: strata build Runs The Self-Hosted Driver
+      run: python3 test_suite/toolchain_uses_driver.py
+
     # The proof that the bootstrap can be retired: the Strata front end,
     # rebuilt from C it generated itself, reproduces that C exactly.
     - name: Self-Hosting Fixpoint

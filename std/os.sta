@@ -79,6 +79,20 @@ int make_dir(str path) {
     ";
 }
 
+// True when `path` is a directory.
+//
+// file_exists opens the path, and opening a directory for reading SUCCEEDS on
+// Linux -- so a directory looked like a readable file, the read came back
+// empty, and the compiler walked into an empty token stream and crashed.
+// A compiler handed the wrong kind of path should say so.
+int is_directory(str path) {
+    native "
+    struct stat _st;
+    if (stat($path, &_st) != 0) return 0;
+    return S_ISDIR(_st.st_mode) ? 1 : 0;
+    ";
+}
+
 // True when `name` is runnable from PATH. Used to pick a C compiler rather
 // than hardcoding one, so the toolchain works on a machine that has clang and
 // on a machine that has gcc.

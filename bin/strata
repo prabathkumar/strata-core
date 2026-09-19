@@ -72,6 +72,54 @@ toml_value() {
     sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*$/\1/p" "$1" | head -1
 }
 
+# The compiler that runs a build.
+#
+# `compiler/driver.sta` does the whole build in Strata and is proven
+# equivalent to the bootstrap by four differential tests: the linker command,
+# the C compiler invocation, the finished binary byte for byte, and the
+# machine-readable diagnostics. This is what makes that equivalence load
+# bearing rather than decorative.
+#
+# STRATA_BOOTSTRAP=1 forces the Python path. Keep it: if the driver is ever
+# wrong, the person hitting it needs a way past without editing the toolchain,
+# and the bootstrap is right there.
+#
+# The driver is rebuilt when any compiler source is newer than it. Without
+# that, editing the compiler and running `strata build` would silently use
+# yesterday's driver -- the kind of bug that costs an afternoon.
+driver_bin() {
+    local bin="$ROOT/build/strata-build"
+    local newest
+    newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
+    if [ ! -x "$bin" ] || [ -n "$newest" ]; then
+        mkdir -p "$ROOT/build"
+        if ! python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/driver.sta" \
+                -o "$bin" >/dev/null 2>&1; then
+            return 1
+        fi
+    fi
+    printf '%s' "$bin"
+}
+
+# Run a build with the driver, falling back to the bootstrap when the driver
+# cannot be built at all. A driver that builds and then rejects the program is
+# NOT a fallback case: that is a compiler saying no, and quietly asking a
+# different compiler for a second opinion would hide exactly the divergence
+# the differential tests exist to catch.
+run_build() {
+    if [ "${STRATA_BOOTSTRAP:-0}" = "1" ]; then
+        python3 "$ROOT/bootstrap/stage0.py" "$@"
+        return $?
+    fi
+    local bin
+    if bin="$(driver_bin)"; then
+        "$bin" "$@"
+        return $?
+    fi
+    echo "[Strata] the self-hosted driver could not be built; using the bootstrap" >&2
+    python3 "$ROOT/bootstrap/stage0.py" "$@"
+}
+
 cmd_build() {
     local file="$1"
 
@@ -91,14 +139,14 @@ cmd_build() {
         fi
         mkdir -p "$proj/$(dirname "$out")"
         echo "[Strata] building $(basename "$proj") — $main -> $out"
-        ( cd "$proj" && python3 "$ROOT/bootstrap/stage0.py" "$main" -o "$out" ) || return 1
+        ( cd "$proj" && run_build "$main" -o "$out" ) || return 1
         return 0
     fi
 
-    # A single file, for a script or an example. stage0 does the type checking:
-    # doing it again here, without resolving imports, printed "TypeCheck OK"
-    # for files it then rejected.
-    python3 "$ROOT/bootstrap/stage0.py" "$@"
+    # A single file, for a script or an example. The compiler does the type
+    # checking: doing it again here, without resolving imports, printed
+    # "TypeCheck OK" for files it then rejected.
+    run_build "$@"
 }
 
 cmd_check() {
