@@ -20,7 +20,16 @@ str json_str(str value) {
     sb_append(&sb, "\"");
     int n = str_len(value);
     for (int i = 0; i < n; i = i + 1) {
+        // A byte, not a character. Indexing a str yields a signed value, so
+        // every byte of a multi-byte character reads as negative -- and the
+        // control-character branch below then wrote each one out as a \u00XX
+        // escape of a negative number, which is not an escape and not the
+        // character either. An em dash in a compiler diagnostic came out as
+        // three pieces of garbage in the JSON payload. Bytes at or above 128
+        // are part of a UTF-8 sequence and belong in the output untouched.
         int c = value[i];
+        if (c < 0) { c = c + 256; }
+        if (c > 127) { sb_append(&sb, char_from_code(c)); continue; }
         if (c == 34) { sb_append(&sb, "\\\""); }
         else {
             if (c == 92) { sb_append(&sb, "\\\\"); }
@@ -110,4 +119,78 @@ int extract_json_int(str text, str name) {
         i = i + 1;
     }
     return 0;
+}
+
+// The index just past `"name"` in `text`, searching from `start_at`, or -1.
+//
+// Reading JSON, rather than writing it, starts here. It is deliberately
+// positional: find a key, then read the value that follows it. That is enough
+// for a document whose shape is known -- a taxonomy keyed by error code, a
+// configuration file -- and not enough for one that is not. Anything needing
+// real parsing should say so rather than leaning on this.
+int json_index_of_key(str text, str name, int start_at) {
+    StringBuilder key = sb_new();
+    sb_append(&key, "\"");
+    sb_append(&key, name);
+    sb_append(&key, "\"");
+    int n = str_len(text);
+    if (start_at < 0) { return -1; }
+    if (start_at >= n) { return -1; }
+    int at = str_index_of(str_slice(text, start_at, n), sb_to_str(&key));
+    if (at < 0) { return -1; }
+    return start_at + at + str_len(sb_to_str(&key));
+}
+
+// The string value of field `name`, searching from `start_at`. "" when the field
+// is absent or does not hold a string. Escapes are not interpreted: a
+// document with a backslash in a value needs a real parser, and the ones this
+// reads do not have one.
+str json_string_field_from(str text, str name, int start_at) {
+    int at = json_index_of_key(text, name, start_at);
+    if (at < 0) { return ""; }
+    int n = str_len(text);
+    int i = at;
+    // Step over the colon and any space to the opening quote.
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) { i = i + 1; break; }
+        // A comma or a brace before the quote means this field had no string.
+        if (c == 44) { return ""; }
+        if (c == 125) { return ""; }
+        i = i + 1;
+    }
+    int start = i;
+    while (i < n) {
+        if (text[i] == 34) { return str_slice(text, start, i); }
+        i = i + 1;
+    }
+    return "";
+}
+
+// The string value of field `name` anywhere in `text`.
+str json_string_field(str text, str name) {
+    return json_string_field_from(text, name, 0);
+}
+
+verify "a string with a character outside ASCII survives the trip" {
+    // An em dash is three bytes. Each one reads as negative when the string
+    // is indexed, and the escaper used to turn each into a \u00XX escape of a
+    // negative number -- so a compiler diagnostic containing one arrived at
+    // the repair agent as garbage. Quotes, backslashes and real control
+    // characters still have to be escaped.
+    assert str_eq(json_str("a — b"), "\"a — b\"") == 1;
+    assert str_eq(json_str("plain"), "\"plain\"") == 1;
+    assert str_eq(json_str("say \"hi\""), "\"say \\\"hi\\\"\"") == 1;
+    assert str_eq(json_str("a\nb"), "\"a\\nb\"") == 1;
+    assert str_eq(json_str("tab\there"), "\"tab\\there\"") == 1;
+}
+
+verify "a known-shape document can be read back" {
+    str doc = "{\"E004\": {\"severity\": \"CRITICAL_HALT\", \"note\": \"x\"}, \"E007\": {\"severity\": \"ADVISORY\"}}";
+    assert str_eq(json_string_field(doc, "severity"), "CRITICAL_HALT") == 1;
+    int at = json_index_of_key(doc, "E007", 0);
+    assert at > 0;
+    assert str_eq(json_string_field_from(doc, "severity", at), "ADVISORY") == 1;
+    assert str_eq(json_string_field(doc, "absent"), "") == 1;
+    assert json_index_of_key(doc, "absent", 0) < 0;
 }

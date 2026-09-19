@@ -1,0 +1,123 @@
+// STRATA COMPILER — compiler/diagnostics.sta
+//
+// Machine-readable diagnostics.
+//
+// Human-readable compiler text is for humans. Everything else that reads a
+// compiler -- an editor showing squiggles, a repair agent deciding what to
+// patch, CI deciding whether to stop -- needs the same information as data,
+// with the taxonomy's classification, severity and remediation strategy
+// attached. That is what --json produces, and why nothing has to scrape prose.
+
+import io          from std;
+import json        from std;
+import mem         from std;
+import os          from std;
+import str         from std;
+import lexer       from compiler;
+import parser      from compiler;
+import taxonomy    from compiler;
+import typechecker from compiler;
+
+// One captured diagnostic record: code, file, line, column, message, hint,
+// tab-separated, as emit_hint writes them.
+str field_at(str record, int index) {
+    int n = str_len(record);
+    int field = 0;
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_tab = 0;
+        if (at_end == 0) { if (record[i] == 9) { is_tab = 1; } }
+        if (is_tab == 1 || at_end == 1) {
+            if (field == index) { return str_slice(record, start, i); }
+            field = field + 1;
+            start = i + 1;
+        }
+    }
+    return "";
+}
+
+// The diagnostics of one file, as the JSON a repair agent consumes.
+//
+// `ok` is false only when something halting was found. An advisory is
+// reported and does not stop the build: a dependency provided at link time is
+// legitimate, and a repair loop reading `ok` cannot fix a module that is
+// genuinely external, so making it false would send the loop after something
+// it can never resolve.
+str diagnostics_json(str root, str source_path) {
+    str tax = file_read(taxonomy_path(root));
+
+    diag_capture_begin();
+    Node unit = parse_source(file_read(source_path));
+    check_unit_project(root, dir_of(source_path), unit);
+    str log = diag_capture_end();
+
+    StringBuilder items = sb_new();
+    int halting = 0;
+    int advisory = 0;
+    int count = 0;
+
+    int n = str_len(log);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (log[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+
+        str record = str_slice(log, start, i);
+        start = i + 1;
+        if (str_len(record) == 0) { continue; }
+
+        str code = field_at(record, 0);
+        str in_file = field_at(record, 1);
+        if (str_len(in_file) == 0) { in_file = source_path; }
+        str severity = severity_of(tax, code);
+        if (str_eq(severity, "ADVISORY") == 1) { advisory = advisory + 1; }
+        if (str_eq(severity, "ADVISORY") == 0) { halting = halting + 1; }
+
+        if (count > 0) { sb_append(&items, ",\n"); }
+        count = count + 1;
+        sb_append(&items, "    {\n");
+        sb_append(&items, "      \"code\": ");
+        sb_append(&items, json_str(code));
+        sb_append(&items, ",\n      \"file\": ");
+        sb_append(&items, json_str(in_file));
+        sb_append(&items, ",\n      \"classification\": ");
+        sb_append(&items, json_str(taxonomy_field(tax, code, "classification")));
+        sb_append(&items, ",\n      \"severity\": ");
+        sb_append(&items, json_str(severity));
+        sb_append(&items, ",\n      \"message\": ");
+        sb_append(&items, json_str(field_at(record, 4)));
+        sb_append(&items, ",\n      \"line\": ");
+        sb_append(&items, field_at(record, 2));
+        sb_append(&items, ",\n      \"column\": ");
+        sb_append(&items, field_at(record, 3));
+        sb_append(&items, ",\n      \"hint\": ");
+        sb_append(&items, json_str(field_at(record, 5)));
+        sb_append(&items, ",\n      \"remediation_strategy\": ");
+        sb_append(&items, json_str(taxonomy_field(tax, code, "ai_remediation_strategy")));
+        sb_append(&items, "\n    }");
+    }
+
+    StringBuilder out = sb_new();
+    sb_append(&out, "{\n  \"file\": ");
+    sb_append(&out, json_str(source_path));
+    sb_append(&out, ",\n  \"stage\": \"typecheck\",\n  \"ok\": ");
+    if (halting == 0) { sb_append(&out, "true"); }
+    if (halting > 0) { sb_append(&out, "false"); }
+    sb_append(&out, ",\n  \"error_count\": ");
+    sb_append(&out, str(halting));
+    sb_append(&out, ",\n  \"advisory_count\": ");
+    sb_append(&out, str(advisory));
+    sb_append(&out, ",\n  \"diagnostics\": [");
+    if (count == 0) { sb_append(&out, "]\n}"); }
+    if (count > 0) {
+        sb_append(&out, "\n");
+        sb_append(&out, sb_to_str(&items));
+        sb_append(&out, "\n  ]\n}");
+    }
+    return sb_to_str(&out);
+}

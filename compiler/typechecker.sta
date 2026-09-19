@@ -276,9 +276,157 @@ int name_in_list(str names, str name) {
     return 0;
 }
 
+// Diagnostics normally go straight to stdout. --json needs them collected
+// instead, and the machinery for that is one function holding one buffer.
+//
+// It is deliberately small and deliberately ugly: a compiler run checks one
+// unit in one process, so a single capture buffer is honest about what it is.
+// Anything richer -- a diagnostic list threaded through every check function
+// -- would change the signature of most of this file to serve one flag.
+//
+//   1 start capturing (and stop printing)   2 record a line
+//   3 stop capturing and return the lines   4 "1" while capturing
+str diag_buf(int op, str text) {
+    native "
+    static char* _log = NULL;
+    static int _quiet = 0;
+    if ($op == 1) { _quiet = 1; if (_log) free(_log); _log = strdup(\"\"); return \"\"; }
+    if ($op == 2) {
+        if (!_log) _log = strdup(\"\");
+        size_t _n = strlen(_log) + strlen($text) + 2;
+        char* _g = (char*)malloc(_n);
+        snprintf(_g, _n, \"%s%s\\n\", _log, $text);
+        free(_log); _log = _g;
+        return \"\";
+    }
+    if ($op == 3) { _quiet = 0; return _log ? _log : \"\"; }
+    if ($op == 4) { return _quiet ? \"1\" : \"\"; }
+    return \"\";
+    ";
+}
+
+def diag_capture_begin() { diag_buf(1, ""); }
+str diag_capture_end()   { return diag_buf(3, ""); }
+
 // Diagnostics are written as they are found, which preserves traversal order —
 // the order the oracle produces and the order the repair loop consumes.
+// Hint text, assembled. Two shapes cover every hint this file produces: one
+// interpolated value, or two. They exist because a hint is built at the point
+// the diagnostic is raised, where the interesting names are in scope, and
+// three lines of StringBuilder at each of thirty-odd sites buries the
+// diagnostics in punctuation.
+str hint_quoted(str before, str value, str after) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, before);
+    sb_append(&sb, value);
+    sb_append(&sb, after);
+    return sb_to_str(&sb);
+}
+
+str hint_two(str a, str v1, str b, str v2, str c) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, a);
+    sb_append(&sb, v1);
+    sb_append(&sb, b);
+    sb_append(&sb, v2);
+    sb_append(&sb, c);
+    return sb_to_str(&sb);
+}
+
+// Column or field names as a list of quoted strings, the way the oracle
+// renders them: ['id', 'name'].
+// The same, sorted. Two of the oracle's hints sort the column names and the
+// rest print them in declaration order; both orders are reproduced exactly,
+// because a differential test that ignores the difference is not comparing
+// the thing a repair agent reads.
+str sym_names_sorted_repr(int head) {
+    // Insertion sort over the names. A schema has a handful of columns, so
+    // the simplest correct thing is also the right one.
+    StringBuilder out = sb_new();
+    sb_append(&out, "[");
+    str placed = ",";
+    int total = 0;
+    int cur = head;
+    while (cur != 0) { Sym s = sym_at(cur); total = total + 1; cur = s.next; }
+    for (int n = 0; n < total; n = n + 1) {
+        str best = "";
+        int have = 0;
+        int c2 = head;
+        while (c2 != 0) {
+            Sym s2 = sym_at(c2);
+            if (name_in_list(placed, s2.name) == 0) {
+                if (have == 0) { best = s2.name; have = 1; }
+                if (have == 1) {
+                    if (str_before(s2.name, best) == 1) { best = s2.name; }
+                }
+            }
+            c2 = s2.next;
+        }
+        if (have == 1) {
+            if (n > 0) { sb_append(&out, ", "); }
+            sb_append(&out, "'");
+            sb_append(&out, best);
+            sb_append(&out, "'");
+            StringBuilder grown = sb_new();
+            sb_append(&grown, placed);
+            sb_append(&grown, best);
+            sb_append(&grown, ",");
+            placed = sb_to_str(&grown);
+        }
+    }
+    sb_append(&out, "]");
+    return sb_to_str(&out);
+}
+
+// Byte order, which is what sorting a list of column names means here.
+int str_before(str a, str b) {
+    int na = str_len(a);
+    int nb = str_len(b);
+    int n = na;
+    if (nb < n) { n = nb; }
+    for (int i = 0; i < n; i = i + 1) {
+        int ca = a[i];
+        int cb = b[i];
+        if (ca < cb) { return 1; }
+        if (ca > cb) { return 0; }
+    }
+    if (na < nb) { return 1; }
+    return 0;
+}
+
+str sym_names_repr(int head) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int cur = head;
+    int first = 1;
+    while (cur != 0) {
+        Sym s = sym_at(cur);
+        if (first == 0) { sb_append(&sb, ", "); }
+        sb_append(&sb, "'");
+        sb_append(&sb, s.name);
+        sb_append(&sb, "'");
+        first = 0;
+        cur = s.next;
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
 def emit(TC &tc, str code, str msg, int line, int col) {
+    emit_hint(&tc, code, msg, line, col, "");
+}
+
+// A diagnostic with the one-line suggestion that goes with it.
+//
+// The hint is not decoration. It is the field a repair agent reads to know
+// what to try, and the reason --json exists at all: a caller should never
+// have to parse prose to find out what the compiler wants.
+//
+// The printed form is unchanged -- the oracle prints exactly this and a
+// differential test compares the two character by character. The hint rides
+// alongside, in the capture buffer, as a tab-separated record that only
+// --json reads.
+def emit_hint(TC &tc, str code, str msg, int line, int col, str hint) {
     StringBuilder sb = sb_new();
     sb_append(&sb, code);
     sb_append(&sb, " ");
@@ -291,7 +439,21 @@ def emit(TC &tc, str code, str msg, int line, int col) {
     sb_append(&sb, str(col));
     sb_append(&sb, " ");
     sb_append(&sb, msg);
-    print(sb_to_str(&sb));
+    if (str_len(diag_buf(4, "")) == 0) { print(sb_to_str(&sb)); }
+
+    StringBuilder rec = sb_new();
+    sb_append(&rec, code);
+    sb_append(&rec, "\t");
+    sb_append(&rec, tc.current_file);
+    sb_append(&rec, "\t");
+    sb_append(&rec, str(line));
+    sb_append(&rec, "\t");
+    sb_append(&rec, str(col));
+    sb_append(&rec, "\t");
+    sb_append(&rec, msg);
+    sb_append(&rec, "\t");
+    sb_append(&rec, hint);
+    diag_buf(2, sb_to_str(&rec));
     tc.error_count = tc.error_count + 1;
 }
 
@@ -341,7 +503,7 @@ def report_unresolved_imports(TC &tc, Node unit, str root, str src_dir) {
             sb_append(&sb, "' from '");
             sb_append(&sb, imp.s2);
             sb_append(&sb, "' has no local checkout");
-            emit(&tc, "E007", sb_to_str(&sb), imp.line, imp.col);
+            emit_hint(&tc, "E007", sb_to_str(&sb), imp.line, imp.col, "Its symbols must be provided at link time, and nothing it declares is checked here — including calls into it");
         }
     }
 }
@@ -537,7 +699,7 @@ int infer(TC &tc, int node_p, int scope_p) {
                 sb_append(&sb, "Undefined identifier '");
                 sb_append(&sb, e.s1);
                 sb_append(&sb, "'");
-                emit(&tc, "E001", sb_to_str(&sb), e.line, e.col);
+                emit_hint(&tc, "E001", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' before use"));
             }
             return 0;
         }
@@ -570,7 +732,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             sb_append(&sb, "'"); sb_append(&sb, e.s1);
             sb_append(&sb, "' is a field of the row, not of '");
             sb_append(&sb, ty_str(ot)); sb_append(&sb, "'");
-            emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+            emit_hint(&tc, "E003", sb_to_str(&sb), e.line, e.col, "Index the list or iterate it with 'for x in ...' first");
             return 0;
         }
         int sch = schema_find(tc.schemas, o.name);
@@ -584,7 +746,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             sb_append(&sb, "' not in '");
             sb_append(&sb, o.name);
             sb_append(&sb, "'");
-            emit(&tc, "E004", sb_to_str(&sb), e.line, e.col);
+            emit_hint(&tc, "E004", sb_to_str(&sb), e.line, e.col, hint_quoted("Valid fields: ", sym_names_repr(s.fields), ""));
             return 0;
         }
         Sym fs = sym_at(f);
@@ -601,7 +763,7 @@ int infer(TC &tc, int node_p, int scope_p) {
                 sb_append(&sb, "List index must be 'int', got '");
                 sb_append(&sb, ty_str(it));
                 sb_append(&sb, "'");
-                emit(&tc, "E001", sb_to_str(&sb), e.line, e.col);
+                emit_hint(&tc, "E001", sb_to_str(&sb), e.line, e.col, "Use an integer expression as the index");
             }
         }
         if (bt == 0) { return 0; }
@@ -610,7 +772,7 @@ int infer(TC &tc, int node_p, int scope_p) {
         if (str_eq(b.name, "str") == 1) { return ty_ptr(ty_new("int")); }
         StringBuilder sb2 = sb_new();
         sb2_msg(&sb2, ty_str(bt));
-        emit(&tc, "E003", sb_to_str(&sb2), e.line, e.col);
+        emit_hint(&tc, "E003", sb_to_str(&sb2), e.line, e.col, "Indexing applies to list[T] and str values");
         return 0;
     }
 
@@ -624,7 +786,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "'"); sb_append(&sb, e.s1);
             sb_append(&sb, "' is not a layout or report");
-            emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+            emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_two("Declare 'layout ", e.s1, "' or 'report ", e.s1, "'"));
         }
         return ty_ptr(ty_new("str"));
     }
@@ -636,7 +798,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, e.s1);
             sb_append(&qsb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&qsb), e.line, e.col);
+            emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, hint_quoted("Declare 'database ", e.s1, "' first"));
             return 0;
         }
         validate_query(&tc, e.c1, e.s1, e.line, e.col);
@@ -683,7 +845,7 @@ int infer_binary(TC &tc, Node e, int scope_p) {
                         sb_append(&sb, "Cannot concat str with '");
                         sb_append(&sb, ty_str(right));
                         sb_append(&sb, "' — wrap in str()");
-                        emit(&tc, "E005", sb_to_str(&sb), e.line, e.col);
+                        emit_hint(&tc, "E005", sb_to_str(&sb), e.line, e.col, "Use str() to convert first");
                     }
                 }
                 return ty_ptr(ty_new("str"));
@@ -712,7 +874,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
         StringBuilder sb = sb_new();
         sb_append(&sb, "'"); sb_append(&sb, e.s1);
         sb_append(&sb, "' takes one argument, got "); sb_append(&sb, str(na));
-        emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_two("Write ", e.s1, "(rows) or ", e.s1, "(rows.column)"));
         if (is_count == 1) { return ty_ptr(ty_new("int")); }
         return ty_ptr(ty_new("float"));
     }
@@ -726,7 +888,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
                 StringBuilder sb = sb_new();
                 sb_append(&sb, "'count' expects a list, got '");
                 sb_append(&sb, ty_str(at)); sb_append(&sb, "'");
-                emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+                emit_hint(&tc, "E003", sb_to_str(&sb), e.line, e.col, "Pass a list or a query result");
             }
         }
         return ty_ptr(ty_new("int"));
@@ -748,7 +910,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
                     sb_append(&sb, "' cannot project '"); sb_append(&sb, arg.s1);
                     sb_append(&sb, "' out of '"); sb_append(&sb, ty_str(bt));
                     sb_append(&sb, "' — its element is not a record");
-                    emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+                    emit_hint(&tc, "E003", sb_to_str(&sb), e.line, e.col, "Project a column of a database or protocol type");
                     return ty_ptr(ty_new("float"));
                 }
                 Schema sc = schema_at(sch);
@@ -758,7 +920,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
                     sb_append(&sb, "Column '"); sb_append(&sb, arg.s1);
                     sb_append(&sb, "' does not exist in '"); sb_append(&sb, rowname);
                     sb_append(&sb, "'");
-                    emit(&tc, "E004", sb_to_str(&sb), e.line, e.col);
+                    emit_hint(&tc, "E004", sb_to_str(&sb), e.line, e.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(sc.fields), ""));
                     return ty_ptr(ty_new("float"));
                 }
                 Sym col = sym_at(fp);
@@ -777,7 +939,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
                 sb_append(&sb, "'"); sb_append(&sb, e.s1);
                 sb_append(&sb, "' expects a list, got '"); sb_append(&sb, ty_str(at));
                 sb_append(&sb, "'");
-                emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+                emit_hint(&tc, "E003", sb_to_str(&sb), e.line, e.col, "Pass a list or a query result");
                 return ty_ptr(ty_new("float"));
             }
         }
@@ -793,7 +955,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
             sb_append(&sb, "'"); sb_append(&sb, e.s1);
             sb_append(&sb, "' expects numbers, got '"); sb_append(&sb, en);
             sb_append(&sb, "'");
-            emit(&tc, "E003", sb_to_str(&sb), e.line, e.col);
+            emit_hint(&tc, "E003", sb_to_str(&sb), e.line, e.col, "Aggregates apply to int and float");
             return ty_ptr(ty_new("float"));
         }
     }
@@ -851,7 +1013,7 @@ int infer_call(TC &tc, Node e, int scope_p) {
                         sb_append(&sb, "Undefined function '");
                         sb_append(&sb, e.s1);
                         sb_append(&sb, "'");
-                        emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+                        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' or import the module that defines it"));
                     }
                 }
             }
@@ -868,7 +1030,7 @@ int infer_call(TC &tc, Node e, int scope_p) {
         sb_append(&sb, str(f.nparams));
         sb_append(&sb, " args, got ");
         sb_append(&sb, str(na));
-        emit(&tc, "E002", sb_to_str(&sb), e.line, e.col);
+        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, "");
         return f.rt;
     }
 
@@ -888,7 +1050,7 @@ int infer_call(TC &tc, Node e, int scope_p) {
                 sb_append(&sb, "', got '");
                 sb_append(&sb, ty_str(at));
                 sb_append(&sb, "'");
-                emit(&tc, "E005", sb_to_str(&sb), e.line, e.col);
+                emit_hint(&tc, "E005", sb_to_str(&sb), e.line, e.col, hint_quoted("Cast argument to '", ty_str(ps.ty), "'"));
             }
         }
         cur = ps.next;
@@ -903,7 +1065,7 @@ int infer_predict(TC &tc, Node e, int scope_p) {
         sb_append(&sb, "Model '");
         sb_append(&sb, e.s1);
         sb_append(&sb, "' not declared");
-        emit(&tc, "E006", sb_to_str(&sb), e.line, e.col);
+        emit_hint(&tc, "E006", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare 'model ", e.s1, "' first"));
         infer(&tc, e.c1, scope_p);
         return 0;
     }
@@ -935,7 +1097,7 @@ def tensor_drift(TC &tc, Node e, Ty want, Ty got) {
     sb_append(&sb, ",");
     sb_append(&sb, str(got.cols));
     sb_append(&sb, "]");
-    emit(&tc, "E006", sb_to_str(&sb), e.line, e.col);
+    emit_hint(&tc, "E006", sb_to_str(&sb), e.line, e.col, "Reshape tensor to match model contract");
 }
 
 // ── Statement checking ───────────────────────────────────────────────────────
@@ -958,7 +1120,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, qval.s1);
             sb_append(&qsb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&qsb), st.line, st.col);
+            emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, hint_quoted("Declare 'database ", qval.s1, "' first"));
         }
         if (qsch != 0) {
             validate_query(&tc, qval.c1, qval.s1, st.line, st.col);
@@ -993,7 +1155,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
                         sb_append(&sb, "', got '");
                         sb_append(&sb, ty_str(et));
                         sb_append(&sb, "'");
-                        emit(&tc, "E003", sb_to_str(&sb), st.line, st.col);
+                        emit_hint(&tc, "E003", sb_to_str(&sb), st.line, st.col, hint_two("All elements of list[", ty_str(d.elem), "] must be '", ty_str(d.elem), "'"));
                     }
                 }
             }
@@ -1012,7 +1174,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
                     sb_append(&sb, "' but assigned '");
                     sb_append(&sb, ty_str(actual));
                     sb_append(&sb, "'");
-                    emit(&tc, "E001", sb_to_str(&sb), st.line, st.col);
+                    emit_hint(&tc, "E001", sb_to_str(&sb), st.line, st.col, hint_quoted("Change value to type '", ty_str(declared), "' or update declaration"));
                 }
             }
         }
@@ -1061,7 +1223,7 @@ int scope_p) {
                             sb_append(&sb, "' is both a column of '");
                             sb_append(&sb, schema);
                             sb_append(&sb, "' and a variable in scope");
-                            emit(&tc, "E008", sb_to_str(&sb), line, col);
+                            emit_hint(&tc, "E008", sb_to_str(&sb), line, col, hint_two("Inside a query the name is always the column, so this compares '", c.s1, "' with itself and matches every row. Rename the variable.", "", ""));
                         }
                     }
                 }
@@ -1090,7 +1252,7 @@ def validate_query(TC &tc, int cond_p, str schema, int line, int col) {
             sb_append(&sb, "' does not exist in '");
             sb_append(&sb, schema);
             sb_append(&sb, "'");
-            emit(&tc, "E004", sb_to_str(&sb), line, col);
+            emit_hint(&tc, "E004", sb_to_str(&sb), line, col, hint_quoted("Valid columns: ", sym_names_repr(s.fields), ""));
         }
     }
     validate_query(&tc, c.c1, schema, line, col);
@@ -1111,7 +1273,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                 sb_append(&sb, "Function must return '");
                 sb_append(&sb, ty_str(rt));
                 sb_append(&sb, "' but returns nothing");
-                emit(&tc, "E002", sb_to_str(&sb), st.line, st.col);
+                emit_hint(&tc, "E002", sb_to_str(&sb), st.line, st.col, hint_quoted("Add return value of type '", ty_str(rt), "'"));
             }
             return;
         }
@@ -1124,7 +1286,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                 sb_append(&sb, "', got '");
                 sb_append(&sb, ty_str(at));
                 sb_append(&sb, "'");
-                emit(&tc, "E002", sb_to_str(&sb), st.line, st.col);
+                emit_hint(&tc, "E002", sb_to_str(&sb), st.line, st.col, hint_quoted("Change return value to type '", ty_str(rt), "'"));
             }
         }
         return;
@@ -1163,7 +1325,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                 sb_append(&cb, "Cannot assign to constant '");
                 sb_append(&cb, atgt.s1);
                 sb_append(&cb, "'");
-                emit(&tc, "E001", sb_to_str(&cb), st.line, st.col);
+                emit_hint(&tc, "E001", sb_to_str(&cb), st.line, st.col, "A constant is fixed when the program is built. Use a local variable if the value needs to change.");
                 return;
             }
         }
@@ -1181,7 +1343,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                     sb_append(&sb, "' but assigned '");
                     sb_append(&sb, ty_str(vt));
                     sb_append(&sb, "'");
-                    emit(&tc, "E001", sb_to_str(&sb), st.line, st.col);
+                    emit_hint(&tc, "E001", sb_to_str(&sb), st.line, st.col, hint_quoted("Assign a value of type '", ty_str(tt), "'"));
                 }
             }
         }
@@ -1195,7 +1357,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "Database '");
             sb_append(&sb, st.s1);
             sb_append(&sb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
             return;
         }
         Schema s = schema_at(sch);
@@ -1210,7 +1372,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                 sb_append(&sb, "' does not exist in '");
                 sb_append(&sb, st.s1);
                 sb_append(&sb, "'");
-                emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
+                emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(s.fields), ""));
             }
             infer(&tc, pair.c1, scope_p);
         }
@@ -1231,7 +1393,20 @@ def check_stmt(TC &tc, Node st, int scope_p) {
                 sb_append(&sb, "' omits column '");
                 sb_append(&sb, fname);
                 sb_append(&sb, "'");
-                emit(&tc, "E009", sb_to_str(&sb), st.line, st.col);
+                StringBuilder hb = sb_new();
+                sb_append(&hb, "Add '");
+                sb_append(&hb, fname);
+                sb_append(&hb, " = <value>' to the insert — '");
+                sb_append(&hb, fname);
+                sb_append(&hb, "' is '");
+                sb_append(&hb, ty_str(fs.ty));
+                sb_append(&hb, "' — or remove '");
+                sb_append(&hb, fname);
+                sb_append(&hb, "' from 'database ");
+                sb_append(&hb, st.s1);
+                sb_append(&hb, "'");
+                emit_hint(&tc, "E009", sb_to_str(&sb), st.line, st.col,
+                sb_to_str(&hb));
             }
             cur = fs.next;
         }
@@ -1244,7 +1419,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "Database '");
             sb_append(&sb, st.s1);
             sb_append(&sb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
             return;
         }
         validate_query(&tc, st.c1, st.s1, st.line, st.col);
@@ -1257,7 +1432,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "Database '"); sb_append(&sb, st.s2);
             sb_append(&sb, "' not declared");
-            emit(&tc, "E004", sb_to_str(&sb), st.line, st.col);
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s2, "' first"));
         }
         return;
     }
@@ -1292,7 +1467,7 @@ def check_report(TC &tc, Node decl) {
         sb_append(&sb, "Database '");
         sb_append(&sb, q.s1);
         sb_append(&sb, "' not declared");
-        emit(&tc, "E004", sb_to_str(&sb), decl.line, decl.col);
+        emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, hint_quoted("Declare 'database ", q.s1, "' first"));
         return;
     }
     validate_query(&tc, q.c1, q.s1, decl.line, decl.col);
@@ -1316,7 +1491,7 @@ def check_report(TC &tc, Node decl) {
                 sb_append(&sb, "' but assigned '");
                 sb_append(&sb, ty_str(actual));
                 sb_append(&sb, "'");
-                emit(&tc, "E001", sb_to_str(&sb), m.line, m.col);
+                emit_hint(&tc, "E001", sb_to_str(&sb), m.line, m.col, hint_quoted("Change value to type '", ty_str(declared), "' or update declaration"));
             }
         }
     }
@@ -1378,7 +1553,7 @@ def check_for_in(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "' iterates '");
             sb_append(&sb, ty_str(ct));
             sb_append(&sb, "', which is not a list");
-            emit(&tc, "E003", sb_to_str(&sb), st.line, st.col);
+            emit_hint(&tc, "E003", sb_to_str(&sb), st.line, st.col, "Iterate a list[T], such as a query result");
         }
     }
     NodeVec body = nv_at(st.v1);
@@ -1562,7 +1737,7 @@ str src_dir, int report_imports, int mods_p) {
                     sb_append(&cb2, "' but its value is '");
                     sb_append(&cb2, ty_str(cactual));
                     sb_append(&cb2, "'");
-                    emit(&tc, "E001", sb_to_str(&cb2), cd.line, cd.col);
+                    emit_hint(&tc, "E001", sb_to_str(&cb2), cd.line, cd.col, hint_two("Give it a value of type '", ty_str(cdeclared), "', or declare it as '", ty_str(cactual), "'"));
                 }
             }
         }

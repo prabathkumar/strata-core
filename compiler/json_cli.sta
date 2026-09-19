@@ -1,0 +1,20 @@
+// STRATA COMPILER — compiler/json_cli.sta
+//
+//   json_cli <root> <source.sta>
+//
+// Machine-readable diagnostics for one file. Exit status 1 when something
+// halting was found, 0 otherwise, so a script can branch without reading the
+// payload it just printed.
+
+import io          from std;
+import cli         from std;
+import mem         from std;
+import str         from std;
+import diagnostics from compiler;
+
+int main() {
+    str payload = diagnostics_json(arg(1), arg(2));
+    print(payload);
+    if (str_index_of(payload, "\"ok\": false") >= 0) { return 1; }
+    return 0;
+}

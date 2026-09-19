@@ -1,0 +1,52 @@
+// STRATA COMPILER — compiler/taxonomy.sta
+//
+// ERROR_TAXONOMY.json, read from Strata.
+//
+// A diagnostic is more than a sentence and a line number. Every code carries a
+// classification, a severity, and a remediation strategy -- what a repair
+// agent should try. That is what makes the error matrix actionable instead of
+// decorative, and it is why --json exists: a caller should never have to
+// scrape human-readable compiler text to find out what went wrong.
+//
+// The taxonomy is one file, read by both compilers. Neither has its own copy,
+// so neither can drift from it.
+
+import io   from std;
+import json from std;
+import mem  from std;
+import os   from std;
+import str  from std;
+
+// The taxonomy file that ships with the compiler.
+str taxonomy_path(str root) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, root);
+    sb_append(&sb, "/ERROR_TAXONOMY.json");
+    return sb_to_str(&sb);
+}
+
+// One field of one error code, or "" when the file or the code is not there.
+// A missing taxonomy is not fatal: the diagnostic still has its code, message
+// and position, which is the part that cannot be reconstructed.
+str taxonomy_field(str taxonomy, str code, str field) {
+    if (str_len(taxonomy) == 0) { return ""; }
+    int at = json_index_of_key(taxonomy, code, 0);
+    if (at < 0) { return ""; }
+    return json_string_field_from(taxonomy, field, at);
+}
+
+// Severity decides whether a build stops. An advisory is reported and carries
+// on: a dependency provided at link time is legitimate, and failing the build
+// on one would make external modules unusable. Anything not marked ADVISORY
+// halts, including a code the taxonomy has never heard of -- an unknown
+// diagnostic is not a safe one.
+str severity_of(str taxonomy, str code) {
+    str s = taxonomy_field(taxonomy, code, "severity");
+    if (str_len(s) == 0) { return "CRITICAL_HALT"; }
+    return s;
+}
+
+int is_advisory(str taxonomy, str code) {
+    if (str_eq(severity_of(taxonomy, code), "ADVISORY") == 1) { return 1; }
+    return 0;
+}
