@@ -1,4 +1,4 @@
-package my.neuronsolutions.orders
+package org.stratalang.orders
 
 import android.app.Activity
 import android.graphics.Canvas

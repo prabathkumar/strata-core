@@ -15,7 +15,7 @@ int seed() {
     Order <- [id = 1, customer = "Acme Bhd",      region = "apac", amount = 1250.50, status = "OPEN"];
     Order <- [id = 2, customer = "Globex",        region = "emea", amount =  340.00, status = "OPEN"];
     Order <- [id = 3, customer = "Initech",       region = "amer", amount =  980.75, status = "CLOSED"];
-    Order <- [id = 4, customer = "Neuron Sdn",    region = "apac", amount = 4820.00, status = "OPEN"];
+    Order <- [id = 4, customer = "Kestrel Ltd",   region = "apac", amount = 4820.00, status = "OPEN"];
     Order <- [id = 5, customer = "Umbrella Corp", region = "emea", amount =   75.25, status = "OPEN"];
     Order <- [id = 6, customer = "Soylent",       region = "amer", amount = 2010.00, status = "CLOSED"];
     Order <- [id = 7, customer = "Stark Ind",     region = "apac", amount = 9999.99, status = "OPEN"];
