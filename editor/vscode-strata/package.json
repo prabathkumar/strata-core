@@ -1,6 +1,6 @@
 {
   "name": "strata-lang",
-  "displayName": "Strata",
+  "displayName": "Strata Language (.sta)",
   "description": "Syntax highlighting, live compiler diagnostics, and one-click repair for the Strata language (.sta).",
   "version": "0.4.0",
   "publisher": "prabathkumar",

@@ -8,6 +8,9 @@
 #include <math.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <unistd.h>
 
 typedef int64_t   strata_int;
 typedef double    strata_float;
