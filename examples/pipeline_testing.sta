@@ -24,9 +24,13 @@ int processes_vault_deposit(int target_id, float credit_amount) {
 // The compiler extracts this block ahead-of-time during 'strata test' execution
 verify "Corporate Ingestion Pipeline Integration Test Sweep" {
 
-    // Setup Phase: Instantiating test data structures mock frames
+    // Setup Phase: the account has to exist before a deposit can reach it.
+    // This block used to jump straight to the call with an empty table, so
+    // the deposit was refused and the assertion below failed -- invisibly,
+    // because assert_true did not record failures at the time.
     int test_target_id = 9901;
     float deposit_value = 500.00;
+    CustomerAccount <- [account_id = test_target_id, vault_balance = 0.0];
 
     // Execution Phase: Triggering target logical loops
     int operations_clear = processes_vault_deposit(test_target_id, deposit_value);

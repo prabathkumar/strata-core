@@ -15,12 +15,19 @@ database TestSuiteTelemetry {
 #endregion
 
 #region NATIVE_ASSERTION_MACROS
-// Core mathematical boolean constraint evaluator managed directly by the compiler
+// One assertion, recorded.
+//
+// This used to print a failure and return 0, and nothing else. The harness
+// counts assertions and failures in the runtime, and this function never
+// touched either counter, so a suite could print VERIFY FAILURE and still
+// finish "0 failed" and exit 0 -- a red test that CI reads as green. It now
+// goes through the same recorder the built-in `assert` statement uses, so a
+// failure here is counted, appears in the tally, and makes the exit status
+// non-zero.
 int assert_true(str criterion_label, int conditional_boolean_flag) {
-    if (conditional_boolean_flag == 0) {
-        print_line(" !!! [VERIFY FAILURE]: Assertion condition failed on rule: " + criterion_label);
-        return 0; // Trigger test frame violation state
-    }
-    return 1; // Assertion passed cleanly
+    native "
+    __strata_assert($conditional_boolean_flag != 0, $criterion_label, 0);
+    return $conditional_boolean_flag != 0 ? 1 : 0;
+    ";
 }
 #endregion
