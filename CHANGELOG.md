@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### A licence, and an exception the compiler needs
+
+`Strata.toml` had said `license = "Apache-2.0"` for weeks and there was no
+LICENSE file. Metadata is not a licence: without the file, the code was
+all-rights-reserved whatever the metadata said, and nobody could legally use
+or contribute to it.
+
+Apache-2.0 over MIT, for the express patent grant — the thing a corporate
+legal review looks for and MIT does not have.
+
+**And an exception, because a compiler is not an ordinary program.**
+`compiler/runtime_preamble.c` is 818 lines that get pasted verbatim into every
+program Strata builds. Without an exception, every binary anyone produced
+would contain Apache-2.0 code, and whoever shipped it would inherit the
+attribution and notice obligations for code they did not write and may not
+even know was there. `LICENSE-EXCEPTION` grants the additional permission that
+removes this, following the Swift and LLVM runtime library exceptions in
+intent. The compiler is licensed; what people build with it is theirs.
+
+### The repository stops calling itself a Python project
+
+GitHub reported 85% Python. The tracked bytes are 450 KB Python and 434 KB
+Strata — roughly half and half. The gap is not a measurement, it is that
+GitHub's detector has never heard of `.sta`, counts it as nothing, and
+re-apportions the rest.
+
+`.gitattributes` fixes what is actually in our control: generated C is marked
+generated, and the Python test suites are excluded the way GitHub already
+excludes test code it recognises. It does **not** claim `.sta` is some other
+language to make the bar look right — an override can only name a language
+GitHub already knows, and naming Strata as C would be a lie in a file.
+
+Getting `.sta` recognised means a pull request to `github-linguist/linguist`,
+which only accepts languages already used across hundreds of repositories.
+That is a consequence of adoption, not a step toward it, and the `.gitattributes`
+comment says so.
+
+### The grammar can be published on its own
+
+`editor/strata-grammar/` — the TextMate grammar, the language configuration,
+and a licence, with no dependency on anything around them. Linguist pulls
+grammars in as submodules from standalone repositories, and so do several
+editors; a grammar buried inside an extension cannot be used that way. Ready
+to lift into its own repository when there is a reason to.
+
 ### What exists, stated in one place
 
 README gained a "What exists" table: the line counts, the self-hosting

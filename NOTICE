@@ -1,0 +1,13 @@
+Strata
+Copyright 2026 Prabath Kumar
+
+This product includes software developed by Prabath Kumar.
+
+Strata is an independent project. It is not a product of, and is not owned
+by, any employer or client of its author.
+
+Licensed under the Apache License, Version 2.0 — see LICENSE.
+
+Programs COMPILED WITH Strata are not covered by that licence: the runtime
+support code that the compiler embeds in them is granted an additional
+permission — see LICENSE-EXCEPTION. What you build with Strata is yours.

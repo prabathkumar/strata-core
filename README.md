@@ -120,6 +120,20 @@ shipped software — see the evidence below, and the
 
 ---
 
+## Licence and ownership
+
+Strata is an independent project by Prabath Kumar, licensed **Apache-2.0** —
+chosen over MIT because it carries an express patent grant from contributors,
+which is what a language intended for enterprise use needs.
+
+**Programs compiled with Strata are not covered by that licence.** The
+compiler pastes 800 lines of runtime support into every program it builds, so
+without an exception every binary anyone produced would contain Apache-2.0
+code and inherit its attribution obligations — for code they did not write.
+`LICENSE-EXCEPTION` grants the additional permission that removes this, in the
+same way and for the same reason as the Swift and LLVM runtime library
+exceptions. What you build with Strata is yours.
+
 ## What exists
 
 | | |

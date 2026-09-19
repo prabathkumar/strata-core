@@ -1,0 +1,53 @@
+                  STRATA RUNTIME LIBRARY EXCEPTION
+                          Version 1.0
+
+This exception is an additional permission granted alongside the Apache
+License, Version 2.0 (the "License") under which Strata is distributed.
+
+
+                              WHY IT EXISTS
+
+A Strata program is compiled by pasting the runtime support code in
+`compiler/runtime_preamble.c` — and any standard library module the program
+imports — into the C that is generated for it. That code therefore ends up
+inside every binary the compiler produces.
+
+Without this exception, a program compiled with Strata would contain code
+covered by the License, and whoever shipped that program would inherit the
+License's attribution and notice obligations for it — even though they wrote
+none of it and may not be distributing Strata at all.
+
+That is not the intent. The compiler is Apache-2.0 so that contributions to
+Strata carry an express patent grant. What somebody builds WITH Strata is
+theirs.
+
+The same problem is solved the same way by the Swift and LLVM projects, whose
+runtime library exceptions this one follows in intent.
+
+
+                              THE EXCEPTION
+
+As an additional permission under section 7 of the Apache License, Version
+2.0, you are granted the following:
+
+  "Runtime Library" means the contents of `compiler/runtime_preamble.c`,
+  `compiler/runtime_preamble_wasm.c`, and any file under `std/`, in each case
+  as distributed with Strata and including any modification of those files
+  that does not add functionality beyond runtime support.
+
+  "Compiler Output" means the C source, object code, or executable produced
+  by the Strata compiler from source code that is not itself part of Strata.
+
+You may use, reproduce, modify, and distribute Compiler Output — including
+Compiler Output that embeds all or part of the Runtime Library — under terms
+of your own choosing, without those parts of the Runtime Library causing the
+Compiler Output to become subject to the License, and without any requirement
+to reproduce the License, the NOTICE file, or any attribution in or with that
+Compiler Output.
+
+This exception applies only to the Runtime Library as embedded in Compiler
+Output. Distributing Strata itself, the Runtime Library on its own, or a
+modified version of either, remains governed by the License in full.
+
+If any part of this exception is held unenforceable, the License continues to
+apply to the Runtime Library without this exception.

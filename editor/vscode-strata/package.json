@@ -4,22 +4,37 @@
   "description": "Syntax highlighting and compiler diagnostics for the Strata language.",
   "version": "0.4.0",
   "publisher": "strata",
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Programming Languages"],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:strata"],
+  "activationEvents": [
+    "onLanguage:strata"
+  ],
   "contributes": {
-    "languages": [{
-      "id": "strata",
-      "aliases": ["Strata", "strata"],
-      "extensions": [".sta"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "strata",
-      "scopeName": "source.strata",
-      "path": "./syntaxes/strata.tmLanguage.json"
-    }],
+    "languages": [
+      {
+        "id": "strata",
+        "aliases": [
+          "Strata",
+          "strata"
+        ],
+        "extensions": [
+          ".sta"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "strata",
+        "scopeName": "source.strata",
+        "path": "./syntaxes/strata.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "Strata",
       "properties": {
@@ -40,5 +55,10 @@
         }
       }
     }
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/prabathkumar/strata-core"
   }
 }
