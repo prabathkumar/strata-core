@@ -90,6 +90,11 @@ jobs:
     - name: Code Generator Differential (Strata vs Python oracle)
       run: python3 test_suite/codegen_diff.py
 
+    # The grammar lives in two places because Linguist and the VS Code
+    # marketplace want it in different shapes. Two copies drift.
+    - name: Grammar Is One Grammar
+      run: python3 test_suite/grammar_sync.py
+
     # Stage 5: the build decisions, not just the code. A program's libraries
     # come from its own `foreign ... link` declarations, so the two compilers
     # must reach the same linker command from the same source.

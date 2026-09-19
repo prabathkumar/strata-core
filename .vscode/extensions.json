@@ -1,5 +1,6 @@
 {
   "recommendations": [
+    "prabathkumar.strata-lang",
     "ms-python.python",
     "ms-vscode.wasm-wasi-core"
   ]
