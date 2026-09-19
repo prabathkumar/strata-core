@@ -1,0 +1,11 @@
+// Scratch CLI: print the link libraries a file needs, one per line.
+import io     from std;
+import cli    from std;
+import mem    from std;
+import build  from compiler;
+
+int main() {
+    print_raw(link_flags(collect_link_libs(arg(1), arg(2))));
+    print("");
+    return 0;
+}

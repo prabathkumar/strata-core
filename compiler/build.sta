@@ -1,0 +1,107 @@
+// STRATA COMPILER — compiler/build.sta
+//
+// What to hand the C compiler.
+//
+// Generating C is only half of a build. The other half is a set of decisions
+// about the environment: which libraries this program needs linked, whether it
+// is a program or a library, where the Postgres headers live on this machine,
+// which C compiler is installed. The bootstrap made all of those in Python.
+// This file makes them in Strata, from the same facts -- the program's own
+// `foreign ... link` declarations -- so the answer is derived from the source
+// rather than configured alongside it.
+
+import io     from std;
+import mem    from std;
+import os     from std;
+import str    from std;
+import lexer  from compiler;
+import parser from compiler;
+
+// Every library named by a `foreign ... link "x"` declaration in this program
+// or anything it imports, in the order the declarations are emitted, each one
+// only once. Comma-separated, with a leading and trailing comma, so a caller
+// can test membership with str_index_of without matching a prefix: "pq" must
+// not match "pqxx".
+//
+// The order is the order the declarations reach the generated C, which is
+// modules in dependency order and then the file itself. It matters only
+// because the bootstrap produced that order and the two must agree
+// byte-for-byte.
+str collect_link_libs(str root, str source_path) {
+    Node unit = parse_source(file_read(source_path));
+
+    NodeVec mods = nv_new();
+    str seen = "";
+    int unresolved = 0;
+    collect_modules_from(root, dir_of(source_path), unit, &mods, &seen, &unresolved);
+
+    str libs = "";
+    int nm = mods.len;
+    for (int i = 0; i < nm; i = i + 1) {
+        libs = add_unit_libs(nv_get(&mods, i), libs);
+    }
+    libs = add_unit_libs(unit, libs);
+    return libs;
+}
+
+// The `foreign` declarations of one unit, appended to the running list.
+str add_unit_libs(Node unit, str libs) {
+    NodeVec decls = nv_at(unit.v2);
+    int n = decls.len;
+    str out = libs;
+    for (int i = 0; i < n; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind == 74) {
+            if (str_len(d.s2) > 0) { out = add_lib(out, d.s2); }
+        }
+    }
+    return out;
+}
+
+// One library name, if it is not already there.
+str add_lib(str libs, str name) {
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ",");
+    sb_append(&needle, name);
+    sb_append(&needle, ",");
+    if (str_len(libs) > 0) {
+        if (str_index_of(libs, sb_to_str(&needle)) >= 0) { return libs; }
+    }
+    StringBuilder grown = sb_new();
+    if (str_len(libs) == 0) { sb_append(&grown, ","); }
+    sb_append(&grown, libs);
+    sb_append(&grown, name);
+    sb_append(&grown, ",");
+    return sb_to_str(&grown);
+}
+
+// True when `name` is in a list built by add_lib. Whole names only.
+int links_against(str libs, str name) {
+    if (str_len(libs) == 0) { return 0; }
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ",");
+    sb_append(&needle, name);
+    sb_append(&needle, ",");
+    if (str_index_of(libs, sb_to_str(&needle)) >= 0) { return 1; }
+    return 0;
+}
+
+// The list as linker flags: ",m,pq," becomes "-lm -lpq".
+str link_flags(str libs) {
+    StringBuilder out = sb_new();
+    int n = str_len(libs);
+    StringBuilder word = sb_new();
+    for (int i = 0; i < n; i = i + 1) {
+        str ch = str_slice(libs, i, i + 1);
+        if (str_eq(ch, ",") == 1) {
+            if (str_len(sb_to_str(&word)) > 0) {
+                if (str_len(sb_to_str(&out)) > 0) { sb_append(&out, " "); }
+                sb_append(&out, "-l");
+                sb_append(&out, sb_to_str(&word));
+                word = sb_new();
+            }
+        }
+        if (str_eq(ch, ",") == 0) { sb_append(&word, ch); }
+    }
+    return sb_to_str(&out);
+}

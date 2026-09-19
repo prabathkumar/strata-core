@@ -90,6 +90,12 @@ jobs:
     - name: Code Generator Differential (Strata vs Python oracle)
       run: python3 test_suite/codegen_diff.py
 
+    # Stage 5: the build decisions, not just the code. A program's libraries
+    # come from its own `foreign ... link` declarations, so the two compilers
+    # must reach the same linker command from the same source.
+    - name: Link Command Differential (Strata vs Python oracle)
+      run: python3 test_suite/link_libs_diff.py
+
     # The proof that the bootstrap can be retired: the Strata front end,
     # rebuilt from C it generated itself, reproduces that C exactly.
     - name: Self-Hosting Fixpoint
