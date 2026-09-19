@@ -541,8 +541,14 @@ purpose and builds again to prove it.
 ### Editing it
 
 `editor/vscode-strata` is a VS Code extension: syntax highlighting for `.sta`,
-and the compiler's own diagnostics underlined where they happened, as you
-type. It is not a language server. `strata check` is fast and is the same
+the compiler's own diagnostics underlined where they happened as you type,
+and **repair on the lightbulb** — the Quick Fix on a Strata error runs
+`strata repair`, which reads the compiler's machine-readable diagnostics,
+patches the source and recompiles until it is clean. Every other language's
+Quick Fix is a rule somebody wrote into the editor by hand; this one is the
+compiler. It saves the document first, because repair works on the file on
+disk, and it is offered rather than automatic — a compiler that edits your
+code without being asked is not a feature. It is not a language server. `strata check` is fast and is the same
 check CI runs, so the extension runs the real compiler rather than
 reimplementing the rules — a second implementation would be the first thing to
 drift out of step with the first. If the editor and the build disagree, the

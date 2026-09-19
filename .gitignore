@@ -29,3 +29,7 @@ apps/orders_mobile/src/*.c
 
 # a folder the desktop bridge creates; not part of the project
 Claude outputs/
+
+# packaged extension builds
+editor/vscode-strata/dist/
+editor/vscode-strata/node_modules/

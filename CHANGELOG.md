@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### The editor extension repairs your code from the lightbulb
+
+The extension was competent and ordinary: highlighting and diagnostics, like
+every other language extension. It now does something none of them can.
+
+Strata's diagnostics are machine-readable on purpose, and `strata repair`
+reads them, patches the source and recompiles until it is clean. That is now
+behind the Quick Fix lightbulb on any Strata error. Every other language's
+Quick Fix is a rule somebody wrote into the editor by hand; this one is the
+compiler.
+
+Two deliberate limits, because repair rewrites the file on disk. The document
+is **saved first** — otherwise repair patches a stale copy and the unsaved
+buffer overwrites the fix a moment later. And it is **offered, never
+automatic**: a compiler that edits your code without being asked is not a
+feature.
+
+### And the extension is now a package, not a folder
+
+A manifest with a publisher, licence, repository and categories; an icon; a
+readme written for a marketplace listing rather than for this repository; a
+changelog; and the Apache licence alongside. It builds: `vsce package`
+produces an installable 17 KB `.vsix` of 11 files.
+
+`journey_install` gained four checks over it, one of which is the reason the
+others exist: **every command the code registers must be declared in the
+manifest**. A command registered in JavaScript and missing from the manifest
+does not appear in the palette at all — which is exactly how the repair action
+would have shipped invisible, working perfectly and reachable by nobody.
+
+The icon is layers — three aligned, one displaced along a fault, flagged. That
+is the language in a picture: strata, and the one that stopped lining up.
+
 ### A licence, and an exception the compiler needs
 
 `Strata.toml` had said `license = "Apache-2.0"` for weeks and there was no

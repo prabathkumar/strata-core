@@ -220,6 +220,35 @@ def main():
             ok("an advisory is parsed as advisory",
                len(got) == 1 and got[0]["advisory"], str(got))
 
+        print("\n── The editor extension is a real package ──────────────────────")
+        # A marketplace listing needs more than a grammar: a manifest with a
+        # publisher and a licence, an icon, a readme, a changelog, and every
+        # command the code registers declared in the manifest. A command that
+        # is registered in JavaScript but missing from the manifest simply
+        # does not appear in the palette -- which is how the repair action
+        # would have shipped invisible.
+        pkg = json.load(open(os.path.join(ext, "package.json")))
+        missing = [f for f in ("name", "displayName", "publisher", "version",
+                               "license", "icon", "repository", "categories")
+                   if f not in pkg]
+        ok("the manifest has what a marketplace listing needs",
+           not missing, f"missing {missing}")
+
+        declared = {c["command"] for c in pkg["contributes"]["commands"]}
+        source = open(os.path.join(ext, "extension.js")).read()
+        registered = set(re.findall(r'registerCommand\(\s*"([^"]+)"', source))
+        ok("every command the code registers is in the manifest",
+           registered <= declared,
+           f"registered {registered}, declared {declared}")
+        ok("and every command in the manifest exists in the code",
+           declared <= registered,
+           f"declared {declared}, registered {registered}")
+
+        absent = [f for f in ("README.md", "CHANGELOG.md", "icon.png", "LICENSE")
+                  if not os.path.exists(os.path.join(ext, f))]
+        ok("the package ships its readme, changelog, icon and licence",
+           not absent, f"missing {absent}")
+
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

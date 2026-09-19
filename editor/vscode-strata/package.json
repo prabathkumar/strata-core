@@ -1,15 +1,39 @@
 {
-  "name": "strata",
+  "name": "strata-lang",
   "displayName": "Strata",
-  "description": "Syntax highlighting and compiler diagnostics for the Strata language.",
+  "description": "Syntax highlighting, live compiler diagnostics, and one-click repair for the Strata language (.sta).",
   "version": "0.4.0",
-  "publisher": "strata",
+  "publisher": "prabathkumar",
+  "license": "Apache-2.0",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0F1416",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters",
+    "Formatters"
   ],
+  "keywords": [
+    "strata",
+    "sta",
+    "compiler",
+    "systems language",
+    "database schema",
+    "auto-repair"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/prabathkumar/strata-core"
+  },
+  "bugs": {
+    "url": "https://github.com/prabathkumar/strata-core/issues"
+  },
+  "homepage": "https://github.com/prabathkumar/strata-core#readme",
   "main": "./extension.js",
   "activationEvents": [
     "onLanguage:strata"
@@ -25,14 +49,33 @@
         "extensions": [
           ".sta"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
       }
     ],
     "grammars": [
       {
         "language": "strata",
         "scopeName": "source.strata",
-        "path": "./syntaxes/strata.tmLanguage.json"
+        "path": "./syntaxes/strata.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.c.strata": "c"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "strata.check",
+        "title": "Strata: Check This File",
+        "category": "Strata"
+      },
+      {
+        "command": "strata.repair",
+        "title": "Strata: Repair This File",
+        "category": "Strata"
       }
     ],
     "configuration": {
@@ -41,7 +84,7 @@
         "strata.toolchainPath": {
           "type": "string",
           "default": "strata",
-          "description": "Path to the strata command. The default assumes it is on PATH, which is what tools/install.sh arranges."
+          "description": "Path to the strata command. The default assumes it is on PATH, which is what the toolchain's install script arranges."
         },
         "strata.checkOnSave": {
           "type": "boolean",
@@ -55,10 +98,5 @@
         }
       }
     }
-  },
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/prabathkumar/strata-core"
   }
 }
