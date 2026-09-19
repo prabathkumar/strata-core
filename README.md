@@ -2,6 +2,9 @@
 
 **The compiler is the code reviewer.**
 
+*An independent project by Prabath Kumar. Not a product of, and not owned by,
+any employer or client.*
+
 Strata is a systems language for a world where most code is written by machines.
 Describe what you want, let a model write it, and let the compiler — not a tired
 human on a Friday afternoon — prove the pieces actually fit. When it doesn't fit,
@@ -28,6 +31,94 @@ That loop is real and runs today. Most of what surrounds it does not yet — see
 > about what is not. Every code example below is compiled on every commit by
 > `test_suite/doc_examples.py`, so an example that stopped working would fail
 > the build rather than sit here.
+
+## For business readers
+
+Three sentences, then a picture.
+
+**One definition.** A business system has a handful of facts at its centre —
+what an order is, what a customer is, what a payment is. In Strata those facts
+are written down once, in the language itself.
+
+**One check.** Everything else in the system — the rules, the reports, the web
+pages, the phone screens — is checked against that definition when the software
+is built, not when a customer uses it.
+
+**Every surface.** The same definition serves the website, the mobile app and
+the database. They cannot drift apart, because there is only one of them.
+
+### Where a mistake gets caught
+
+The cost of a mistake is mostly decided by *when* it is found. A typo found
+while typing costs seconds. The same typo found by a customer costs an apology,
+an investigation, a fix, a release, and some trust.
+
+```mermaid
+flowchart LR
+    A["Someone renames a column"] --> B{"Where is it caught?"}
+    B -->|"Usual stack"| C["Nothing complains"]
+    C --> D["Tests pass<br/>the ones that cover it"]
+    D --> E["Released"]
+    E --> F["A customer hits it<br/>hours to fix, trust spent"]
+    B -->|"Strata"| G["Build fails immediately<br/>names every place affected"]
+    G --> H["Fixed in minutes<br/>nobody outside ever sees it"]
+
+    style F fill:#B3172C,color:#ffffff
+    style H fill:#1F6B4A,color:#ffffff
+    style G fill:#1F4E62,color:#ffffff
+```
+
+### Why that is hard to do normally
+
+A typical business system is built from four separate worlds that do not know
+about each other. Keeping them agreeing is manual work, and it is the work that
+quietly stops being done when a deadline arrives.
+
+```mermaid
+flowchart TB
+    subgraph U["The usual way — four worlds, held together by hand"]
+        direction LR
+        U1["Database<br/><i>SQL</i>"] -.-> U2["Back-end<br/><i>Java / C# / Node</i>"]
+        U2 -.-> U3["Website<br/><i>JavaScript / React</i>"]
+        U3 -.-> U4["Mobile app<br/><i>Swift / Kotlin</i>"]
+    end
+
+    subgraph S["Strata — one definition, checked everywhere"]
+        direction LR
+        S1["The definition<br/><b>database Order</b>"] --> S2["Rules"]
+        S1 --> S3["Web pages"]
+        S1 --> S4["Phone screens"]
+        S1 --> S5["Reports"]
+    end
+
+    style U1 fill:#E6ECEE,color:#161A1C
+    style U2 fill:#E6ECEE,color:#161A1C
+    style U3 fill:#E6ECEE,color:#161A1C
+    style U4 fill:#E6ECEE,color:#161A1C
+    style S1 fill:#1F4E62,color:#ffffff
+```
+
+The dotted lines are the problem: nothing enforces them. The solid lines are
+enforced by the compiler, every time the software is built.
+
+### What this buys, in plain terms
+
+| | |
+|---|---|
+| Fewer production surprises | A whole class of bug — "the app and the website disagree" — stops being possible, because there is one definition rather than several |
+| Cheaper change | Changing a business fact is one edit; the compiler then lists every place that must follow, instead of somebody searching for them |
+| Smaller teams | One language across the server, the web and the phone means one skill set, not four |
+| Safer AI-written code | A machine writes fast and is confidently wrong. The compiler catches what code review misses, and hands the machine a precise description to fix |
+
+### What it is not
+
+It is pre-release, weeks old, and written by one person. It has no ecosystem
+and nobody else knows it yet. It is not something to put a production system on
+today. What it is: a demonstration that the idea works, tested harder than most
+shipped software — see the evidence below, and the
+[Roadmap](#roadmap), which lists what is still missing without softening it.
+
+---
 
 ## What exists
 
