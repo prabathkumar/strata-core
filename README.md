@@ -22,17 +22,33 @@ $ strata repair ledger.sta
 That loop is real and runs today. Most of what surrounds it does not yet — see
 [Roadmap](#roadmap), which is exhaustive and blunt.
 
-> **Status: pre-release, under active development.** The compiler works, is
-> self-hosting for the front end, and is covered by 22 test suites — 185
-> conformance cases plus seven end-to-end journeys that build and run real
-> services, including one against a real PostgreSQL. Three applications
-> (`apps/orders`, `apps/ledger`, `apps/orders_mobile`) are built on it, the last
-> of them a phone screen drawn by Strata itself. The toolchain installs as a
-> `strata` command and there is a VS Code extension. Several components described under
-> [Roadmap](#roadmap) are designed but not yet built, and are marked as such.
-> Nothing in this document is claimed to work unless it is in
-> [What works today](#what-works-today). Every code example below is compiled
-> on every commit by `test_suite/doc_examples.py`.
+> **Status: pre-release, under active development.** Nothing in this document
+> is claimed to work unless it is in [What works today](#what-works-today) or
+> marked **Done** in the [Roadmap](#roadmap), which is exhaustive and blunt
+> about what is not. Every code example below is compiled on every commit by
+> `test_suite/doc_examples.py`, so an example that stopped working would fail
+> the build rather than sit here.
+
+## What exists
+
+| | |
+|---|---|
+| Language | 11,700 lines of Strata in this repository — the compiler, the standard library, three applications and the examples |
+| Compiler | Self-hosting front end: lexer, parser, type checker and code generator written in Strata, 7,500 lines, **2.2% `native`**. Each is checked against an independent Python implementation on every commit — tokens, syntax trees, diagnostics and generated C compared byte for byte |
+| Fixpoint | The front end rebuilt from C it generated itself reproduces that C exactly |
+| Standard library | 15 modules that compile, link and run |
+| Applications | An orders web service, a financial ledger, and a phone app — all on one schema definition each |
+| Storage | Tab-separated files or PostgreSQL, chosen by changing a string; writes send only the rows that changed |
+| Surfaces | One `layout` renders as a web page and draws as a phone screen |
+| Tests | 23 suites — 185 conformance cases and 9 end-to-end journeys that install the toolchain, build a service, change it, deploy it in Docker, flood it, operate it, talk to a real PostgreSQL, and run the same rules on a phone's processor |
+| CI | 34 steps on every push, including a real PostgreSQL 16 and an ARM64 cross-compiler and emulator |
+
+The journeys are the unusual part. Each walks a whole path a person would
+take, end to end, and fails if any step of it does: 26 checks for using the
+orders service, 44 for operating it, 32 for installing the toolchain on a
+machine that has never seen it, 40 against a live database, 28 for the phone.
+They are where most of the bugs in this repository were found, and the
+changelog says which.
 
 ---
 

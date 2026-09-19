@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### What exists, stated in one place
+
+README gained a "What exists" table: the line counts, the self-hosting
+percentage, the module and suite counts, and what each end-to-end journey
+checks. Nothing in it is new work — it is the first time the numbers are
+written down together rather than scattered through a roadmap, and every one
+of them is produced by running something rather than remembered.
+
 ### One screen description, two surfaces
 
 A `layout` rendered one way: HTML. Phone screens were written separately with
