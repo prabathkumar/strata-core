@@ -150,6 +150,22 @@ int scp_lookup(int scope_p, str name) {
     return 0;
 }
 
+// True when `name` is defined inside the function rather than only as a
+// global. A function's name lives in the global scope carrying its RETURN
+// type, so calls type check -- which also made a bare function name look like
+// an ordinary variable. A local of the same name shadows the function and is
+// a variable; only an unshadowed name is a reference to the function itself.
+int scp_has_below(int scope_p, str name, int globals_p) {
+    int cur = scope_p;
+    while (cur != 0) {
+        if (cur == globals_p) { return 0; }
+        Scp s = scp_at(cur);
+        if (sym_find(s.syms, name) != 0) { return 1; }
+        cur = s.parent;
+    }
+    return 0;
+}
+
 int scp_has(int scope_p, str name) {
     int cur = scope_p;
     while (cur != 0) {
@@ -691,9 +707,25 @@ int infer(TC &tc, int node_p, int scope_p) {
             // A bare model name is the model itself, so Strata code never has
             // to name a generated C global.
             if (mdl_find(tc.models, e.s1) != 0) { return 0; }
-            // A bare function name is a reference — an event handler passed to
-            // a layout element, for instance — not an undefined variable.
-            if (fn_find(tc.fns, e.s1) != 0) { return 0; }
+            // A bare function name used as a value. This used to be let
+            // through as "a reference — an event handler passed to a layout
+            // element". There are no function values in Strata and no browser
+            // event loop to call one: the name reached the generated C as an
+            // undeclared variable, so the program did not compile and the
+            // diagnostic named C rather than Strata.
+            int shadowed = scp_has_below(scope_p, e.s1, tc.globals);
+            if (fn_find(tc.fns, e.s1) != 0 && shadowed == 0) {
+                StringBuilder fb = sb_new();
+                sb_append(&fb, "'");
+                sb_append(&fb, e.s1);
+                sb_append(&fb, "' is a function, not a value");
+                StringBuilder fh = sb_new();
+                sb_append(&fh, "Call it as '");
+                sb_append(&fh, e.s1);
+                sb_append(&fh, "(...)'. Strata has no function values; a button names a route it posts to, as a string");
+                emit_hint(&tc, "E001", sb_to_str(&fb), e.line, e.col, sb_to_str(&fh));
+                return 0;
+            }
             if (scp_has(scope_p, e.s1) == 0) {
                 StringBuilder sb = sb_new();
                 sb_append(&sb, "Undefined identifier '");

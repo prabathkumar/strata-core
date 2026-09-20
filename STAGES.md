@@ -171,11 +171,10 @@ as an oracle to compare against.
    design, not tested code, and iOS has no shell at all.
 6. There is no package manager, so two projects cannot share a library except
    by copying files.
-7. A layout property whose value is an expression is not type checked. A
-   misspelled name there reaches the user as an undeclared variable in the
-   generated C rather than as a Strata diagnostic — which is how
-   `action = on_trigger_optimize` sat in an example that had not compiled for
-   some time.
+7. A layout has no event model. A button names a route it posts to; nothing
+   in a rendered page calls a Strata function by itself, because Strata emits
+   no JavaScript. Passing a handler's name to `action` is now E001 rather
+   than, as before, a clean type check followed by a C compiler error.
 8. `bin/strata build` now runs the self-hosted driver, with
    `STRATA_BOOTSTRAP=1` as the way back. The bootstrap is still what every
    other subcommand runs -- `check`, `ast`, `lex`, `test`, `repair` and `fmt`

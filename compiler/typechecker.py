@@ -70,6 +70,17 @@ def is_compatible(declared, actual):
     if declared.name == "float" and actual.name == "int": return True
     return False
 
+def _shadowed(scope, name, global_scope):
+    """True when `name` is defined somewhere inside the function, not only as
+    a global. Used to tell a local variable from a function of the same name."""
+    s = scope
+    while s is not None and s is not global_scope:
+        if name in s.symbols:
+            return True
+        s = s.parent
+    return False
+
+
 class Scope:
     def __init__(self, parent=None):
         self.parent=parent; self.symbols={}
@@ -586,15 +597,26 @@ class TypeChecker:
         if isinstance(expr,BoolLiteral): return T_BOOL
         if isinstance(expr,Identifier):
             t=scope.lookup(expr.name)
+            # A function's name is defined in the global scope carrying its
+            # RETURN type, so calls type check. That made a bare function name
+            # look like an ordinary variable of that type, and the code
+            # generator emitted it as one -- an undeclared C identifier, so the
+            # program failed to build with a diagnostic naming C rather than
+            # Strata. A local variable of the same name shadows the function
+            # and is a variable, so only an unshadowed name is a reference.
+            if expr.name in self.functions and not _shadowed(scope, expr.name,
+                                                             self.global_scope):
+                self._error("E001",
+                    f"'{expr.name}' is a function, not a value",
+                    expr.line,expr.col,
+                    f"Call it as '{expr.name}(...)'. Strata has no function "
+                    f"values; a button names a route it posts to, as a string")
+                return None
             if t is None and expr.name in self.models:
                 # A bare model name is the model itself, so it can be passed
                 # to the runtime without exposing a generated C global.
                 return SType("model")
-            if t is None and expr.name in self.functions:
-                # A bare function name is a reference, not a call — an event
-                # handler passed to a layout element, for instance. Its type is
-                # not yet expressible, but it is certainly not undefined.
-                return None
+
             if t is None:
                 self._error("E001",f"Undefined identifier '{expr.name}'",
                     expr.line,expr.col,f"Declare '{expr.name}' before use")

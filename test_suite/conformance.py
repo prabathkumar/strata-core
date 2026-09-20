@@ -256,8 +256,19 @@ test("layout_for_in_non_list",
      'layout C() { window "x" { int n = 5; for R in n { text "x"; } } }', "E003")
 test("layout_element_id_not_undefined",
      'layout C() { window "x" { canvas topology_view [width = 500]; } }')
-test("layout_handler_reference",
-     'int on_click() { return 0; }\nlayout C() { window "x" { button "Go" [action = on_click]; } }')
+# This asserted the opposite -- that a bare handler name in a layout property
+# type checks clean. It did, and then the program did not compile: the name
+# reached the generated C as an undeclared variable. The test only ever looked
+# at the checker's silence, never at whether the thing it permitted could be
+# built. Strata has no function values and no browser event loop; a button
+# names a route it posts to.
+test("layout_handler_reference_is_e001",
+     'int on_click() { return 0; }\nlayout C() { window "x" { button "Go" [action = on_click]; } }',
+     "E001")
+compile_run("a_layout_action_is_a_route",
+     'import io from std;\nlayout C() { window "x" { form [action = "/click", method = "post"] { button "Go"; } } }\n'
+     'int main() { print("ok"); return 0; }',
+     "ok")
 
 print("\n── Contextual keywords ───────────────────────────────────────────")
 compile_run("ctx_title_and_metrics_as_variables",
