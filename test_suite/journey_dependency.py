@@ -199,6 +199,67 @@ def main():
               and "money" in r.stderr and "other_fmt" in r.stderr,
               r.stderr[-300:])
 
+        # A git dependency, against a repository on disk so the test needs no
+        # network. The point of pinning a revision is that upstream moving
+        # does not change this build, and nothing checked that until now.
+        def git(*args, cwd):
+            return subprocess.run(
+                ["git", "-c", "user.email=t@example.invalid",
+                 "-c", "user.name=test", *args],
+                cwd=cwd, capture_output=True, text=True, timeout=120)
+
+        upstream = os.path.join(tmp, "greet")
+        write(os.path.join(upstream, "Strata.toml"), '[package]\nname = "greet"\n')
+        write(os.path.join(upstream, "src", "hello.sta"),
+              'import mem from std;\n\nstr greeting() { return "first"; }\n')
+        git("init", "-q", ".", cwd=upstream)
+        git("add", "-A", cwd=upstream)
+        git("commit", "-qm", "one", cwd=upstream)
+        first = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+        gitapp = os.path.join(tmp, "gitapp")
+        write(os.path.join(gitapp, "Strata.toml"),
+              '[package]\nname = "gitapp"\n\n[build]\n'
+              'main = "src/main.sta"\noutput = "build/gitapp"\n\n'
+              '[dependencies]\n'
+              f'greet = {{ git = "{upstream}", rev = "{first}" }}\n')
+        write(os.path.join(gitapp, "src", "main.sta"),
+              'import io    from std;\nimport hello from greet;\n\n'
+              'int main() { print(greeting()); return 0; }\n')
+
+        r = strata("deps", "-v", cwd=gitapp)
+        check("a git dependency is fetched at its revision", r.returncode == 0,
+              r.stdout[-200:] + r.stderr[-200:])
+        gitbin = os.path.join(gitapp, "build", "gitapp")
+        r = strata("build", cwd=gitapp)
+        out = subprocess.run([gitbin], cwd=gitapp, capture_output=True,
+                             text=True, timeout=60) if r.returncode == 0 else None
+        check("and the program uses it",
+              out is not None and out.stdout.strip() == "first",
+              (r.stdout + r.stderr)[-300:] if out is None else repr(out.stdout))
+
+        # Upstream moves. The pin is the whole point: this build must not.
+        write(os.path.join(upstream, "src", "hello.sta"),
+              'import mem from std;\n\nstr greeting() { return "second"; }\n')
+        git("commit", "-aqm", "two", cwd=upstream)
+        second = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+        strata("deps", cwd=gitapp)
+        strata("build", cwd=gitapp)
+        out = subprocess.run([gitbin], cwd=gitapp, capture_output=True,
+                             text=True, timeout=60)
+        check("upstream moving does not change a pinned build",
+              out.stdout.strip() == "first", repr(out.stdout))
+
+        manifest = os.path.join(gitapp, "Strata.toml")
+        write(manifest, open(manifest).read().replace(first, second))
+        strata("deps", cwd=gitapp)
+        strata("build", cwd=gitapp)
+        out = subprocess.run([gitbin], cwd=gitapp, capture_output=True,
+                             text=True, timeout=60)
+        check("repinning the revision does change it",
+              out.stdout.strip() == "second", repr(out.stdout))
+
         # Nothing declared is not an error.
         plain = os.path.join(tmp, "plain")
         write(os.path.join(plain, "Strata.toml"), '[package]\nname = "plain"\n')
