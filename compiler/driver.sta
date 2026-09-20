@@ -21,6 +21,7 @@ import parser  from compiler;
 import build   from compiler;
 import codegen from compiler;
 import typechecker from compiler;
+import diagnostics  from compiler;
 
 // Where the compiler's own files live: the runtime preamble and the standard
 // library. STRATA_ROOT pins it; otherwise the current directory, which is
@@ -48,8 +49,16 @@ int verbose) {
     // Type check before generating anything. Without this the error taxonomy
     // only ever runs under `strata check`, and a type error reaches the user
     // as a C compiler diagnostic instead of a Strata one.
-    int errors = check_unit_project(root, dir_of(source), unit);
-    if (errors > 0) { return 1; }
+    //
+    // The diagnostics are captured rather than printed straight out, because
+    // whether each one STOPS the build is a question for the taxonomy. The
+    // driver used to count them all as fatal, so a program importing a module
+    // provided at link time -- an advisory the bootstrap reports and walks
+    // past -- would not build at all.
+    diag_capture_begin();
+    check_unit_project(root, dir_of(source), unit);
+    int halting = report_diagnostics(root, diag_capture_end());
+    if (halting > 0) { return 1; }
 
     str c_source = generate_mode(root, source, target, test_mode);
     str c_path = str_concat(drop_extension(source), ".c");

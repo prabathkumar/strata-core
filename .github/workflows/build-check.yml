@@ -112,6 +112,11 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # examples/ is what someone reads first, and nothing built it until a
+    # file there was found to compile and then crash.
+    - name: Every Example Builds And Runs
+      run: python3 test_suite/examples_run.py
+
     # Equivalence is not use. This is the step that says the toolchain
     # actually reaches for the driver, and that the way back still works.
     - name: strata build Runs The Self-Hosted Driver

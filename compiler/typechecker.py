@@ -527,14 +527,24 @@ class TypeChecker:
             scope.define(stmt.name, declared)
             return
         if isinstance(stmt.value,QueryExpr):
-            # A query into a record type yields the first match rather than a
-            # list, so the element type is what must be compatible.
             src=stmt.value.source
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",stmt.line,stmt.col,
                     f"Declare 'database {src}' before querying")
             else:
                 self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col,scope)
+            # A query into a single record used to mean "the first row that
+            # matches, or none" -- and "none" was a raw null with nothing in
+            # the language able to test for it, so every use of the form was a
+            # crash waiting for an empty result. A query yields rows; the
+            # count of them is part of the answer.
+            if not declared.is_list:
+                self._error("E001",
+                    f"'{stmt.name}' is '{declared}', but a query yields rows",
+                    stmt.line,stmt.col,
+                    f"Write 'list[{src}] {stmt.name} = {src} <- [...];' and check "
+                    f"count({stmt.name}) — a query that matches nothing is not an error, "
+                    f"but a record that is not there cannot be read")
             scope.define(stmt.name,declared); return
         actual=self._infer_type(stmt.value,scope)
         if actual and not is_compatible(declared,actual):

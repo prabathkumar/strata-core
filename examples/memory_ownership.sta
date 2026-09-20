@@ -1,30 +1,45 @@
 // ==============================================================================
 // STRATA MEMORY CORE: memory_ownership.sta
-// Compile-Time Reference Borrowing & Zero-Allocation Lifetime Contracts
+// Passing a record without copying it
 // ==============================================================================
 
 import core.io from std;
 
 database VaultAsset {
-    int  asset_id;
+    int   asset_id;
     float valuation;
 }
 
-int main() {
-    // 1. Absolute Memory Ownership Allocation
-    VaultAsset primary_vault = VaultAsset <- [asset_id == 101];
-
-    // 2. Safe Reference Borrowing (&)
-    // Passes a read-only pointer to the function. Zero bytes are copied in memory.
-    int check_state = evaluate_vault_risk(&primary_vault);
-
-    return check_state;
-}
-
-// Function requires an explicit immutable borrow contract parameter
+// The function takes a reference: a read-only pointer to the row, with no
+// bytes copied. That is what `&` means here.
 int evaluate_vault_risk(VaultAsset &target_vault) {
     if (target_vault.valuation > 1000000.00) {
-        return 1; // High risk profile verified
+        return 1;                       // High risk
     }
-    return 0; // Safe
+    return 0;                           // Safe
+}
+
+int main() {
+    VaultAsset <- [asset_id = 101, valuation = 2500000.00];
+    VaultAsset <- [asset_id = 102, valuation = 4000.00];
+
+    // A query yields rows, however many matched — which may be none. This
+    // file used to write `VaultAsset v = VaultAsset <- [...];` for "the first
+    // match", and when nothing matched the program read a record that was not
+    // there and crashed. The compiler now refuses that form (E001); the count
+    // is part of the answer, so the code has to say what it does with zero.
+    list[VaultAsset] found = VaultAsset <- [asset_id == 101];
+    if (count(found) == 0) {
+        print("No such asset.");
+        return 1;
+    }
+
+    int risk = 0;
+    for asset in found {
+        risk = evaluate_vault_risk(&asset);
+    }
+
+    if (risk == 1) { print("High risk."); }
+    if (risk == 0) { print("Safe."); }
+    return 0;
 }

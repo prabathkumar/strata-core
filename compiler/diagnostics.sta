@@ -121,3 +121,58 @@ str diagnostics_json(str root, str source_path) {
     }
     return sb_to_str(&out);
 }
+
+// Print captured diagnostics the way a build reports them, and return how
+// many of them stop it.
+//
+// Severity is not cosmetic. E007 -- an import with no local checkout -- is an
+// advisory: a dependency provided at link time is legitimate, and refusing to
+// build on one makes external modules unusable. Counting every diagnostic as
+// fatal is exactly the bug this function exists to prevent, and it is one the
+// driver had: it halted on an advisory that the bootstrap reports and walks
+// past.
+int report_diagnostics(str root, str log) {
+    str tax = file_read(taxonomy_path(root));
+    int halting = 0;
+    int n = str_len(log);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (log[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+
+        str record = str_slice(log, start, i);
+        start = i + 1;
+        if (str_len(record) == 0) { continue; }
+
+        str code = field_at(record, 0);
+        StringBuilder line = sb_new();
+        sb_append(&line, code);
+        sb_append(&line, " ");
+        str in_file = field_at(record, 1);
+        if (str_len(in_file) > 0) {
+            sb_append(&line, in_file);
+            sb_append(&line, ":");
+        }
+        sb_append(&line, field_at(record, 2));
+        sb_append(&line, ":");
+        sb_append(&line, field_at(record, 3));
+        sb_append(&line, " ");
+        sb_append(&line, field_at(record, 4));
+
+        if (is_advisory(tax, code) == 1) {
+            eprint(str_concat("[Strata Check] advisory: ", sb_to_str(&line)));
+        }
+        if (is_advisory(tax, code) == 0) {
+            eprint(sb_to_str(&line));
+            str hint = field_at(record, 5);
+            if (str_len(hint) > 0) {
+                eprint(str_concat("  Hint: ", hint));
+            }
+            halting = halting + 1;
+        }
+    }
+    return halting;
+}

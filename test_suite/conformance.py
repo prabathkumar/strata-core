@@ -338,11 +338,30 @@ print("\n── Declarations, verify blocks, single-record queries ────�
 compile_run("uninit_decl_zeroes",
     'import io from std;\nint main() { int n; float f; n = 7; print(str(n)); print(str(f)); return 0; }',
     "7\n0.0")
-compile_run("single_record_query",
+# A query into a single record used to mean "the first row that matches, or
+# none". This test asserted the matching half and there was no test for the
+# other one -- where "none" was a raw null that nothing in the language could
+# test for, so reading it crashed. The form is refused now; the list form,
+# which makes the caller say what zero rows means, is what replaces it.
+test("single_record_query_is_e001",
+    'database M { int id; str name; }\n'
+    'int main() { M hit = M <- [id == 2]; return 0; }', "E001")
+compile_run("query_into_a_list_of_rows",
     'import io from std;\ndatabase M { int id; str name; }\n'
     'int main() { M <- [id = 1, name = "a"]; M <- [id = 2, name = "b"];\n'
-    '  M hit = M <- [id == 2]; print(hit.name); return 0; }',
+    '  list[M] hit = M <- [id == 2];\n'
+    '  if (count(hit) == 0) { print("none"); return 0; }\n'
+    '  for row in hit { print(row.name); }\n'
+    '  return 0; }',
     "b")
+compile_run("a_query_that_matches_nothing_is_not_a_crash",
+    'import io from std;\ndatabase M { int id; str name; }\n'
+    'int main() { M <- [id = 1, name = "a"];\n'
+    '  list[M] hit = M <- [id == 99];\n'
+    '  if (count(hit) == 0) { print("none"); return 0; }\n'
+    '  for row in hit { print(row.name); }\n'
+    '  return 0; }',
+    "none")
 test("verify_block_typechecks",
     'int twice(int x) { return x * 2; }\nverify "doubling" { int a = 21; int b = twice(a); assert b == 42; }', None)
 test("assert_group_sees_outer_scope",

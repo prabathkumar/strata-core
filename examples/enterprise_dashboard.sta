@@ -71,17 +71,27 @@ layout CoreOperationalConsole() {
             column [background = "#121218", border_radius = 8, border_color = "#232330", padding = 16] {
                 text "Asynchronous Stream Feed" [color = "#ffffff", size = 14];
 
-                row [padding_top = 12] {
-                    // Type-safe dynamic interaction click hook
-                    button "Execute Core Optimization Sweep" [background = "#00bcff", color = "#ffffff", action = on_trigger_optimize];
+                // A button posts to a route, the way every form in this
+                // repository does. This line used to read
+                // `action = on_trigger_optimize` -- a bare function name, as
+                // though the button called it in the browser. Strata renders
+                // HTML; it emits no JavaScript and has no browser event loop,
+                // so there was nothing to call. It did not compile either:
+                // the name reached the generated C as an undeclared variable.
+                form [action = "/optimize", method = "post"] {
+                    row [padding_top = 12] {
+                        button "Execute Core Optimization Sweep" [background = "#00bcff", color = "#ffffff"];
+                    }
                 }
             }
         }
     }
 }
 
-// 3. REACTIVE EVENT ROUTING LOGIC
-// Standard compiled execution loop running at native speed inside the browser thread
+// 3. WHAT HANDLES THAT ROUTE
+// An ordinary function. A server dispatches "/optimize" to it -- see
+// apps/orders/src/main.sta for a router that does exactly that. Nothing in a
+// rendered page calls it by itself.
 int on_trigger_optimize() {
     print("[UI Action Loop]: Initiating asynchronous memory compaction sweep...");
 

@@ -40,6 +40,12 @@ PROGRAMS = [
     # that the two builds actually behave the same.
     ("examples/aggregation.sta", True),
     ("examples/ffi_math.sta", True),
+    # An import with no local checkout. E007 is an ADVISORY: the build carries
+    # on and the symbols are left to the linker. Nothing here exercised that
+    # until it caught the driver treating every diagnostic as fatal, so a
+    # program with an external dependency would not build at all.
+    ("examples/ml_bridge.sta", False),
+    ("examples/network_routing.sta", False),
 ]
 
 

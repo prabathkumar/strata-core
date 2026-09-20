@@ -171,9 +171,11 @@ as an oracle to compare against.
    design, not tested code, and iOS has no shell at all.
 6. There is no package manager, so two projects cannot share a library except
    by copying files.
-7. `examples/memory_ownership.sta` compiles and then segfaults when run. The
-   example suite compiles examples and does not run them, which is why nothing
-   caught it — and is the more useful half of the finding.
+7. A layout property whose value is an expression is not type checked. A
+   misspelled name there reaches the user as an undeclared variable in the
+   generated C rather than as a Strata diagnostic — which is how
+   `action = on_trigger_optimize` sat in an example that had not compiled for
+   some time.
 8. `bin/strata build` now runs the self-hosted driver, with
    `STRATA_BOOTSTRAP=1` as the way back. The bootstrap is still what every
    other subcommand runs -- `check`, `ast`, `lex`, `test`, `repair` and `fmt`

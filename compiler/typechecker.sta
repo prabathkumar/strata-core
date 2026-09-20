@@ -1110,8 +1110,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
         return;
     }
     // A query on the right of a declaration is checked here and the
-    // declaration returns: a query into a record type yields the first match
-    // rather than a list, so the element type is what must be compatible.
+    // declaration returns.
     Node qval = node_at(st.c2);
     if (qval.kind == 46) {
         int qsch = schema_find(tc.schemas, qval.s1);
@@ -1125,6 +1124,31 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
         if (qsch != 0) {
             validate_query(&tc, qval.c1, qval.s1, st.line, st.col);
             validate_query_scoped(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
+        }
+        // A query into a single record used to mean "the first row that
+        // matches, or none" -- and "none" was a raw null with nothing in the
+        // language able to test for it, so every use of the form was a crash
+        // waiting for an empty result. A query yields rows; how many is part
+        // of the answer.
+        Ty dq = ty_at(declared);
+        if (dq.is_list == 0) {
+            StringBuilder qb = sb_new();
+            sb_append(&qb, "'");
+            sb_append(&qb, st.s1);
+            sb_append(&qb, "' is '");
+            sb_append(&qb, ty_str(declared));
+            sb_append(&qb, "', but a query yields rows");
+            StringBuilder qh = sb_new();
+            sb_append(&qh, "Write 'list[");
+            sb_append(&qh, qval.s1);
+            sb_append(&qh, "] ");
+            sb_append(&qh, st.s1);
+            sb_append(&qh, " = ");
+            sb_append(&qh, qval.s1);
+            sb_append(&qh, " <- [...];' and check count(");
+            sb_append(&qh, st.s1);
+            sb_append(&qh, ") — a query that matches nothing is not an error, but a record that is not there cannot be read");
+            emit_hint(&tc, "E001", sb_to_str(&qb), st.line, st.col, sb_to_str(&qh));
         }
         Scp sq = scp_at(scope_p);
         scp_define(&sq, st.s1, declared);
