@@ -1724,6 +1724,67 @@ str app_module_path(str src_dir, str name) {
     return here;
 }
 
+// The project a file belongs to: the nearest directory at or above it that
+// has a Strata.toml. "" when there is none, which is the case for a loose
+// script and for everything in this repository outside apps/.
+str project_root(str src_dir) {
+    str here = src_dir;
+    if (str_len(here) == 0) { here = "."; }
+    // Eight levels is deeper than any project layout and stops a symlink loop
+    // from hanging the compiler.
+    for (int i = 0; i < 8; i = i + 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, here);
+        sb_append(&sb, "/Strata.toml");
+        if (file_exists(sb_to_str(&sb)) == 1) { return here; }
+        StringBuilder up = sb_new();
+        sb_append(&up, here);
+        sb_append(&up, "/..");
+        here = sb_to_str(&up);
+    }
+    return "";
+}
+
+// Where a dependency's modules live once they have been fetched.
+//
+// `strata deps` puts them there: a path dependency as a link to the directory
+// it names, a git dependency as a checkout at the revision the lock file
+// pins. The compiler only ever looks in the directory -- it does not read
+// Strata.toml, resolve versions or reach the network, so a build is the same
+// whether or not anything has changed on someone else's machine.
+str dep_module_path(str src_dir, str source, str name) {
+    str proj = project_root(src_dir);
+    if (str_len(proj) == 0) { return ""; }
+
+    int last_dot = -1;
+    int n = str_len(name);
+    for (int i = 0; i < n; i = i + 1) { if (name[i] == 46) { last_dot = i; } }
+    str leaf = name;
+    if (last_dot >= 0) { leaf = str_slice(name, last_dot + 1, n); }
+
+    // A dependency laid out as a project keeps its modules in src/; one that
+    // is a bare folder of modules keeps them at the top. Both are common and
+    // neither is worth insisting on.
+    StringBuilder a = sb_new();
+    sb_append(&a, proj);
+    sb_append(&a, "/.strata/deps/");
+    sb_append(&a, source);
+    sb_append(&a, "/src/");
+    sb_append(&a, leaf);
+    sb_append(&a, ".sta");
+    if (file_exists(sb_to_str(&a)) == 1) { return sb_to_str(&a); }
+
+    StringBuilder b = sb_new();
+    sb_append(&b, proj);
+    sb_append(&b, "/.strata/deps/");
+    sb_append(&b, source);
+    sb_append(&b, "/");
+    sb_append(&b, leaf);
+    sb_append(&b, ".sta");
+    if (file_exists(sb_to_str(&b)) == 1) { return sb_to_str(&b); }
+    return "";
+}
+
 str module_path(str root, str source, str name) {
     // The leaf of a dotted path names the file: core.io -> std/io.sta
     int last_dot = -1;
@@ -1755,10 +1816,18 @@ str &seen, int &unresolved) {
         if (str_eq(imp.s2, "compiler") == 1) { local = 1; }
         int is_app = 0;
         if (str_eq(imp.s2, "app") == 1) { if (str_len(src_dir) > 0) { is_app = 1; local = 1; } }
+        // Anything else names a dependency this project declared. It resolves
+        // only if `strata deps` has put it in place; an unfetched one is an
+        // unresolved import like any other, which is an advisory rather than
+        // a failure, so a build that does not touch it still works.
+        str dep = "";
+        if (local == 0) { dep = dep_module_path(src_dir, imp.s2, imp.s1); }
+        if (str_len(dep) > 0) { local = 1; }
         if (local == 0) { unresolved = unresolved + 1; }
         if (local == 1) {
             str path = module_path(root, imp.s2, imp.s1);
             if (is_app == 1) { path = app_module_path(src_dir, imp.s1); }
+            if (str_len(dep) > 0) { path = dep; }
             if (file_exists(path) == 0) { unresolved = unresolved + 1; }
             if (file_exists(path) == 1) {
                 StringBuilder needle = sb_new();

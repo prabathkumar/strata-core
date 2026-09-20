@@ -1,0 +1,28 @@
+// STRATA COMPILER — compiler/deps_cli.sta
+//
+//   strata-deps [project-dir] [-v]
+//
+// Puts every declared dependency in place and writes Strata.lock.
+
+import io   from std;
+import cli  from std;
+import mem  from std;
+import str  from std;
+import deps from compiler;
+
+int main() {
+    str project = ".";
+    int verbose = 0;
+    int n = arg_count();
+    for (int i = 1; i < n; i = i + 1) {
+        str a = arg(i);
+        if (str_eq(a, "-v") == 1) { verbose = 1; }
+        if (str_eq(a, "--verbose") == 1) { verbose = 1; }
+        if (str_eq(a, "-v") == 0) {
+            if (str_eq(a, "--verbose") == 0) { project = a; }
+        }
+    }
+    int failed = resolve_deps(project, verbose);
+    if (failed == 0) { print("[Strata] dependencies resolved."); }
+    return failed;
+}

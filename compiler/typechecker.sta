@@ -512,6 +512,10 @@ def report_unresolved_imports(TC &tc, Node unit, str root, str src_dir) {
             if (str_eq(imp.s2, "app") == 1) { mp = app_module_path(src_dir, imp.s1); }
             if (file_exists(mp) == 1) { found = 1; }
         }
+        // A dependency `strata deps` has put in place resolves too.
+        if (local == 0) {
+            if (str_len(dep_module_path(src_dir, imp.s2, imp.s1)) > 0) { found = 1; }
+        }
         if (found == 0) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "'");
@@ -1659,6 +1663,10 @@ int check_unit_project(str root, str src_dir, Node unit) {
             str mp = module_path(root, imp.s2, imp.s1);
             if (str_eq(imp.s2, "app") == 1) { mp = app_module_path(src_dir, imp.s1); }
             if (file_exists(mp) == 1) { found = 1; }
+        }
+        // A dependency `strata deps` has put in place resolves too.
+        if (local == 0) {
+            if (str_len(dep_module_path(src_dir, imp.s2, imp.s1)) > 0) { found = 1; }
         }
         if (found == 0) { root_unresolved = root_unresolved + 1; }
     }

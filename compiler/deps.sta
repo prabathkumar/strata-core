@@ -1,0 +1,250 @@
+// STRATA COMPILER — compiler/deps.sta
+//
+// Dependencies: getting somebody else's modules into this project.
+//
+// Until now two Strata projects could share a library only by copying files
+// between folders, which means the copies drift and nobody can say which
+// version is in a build. A project declares what it needs; `strata deps` puts
+// it in .strata/deps/; the compiler looks only in that directory and never
+// reads a manifest, resolves a version or touches the network. A build is
+// therefore the same whether or not anything has moved in someone else's
+// repository since.
+//
+//   [dependencies]
+//   money = { path = "../money" }
+//   http2 = { git = "https://github.com/x/http2", rev = "a1b2c3d" }
+//
+// A git dependency must pin a revision. A floating branch means two machines
+// building the same commit of this project can get different code, which is
+// the whole problem a lock file exists to stop.
+
+import io   from std;
+import mem  from std;
+import os   from std;
+import str  from std;
+import toml from std;
+
+str deps_dir(str project) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, project);
+    sb_append(&sb, "/.strata/deps");
+    return sb_to_str(&sb);
+}
+
+str dep_target(str project, str name) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, deps_dir(project));
+    sb_append(&sb, "/");
+    sb_append(&sb, name);
+    return sb_to_str(&sb);
+}
+
+// A path dependency is linked, not copied. An edit in the library shows up in
+// the next build of everything that uses it, which is the point of working on
+// two projects at once; a copy would go stale silently, which is the thing
+// this replaces.
+int link_path_dep(str project, str name, str rel, int verbose) {
+    StringBuilder src = sb_new();
+    sb_append(&src, project);
+    sb_append(&src, "/");
+    sb_append(&src, rel);
+    str source_dir = sb_to_str(&src);
+
+    if (is_directory(source_dir) == 0) {
+        eprint(str_concat("[STRATA DEPS] no such directory: ", source_dir));
+        eprint(str_concat("  declared by dependency '", str_concat(name, "'")));
+        return 1;
+    }
+
+    // The link is made in .strata/deps/, so a path relative to the project
+    // would be read relative to the link instead and point somewhere else --
+    // ../money became .strata/money, and the build failed at the linker with
+    // no sign of why. Resolve it to an absolute path first.
+    StringBuilder pwd = sb_new();
+    sb_append(&pwd, "cd '");
+    sb_append(&pwd, source_dir);
+    sb_append(&pwd, "' && pwd");
+    str absolute = capture(sb_to_str(&pwd));
+    if (str_len(absolute) == 0) {
+        eprint(str_concat("[STRATA DEPS] could not resolve ", source_dir));
+        return 1;
+    }
+
+    StringBuilder cmd = sb_new();
+    sb_append(&cmd, "ln -sfn '");
+    sb_append(&cmd, absolute);
+    sb_append(&cmd, "' '");
+    sb_append(&cmd, dep_target(project, name));
+    sb_append(&cmd, "'");
+    if (run(sb_to_str(&cmd)) != 0) {
+        eprint(str_concat("[STRATA DEPS] could not link ", name));
+        return 1;
+    }
+    if (verbose == 1) {
+        print(str_concat(str_concat("  ", name), str_concat(" -> ", rel)));
+    }
+    return 0;
+}
+
+// A git dependency is a checkout at one revision. Fetching only that revision
+// keeps it quick and keeps the result the same every time.
+int fetch_git_dep(str project, str name, str url, str rev, int verbose) {
+    if (str_len(rev) == 0) {
+        eprint(str_concat("[STRATA DEPS] dependency '", str_concat(name, "' names a git repository with no rev")));
+        eprint("  Pin one: { git = \"...\", rev = \"<commit>\" }. A branch means two");
+        eprint("  machines building this commit can get different code.");
+        return 1;
+    }
+    str target = dep_target(project, name);
+    StringBuilder head = sb_new();
+    sb_append(&head, target);
+    sb_append(&head, "/.git/HEAD");
+    if (file_exists(sb_to_str(&head)) == 0) {
+        StringBuilder init = sb_new();
+        sb_append(&init, "git init -q '");
+        sb_append(&init, target);
+        sb_append(&init, "' && git -C '");
+        sb_append(&init, target);
+        sb_append(&init, "' remote add origin '");
+        sb_append(&init, url);
+        sb_append(&init, "'");
+        if (run(sb_to_str(&init)) != 0) {
+            eprint(str_concat("[STRATA DEPS] could not start a checkout for ", name));
+            return 1;
+        }
+    }
+    StringBuilder pull = sb_new();
+    sb_append(&pull, "git -C '");
+    sb_append(&pull, target);
+    sb_append(&pull, "' fetch -q --depth 1 origin '");
+    sb_append(&pull, rev);
+    sb_append(&pull, "' && git -C '");
+    sb_append(&pull, target);
+    sb_append(&pull, "' checkout -q FETCH_HEAD");
+    if (run(sb_to_str(&pull)) != 0) {
+        eprint(str_concat("[STRATA DEPS] could not fetch ", str_concat(name, " at that revision")));
+        eprint(str_concat("  ", url));
+        return 1;
+    }
+    if (verbose == 1) {
+        print(str_concat(str_concat("  ", name), str_concat(" -> ", rev)));
+    }
+    return 0;
+}
+
+// What was resolved, written beside the manifest. Commit it: it is the record
+// of what a build actually used, and the only thing that makes two machines
+// agree.
+str lock_text(str manifest) {
+    str section = toml_section(manifest, "dependencies");
+    str keys = toml_keys(section);
+
+    StringBuilder out = sb_new();
+    sb_append(&out, "# Strata.lock — written by `strata deps`. Commit it.\n");
+    sb_append(&out, "#\n");
+    sb_append(&out, "# This is what the last resolve produced. A path dependency records the\n");
+    sb_append(&out, "# path as declared, not where it landed on one machine; a git dependency\n");
+    sb_append(&out, "# records the exact revision.\n");
+
+    int n = str_len(keys);
+    int start = 1;
+    for (int i = 1; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_comma = 0;
+        if (at_end == 0) { if (keys[i] == 44) { is_comma = 1; } }
+        if (is_comma == 0) { if (at_end == 0) { continue; } }
+        str name = str_slice(keys, start, i);
+        start = i + 1;
+        if (str_len(name) == 0) { continue; }
+
+        str spec = toml_get(section, name);
+        str path = toml_field(spec, "path");
+        str git = toml_field(spec, "git");
+        str rev = toml_field(spec, "rev");
+
+        sb_append(&out, "\n[");
+        sb_append(&out, name);
+        sb_append(&out, "]\n");
+        if (str_len(path) > 0) {
+            sb_append(&out, "kind = \"path\"\npath = \"");
+            sb_append(&out, path);
+            sb_append(&out, "\"\n");
+        }
+        if (str_len(git) > 0) {
+            sb_append(&out, "kind = \"git\"\ngit = \"");
+            sb_append(&out, git);
+            sb_append(&out, "\"\nrev = \"");
+            sb_append(&out, rev);
+            sb_append(&out, "\"\n");
+        }
+    }
+    return sb_to_str(&out);
+}
+
+// Resolve every declared dependency. 0 when they are all in place.
+int resolve_deps(str project, int verbose) {
+    StringBuilder mf = sb_new();
+    sb_append(&mf, project);
+    sb_append(&mf, "/Strata.toml");
+    str manifest_path = sb_to_str(&mf);
+    if (file_exists(manifest_path) == 0) {
+        eprint(str_concat("[STRATA DEPS] no Strata.toml in ", project));
+        return 1;
+    }
+    str manifest = file_read(manifest_path);
+    str section = toml_section(manifest, "dependencies");
+    str keys = toml_keys(section);
+    if (str_len(keys) < 2) {
+        if (verbose == 1) { print("  no dependencies declared"); }
+        return 0;
+    }
+
+    if (make_dir(deps_dir(project)) == 0) {
+        eprint(str_concat("[STRATA DEPS] could not create ", deps_dir(project)));
+        return 1;
+    }
+
+    int failures = 0;
+    int n = str_len(keys);
+    int start = 1;
+    for (int i = 1; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_comma = 0;
+        if (at_end == 0) { if (keys[i] == 44) { is_comma = 1; } }
+        if (is_comma == 0) { if (at_end == 0) { continue; } }
+        str name = str_slice(keys, start, i);
+        start = i + 1;
+        if (str_len(name) == 0) { continue; }
+
+        str spec = toml_get(section, name);
+        str path = toml_field(spec, "path");
+        str git = toml_field(spec, "git");
+        str rev = toml_field(spec, "rev");
+
+        if (str_len(path) > 0) {
+            failures = failures + link_path_dep(project, name, path, verbose);
+        }
+        if (str_len(path) == 0) {
+            if (str_len(git) > 0) {
+                failures = failures + fetch_git_dep(project, name, git, rev, verbose);
+            }
+            if (str_len(git) == 0) {
+                eprint(str_concat("[STRATA DEPS] dependency '", str_concat(name, "' names neither a path nor a git repository")));
+                failures = failures + 1;
+            }
+        }
+    }
+
+    if (failures > 0) { return 1; }
+
+    StringBuilder lf = sb_new();
+    sb_append(&lf, project);
+    sb_append(&lf, "/Strata.lock");
+    if (file_write(sb_to_str(&lf), lock_text(manifest)) == 0) {
+        eprint("[STRATA DEPS] could not write Strata.lock");
+        return 1;
+    }
+    return 0;
+}

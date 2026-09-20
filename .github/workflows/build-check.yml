@@ -112,6 +112,11 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # Two projects sharing a library, from an empty directory: declare,
+    # resolve, build against it, change the library and see the change.
+    - name: A Project Can Depend On Another Project
+      run: python3 test_suite/journey_dependency.py
+
     # examples/ is what someone reads first, and nothing built it until a
     # file there was found to compile and then crash.
     - name: Every Example Builds And Runs
@@ -261,7 +266,15 @@ jobs:
         fail=0
         note() { echo "::error::$1"; fail=1; }
 
-        for f in Strata.lock deploy/production_k8s.yaml deploy/cluster.tf \
+        # Strata.lock was on this list: the old one named a registry that did
+        # not exist. It is a real artefact now -- written by `strata deps` from
+        # a project's declared dependencies, and covered by
+        # test_suite/journey_dependency.py -- so the rule is no longer "it must
+        # not exist" but "it must not exist at the root of this repository,
+        # which declares no dependencies".
+        [ -e Strata.lock ] && note "Strata.lock at the repository root: this project declares no dependencies, so nothing should have written one"
+
+        for f in deploy/production_k8s.yaml deploy/cluster.tf \
                  deploy/run_cloud_deploy.sh deploy_container.sh \
                  test_compiler.sh ARCHITECTURAL_MANUAL.md \
                  DOCUMENTATION_MANIFESTO.md ONBOARDING_WORKSHOP.md \

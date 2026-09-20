@@ -33,3 +33,7 @@ Claude outputs/
 # packaged extension builds
 editor/vscode-strata/dist/
 editor/vscode-strata/node_modules/
+
+# Fetched dependencies. Strata.lock records what they are and IS committed;
+# the checkouts themselves are not.
+.strata/

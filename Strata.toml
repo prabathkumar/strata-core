@@ -5,7 +5,12 @@ authors = ["Prabath Kumar"]
 edition = "2026"
 license = "Apache-2.0"
 
-# Nothing reads this file yet.
+# `strata build` reads a project's Strata.toml for `main` and `output`, and
+# `strata deps` reads its [dependencies]. This repository declares none: the
+# compiler, the standard library and the applications in apps/ all live in the
+# same tree, so there is nothing to fetch.
+#
+# Historical note kept because it explains the shape of what is here now.
 #
 # `strata build` reads a project's own Strata.toml — apps/orders/Strata.toml —
 # for `main` and `output`, and ignores everything else. This one previously

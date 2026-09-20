@@ -10,6 +10,7 @@ usage() {
     echo "Strata toolchain 0.4.0-alpha"
     echo "  strata build [file.sta]        no file: builds the project here"
     echo "  strata run   [file.sta]        no file: builds and runs the project"
+    echo "  strata deps  [project-dir]     fetch what this project depends on"
     echo "  strata check <file.sta>"
     echo "  strata lex   <file.sta> [--json|--count]"
     echo "  strata ast   <file.sta>"
@@ -443,9 +444,42 @@ cmd_fmt() {
     return $rc
 }
 
+# `strata deps` — put every declared dependency in place.
+#
+# Built on first use and rebuilt when its sources change, the same way the
+# formatter is. It is a Strata program; nothing about resolving dependencies
+# needs Python.
+cmd_deps() {
+    local cache="$ROOT/build"
+    if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+        cache="${XDG_CACHE_HOME:-$HOME/.cache}/strata"
+        mkdir -p "$cache"
+    fi
+    local bin="$cache/strata-deps"
+    local newest
+    newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
+    if [ ! -x "$bin" ] || [ -n "$newest" ]; then
+        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/deps_cli.sta" \
+            -o "$bin" >/dev/null || { echo "could not build strata deps" >&2; return 1; }
+    fi
+
+    # With no directory given, resolve the project we are standing in, the way
+    # `strata build` with no file does.
+    if [ $# -eq 0 ] || [ "${1:0:1}" = "-" ]; then
+        local proj; proj="$(find_project)" || {
+            echo "no Strata.toml here or above; run 'strata deps <project-dir>'" >&2
+            return 1
+        }
+        "$bin" "$proj" "$@"
+        return $?
+    fi
+    "$bin" "$@"
+}
+
 CMD="${1:-}"; shift 2>/dev/null || true
 case "$CMD" in
     build)   cmd_build "$@" ;;
+    deps)    cmd_deps  "$@" ;;
     check)   cmd_check "$@" ;;
     lex)     cmd_lex   "$@" ;;
     ast)     cmd_ast   "$@" ;;

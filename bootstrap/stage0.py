@@ -1919,6 +1919,40 @@ int main(int argc, char** argv) {
 # have to live in std/.
 LOCAL_SOURCES = ("std", "compiler", "app")
 
+def _project_root(src_dir):
+    """The nearest directory at or above `src_dir` holding a Strata.toml."""
+    if not src_dir:
+        return None
+    here = os.path.abspath(src_dir)
+    for _ in range(8):
+        if os.path.isfile(os.path.join(here, "Strata.toml")):
+            return here
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return None
+
+
+def _resolve_dependency(imp, app_root):
+    """A module from a declared dependency, once `strata deps` has fetched it.
+
+    The compiler only looks in .strata/deps/<name>/. It does not read
+    Strata.toml, resolve versions or reach the network: a build is the same
+    whether or not anything has moved in someone else's repository since.
+    """
+    proj = _project_root(app_root)
+    if proj is None:
+        return None
+    leaf = imp.name.split(".")[-1]
+    base = os.path.join(proj, ".strata", "deps", imp.source)
+    for cand in (os.path.join(base, "src", leaf + ".sta"),
+                 os.path.join(base, leaf + ".sta")):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
 def _resolve_module(imp, search_root, app_root=None):
     """Map an ImportDecl onto a .sta file path, or None if not locally resolvable.
 
@@ -1926,9 +1960,10 @@ def _resolve_module(imp, search_root, app_root=None):
     `import io from std;`        -> <root>/std/io.sta
     `import lexer from compiler;`-> <root>/compiler/lexer.sta
     `import schema from app;`    -> <dir of the file being compiled>/schema.sta
+    `import money from finance;` -> <project>/.strata/deps/finance/{src/,}money.sta
     """
     if imp.source not in LOCAL_SOURCES:
-        return None
+        return _resolve_dependency(imp, app_root)
     leaf = imp.name.split(".")[-1]
     if imp.source == "app":
         if app_root is None:

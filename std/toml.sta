@@ -1,0 +1,175 @@
+// STRATA STANDARD LIBRARY — std/toml.sta
+//
+// Enough TOML to read a Strata.toml.
+//
+// This is a reader for a file whose shape is known: sections, `key = value`,
+// and inline tables one level deep. It does not do arrays of tables, multi-line
+// strings, dates, or nesting, and it should not pretend to -- a project
+// manifest that needs those is a manifest that has gone wrong.
+//
+// The toolchain shell script read this file with sed. That worked for two keys
+// and stops working the moment a value is a table.
+
+import io  from std;
+import mem from std;
+import str from std;
+
+// The body of [name], up to the next section header or the end. "" when the
+// section is not there.
+str toml_section(str text, str name) {
+    StringBuilder header = sb_new();
+    sb_append(&header, "[");
+    sb_append(&header, name);
+    sb_append(&header, "]");
+    str want = sb_to_str(&header);
+
+    int n = str_len(text);
+    int i = 0;
+    int start = -1;
+    while (i < n) {
+        int eol = line_end(text, i);
+        str line = trim(str_slice(text, i, eol));
+        if (start < 0) {
+            if (str_eq(line, want) == 1) { start = eol + 1; }
+        } else {
+            if (str_len(line) > 0) {
+                if (line[0] == 91) { return str_slice(text, start, i); }
+            }
+        }
+        i = eol + 1;
+    }
+    if (start < 0) { return ""; }
+    if (start > n) { return ""; }
+    return str_slice(text, start, n);
+}
+
+// The raw text right of `key =`, trimmed, with a surrounding pair of quotes
+// removed. "" when the key is absent. An inline table comes back as
+// `{ path = "../money" }` for toml_field to take apart.
+str toml_get(str section, str key) {
+    int n = str_len(section);
+    int i = 0;
+    while (i < n) {
+        int eol = line_end(section, i);
+        str line = trim(str_slice(section, i, eol));
+        int eq = str_index_of(line, "=");
+        if (eq > 0) {
+            str name = trim(str_slice(line, 0, eq));
+            if (str_eq(name, key) == 1) {
+                return unquote(trim(str_slice(line, eq + 1, str_len(line))));
+            }
+        }
+        i = eol + 1;
+    }
+    return "";
+}
+
+// Every key in a section, as ",a,b," so a caller can walk them.
+str toml_keys(str section) {
+    StringBuilder out = sb_new();
+    sb_append(&out, ",");
+    int n = str_len(section);
+    int i = 0;
+    while (i < n) {
+        int eol = line_end(section, i);
+        str line = trim(str_slice(section, i, eol));
+        int eq = str_index_of(line, "=");
+        if (eq > 0) {
+            if (line[0] != 35) {                     // not a comment
+                sb_append(&out, trim(str_slice(line, 0, eq)));
+                sb_append(&out, ",");
+            }
+        }
+        i = eol + 1;
+    }
+    return sb_to_str(&out);
+}
+
+// One field of an inline table: toml_field("{ path = \"../money\" }", "path").
+str toml_field(str inline, str field) {
+    int open = str_index_of(inline, "{");
+    if (open < 0) { return ""; }
+    int n = str_len(inline);
+    str body = str_slice(inline, open + 1, n);
+    int close = str_index_of(body, "}");
+    if (close >= 0) { body = str_slice(body, 0, close); }
+
+    int bn = str_len(body);
+    int start = 0;
+    for (int i = 0; i <= bn; i = i + 1) {
+        int at_end = 0;
+        if (i == bn) { at_end = 1; }
+        int is_comma = 0;
+        if (at_end == 0) { if (body[i] == 44) { is_comma = 1; } }
+        if (is_comma == 1 || at_end == 1) {
+            str pair = trim(str_slice(body, start, i));
+            int eq = str_index_of(pair, "=");
+            if (eq > 0) {
+                if (str_eq(trim(str_slice(pair, 0, eq)), field) == 1) {
+                    return unquote(trim(str_slice(pair, eq + 1, str_len(pair))));
+                }
+            }
+            start = i + 1;
+        }
+    }
+    return "";
+}
+
+// ── The small things the above is made of ─────────────────────────────────
+
+int line_end(str text, int from_index) {
+    int n = str_len(text);
+    for (int i = from_index; i < n; i = i + 1) {
+        if (text[i] == 10) { return i; }
+    }
+    return n;
+}
+
+str trim(str s) {
+    int n = str_len(s);
+    int a = 0;
+    while (a < n) {
+        int c = s[a];
+        if (c != 32 && c != 9 && c != 13) { break; }
+        a = a + 1;
+    }
+    int b = n;
+    while (b > a) {
+        int c = s[b - 1];
+        if (c != 32 && c != 9 && c != 13) { break; }
+        b = b - 1;
+    }
+    return str_slice(s, a, b);
+}
+
+str unquote(str s) {
+    int n = str_len(s);
+    if (n < 2) { return s; }
+    if (s[0] == 34) {
+        if (s[n - 1] == 34) { return str_slice(s, 1, n - 1); }
+    }
+    return s;
+}
+
+verify "a manifest reads back" {
+    str m = "[package]\nname = \"shop\"\nversion = \"0.1.0\"\n\n[dependencies]\nmoney = { path = \"../money\" }\nhttp2 = { git = \"https://example.invalid/h\", rev = \"abc123\" }\n";
+    assert str_eq(toml_get(toml_section(m, "package"), "name"), "shop") == 1;
+    assert str_eq(toml_get(toml_section(m, "package"), "version"), "0.1.0") == 1;
+    assert str_eq(toml_get(toml_section(m, "package"), "absent"), "") == 1;
+    assert str_eq(toml_section(m, "absent"), "") == 1;
+    assert str_eq(toml_keys(toml_section(m, "dependencies")), ",money,http2,") == 1;
+    assert str_eq(toml_field(toml_get(toml_section(m, "dependencies"), "money"), "path"), "../money") == 1;
+    assert str_eq(toml_field(toml_get(toml_section(m, "dependencies"), "http2"), "rev"), "abc123") == 1;
+    assert str_eq(toml_field(toml_get(toml_section(m, "dependencies"), "http2"), "path"), "") == 1;
+}
+
+verify "a section ends where the next one begins" {
+    str m = "[a]\nx = \"1\"\n[b]\nx = \"2\"\n";
+    assert str_eq(toml_get(toml_section(m, "a"), "x"), "1") == 1;
+    assert str_eq(toml_get(toml_section(m, "b"), "x"), "2") == 1;
+}
+
+verify "comments and blank lines are not keys" {
+    str m = "[deps]\n# money = { path = \"x\" }\n\nreal = { path = \"y\" }\n";
+    assert str_eq(toml_keys(toml_section(m, "deps")), ",real,") == 1;
+}
