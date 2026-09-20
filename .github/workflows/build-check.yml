@@ -112,6 +112,11 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # Break valid programs on purpose. Four bugs in one week were the error
+    # path being untested; this goes looking rather than waiting for a fifth.
+    - name: Malformed Input Is Rejected, Not Crashed On
+      run: python3 test_suite/malformed_input.py
+
     # `strata check` says exactly what it said when it was a Python script.
     - name: strata check Is Unchanged And Needs No Python
       run: python3 test_suite/check_cli_diff.py

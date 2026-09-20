@@ -641,6 +641,12 @@ Node parse_report(P &p) {
 
     while (p_check(&p, 51) == 0) {
         if (p_at_end(&p) == 1) { break; }
+        // Where this turn of the loop started. A report body understands three
+        // words; anything else used to match none of the branches, consume
+        // nothing, and come round again — so a typo inside a report hung the
+        // compiler for ever rather than reporting a line. The oracle raises
+        // here, and now so does this.
+        int before = p.pos;
         if (p_at_word(&p, "title") == 1) {
             p_advance(&p); p_expect(&p, 57);
             Token title_tok = p_advance(&p);
@@ -681,6 +687,14 @@ Node parse_report(P &p) {
                 nv_push(&mets, m);
             }
             p_expect(&p, 51);
+        }
+        if (p.pos == before) {
+            Token bad = p_peek(&p, 0);
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "Unexpected token in report '");
+            sb_append(&sb, bad.value);
+            sb_append(&sb, "'");
+            parse_fail(sb_to_str(&sb), bad.line, bad.col);
         }
     }
     p_expect(&p, 51);

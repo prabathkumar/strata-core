@@ -56,8 +56,23 @@ def vec_push(TokVec &v, Token t) {
     ";
 }
 
+// Reading past the end gives back the last token, which is always EOF.
+//
+// It used to read past the array and hand the parser whatever was in memory
+// there. A file that simply stops -- `int main() { list[` -- walked the
+// parser off the end and segfaulted the compiler, with no diagnostic and
+// nothing to point at. Clamping turns every one of those into the parser
+// asking for something and finding EOF, which is a normal parse error with a
+// line and a column.
 Token vec_get(TokVec &v, int i) {
-    native "return ((Token**)(uintptr_t)$v->ptr)[$i];";
+    native "
+    int64_t _n = $v->len;
+    if (_n <= 0) return NULL;
+    int64_t _i = $i;
+    if (_i < 0) _i = 0;
+    if (_i >= _n) _i = _n - 1;
+    return ((Token**)(uintptr_t)$v->ptr)[_i];
+    ";
 }
 
 Lex lex_new(str source) {
