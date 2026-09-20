@@ -397,17 +397,50 @@ int p_at_word(P &p, str w) {
 
 Token p_expect_word(P &p, str w) {
     if (p_at_word(&p, w) == 0) {
-        eprint("[STRATA PARSE ERROR] expected keyword");
-        eprint(w);
+        Token bad = p_peek(&p, 0);
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Expected '");
+        sb_append(&sb, w);
+        sb_append(&sb, "', got '");
+        sb_append(&sb, bad.value);
+        sb_append(&sb, "'");
+        parse_fail(sb_to_str(&sb), bad.line, bad.col);
     }
     return p_advance(&p);
+}
+
+// A parse error stops the parse.
+//
+// It used to print a line and carry on, which meant the tree kept being built
+// out of tokens the grammar had already rejected. `strata check` then reported
+// "No errors. OK" for a file that does not parse, and `strata build` generated
+// C from the wreckage -- so a misplaced `=` reached the user as a screenful of
+// C compiler errors instead of a line and a column. The oracle has always
+// raised here; this is the same message and the same stop.
+def parse_fail(str message, int line, int col) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[STRATA PARSE ERROR] ");
+    sb_append(&sb, message);
+    sb_append(&sb, " at line ");
+    sb_append(&sb, str(line));
+    sb_append(&sb, ", col ");
+    sb_append(&sb, str(col));
+    eprint(sb_to_str(&sb));
+    native "exit(1);";
 }
 
 Token p_expect(P &p, int kind) {
     if (p_check(&p, kind) == 0) {
         Token bad = p_peek(&p, 0);
-        eprint("[STRATA PARSE ERROR] unexpected token");
-        eprint(bad.value);
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Expected ");
+        sb_append(&sb, kind_name(kind));
+        sb_append(&sb, ", got '");
+        sb_append(&sb, bad.value);
+        sb_append(&sb, "' (");
+        sb_append(&sb, kind_name(bad.kind));
+        sb_append(&sb, ")");
+        parse_fail(sb_to_str(&sb), bad.line, bad.col);
     }
     return p_advance(&p);
 }
@@ -1441,8 +1474,14 @@ Node parse_unit(P &p) {
             else { if (is_type_kind(k) == 0) {
                     if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
                                         if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
-                                                        eprint("[STRATA PARSE ERROR] unexpected top-level token");
-                                                        p_advance(&p);
+                                                        Token badtop = p_peek(&p, 0);
+                                                        StringBuilder tsb = sb_new();
+                                                        sb_append(&tsb, "Expected a declaration, got '");
+                                                        sb_append(&tsb, badtop.value);
+                                                        sb_append(&tsb, "' (");
+                                                        sb_append(&tsb, kind_name(badtop.kind));
+                                                        sb_append(&tsb, ")");
+                                                        parse_fail(sb_to_str(&tsb), badtop.line, badtop.col);
                                                     } } } }
                                     } } } } }
                 } } }

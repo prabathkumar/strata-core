@@ -178,11 +178,9 @@ as an oracle to compare against.
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-8. `bin/strata build` now runs the self-hosted driver, with
-   `STRATA_BOOTSTRAP=1` as the way back. The bootstrap is still what every
-   other subcommand runs -- `check`, `ast`, `lex`, `test`, `repair` and `fmt`
-   all go through Python, and `strata check` is a Python type checker
-   entirely. The build is self-hosted; the toolchain around it is not.
+8. `build`, `check`, `fmt` and `deps` are self-hosted, with
+   `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
+   `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
 ### Corrected rather than deleted
 

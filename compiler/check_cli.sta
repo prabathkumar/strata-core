@@ -1,0 +1,137 @@
+// STRATA COMPILER — compiler/check_cli.sta
+//
+//   strata-check <file.sta>
+//
+// The same check `strata build` runs, on its own: imports resolved first, so
+// the checker sees what the compiler sees. Without that, a file importing its
+// own schema is checked knowing nothing about `database Order`, and the first
+// thing a newcomer runs tells them their code is broken when it is not.
+//
+// This was a Python script inside the toolchain. The check itself has been
+// Strata for some time; only the reporting around it was not.
+
+import io          from std;
+import cli         from std;
+import mem         from std;
+import str         from std;
+import lexer       from compiler;
+import parser      from compiler;
+import taxonomy    from compiler;
+import diagnostics from compiler;
+import typechecker from compiler;
+
+str install_root() {
+    str pinned = env("STRATA_ROOT");
+    if (str_len(pinned) > 0) { return pinned; }
+    return ".";
+}
+
+// One diagnostic as the toolchain has always printed it:
+//   [E001] message (line 3, col 12)
+//     Hint: ...
+str rendered(str record) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    sb_append(&sb, field_at(record, 0));
+    sb_append(&sb, "] ");
+    sb_append(&sb, field_at(record, 4));
+    sb_append(&sb, " (");
+    str in_file = field_at(record, 1);
+    if (str_len(in_file) > 0) {
+        sb_append(&sb, in_file);
+        sb_append(&sb, ":");
+    }
+    sb_append(&sb, "line ");
+    sb_append(&sb, field_at(record, 2));
+    sb_append(&sb, ", col ");
+    sb_append(&sb, field_at(record, 3));
+    sb_append(&sb, ")");
+    str hint = field_at(record, 5);
+    if (str_len(hint) > 0) {
+        sb_append(&sb, "\n  Hint: ");
+        sb_append(&sb, hint);
+    }
+    return sb_to_str(&sb);
+}
+
+int main() {
+    str path = arg(1);
+    if (str_len(path) == 0) {
+        eprint("Usage: strata check <file.sta>");
+        return 1;
+    }
+    if (file_exists(path) == 0) {
+        eprint(str_concat("[STRATA ERROR] No such file: ", path));
+        return 1;
+    }
+    print(str_concat(str_concat("[Strata Check] Analysing '", path), "'..."));
+
+    str root = install_root();
+    str tax = file_read(taxonomy_path(root));
+    Node unit = parse_source(file_read(path));
+
+    diag_capture_begin();
+    check_unit_project(root, dir_of(path), unit);
+    str log = diag_capture_end();
+
+    // Advisories are printed and do not fail the check; anything else is
+    // collected so the count comes before the list, the way it always has.
+    StringBuilder hard = sb_new();
+    int halting = 0;
+    int n = str_len(log);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (log[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str record = str_slice(log, start, i);
+        start = i + 1;
+        if (str_len(record) == 0) { continue; }
+
+        if (is_advisory(tax, field_at(record, 0)) == 1) {
+            print(str_concat("[Strata Check] advisory: ", rendered(record)));
+        }
+        if (is_advisory(tax, field_at(record, 0)) == 0) {
+            sb_append(&hard, "  ");
+            sb_append(&hard, rendered(record));
+            sb_append(&hard, "\n");
+            halting = halting + 1;
+        }
+    }
+
+    if (halting > 0) {
+        StringBuilder head = sb_new();
+        sb_append(&head, "[Strata Check] ");
+        sb_append(&head, str(halting));
+        sb_append(&head, " error(s) found:");
+        eprint(sb_to_str(&head));
+        StringBuilder body = sb_new();
+        sb_append(&body, sb_to_str(&hard));
+        eprint_raw(sb_to_str(&body));
+        return 1;
+    }
+
+    NodeVec mods = nv_new();
+    str seen = "";
+    int unresolved = 0;
+    collect_modules_from(root, dir_of(path), unit, &mods, &seen, &unresolved);
+
+    NodeVec imports = nv_at(unit.v1);
+    NodeVec decls = nv_at(unit.v2);
+    NodeVec fns = nv_at(unit.v3);
+    StringBuilder line = sb_new();
+    sb_append(&line, "  ");
+    sb_append(&line, str(imports.len));
+    sb_append(&line, " imports, ");
+    sb_append(&line, str(mods.len));
+    sb_append(&line, " resolved module(s), ");
+    sb_append(&line, str(decls.len));
+    sb_append(&line, " decls, ");
+    sb_append(&line, str(fns.len));
+    sb_append(&line, " functions");
+    print(sb_to_str(&line));
+    print("[Strata Check] No errors. OK");
+    return 0;
+}

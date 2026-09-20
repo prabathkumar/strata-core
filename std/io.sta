@@ -13,6 +13,12 @@ def print_int(int value) {
     native "printf(\"%lld\\n\", (long long)$value);";
 }
 
+// Like eprint, but writes the text exactly: no newline is added. For output
+// that already carries its own line breaks.
+def eprint_raw(str message) {
+    native "fputs($message, stderr);";
+}
+
 def eprint(str message) {
     native "fprintf(stderr, \"%s\\n\", $message);";
 }

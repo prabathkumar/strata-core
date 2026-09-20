@@ -159,45 +159,28 @@ cmd_check() {
     # complaint. A checker that disagrees with the compiler is worse than no
     # checker: the first thing a newcomer runs told them their code was
     # broken when it was not.
+    #
+    # This was a Python script embedded here. The check has been Strata for
+    # some time; only the reporting around it was not, and a second
+    # implementation of "which diagnostics stop a build" is a second thing to
+    # get wrong -- `strata check` once treated the E007 advisory as an error,
+    # which is the opposite of what the taxonomy says.
     local f="$1"
     if [ -z "$f" ]; then echo "Usage: strata check <file.sta>"; exit 1; fi
-    echo "[Strata Check] Analysing '$f'..."
-    python3 - "$f" << 'PYEOF'
-import sys, os
-sys.path.insert(0, os.environ["STRATA_ROOT"])
-from compiler.lexer import LexError
-from compiler.parser import ParseError
-from bootstrap.stage0 import parse_file, resolve_imports
-from compiler.typechecker import TypeChecker
 
-f = sys.argv[1]
-try:
-    ast = parse_file(f)
-    modules, _, root_unresolved, app_modules = resolve_imports(ast, f)
-    errs = TypeChecker(ast, filename=f,
-                       modules=None if root_unresolved else modules,
-                       unresolved_imports=root_unresolved,
-                       project_modules=app_modules).check()
-except (LexError, ParseError) as e:
-    print(str(e), file=sys.stderr); sys.exit(1)
-
-# E007 is the advisory: an import with no local checkout is reported and the
-# build continues. `strata check` treated it as an error and exited non-zero,
-# which is the opposite of what the taxonomy says.
-ADVISORY_CODES = {"E007"}
-advisories = [e for e in errs if e.code in ADVISORY_CODES]
-hard = [e for e in errs if e.code not in ADVISORY_CODES]
-for e in advisories:
-    print(f"[Strata Check] advisory: {e}")
-if hard:
-    print(f"[Strata Check] {len(hard)} error(s) found:", file=sys.stderr)
-    for e in hard:
-        print(f"  {e}", file=sys.stderr)
-    sys.exit(1)
-print(f"  {len(ast.imports)} imports, {len(modules)} resolved module(s), "
-      f"{len(ast.declarations)} decls, {len(ast.functions)} functions")
-print("[Strata Check] No errors. OK")
-PYEOF
+    local cache="$ROOT/build"
+    if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+        cache="${XDG_CACHE_HOME:-$HOME/.cache}/strata"
+        mkdir -p "$cache"
+    fi
+    local bin="$cache/strata-check"
+    local newest
+    newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
+    if [ ! -x "$bin" ] || [ -n "$newest" ]; then
+        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/check_cli.sta" \
+            -o "$bin" >/dev/null || { echo "could not build strata check" >&2; return 1; }
+    fi
+    "$bin" "$f"
 }
 
 cmd_lex() { python3 "$ROOT/compiler/lexer.py" "$@"; }

@@ -112,6 +112,10 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # `strata check` says exactly what it said when it was a Python script.
+    - name: strata check Is Unchanged And Needs No Python
+      run: python3 test_suite/check_cli_diff.py
+
     # Two projects sharing a library, from an empty directory: declare,
     # resolve, build against it, change the library and see the change.
     - name: A Project Can Depend On Another Project
