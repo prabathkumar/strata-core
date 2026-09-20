@@ -140,6 +140,65 @@ def main():
         check("a git dependency with no pinned revision is refused",
               r.returncode != 0 and "rev" in r.stderr.lower(), r.stderr[-200:])
 
+        # A dependency has dependencies of its own. shop -> money -> fmtlib:
+        # fmtlib is never named by shop, and shop must still get it.
+        fmt = os.path.join(tmp, "fmt")
+        write(os.path.join(fmt, "Strata.toml"), '[package]\nname = "fmtlib"\n')
+        write(os.path.join(fmt, "src", "pad.sta"),
+              'import mem from std;\nimport str from std;\n\n'
+              'str pad_left(str s, int width) {\n'
+              '    StringBuilder sb = sb_new();\n'
+              '    int n = str_len(s);\n'
+              '    for (int i = n; i < width; i = i + 1) { sb_append(&sb, " "); }\n'
+              '    sb_append(&sb, s);\n'
+              '    return sb_to_str(&sb);\n}\n')
+        write(os.path.join(lib, "Strata.toml"),
+              '[package]\nname = "money"\n\n[dependencies]\n'
+              'fmtlib = { path = "../fmt" }\n')
+        write(os.path.join(lib, "src", "rounding.sta"),
+              'import mem from std;\nimport str from std;\nimport pad from fmtlib;\n\n'
+              'str cents(float amount) {\n'
+              '    float r = float(int(amount * 100.0 + 0.5)) / 100.0;\n'
+              '    return pad_left(str_fixed(r, 2), 8);\n}\n')
+        write(os.path.join(app, "src", "main.sta"),
+              'import io       from std;\nimport rounding from money;\n\n'
+              'int main() {\n    print(cents(12.3456));\n    return 0;\n}\n')
+
+        shutil.rmtree(os.path.join(app, ".strata"), ignore_errors=True)
+        r = strata("deps", "-v", cwd=app)
+        check("a dependency's own dependency is fetched too",
+              r.returncode == 0
+              and os.path.isdir(os.path.join(app, ".strata", "deps", "fmtlib")),
+              r.stdout[-200:] + r.stderr[-200:])
+        if os.path.isfile(lock):
+            text = open(lock).read()
+            check("the lock says who asked for it",
+                  '[fmtlib]' in text and 'asked-by = "money"' in text, text[-200:])
+        r = strata("build", cwd=app)
+        out = subprocess.run([binary], cwd=app, capture_output=True, text=True,
+                             timeout=60) if r.returncode == 0 else None
+        check("and the program uses it",
+              out is not None and out.stdout.strip() == "12.35",
+              (r.stdout + r.stderr)[-300:] if out is None else repr(out.stdout))
+
+        # Two packages naming the same dependency differently. There is no
+        # version solving, so this is reported rather than decided.
+        other = os.path.join(tmp, "other_fmt")
+        write(os.path.join(other, "Strata.toml"), '[package]\nname = "fmtlib"\n')
+        write(os.path.join(other, "src", "pad.sta"),
+              'str pad_left(str s, int w) { return s; }\n')
+        write(os.path.join(app, "Strata.toml"),
+              '[package]\nname = "shop"\n\n'
+              '[build]\nmain = "src/main.sta"\noutput = "build/shop"\n\n'
+              '[dependencies]\nmoney  = { path = "../money" }\n'
+              'fmtlib = { path = "../other_fmt" }\n')
+        shutil.rmtree(os.path.join(app, ".strata"), ignore_errors=True)
+        r = strata("deps", cwd=app)
+        check("a disagreement about one name is reported, naming both askers",
+              r.returncode != 0 and "disagree" in r.stderr
+              and "money" in r.stderr and "other_fmt" in r.stderr,
+              r.stderr[-300:])
+
         # Nothing declared is not an error.
         plain = os.path.join(tmp, "plain")
         write(os.path.join(plain, "Strata.toml"), '[package]\nname = "plain"\n')

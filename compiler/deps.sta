@@ -44,8 +44,16 @@ str dep_target(str project, str name) {
 // two projects at once; a copy would go stale silently, which is the thing
 // this replaces.
 int link_path_dep(str project, str name, str rel, int verbose) {
+    return link_path_dep_from(project, project, name, rel, verbose);
+}
+
+// `relative_to` is the directory the path was written in: the project for a
+// dependency this project declares, and the dependency's own directory for
+// one it declares in turn. `root` is always where the link is made, because
+// the compiler looks in exactly one place.
+int link_path_dep_from(str root, str relative_to, str name, str rel, int verbose) {
     StringBuilder src = sb_new();
-    sb_append(&src, project);
+    sb_append(&src, relative_to);
     sb_append(&src, "/");
     sb_append(&src, rel);
     str source_dir = sb_to_str(&src);
@@ -60,8 +68,13 @@ int link_path_dep(str project, str name, str rel, int verbose) {
     // would be read relative to the link instead and point somewhere else --
     // ../money became .strata/money, and the build failed at the linker with
     // no sign of why. Resolve it to an absolute path first.
+    // -P, because the directory being resolved is often reached THROUGH a
+    // link: a dependency of a dependency is a path written relative to a
+    // package that is itself a link in .strata/deps/. Without it the shell
+    // resolves `..` lexically and lands one directory above the link instead
+    // of one above what it points at.
     StringBuilder pwd = sb_new();
-    sb_append(&pwd, "cd '");
+    sb_append(&pwd, "cd -P '");
     sb_append(&pwd, source_dir);
     sb_append(&pwd, "' && pwd");
     str absolute = capture(sb_to_str(&pwd));
@@ -74,7 +87,7 @@ int link_path_dep(str project, str name, str rel, int verbose) {
     sb_append(&cmd, "ln -sfn '");
     sb_append(&cmd, absolute);
     sb_append(&cmd, "' '");
-    sb_append(&cmd, dep_target(project, name));
+    sb_append(&cmd, dep_target(root, name));
     sb_append(&cmd, "'");
     if (run(sb_to_str(&cmd)) != 0) {
         eprint(str_concat("[STRATA DEPS] could not link ", name));
@@ -132,78 +145,90 @@ int fetch_git_dep(str project, str name, str url, str rev, int verbose) {
     return 0;
 }
 
-// What was resolved, written beside the manifest. Commit it: it is the record
-// of what a build actually used, and the only thing that makes two machines
-// agree.
-str lock_text(str manifest) {
-    str section = toml_section(manifest, "dependencies");
-    str keys = toml_keys(section);
+// ── Resolving the graph ───────────────────────────────────────────────────
+//
+// A dependency has dependencies of its own. They are fetched into the same
+// .strata/deps/ as everything else -- one flat directory, because that is
+// where the compiler looks and because two copies of the same library in one
+// program is a class of bug rather than a feature.
+//
+// Flat means two packages can ask for the same name and disagree about which
+// one they mean. There is no version solving here and there should not be one
+// pretending: the disagreement is reported, naming both askers, and the build
+// stops. Choosing for the user silently is how a program ends up running code
+// nobody chose.
 
-    StringBuilder out = sb_new();
-    sb_append(&out, "# Strata.lock — written by `strata deps`. Commit it.\n");
-    sb_append(&out, "#\n");
-    sb_append(&out, "# This is what the last resolve produced. A path dependency records the\n");
-    sb_append(&out, "# path as declared, not where it landed on one machine; a git dependency\n");
-    sb_append(&out, "# records the exact revision.\n");
-
-    int n = str_len(keys);
-    int start = 1;
-    for (int i = 1; i <= n; i = i + 1) {
-        int at_end = 0;
-        if (i == n) { at_end = 1; }
-        int is_comma = 0;
-        if (at_end == 0) { if (keys[i] == 44) { is_comma = 1; } }
-        if (is_comma == 0) { if (at_end == 0) { continue; } }
-        str name = str_slice(keys, start, i);
-        start = i + 1;
-        if (str_len(name) == 0) { continue; }
-
-        str spec = toml_get(section, name);
-        str path = toml_field(spec, "path");
-        str git = toml_field(spec, "git");
-        str rev = toml_field(spec, "rev");
-
-        sb_append(&out, "\n[");
-        sb_append(&out, name);
-        sb_append(&out, "]\n");
-        if (str_len(path) > 0) {
-            sb_append(&out, "kind = \"path\"\npath = \"");
-            sb_append(&out, path);
-            sb_append(&out, "\"\n");
-        }
-        if (str_len(git) > 0) {
-            sb_append(&out, "kind = \"git\"\ngit = \"");
-            sb_append(&out, git);
-            sb_append(&out, "\"\nrev = \"");
-            sb_append(&out, rev);
-            sb_append(&out, "\"\n");
-        }
+// How a dependency was named, as one comparable string.
+str spec_key(str spec) {
+    str path = toml_field(spec, "path");
+    if (str_len(path) > 0) { return str_concat("path:", path); }
+    str git = toml_field(spec, "git");
+    if (str_len(git) > 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "git:");
+        sb_append(&sb, git);
+        sb_append(&sb, "@");
+        sb_append(&sb, toml_field(spec, "rev"));
+        return sb_to_str(&sb);
     }
-    return sb_to_str(&out);
+    return "";
 }
 
-// Resolve every declared dependency. 0 when they are all in place.
-int resolve_deps(str project, int verbose) {
+// A record per resolved package: name, spec key, and who asked for it,
+// newline separated and tab delimited.
+str record_of(str resolved, str name) {
+    int n = str_len(resolved);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (resolved[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str line = str_slice(resolved, start, i);
+        start = i + 1;
+        int tab = str_index_of(line, "\t");
+        if (tab > 0) {
+            if (str_eq(str_slice(line, 0, tab), name) == 1) { return line; }
+        }
+    }
+    return "";
+}
+
+str field_of(str record, int index) {
+    int n = str_len(record);
+    int field = 0;
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_tab = 0;
+        if (at_end == 0) { if (record[i] == 9) { is_tab = 1; } }
+        if (is_tab == 1 || at_end == 1) {
+            if (field == index) { return str_slice(record, start, i); }
+            field = field + 1;
+            start = i + 1;
+        }
+    }
+    return "";
+}
+
+// Every dependency one manifest declares, resolved into `root`'s deps
+// directory. Anything newly fetched is appended to `queue` so its own
+// manifest is read in turn.
+int resolve_one_manifest(str root, str manifest_dir, str asker, str &resolved,
+str &queue, int verbose) {
     StringBuilder mf = sb_new();
-    sb_append(&mf, project);
+    sb_append(&mf, manifest_dir);
     sb_append(&mf, "/Strata.toml");
     str manifest_path = sb_to_str(&mf);
-    if (file_exists(manifest_path) == 0) {
-        eprint(str_concat("[STRATA DEPS] no Strata.toml in ", project));
-        return 1;
-    }
-    str manifest = file_read(manifest_path);
-    str section = toml_section(manifest, "dependencies");
-    str keys = toml_keys(section);
-    if (str_len(keys) < 2) {
-        if (verbose == 1) { print("  no dependencies declared"); }
-        return 0;
-    }
+    // A dependency need not be a project: a bare folder of modules has no
+    // manifest and therefore no dependencies of its own.
+    if (file_exists(manifest_path) == 0) { return 0; }
 
-    if (make_dir(deps_dir(project)) == 0) {
-        eprint(str_concat("[STRATA DEPS] could not create ", deps_dir(project)));
-        return 1;
-    }
+    str section = toml_section(file_read(manifest_path), "dependencies");
+    str keys = toml_keys(section);
+    if (str_len(keys) < 2) { return 0; }
 
     int failures = 0;
     int n = str_len(keys);
@@ -219,32 +244,170 @@ int resolve_deps(str project, int verbose) {
         if (str_len(name) == 0) { continue; }
 
         str spec = toml_get(section, name);
-        str path = toml_field(spec, "path");
-        str git = toml_field(spec, "git");
-        str rev = toml_field(spec, "rev");
+        str key = spec_key(spec);
+        if (str_len(key) == 0) {
+            eprint(str_concat("[STRATA DEPS] dependency '", str_concat(name, "' names neither a path nor a git repository")));
+            eprint(str_concat("  declared by ", asker));
+            failures = failures + 1;
+            continue;
+        }
 
+        str already = record_of(resolved, name);
+        if (str_len(already) > 0) {
+            if (str_eq(field_of(already, 1), key) == 1) { continue; }
+            eprint(str_concat("[STRATA DEPS] two packages disagree about '", str_concat(name, "'")));
+            eprint(str_concat("  ", str_concat(field_of(already, 2), str_concat(" asks for ", field_of(already, 1)))));
+            eprint(str_concat("  ", str_concat(asker, str_concat(" asks for ", key))));
+            eprint("  There is no version solving here, and guessing for you would mean");
+            eprint("  running code nobody chose. Make them agree.");
+            failures = failures + 1;
+            continue;
+        }
+
+        str path = toml_field(spec, "path");
         if (str_len(path) > 0) {
-            failures = failures + link_path_dep(project, name, path, verbose);
+            // A path inside a dependency is relative to that dependency, not
+            // to the project being built.
+            failures = failures + link_path_dep_from(root, manifest_dir, name, path, verbose);
         }
         if (str_len(path) == 0) {
-            if (str_len(git) > 0) {
-                failures = failures + fetch_git_dep(project, name, git, rev, verbose);
-            }
-            if (str_len(git) == 0) {
-                eprint(str_concat("[STRATA DEPS] dependency '", str_concat(name, "' names neither a path nor a git repository")));
-                failures = failures + 1;
-            }
+            failures = failures + fetch_git_dep(root, name, toml_field(spec, "git"),
+            toml_field(spec, "rev"), verbose);
         }
+
+        StringBuilder rec = sb_new();
+        sb_append(&rec, resolved);
+        sb_append(&rec, name);
+        sb_append(&rec, "\t");
+        sb_append(&rec, key);
+        sb_append(&rec, "\t");
+        sb_append(&rec, asker);
+        sb_append(&rec, "\n");
+        resolved = sb_to_str(&rec);
+
+        StringBuilder q = sb_new();
+        sb_append(&q, queue);
+        sb_append(&q, name);
+        sb_append(&q, "\n");
+        queue = sb_to_str(&q);
+    }
+    return failures;
+}
+
+// What was resolved, written beside the manifest. Commit it: it is the record
+// of what a build actually used, and the only thing that makes two machines
+// agree.
+str lock_text(str resolved) {
+    StringBuilder out = sb_new();
+    sb_append(&out, "# Strata.lock — written by `strata deps`. Commit it.\n");
+    sb_append(&out, "#\n");
+    sb_append(&out, "# Every package a build of this project uses, including the ones reached\n");
+    sb_append(&out, "# through another package. A path dependency records the path as declared,\n");
+    sb_append(&out, "# not where it landed on one machine; a git dependency records the exact\n");
+    sb_append(&out, "# revision. `asked-by` is what pulled it in.\n");
+
+    int n = str_len(resolved);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (resolved[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str line = str_slice(resolved, start, i);
+        start = i + 1;
+        if (str_len(line) == 0) { continue; }
+
+        str name = field_of(line, 0);
+        str key = field_of(line, 1);
+        sb_append(&out, "\n[");
+        sb_append(&out, name);
+        sb_append(&out, "]\n");
+        if (str_starts_with(key, "path:") == 1) {
+            sb_append(&out, "kind = \"path\"\npath = \"");
+            sb_append(&out, str_slice(key, 5, str_len(key)));
+            sb_append(&out, "\"\n");
+        }
+        if (str_starts_with(key, "git:") == 1) {
+            str rest = str_slice(key, 4, str_len(key));
+            int at = -1;
+            int rn = str_len(rest);
+            for (int j = 0; j < rn; j = j + 1) { if (rest[j] == 64) { at = j; } }
+            sb_append(&out, "kind = \"git\"\ngit = \"");
+            if (at >= 0) { sb_append(&out, str_slice(rest, 0, at)); }
+            sb_append(&out, "\"\nrev = \"");
+            if (at >= 0) { sb_append(&out, str_slice(rest, at + 1, rn)); }
+            sb_append(&out, "\"\n");
+        }
+        sb_append(&out, "asked-by = \"");
+        sb_append(&out, field_of(line, 2));
+        sb_append(&out, "\"\n");
+    }
+    return sb_to_str(&out);
+}
+
+// Resolve the whole graph. 0 when every package is in place.
+int resolve_deps(str project, int verbose) {
+    StringBuilder mf = sb_new();
+    sb_append(&mf, project);
+    sb_append(&mf, "/Strata.toml");
+    if (file_exists(sb_to_str(&mf)) == 0) {
+        eprint(str_concat("[STRATA DEPS] no Strata.toml in ", project));
+        return 1;
+    }
+    if (make_dir(deps_dir(project)) == 0) {
+        eprint(str_concat("[STRATA DEPS] could not create ", deps_dir(project)));
+        return 1;
+    }
+
+    str resolved = "";
+    str queue = "";
+    int failures = resolve_one_manifest(project, project, "this project",
+    &resolved, &queue, verbose);
+
+    // Walk what the first pass queued, then what those queued, and so on. The
+    // bound is a guard against a cycle of path dependencies pointing at each
+    // other, not a limit anyone should reach.
+    int done = 0;
+    for (int pass = 0; pass < 64; pass = pass + 1) {
+        str line = queue_at(queue, done);
+        if (str_len(line) == 0) { break; }
+        done = done + 1;
+        StringBuilder dir = sb_new();
+        sb_append(&dir, deps_dir(project));
+        sb_append(&dir, "/");
+        sb_append(&dir, line);
+        failures = failures + resolve_one_manifest(project, sb_to_str(&dir), line,
+        &resolved, &queue, verbose);
     }
 
     if (failures > 0) { return 1; }
+    if (str_len(resolved) == 0) {
+        if (verbose == 1) { print("  no dependencies declared"); }
+        return 0;
+    }
 
     StringBuilder lf = sb_new();
     sb_append(&lf, project);
     sb_append(&lf, "/Strata.lock");
-    if (file_write(sb_to_str(&lf), lock_text(manifest)) == 0) {
+    if (file_write(sb_to_str(&lf), lock_text(resolved)) == 0) {
         eprint("[STRATA DEPS] could not write Strata.lock");
         return 1;
     }
     return 0;
+}
+
+// Line `index` of a newline-separated list, or "" past the end.
+str queue_at(str text, int index) {
+    int n = str_len(text);
+    int line = 0;
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (line == index) { return str_slice(text, start, i); }
+            line = line + 1;
+            start = i + 1;
+        }
+    }
+    return "";
 }

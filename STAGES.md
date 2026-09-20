@@ -169,8 +169,11 @@ as an oracle to compare against.
    usernames — that needs a rate limit, which this is not.
 5. Nothing has run on a handset. `apps/orders_mobile/android/` is reviewed
    design, not tested code, and iOS has no shell at all.
-6. There is no package manager, so two projects cannot share a library except
-   by copying files.
+6. There is no registry and no version solving. A dependency is a path or a
+   git revision, named exactly; `strata deps` fetches the graph, including
+   dependencies of dependencies, and refuses when two packages disagree about
+   one name rather than choosing for you. Nothing publishes, nothing searches,
+   and "^1.2" means nothing here.
 7. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
