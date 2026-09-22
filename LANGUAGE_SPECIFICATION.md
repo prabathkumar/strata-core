@@ -225,6 +225,45 @@ An insert must name every column (E009).
 
 `delete Ticket <- [state == "CLOSED"];` removes the matching rows.
 
+### `scan` — a table too big to hold
+
+```text
+import io from std;
+
+database Reading { int sensor; float value; }
+
+int main() {
+    float total = 0.0;
+    int n = 0;
+    scan Reading from "readings.tsv" as r {
+        if (r.value > 0.0) { total = total + r.value; n = n + 1; }
+    }
+    print(str(n));
+    return 0;
+}
+```
+
+`load` reads a whole table into the process. That is right when the table is
+small and impossible when it is not. A scan reads one row at a time into a
+single reused row, so a file of any size costs what one row costs — measured
+at effectively nothing for a file that a load reads in 23MB, and the same for
+one twenty times larger.
+
+Three things follow from reusing one row, and all of them are deliberate:
+
+- **The row does not outlive its turn.** Keeping a reference to it and reading
+  that reference after the loop reads the next row, or freed memory. Copy what
+  you need into your own variables, which is what the example does.
+- **A scan does not touch the table in memory.** It is a read of a file, not a
+  load: the table is exactly as full or as empty afterwards as it was before.
+- **There is no filter clause.** The body has `if`, and a condition in the
+  body costs the same as one in the header would.
+
+A scan makes the same checks a load makes — the header's table name, the
+column names and types, and every value — and refuses the file for the same
+reasons rather than being a quieter way into the same data.
+
+
 ### `::` — cast
 
 `value :: RecordType` reinterprets a value as a record type. It is a pointer

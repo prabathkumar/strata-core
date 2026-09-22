@@ -420,6 +420,24 @@ class ForInStmt(Node):
                                "body":[s.to_dict() for s in self.body]}
 
 @dataclass
+class ScanStmt(Node):
+    """`scan T from "p" as row { ... }` — one row at a time, off disk.
+
+    A load reads a whole table into the process, which is right when the
+    table is small and impossible when it is not. A scan holds one row: the
+    file is read as it goes and nothing accumulates, so a hundred million
+    rows cost what one row costs. It does not touch the table in memory, and
+    the body cannot keep a row past its turn.
+    """
+    table: str
+    var: str
+    path: str
+    body: List[Any]
+    def to_dict(self): return {"node":"ScanStmt","table":self.table,
+                               "var":self.var,"path":self.path,
+                               "body":[s.to_dict() for s in self.body]}
+
+@dataclass
 class Param(Node):
     param_type: Any
     name: str
@@ -860,6 +878,11 @@ class Parser:
             if self._check(TT.SEMICOLON): self._advance()
             return ExprStmt(t2.line,t2.col,CallExpr(t2.line,t2.col,'native',[StrLiteral(val.line,val.col,val.value)]))
 
+        # `scan T from "p" as row { ... }` — streaming iteration.
+        if self._at_word("scan") and self._peek_at(1).type == TT.IDENT \
+           and self._peek_at(2).type == TT.KW_FROM:
+            return self._parse_scan()
+
         # `Table <- [...]` in statement position is an insert, distinct from
         # the query expression form `list[T] x = Table <- [col == v];`
         if self._check(TT.IDENT) and self._peek_at(1).type == TT.ARROW_L:
@@ -1161,6 +1184,16 @@ class Parser:
             target = self._consume(TT.IDENT).value
             return CastExpr(expr.line, expr.col, expr, target)
         return expr
+
+    def _parse_scan(self):
+        t = self._advance()                       # contextual `scan`
+        table = self._consume(TT.IDENT).value
+        self._consume(TT.KW_FROM)
+        path = self._consume(TT.STR_LIT).value
+        self._consume_word("as")
+        var = self._consume(TT.IDENT).value
+        body = self._parse_block()
+        return ScanStmt(t.line, t.col, table, var, path, body)
 
     def _parse_storage_op(self):
         """`save T to "p"`, `load T from "p" [<- [cond]]`, `delete T <- [cond]`.

@@ -395,6 +395,41 @@ test("assert_group_sees_outer_scope",
 test("field_access_on_list_is_e003",
     'database M { int id; str name; }\nint main() { list[M] rows = M <- [id == 1]; str n = rows.name; return 0; }', "E003")
 
+print("\n── Scanning a stored table ───────────────────────────────────────")
+_SCAN_W = ('import io from std;\ndatabase S { int id; str who; float amt; }\n'
+           'int main() { S <- [id = 1, who = "a", amt = 1.50]; '
+           'S <- [id = 2, who = "b", amt = 2.25]; S <- [id = 3, who = "c", amt = 0.25];\n'
+           '  save S to "s.tsv"; print("saved"); return 0; }')
+
+compile_run_in("scan_reads_every_row",
+    [_SCAN_W, 'import io from std;\ndatabase S { int id; str who; float amt; }\n'
+     'int main() { int n = 0; scan S from "s.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+    "saved\n3")
+compile_run_in("scan_sees_the_columns",
+    [_SCAN_W, 'import io from std;\nimport mem from std;\ndatabase S { int id; str who; float amt; }\n'
+     'int main() { str names = ""; float total = 0.0;\n'
+     '  scan S from "s.tsv" as r { names = str_concat(names, r.who); total = total + r.amt; }\n'
+     '  print(names); print(str(total)); return 0; }'],
+    "saved\nabc\n4.0")
+compile_run_in("scan_body_can_filter",
+    [_SCAN_W, 'import io from std;\ndatabase S { int id; str who; float amt; }\n'
+     'int main() { int n = 0; scan S from "s.tsv" as r { if (r.amt > 1.0) { n = n + 1; } } print(str(n)); return 0; }'],
+    "saved\n2")
+compile_run_in("scan_leaves_the_table_in_memory_alone",
+    [_SCAN_W, 'import io from std;\ndatabase S { int id; str who; float amt; }\n'
+     'int main() { scan S from "s.tsv" as r { } print(str(strata_len(S <- [id > 0]))); return 0; }'],
+    "saved\n0")
+compile_run_in("scan_of_a_missing_file_says_so",
+    ['import io from std;\ndatabase S { int id; }\n'
+     'int main() { int n = 0; scan S from "nope.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+    "0\n[STRATA LOAD] S: refusing to read 'nope.tsv' — there is no such file")
+compile_run_in("scan_refuses_another_tables_file",
+    [_SCAN_W, 'import io from std;\ndatabase Other { int id; str who; float amt; }\n'
+     'int main() { int n = 0; scan Other from "s.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+    "saved\n0\n[STRATA LOAD] Other: refusing to read 's.tsv' — it was saved from 'S', not this table")
+test("scan_of_an_undeclared_table_is_e004",
+     'int main() { scan Ghost from "x.tsv" as r { } return 0; }', "E004")
+
 print("\n── Table persistence ─────────────────────────────────────────────")
 PERSIST = ('import io from std;\ndatabase A { int id; str holder; float balance; }\n'
            'int main() { load A from "/tmp/_p.tsv";\n'

@@ -193,6 +193,7 @@ str node_name(int k) {
     if (k == 75) { return "TableIOStmt"; }
     if (k == 76) { return "DeleteStmt"; }
     if (k == 77) { return "ConstDecl"; }
+    if (k == 78) { return "ScanStmt"; }
     return "Unknown";
 }
 
@@ -325,6 +326,12 @@ str node_json(Node n) {
     if (k == 76) {
         jfield(&sb, "table", jstr(n.s1));
         jfield(&sb, "condition", jchild(n.c1));
+    }
+    if (k == 78) {
+        jfield(&sb, "table", jstr(n.s1));
+        jfield(&sb, "var", jstr(n.s2));
+        jfield(&sb, "path", jstr(n.s3));
+        jfield(&sb, "body", jlist(n.v1));
     }
     if (k == 77) {
         jfield(&sb, "name", jstr(n.s1));
@@ -885,6 +892,33 @@ Node parse_statement(P &p) {
             st.c1 = node_ptr(call);
             n_pos(st, t);
             return st;
+        }
+    }
+
+    // `scan T from "p" as row { ... }` — one row at a time, off disk.
+    //
+    // A load reads a whole table into the process, which is right when the
+    // table is small and impossible when it is not. A scan holds one row.
+    if (k == 4) {
+        if (str_eq(t.value, "scan") == 1) {
+            if (p_kind(&p, 1) == 4) {
+                if (p_kind(&p, 2) == 22) {
+                    p_advance(&p);
+                    Token stable = p_expect(&p, 4);
+                    p_expect(&p, 22);
+                    Token spath = p_expect(&p, 3);
+                    p_expect_word(&p, "as");
+                    Token svar = p_expect(&p, 4);
+                    NodeVec sbody = parse_block(&p);
+                    Node sn = node_new(78);
+                    sn.s1 = stable.value;
+                    sn.s2 = svar.value;
+                    sn.s3 = spath.value;
+                    sn.v1 = nv_ptr(sbody);
+                    n_pos(sn, t);
+                    return sn;
+                }
+            }
         }
     }
 

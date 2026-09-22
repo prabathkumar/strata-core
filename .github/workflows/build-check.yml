@@ -112,6 +112,11 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # The claim that a table need not fit in memory, measured rather than
+    # asserted: the same file both ways, with peak memory compared.
+    - name: A Scan Is Constant Memory
+      run: python3 test_suite/scan_is_constant_memory.py
+
     # The same question one level down: a service reading a damaged file.
     - name: Damaged Data Is Refused, Not Misread
       run: python3 test_suite/malformed_data.py

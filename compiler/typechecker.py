@@ -17,7 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt, ConstDecl,
-    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -382,6 +382,19 @@ class TypeChecker:
         inner=Scope(scope)
         for c in stmt.children: self._check_stmt(c,inner)
 
+    def _check_scan(self,stmt,scope):
+        """The scanned row is the table's row, so the body is checked against
+        the schema exactly as a query result would be. A scan over a table
+        that does not exist is the same mistake as a query over one."""
+        if stmt.table not in self.schemas:
+            self._error("E004",f"Database '{stmt.table}' not declared",
+                stmt.line,stmt.col,
+                f"Declare 'database {stmt.table}' before scanning it")
+            return
+        inner=Scope(scope)
+        inner.define(stmt.var,SType(stmt.table))
+        for st in stmt.body: self._check_stmt(st,inner)
+
     def _check_for_in(self,stmt,scope):
         """Bind the loop variable to the collection's element type.
 
@@ -523,6 +536,7 @@ class TypeChecker:
                     stmt.line,stmt.col,f"Declare 'database {stmt.table}' first")
         elif isinstance(stmt,Element): self._check_element(stmt,scope)
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
+        elif isinstance(stmt,ScanStmt): self._check_scan(stmt,scope)
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)
         elif isinstance(stmt,VerifyBlock):
             inner=Scope(scope)

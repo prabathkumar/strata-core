@@ -1498,9 +1498,31 @@ def check_stmt(TC &tc, Node st, int scope_p) {
     }
     if (k == 71) { check_element(&tc, st, scope_p); return; }
     if (k == 73) { check_for_in(&tc, st, scope_p); return; }
+    if (k == 78) { check_scan(&tc, st, scope_p); return; }
     if (k == 26) { check_verify_in(&tc, st, scope_p); return; }
     if (k == 23) { infer(&tc, st.c1, scope_p); return; }
     if (k == 24) { infer(&tc, st.c1, scope_p); return; }
+}
+
+// The scanned row is the table's row, so the body is checked against the
+// schema exactly as a query result would be. A scan over a table that does not
+// exist is the same mistake as a query over one.
+def check_scan(TC &tc, Node st, int scope_p) {
+    if (schema_find(tc.schemas, st.s1) == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Database '");
+        sb_append(&sb, st.s1);
+        sb_append(&sb, "' not declared");
+        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
+        hint_quoted("Declare 'database ", st.s1, "' before scanning it"));
+        return;
+    }
+    Scp inner = scp_new(scope_p);
+    int ip = scp_ptr(inner);
+    scp_define(&inner, st.s2, ty_ptr(ty_new(st.s1)));
+    NodeVec body = nv_at(st.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { check_stmt(&tc, nv_get(&body, i), ip); }
 }
 
 def check_verify(TC &tc, Node decl) { check_verify_in(&tc, decl, tc.globals); }

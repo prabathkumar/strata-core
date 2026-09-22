@@ -13,7 +13,7 @@ from compiler.parser import (
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt, ConstDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
-    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
+    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -323,6 +323,7 @@ int main(int argc, char** argv) {
             self.schemas[decl.name] = [f.name for f in decl.fields]
             self._gen_table_storage(decl.name)
             self._gen_table_io(decl.name, decl.fields)
+            self._gen_table_scan(decl.name, decl.fields)
         elif isinstance(decl, ProtocolDecl):
             self._gen_struct(decl.name, decl.fields)
         elif isinstance(decl, ModelDecl):
@@ -621,6 +622,112 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    free({name}__from);")
         self.emit_raw(f"    {name}__from = strata_dup(path);")
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
+        self.emit_raw("    return 1;")
+        self.emit_raw("}")
+
+    def _gen_table_scan(self, name, fields):
+        """Reading a stored table one row at a time.
+
+        A load brings the whole table into the process, which is right when it
+        is small and impossible when it is not. These three functions are what
+        `scan T from "p" as row { ... }` compiles to: open and validate the
+        header once, then hand back one row at a time into a single struct the
+        caller owns. Nothing accumulates, so a file of any size costs what one
+        row costs.
+
+        The header checks are deliberately the same ones a load makes. A scan
+        that quietly accepted a file a load would refuse would be a second,
+        laxer way into the same data.
+        """
+        def tchar(fd):
+            ct = self._c_type(fd.field_type)
+            return "s" if ct == "strata_str" else ("f" if ct == "strata_float" else "i")
+
+        strs = [fd for fd in fields if self._c_type(fd.field_type) == "strata_str"]
+
+        self.emit_raw(f"static void {name}__scan_free({name}* r) {{")
+        for fd in strs:
+            self.emit_raw(f"    if (r->{fd.name}) {{ free(r->{fd.name}); "
+                          f"r->{fd.name} = NULL; }}")
+        if not strs:
+            self.emit_raw("    (void)r;")
+        self.emit_raw("}")
+
+        self.emit_raw(f"static FILE* {name}__scan_open(const char* path, "
+                      "int* map, int* ncol) {")
+        self.emit_raw('    FILE* f = fopen(path, "r");')
+        self.emit_raw("    if (!f) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "there is no such file");')
+        self.emit_raw("        return NULL;")
+        self.emit_raw("    }")
+        self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
+        self.emit_raw("    char _types[STRATA_MAX_COLS];")
+        self.emit_raw("    char _table[STRATA_NAME_CAP];")
+        self.emit_raw("    int n = strata_read_header(f, _names, _types, "
+                      "STRATA_MAX_COLS, _table);")
+        self.emit_raw("    if (n == -2) { *ncol = 0; return f; }")
+        self.emit_raw("    if (n == -1) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "no schema header; '
+                      f'it was written before headers existed. Re-save it.");')
+        self.emit_raw("        fclose(f); return NULL;")
+        self.emit_raw("    }")
+        self.emit_raw(f'    if (_table[0] && strcmp(_table, "{name}") != 0) {{')
+        self.emit_raw("        char _why[192];")
+        self.emit_raw('        snprintf(_why, sizeof(_why), "it was saved from '
+                      '\'%s\', not this table", _table);')
+        self.emit_raw(f'        strata_load_refuse("{name}", path, _why);')
+        self.emit_raw("        fclose(f); return NULL;")
+        self.emit_raw("    }")
+        self.emit_raw("    int matched = 0;")
+        self.emit_raw("    for (int c = 0; c < n; c++) {")
+        self.emit_raw("        map[c] = -1;")
+        for idx, fd in enumerate(fields):
+            self.emit_raw(f'        if (strcmp(_names[c], "{fd.name}") == 0) {{')
+            self.emit_raw(f"            if (_types[c] != '{tchar(fd)}') {{")
+            self.emit_raw(f'                strata_load_refuse("{name}", path, '
+                          f'"column \'{fd.name}\' changed type since it was saved");')
+            self.emit_raw("                fclose(f); return NULL;")
+            self.emit_raw("            }")
+            self.emit_raw(f"            map[c] = {idx};")
+            self.emit_raw("        }")
+        self.emit_raw("        if (map[c] >= 0) matched++;")
+        self.emit_raw("    }")
+        self.emit_raw("    if (n > 0 && matched == 0) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "none of its '
+                      f'columns are in this table");')
+        self.emit_raw("        fclose(f); return NULL;")
+        self.emit_raw("    }")
+        self.emit_raw("    *ncol = n;")
+        self.emit_raw("    return f;")
+        self.emit_raw("}")
+
+        self.emit_raw(f"static int {name}__scan_next(FILE* f, const int* map, "
+                      f"int ncol, {name}* out, const char* path, strata_int rowno) {{")
+        self.emit_raw(f"    {name}__scan_free(out);")
+        self.emit_raw(f"    memset(out, 0, sizeof({name}));")
+        for fd in strs:
+            self.emit_raw(f'    out->{fd.name} = strata_dup("");')
+        self.emit_raw("    char buf[4096];")
+        self.emit_raw("    for (int c = 0; c < ncol; c++) {")
+        self.emit_raw("        int more = strata_read_field(f, buf, 4096);")
+        self.emit_raw("        if (more < 0) return 0;")
+        self.emit_raw("        switch (map[c]) {")
+        for idx, fd in enumerate(fields):
+            ct = self._c_type(fd.field_type)
+            if ct == "strata_str":
+                conv = f"free(out->{fd.name}); out->{fd.name} = strata_dup(buf);"
+            elif ct == "strata_float":
+                conv = (f"{{ strata_float _v; if (!strata_parse_float(buf, &_v)) {{ "
+                        f'strata_load_bad_value("{name}", path, "{fd.name}", buf, rowno); '
+                        f"return 0; }} out->{fd.name} = ({ct})_v; }}")
+            else:
+                conv = (f"{{ strata_int _v; if (!strata_parse_int(buf, &_v)) {{ "
+                        f'strata_load_bad_value("{name}", path, "{fd.name}", buf, rowno); '
+                        f"return 0; }} out->{fd.name} = ({ct})_v; }}")
+            self.emit_raw(f"            case {idx}: {conv} break;")
+        self.emit_raw("            default: break;")
+        self.emit_raw("        }")
+        self.emit_raw("    }")
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
@@ -1234,6 +1341,43 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
 
+    def _gen_scan(self, node, param_names=None):
+        """`scan T from "p" as row { ... }`.
+
+        One struct, reused for every row. The body sees a pointer to it, and
+        nothing survives the turn of the loop -- which is exactly the deal
+        that lets a file larger than memory be read at all.
+        """
+        if param_names is None:
+            param_names = []
+        # The body holds a POINTER to the one struct being reused, so member
+        # access on it is `->`. Writing the row type without the star made
+        # every `row.column` in a scan body emit a `.` and fail to compile.
+        self.var_types[node.var] = node.table + "*"
+        self.emit("{")
+        self.indent += 1
+        self.emit("int _smap[STRATA_MAX_COLS]; int _sncol = 0;")
+        self.emit(f'FILE* _sf = {node.table}__scan_open({_c_string(node.path)}, '
+                  f"_smap, &_sncol);")
+        self.emit("if (_sf) {")
+        self.indent += 1
+        self.emit(f"{node.table} _srow; memset(&_srow, 0, sizeof({node.table}));")
+        self.emit(f"{node.table}* {cname(node.var)} = &_srow;")
+        self.emit("strata_int _srowno = 0;")
+        self.emit(f"while ({node.table}__scan_next(_sf, _smap, _sncol, &_srow, "
+                  f"{_c_string(node.path)}, ++_srowno)) {{")
+        self.indent += 1
+        for st in node.body:
+            self._gen_stmt(st, param_names)
+        self.indent -= 1
+        self.emit("}")
+        self.emit(f"{node.table}__scan_free(&_srow);")
+        self.emit("fclose(_sf);")
+        self.indent -= 1
+        self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+
     def _gen_for_in(self, node, param_names=None):
         """Iterate a list, by its length.
 
@@ -1396,6 +1540,8 @@ int main(int argc, char** argv) {
             self.emit("}")
         elif isinstance(stmt, ForStmt):
             self._gen_for(stmt, param_names)
+        elif isinstance(stmt, ScanStmt):
+            self._gen_scan(stmt, param_names)
         elif isinstance(stmt, ForInStmt):
             self._gen_for_in(stmt, param_names)
         elif isinstance(stmt, DeleteStmt):

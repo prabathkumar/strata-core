@@ -1022,6 +1022,7 @@ def gen_stmt(Gen &g, Node st) {
 
     if (k == 30) { gen_for(&g, st); return; }
     if (k == 73) { gen_for_in(&g, st); return; }
+    if (k == 78) { gen_scan(&g, st); return; }
 
     if (k == 28) {                                    // assignment
         StringBuilder sb = sb_new();
@@ -1618,6 +1619,174 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
     emit_raw(&g, "#endif");
 }
 
+// Reading a stored table one row at a time.
+//
+// A load brings the whole table into the process, which is right when it is
+// small and impossible when it is not. These three functions are what a
+// `scan` compiles to: open and validate the header once, then hand back one
+// row at a time into a single struct the caller owns. Nothing accumulates, so
+// a file of any size costs what one row costs.
+//
+// The header checks are deliberately the same ones a load makes. A scan that
+// quietly accepted a file a load would refuse would be a second, laxer way
+// into the same data.
+def gen_table_scan(Gen &g, str name, int fields_vec) {
+    NodeVec fs = nv_at(fields_vec);
+    int n = fs.len;
+
+    StringBuilder f0 = sb_new();
+    sb_append(&f0, "static void "); sb_append(&f0, name);
+    sb_append(&f0, "__scan_free("); sb_append(&f0, name); sb_append(&f0, "* r) {");
+    emit_raw(&g, sb_to_str(&f0));
+    int nstr = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (str_eq(c_type(&g, fd.c1), "strata_str") == 1) {
+            nstr = nstr + 1;
+            StringBuilder fl = sb_new();
+            sb_append(&fl, "    if (r->"); sb_append(&fl, fd.s1);
+            sb_append(&fl, ") { free(r->"); sb_append(&fl, fd.s1);
+            sb_append(&fl, "); r->"); sb_append(&fl, fd.s1);
+            sb_append(&fl, " = NULL; }");
+            emit_raw(&g, sb_to_str(&fl));
+        }
+    }
+    if (nstr == 0) { emit_raw(&g, "    (void)r;"); }
+    emit_raw(&g, "}");
+
+    StringBuilder o0 = sb_new();
+    sb_append(&o0, "static FILE* "); sb_append(&o0, name);
+    sb_append(&o0, "__scan_open(const char* path, int* map, int* ncol) {");
+    emit_raw(&g, sb_to_str(&o0));
+    emit_raw(&g, "    FILE* f = fopen(path, \"r\");");
+    emit_raw(&g, "    if (!f) {");
+    StringBuilder o1 = sb_new();
+    sb_append(&o1, "        strata_load_refuse(\""); sb_append(&o1, name);
+    sb_append(&o1, "\", path, \"there is no such file\");");
+    emit_raw(&g, sb_to_str(&o1));
+    emit_raw(&g, "        return NULL;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
+    emit_raw(&g, "    char _types[STRATA_MAX_COLS];");
+    emit_raw(&g, "    char _table[STRATA_NAME_CAP];");
+    emit_raw(&g, "    int n = strata_read_header(f, _names, _types, STRATA_MAX_COLS, _table);");
+    emit_raw(&g, "    if (n == -2) { *ncol = 0; return f; }");
+    emit_raw(&g, "    if (n == -1) {");
+    StringBuilder o2 = sb_new();
+    sb_append(&o2, "        strata_load_refuse(\""); sb_append(&o2, name);
+    sb_append(&o2, "\", path, \"no schema header; it was written before headers existed. Re-save it.\");");
+    emit_raw(&g, sb_to_str(&o2));
+    emit_raw(&g, "        fclose(f); return NULL;");
+    emit_raw(&g, "    }");
+    StringBuilder o3 = sb_new();
+    sb_append(&o3, "    if (_table[0] && strcmp(_table, \""); sb_append(&o3, name);
+    sb_append(&o3, "\") != 0) {");
+    emit_raw(&g, sb_to_str(&o3));
+    emit_raw(&g, "        char _why[192];");
+    emit_raw(&g, "        snprintf(_why, sizeof(_why), \"it was saved from '%s', not this table\", _table);");
+    StringBuilder o4 = sb_new();
+    sb_append(&o4, "        strata_load_refuse(\""); sb_append(&o4, name);
+    sb_append(&o4, "\", path, _why);");
+    emit_raw(&g, sb_to_str(&o4));
+    emit_raw(&g, "        fclose(f); return NULL;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    int matched = 0;");
+    emit_raw(&g, "    for (int c = 0; c < n; c++) {");
+    emit_raw(&g, "        map[c] = -1;");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        StringBuilder m0 = sb_new();
+        sb_append(&m0, "        if (strcmp(_names[c], \""); sb_append(&m0, fd.s1);
+        sb_append(&m0, "\") == 0) {");
+        emit_raw(&g, sb_to_str(&m0));
+        StringBuilder m1 = sb_new();
+        sb_append(&m1, "            if (_types[c] != '"); sb_append(&m1, col_tchar(&g, fd));
+        sb_append(&m1, "') {");
+        emit_raw(&g, sb_to_str(&m1));
+        StringBuilder m2 = sb_new();
+        sb_append(&m2, "                strata_load_refuse(\""); sb_append(&m2, name);
+        sb_append(&m2, "\", path, \"column '"); sb_append(&m2, fd.s1);
+        sb_append(&m2, "' changed type since it was saved\");");
+        emit_raw(&g, sb_to_str(&m2));
+        emit_raw(&g, "                fclose(f); return NULL;");
+        emit_raw(&g, "            }");
+        StringBuilder m3 = sb_new();
+        sb_append(&m3, "            map[c] = "); sb_append(&m3, str(i)); sb_append(&m3, ";");
+        emit_raw(&g, sb_to_str(&m3));
+        emit_raw(&g, "        }");
+    }
+    emit_raw(&g, "        if (map[c] >= 0) matched++;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    if (n > 0 && matched == 0) {");
+    StringBuilder o5 = sb_new();
+    sb_append(&o5, "        strata_load_refuse(\""); sb_append(&o5, name);
+    sb_append(&o5, "\", path, \"none of its columns are in this table\");");
+    emit_raw(&g, sb_to_str(&o5));
+    emit_raw(&g, "        fclose(f); return NULL;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    *ncol = n;");
+    emit_raw(&g, "    return f;");
+    emit_raw(&g, "}");
+
+    StringBuilder x0 = sb_new();
+    sb_append(&x0, "static int "); sb_append(&x0, name);
+    sb_append(&x0, "__scan_next(FILE* f, const int* map, int ncol, ");
+    sb_append(&x0, name);
+    sb_append(&x0, "* out, const char* path, strata_int rowno) {");
+    emit_raw(&g, sb_to_str(&x0));
+    StringBuilder x1 = sb_new();
+    sb_append(&x1, "    "); sb_append(&x1, name); sb_append(&x1, "__scan_free(out);");
+    emit_raw(&g, sb_to_str(&x1));
+    StringBuilder x2 = sb_new();
+    sb_append(&x2, "    memset(out, 0, sizeof("); sb_append(&x2, name); sb_append(&x2, "));");
+    emit_raw(&g, sb_to_str(&x2));
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (str_eq(c_type(&g, fd.c1), "strata_str") == 1) {
+            StringBuilder zs = sb_new();
+            sb_append(&zs, "    out->"); sb_append(&zs, fd.s1);
+            sb_append(&zs, " = strata_dup(\"\");");
+            emit_raw(&g, sb_to_str(&zs));
+        }
+    }
+    emit_raw(&g, "    char buf[4096];");
+    emit_raw(&g, "    for (int c = 0; c < ncol; c++) {");
+    emit_raw(&g, "        int more = strata_read_field(f, buf, 4096);");
+    emit_raw(&g, "        if (more < 0) return 0;");
+    emit_raw(&g, "        switch (map[c]) {");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        str ct = c_type(&g, fd.c1);
+        StringBuilder cs = sb_new();
+        sb_append(&cs, "            case "); sb_append(&cs, str(i)); sb_append(&cs, ": ");
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&cs, "free(out->"); sb_append(&cs, fd.s1);
+            sb_append(&cs, "); out->"); sb_append(&cs, fd.s1);
+            sb_append(&cs, " = strata_dup(buf);");
+        }
+        if (str_eq(ct, "strata_str") == 0) {
+            if (str_eq(ct, "strata_float") == 1) { sb_append(&cs, "{ strata_float _v; if (!strata_parse_float(buf, &_v"); }
+            if (str_eq(ct, "strata_float") == 0) { sb_append(&cs, "{ strata_int _v; if (!strata_parse_int(buf, &_v"); }
+            sb_append(&cs, ")) { strata_load_bad_value(\"");
+            sb_append(&cs, name);
+            sb_append(&cs, "\", path, \"");
+            sb_append(&cs, fd.s1);
+            sb_append(&cs, "\", buf, rowno); return 0; } out->");
+            sb_append(&cs, fd.s1);
+            sb_append(&cs, " = (");
+            sb_append(&cs, ct);
+            sb_append(&cs, ")_v; }");
+        }
+        sb_append(&cs, " break;");
+        emit_raw(&g, sb_to_str(&cs));
+    }
+    emit_raw(&g, "            default: break;");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    return 1;");
+    emit_raw(&g, "}");
+}
+
 def gen_table_io(Gen &g, str name, int fields_vec) {
     NodeVec all_cols = nv_at(fields_vec);
     NodeVec fs = nv_new();
@@ -2019,7 +2188,7 @@ def gen_decl(Gen &g, Node d) {
         return;
     }
     if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
-        gen_table_io(&g, d.s1, d.v1); return; }
+        gen_table_io(&g, d.s1, d.v1); gen_table_scan(&g, d.s1, d.v1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
@@ -3240,6 +3409,65 @@ def gen_element(Gen &g, Node el) {
     StringBuilder close = sb_new();
     sb_append(&close, "</"); sb_append(&close, tag); sb_append(&close, ">");
     emit_fprintf(&g, sb_to_str(&close));
+}
+
+// `scan T from "p" as row { ... }`.
+//
+// One struct, reused for every row. The body sees a pointer to it and nothing
+// survives the turn of the loop -- which is exactly the deal that lets a file
+// larger than memory be read at all.
+def gen_scan(Gen &g, Node node) {
+    // The body holds a POINTER to the one struct being reused, so member
+    // access on it is `->` rather than `.`.
+    StringBuilder pt = sb_new();
+    sb_append(&pt, node.s1);
+    sb_append(&pt, "*");
+    g.var_types = bind_cons(node.s2, sb_to_str(&pt), g.var_types);
+
+    StringBuilder ps = sb_new();
+    sb_append(&ps, "\"");
+    sb_append(&ps, c_escape(node.s3));
+    sb_append(&ps, "\"");
+    str path = sb_to_str(&ps);
+
+    cg_emit(&g, "{");
+    g.indent = g.indent + 1;
+    cg_emit(&g, "int _smap[STRATA_MAX_COLS]; int _sncol = 0;");
+    StringBuilder op = sb_new();
+    sb_append(&op, "FILE* _sf = "); sb_append(&op, node.s1);
+    sb_append(&op, "__scan_open("); sb_append(&op, path);
+    sb_append(&op, ", _smap, &_sncol);");
+    cg_emit(&g, sb_to_str(&op));
+    cg_emit(&g, "if (_sf) {");
+    g.indent = g.indent + 1;
+    StringBuilder rw = sb_new();
+    sb_append(&rw, node.s1); sb_append(&rw, " _srow; memset(&_srow, 0, sizeof(");
+    sb_append(&rw, node.s1); sb_append(&rw, "));");
+    cg_emit(&g, sb_to_str(&rw));
+    StringBuilder bd = sb_new();
+    sb_append(&bd, node.s1); sb_append(&bd, "* "); sb_append(&bd, cname(node.s2));
+    sb_append(&bd, " = &_srow;");
+    cg_emit(&g, sb_to_str(&bd));
+    cg_emit(&g, "strata_int _srowno = 0;");
+    StringBuilder wh = sb_new();
+    sb_append(&wh, "while ("); sb_append(&wh, node.s1);
+    sb_append(&wh, "__scan_next(_sf, _smap, _sncol, &_srow, ");
+    sb_append(&wh, path); sb_append(&wh, ", ++_srowno)) {");
+    cg_emit(&g, sb_to_str(&wh));
+    g.indent = g.indent + 1;
+    NodeVec body = nv_at(node.v1);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    StringBuilder fr = sb_new();
+    sb_append(&fr, node.s1); sb_append(&fr, "__scan_free(&_srow);");
+    cg_emit(&g, sb_to_str(&fr));
+    cg_emit(&g, "fclose(_sf);");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
 }
 
 def gen_for_in(Gen &g, Node node) {
