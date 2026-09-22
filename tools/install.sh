@@ -52,7 +52,24 @@ if [ -z "$CC_FOUND" ]; then
     echo "or Xcode command line tools and run this again." >&2
     exit 1
 fi
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+# Existing is not the same as runnable: an Apple silicon Mac that still has an
+# Intel Homebrew in /usr/local finds an x86 python3 on PATH and then fails with
+# "Bad CPU type in executable" halfway through the install. Try each candidate
+# instead of testing for one.
+PY3=""
+for _c in "${STRATA_PYTHON:-}" python3 /opt/homebrew/bin/python3 \
+          /usr/bin/python3 /usr/local/bin/python3; do
+    [ -n "$_c" ] || continue
+    if command -v "$_c" >/dev/null 2>&1 && "$_c" -c "pass" >/dev/null 2>&1; then
+        PY3="$_c"; break
+    fi
+done
+if [ -z "$PY3" ]; then
+    echo "no working python3 found. Tried PATH, /opt/homebrew, /usr/bin and" >&2
+    echo "/usr/local. Set STRATA_PYTHON to one that runs on this machine." >&2
+    exit 1
+fi
+export STRATA_PYTHON="$PY3"
 
 # Read after the prerequisite checks above, not before: a machine missing a
 # compiler should be told that, and an earlier version of this script failed
@@ -104,7 +121,7 @@ chmod +x "$BINDIR/strata"
 # Prebuild the formatter so the first `strata fmt` is not a compile, and so a
 # broken install is discovered now rather than by whoever runs it next.
 mkdir -p "$PREFIX/build"
-python3 "$PREFIX/bootstrap/stage0.py" "$PREFIX/compiler/fmt_cli.sta" \
+"$PY3" "$PREFIX/bootstrap/stage0.py" "$PREFIX/compiler/fmt_cli.sta" \
     -o "$PREFIX/build/strata-fmt" >/dev/null 2>&1 \
     || { echo "the formatter did not build; the install is incomplete." >&2
          echo "Run the same command without the redirect to see why." >&2

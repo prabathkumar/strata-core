@@ -6,6 +6,31 @@ ROOT="$(dirname "$SCRIPT_DIR")"
 export PYTHONPATH="$ROOT:$PYTHONPATH"
 export STRATA_ROOT="$ROOT"
 
+# Pick a python3 that actually RUNS on this machine, not merely the first one
+# on PATH. On an Apple silicon Mac that still has an Intel Homebrew in
+# /usr/local, `command -v python3` happily finds an x86 binary and every call
+# then dies with "Bad CPU type in executable" -- a confusing way to be told
+# that the toolchain is looking at a Python built for a different processor.
+# Existing and executable is not the same as runnable, so each candidate is
+# tried rather than tested for.
+find_python() {
+    local c
+    for c in "${STRATA_PYTHON:-}" python3 /opt/homebrew/bin/python3 \
+             /usr/bin/python3 /usr/local/bin/python3; do
+        [ -n "$c" ] || continue
+        if command -v "$c" >/dev/null 2>&1 && "$c" -c "pass" >/dev/null 2>&1; then
+            printf '%s' "$c"
+            return 0
+        fi
+    done
+    echo "[Strata] no working python3 found. Tried PATH, /opt/homebrew," >&2
+    echo "         /usr/bin and /usr/local. Set STRATA_PYTHON to one that" >&2
+    echo "         runs on this machine." >&2
+    return 1
+}
+PY3="$(find_python)" || exit 1
+export STRATA_PYTHON="$PY3"
+
 usage() {
     echo "Strata toolchain 0.4.0-alpha"
     echo "  strata build [file.sta]        no file: builds the project here"
@@ -24,7 +49,7 @@ usage() {
 
 typecheck() {
     local f="$1"
-    python3 - "$f" << 'PYEOF'
+    "$PY3" - "$f" << 'PYEOF'
 import sys
 sys.path.insert(0, sys.argv[1].split('/')[0] if '/' not in sys.argv[1] else '.')
 import os
@@ -94,7 +119,7 @@ driver_bin() {
     newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
     if [ ! -x "$bin" ] || [ -n "$newest" ]; then
         mkdir -p "$ROOT/build"
-        if ! python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/driver.sta" \
+        if ! "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/driver.sta" \
                 -o "$bin" >/dev/null 2>&1; then
             return 1
         fi
@@ -109,7 +134,7 @@ driver_bin() {
 # the differential tests exist to catch.
 run_build() {
     if [ "${STRATA_BOOTSTRAP:-0}" = "1" ]; then
-        python3 "$ROOT/bootstrap/stage0.py" "$@"
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$@"
         return $?
     fi
     local bin
@@ -118,7 +143,7 @@ run_build() {
         return $?
     fi
     echo "[Strata] the self-hosted driver could not be built; using the bootstrap" >&2
-    python3 "$ROOT/bootstrap/stage0.py" "$@"
+    "$PY3" "$ROOT/bootstrap/stage0.py" "$@"
 }
 
 cmd_build() {
@@ -177,17 +202,17 @@ cmd_check() {
     local newest
     newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
     if [ ! -x "$bin" ] || [ -n "$newest" ]; then
-        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/check_cli.sta" \
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/check_cli.sta" \
             -o "$bin" >/dev/null || { echo "could not build strata check" >&2; return 1; }
     fi
     "$bin" "$f"
 }
 
-cmd_lex() { python3 "$ROOT/compiler/lexer.py" "$@"; }
+cmd_lex() { "$PY3" "$ROOT/compiler/lexer.py" "$@"; }
 
 cmd_ast() {
     local f="$1"
-    python3 << PYEOF
+    "$PY3" << PYEOF
 import sys, json
 sys.path.insert(0, '$ROOT')
 from compiler.lexer import tokenise_file
@@ -212,7 +237,7 @@ cmd_run() {
         return $?
     fi
     local tmp; tmp="$(mktemp /tmp/strata_XXXXXX)"
-    python3 "$ROOT/bootstrap/stage0.py" "$f" -o "$tmp"
+    "$PY3" "$ROOT/bootstrap/stage0.py" "$f" -o "$tmp"
     "$tmp"
     rm -f "$tmp"
 }
@@ -347,7 +372,7 @@ cmd_test() {
         if [ -n "$base" ]; then
             src="${sta#$base/}"; run_in="$base"
         fi
-        if ! ( cd "$run_in" && python3 "$ROOT/bootstrap/stage0.py" "$src" --test -o "$bin" ) >/dev/null 2>&1; then
+        if ! ( cd "$run_in" && "$PY3" "$ROOT/bootstrap/stage0.py" "$src" --test -o "$bin" ) >/dev/null 2>&1; then
             echo "  BUILD FAIL: $sta"; f=$((f+1)); continue
         fi
         if ( cd "$run_in" && "$bin" ); then
@@ -391,7 +416,7 @@ cmd_fmt() {
     if [ ! -x "$bin" ] || [ "$ROOT/compiler/fmt.sta" -nt "$bin" ] \
        || [ "$ROOT/compiler/fmt_cli.sta" -nt "$bin" ]; then
         mkdir -p "$cache"
-        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/fmt_cli.sta" \
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/fmt_cli.sta" \
             -o "$bin" >/dev/null || { echo "could not build the formatter" >&2; return 1; }
     fi
 
@@ -442,7 +467,7 @@ cmd_deps() {
     local newest
     newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
     if [ ! -x "$bin" ] || [ -n "$newest" ]; then
-        python3 "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/deps_cli.sta" \
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/deps_cli.sta" \
             -o "$bin" >/dev/null || { echo "could not build strata deps" >&2; return 1; }
     fi
 
@@ -469,7 +494,7 @@ case "$CMD" in
     run)     cmd_run   "$@" ;;
     new)     cmd_new   "$@" ;;
     test)    cmd_test  "$@" ;;
-    repair)  exec python3 "$ROOT/ai_self_repair.py" "$@" ;;
+    repair)  exec "$PY3" "$ROOT/ai_self_repair.py" "$@" ;;
     fmt)     cmd_fmt   "$@" ;;
     version) cmd_version ;;
     ""|help) usage ;;
