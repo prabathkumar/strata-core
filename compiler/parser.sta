@@ -194,6 +194,7 @@ str node_name(int k) {
     if (k == 76) { return "DeleteStmt"; }
     if (k == 77) { return "ConstDecl"; }
     if (k == 78) { return "ScanStmt"; }
+    if (k == 79) { return "AppendStmt"; }
     return "Unknown";
 }
 
@@ -326,6 +327,11 @@ str node_json(Node n) {
     if (k == 76) {
         jfield(&sb, "table", jstr(n.s1));
         jfield(&sb, "condition", jchild(n.c1));
+    }
+    if (k == 79) {
+        jfield(&sb, "target", jstr(n.s1));
+        jfield(&sb, "path", jstr(n.s3));
+        jfield(&sb, "assignments", jassigns(n.v1));
     }
     if (k == 78) {
         jfield(&sb, "table", jstr(n.s1));
@@ -892,6 +898,49 @@ Node parse_statement(P &p) {
             st.c1 = node_ptr(call);
             n_pos(st, t);
             return st;
+        }
+    }
+
+    // `append T to "p" [col = value, ...];` — one row, straight to a file.
+    //
+    // An insert puts a row in the table in memory and `save` writes the whole
+    // table, so what a program can PRODUCE was bounded the way what it could
+    // read used to be. An append writes the row and keeps nothing.
+    if (k == 4) {
+        if (str_eq(t.value, "append") == 1) {
+            if (p_kind(&p, 1) == 4) {
+                p_advance(&p);
+                Token atgt = p_expect(&p, 4);
+                p_expect_word(&p, "to");
+                Token apath = p_expect(&p, 3);
+                p_expect(&p, 54);
+                NodeVec apairs = nv_new();
+                int amore = 1;
+                while (amore == 1) {
+                    if (p_at_end(&p) == 1) { amore = 0; }
+                    if (p_check(&p, 55) == 1) { amore = 0; }
+                    if (amore == 1) {
+                        Token acol = p_advance(&p);
+                        p_expect(&p, 60);
+                        Node av = parse_expr(&p);
+                        Node apair = node_new(0);
+                        apair.s1 = acol.value;
+                        apair.c1 = node_ptr(av);
+                        nv_push(&apairs, apair);
+                        int acomma = p_check(&p, 58);
+                        if (acomma == 1) { p_advance(&p); }
+                        if (acomma == 0) { amore = 0; }
+                    }
+                }
+                p_expect(&p, 55);
+                p_expect(&p, 56);
+                Node an = node_new(79);
+                an.s1 = atgt.value;
+                an.s3 = apath.value;
+                an.v1 = nv_ptr(apairs);
+                n_pos(an, t);
+                return an;
+            }
         }
     }
 

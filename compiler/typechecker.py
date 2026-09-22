@@ -17,7 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt, ConstDecl,
-    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt, AppendStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -523,6 +523,11 @@ class TypeChecker:
         elif isinstance(stmt,PrintStmt): self._infer_type(stmt.value,scope)
         elif isinstance(stmt,AssertStmt): self._infer_type(stmt.condition,scope)
         elif isinstance(stmt,InsertStmt): self._check_insert(stmt,scope)
+        # An append is an insert that goes to a file instead of the table in
+        # memory, so it gets exactly the same rules: the table must exist,
+        # every column must be one of its columns, and every column must be
+        # named. A laxer write would produce files the reader then refuses.
+        elif isinstance(stmt,AppendStmt): self._check_insert(stmt,scope)
         elif isinstance(stmt,DeleteStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",

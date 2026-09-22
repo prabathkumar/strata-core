@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A scan costs what one row costs, however big the file is.
+"""A scan costs what one row costs, however big the file is -- and so does
+an append.
 
 `load` brings a whole table into the process. That is right when the table is
 small and impossible when it is not, and "a table has to fit in memory" was
@@ -45,6 +46,25 @@ int main() {
 NOOP = '''import io from std;
 
 int main() { print("0"); return 0; }
+'''
+
+PIPELINE = '''import io  from std;
+import mem from std;
+
+database Big { int id; str name; float amount; }
+database Kept { int id; float doubled; }
+
+int main() {
+    int written = 0;
+    scan Big from "big.tsv" as r {
+        if (r.amount > 500.0) {
+            append Kept to "kept.tsv" [id = r.id, doubled = r.amount * 2.0];
+            written = written + 1;
+        }
+    }
+    print(str(written));
+    return 0;
+}
 '''
 
 LOAD = '''import io  from std;
@@ -102,7 +122,8 @@ def main():
         print(f"  {ROWS} rows, {os.path.getsize(data) / (1024*1024):.0f}MB on disk")
 
         built = {}
-        for label, source in (("noop", NOOP), ("scan", SCAN), ("load", LOAD)):
+        for label, source in (("noop", NOOP), ("scan", SCAN), ("load", LOAD),
+                              ("pipeline", PIPELINE)):
             src = os.path.join(tmp, f"{label}.sta")
             open(src, "w").write(source)
             out = os.path.join(tmp, label)
@@ -128,6 +149,27 @@ def main():
 
         scan_out, scan_peak = results["scan"]
         load_out, load_peak = results["load"]
+
+        # A whole job: read a file bigger than memory, write one. Both ends
+        # stream, so the cost is one row in and one row out however many there
+        # are -- which is the point of having both halves.
+        pipe_out, pipe_peak = peak_kb_of(built["pipeline"], tmp,
+                                         os.path.join(tmp, "pipeline.out"))
+        pipe_peak = max(pipe_peak - floor, 0)
+        kept = os.path.join(tmp, "kept.tsv")
+        kept_rows = (sum(1 for _ in open(kept)) - 1) if os.path.isfile(kept) else -1
+        print(f"  pipeline: {pipe_peak / 1024:.1f}MB of its own, "
+              f"wrote {kept_rows} rows, printed {pipe_out.strip()!r}")
+        if pipe_peak > SCAN_CEILING_KB:
+            failures.append(
+                f"the pipeline used {pipe_peak / 1024:.1f}MB, over the "
+                f"{SCAN_CEILING_KB / 1024:.0f}MB ceiling — one end is accumulating")
+        if pipe_out.strip() != str(kept_rows):
+            failures.append(
+                f"the pipeline says it wrote {pipe_out.strip()!r} rows and the "
+                f"file has {kept_rows}")
+        if kept_rows <= 0:
+            failures.append("the pipeline wrote nothing")
 
         if scan_out.strip() != load_out.strip():
             failures.append("a scan and a load give different answers:\n"

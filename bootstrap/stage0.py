@@ -13,7 +13,7 @@ from compiler.parser import (
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt, ConstDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
-    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt,
+    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt, AppendStmt,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -321,9 +321,11 @@ int main(int argc, char** argv) {
         if isinstance(decl, DatabaseDecl):
             self._gen_struct(decl.name, decl.fields)
             self.schemas[decl.name] = [f.name for f in decl.fields]
+            self.schema_fields[decl.name] = decl.fields
             self._gen_table_storage(decl.name)
             self._gen_table_io(decl.name, decl.fields)
             self._gen_table_scan(decl.name, decl.fields)
+            self._gen_table_append(decl.name, decl.fields)
         elif isinstance(decl, ProtocolDecl):
             self._gen_struct(decl.name, decl.fields)
         elif isinstance(decl, ModelDecl):
@@ -623,6 +625,54 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    {name}__from = strata_dup(path);")
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
         self.emit_raw("    return 1;")
+        self.emit_raw("}")
+
+    def _gen_table_append(self, name, fields):
+        """Writing a stored table one row at a time.
+
+        `save` writes the table in memory, so what a program can PRODUCE was
+        bounded the way what it could read used to be. An append writes one
+        row and keeps nothing: the handle stays open between rows, so a job
+        can emit a file larger than memory the way a scan reads one.
+
+        The header is written only when the file is new or empty, and it is
+        the same header `save` writes -- a file this produces is one `scan`
+        and `load` accept, with the same table name and the same column types.
+        """
+        header = "\\t".join(
+            f"{fd.name}:{'s' if self._c_type(fd.field_type) == 'strata_str' else ('f' if self._c_type(fd.field_type) == 'strata_float' else 'i')}"
+            for fd in fields)
+        self.emit_raw(f"static FILE* {name}__append_file = NULL;")
+        self.emit_raw(f"static char* {name}__append_path = NULL;")
+        self.emit_raw(f"static void {name}__append_close(void) {{")
+        self.emit_raw(f"    if ({name}__append_file) {{ fclose({name}__append_file); "
+                      f"{name}__append_file = NULL; }}")
+        self.emit_raw("}")
+        self.emit_raw(f"static FILE* {name}__append_open(const char* path) {{")
+        # The common case: the same file as the row before, already open.
+        self.emit_raw(f"    if ({name}__append_file && {name}__append_path "
+                      f"&& strcmp({name}__append_path, path) == 0)")
+        self.emit_raw(f"        return {name}__append_file;")
+        self.emit_raw(f"    if ({name}__append_file) {{ fclose({name}__append_file); "
+                      f"{name}__append_file = NULL; }}")
+        self.emit_raw(f"    free({name}__append_path); {name}__append_path = NULL;")
+        # A header belongs at the top of a new file and nowhere else, so an
+        # appended-to file does not grow a header in the middle of itself.
+        self.emit_raw("    int fresh = 1;")
+        self.emit_raw('    FILE* probe = fopen(path, "r");')
+        self.emit_raw("    if (probe) { if (fgetc(probe) != EOF) fresh = 0; fclose(probe); }")
+        self.emit_raw('    FILE* f = fopen(path, "a");')
+        self.emit_raw("    if (!f) {")
+        self.emit_raw(f'        fprintf(stderr, "[STRATA APPEND] {name}: cannot write '
+                      f'\'%s\'\\n", path);')
+        self.emit_raw("        return NULL;")
+        self.emit_raw("    }")
+        self.emit_raw(f'    if (fresh) fprintf(f, "#strata\\t{name}\\t{header}\\n");')
+        self.emit_raw("    static int registered = 0;")
+        self.emit_raw(f"    if (!registered) {{ atexit({name}__append_close); registered = 1; }}")
+        self.emit_raw(f"    {name}__append_file = f;")
+        self.emit_raw(f"    {name}__append_path = strata_dup(path);")
+        self.emit_raw("    return f;")
         self.emit_raw("}")
 
     def _gen_table_scan(self, name, fields):
@@ -1341,6 +1391,42 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
 
+    def _gen_append(self, node, param_names=None):
+        """`append T to "p" [col = expr, ...];` — one row, straight to a file.
+
+        The columns are written in SCHEMA order whatever order they were
+        written in, because the header says schema order and a reader trusts
+        it. The type checker has already insisted every column is present.
+        """
+        if param_names is None:
+            param_names = []
+        given = dict(node.assignments)
+        fields = self.schema_fields.get(node.target, [])
+        self.emit("{")
+        self.indent += 1
+        self.emit(f"FILE* _pf = {node.target}__append_open({_c_string(node.path)});")
+        self.emit("if (_pf) {")
+        self.indent += 1
+        for i, fd in enumerate(fields):
+            if i:
+                self.emit("fputc(0x09, _pf);")
+            expr = given.get(fd.name)
+            if expr is None:
+                continue
+            value = self._gen_expr(expr, param_names)
+            ct = self._c_type(fd.field_type)
+            if ct == "strata_str":
+                self.emit(f"strata_write_escaped(_pf, {value});")
+            elif ct == "strata_float":
+                self.emit(f'fprintf(_pf, "%.17g", (double)({value}));')
+            else:
+                self.emit(f'fprintf(_pf, "%lld", (long long)({value}));')
+        self.emit("fputc(0x0a, _pf);")
+        self.indent -= 1
+        self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+
     def _gen_scan(self, node, param_names=None):
         """`scan T from "p" as row { ... }`.
 
@@ -1542,6 +1628,8 @@ int main(int argc, char** argv) {
             self._gen_for(stmt, param_names)
         elif isinstance(stmt, ScanStmt):
             self._gen_scan(stmt, param_names)
+        elif isinstance(stmt, AppendStmt):
+            self._gen_append(stmt, param_names)
         elif isinstance(stmt, ForInStmt):
             self._gen_for_in(stmt, param_names)
         elif isinstance(stmt, DeleteStmt):

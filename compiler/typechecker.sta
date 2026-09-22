@@ -1319,6 +1319,73 @@ def validate_query(TC &tc, int cond_p, str schema, int line, int col) {
     validate_query(&tc, c.c2, schema, line, col);
 }
 
+// The shared rules for writing a row: the table exists, every named column
+// is one of its columns, and every column is named. An insert puts the row
+// in memory and an append puts it in a file; neither may write a shape the
+// reader would refuse, so both come here.
+def check_stmt_insert(TC &tc, Node st, int scope_p) {
+    int sch = schema_find(tc.schemas, st.s1);
+    if (sch == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Database '");
+        sb_append(&sb, st.s1);
+        sb_append(&sb, "' not declared");
+        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
+        return;
+    }
+    Schema s = schema_at(sch);
+    NodeVec pairs = nv_at(st.v1);
+    int n = pairs.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node pair = nv_get(&pairs, i);
+        if (sym_find(s.fields, pair.s1) == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "Column '");
+            sb_append(&sb, pair.s1);
+            sb_append(&sb, "' does not exist in '");
+            sb_append(&sb, st.s1);
+            sb_append(&sb, "'");
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(s.fields), ""));
+        }
+        infer(&tc, pair.c1, scope_p);
+    }
+    // Every column must be named — see typechecker.py for why.
+    int cur = s.fields;
+    while (cur != 0) {
+        Sym fs = sym_at(cur);
+        str fname = fs.name;
+        int seen = 0;
+        for (int j = 0; j < n; j = j + 1) {
+            Node pj = nv_get(&pairs, j);
+            if (str_eq(pj.s1, fname) == 1) { seen = 1; }
+        }
+        if (seen == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "Insert into '");
+            sb_append(&sb, st.s1);
+            sb_append(&sb, "' omits column '");
+            sb_append(&sb, fname);
+            sb_append(&sb, "'");
+            StringBuilder hb = sb_new();
+            sb_append(&hb, "Add '");
+            sb_append(&hb, fname);
+            sb_append(&hb, " = <value>' to the insert — '");
+            sb_append(&hb, fname);
+            sb_append(&hb, "' is '");
+            sb_append(&hb, ty_str(fs.ty));
+            sb_append(&hb, "' — or remove '");
+            sb_append(&hb, fname);
+            sb_append(&hb, "' from 'database ");
+            sb_append(&hb, st.s1);
+            sb_append(&hb, "'");
+            emit_hint(&tc, "E009", sb_to_str(&sb), st.line, st.col,
+            sb_to_str(&hb));
+        }
+        cur = fs.next;
+    }
+    return;
+}
+
 def check_stmt(TC &tc, Node st, int scope_p) {
     int k = st.kind;
 
@@ -1410,68 +1477,12 @@ def check_stmt(TC &tc, Node st, int scope_p) {
         return;
     }
 
-    if (k == 27) {                                   // insert
-        int sch = schema_find(tc.schemas, st.s1);
-        if (sch == 0) {
-            StringBuilder sb = sb_new();
-            sb_append(&sb, "Database '");
-            sb_append(&sb, st.s1);
-            sb_append(&sb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
-            return;
-        }
-        Schema s = schema_at(sch);
-        NodeVec pairs = nv_at(st.v1);
-        int n = pairs.len;
-        for (int i = 0; i < n; i = i + 1) {
-            Node pair = nv_get(&pairs, i);
-            if (sym_find(s.fields, pair.s1) == 0) {
-                StringBuilder sb = sb_new();
-                sb_append(&sb, "Column '");
-                sb_append(&sb, pair.s1);
-                sb_append(&sb, "' does not exist in '");
-                sb_append(&sb, st.s1);
-                sb_append(&sb, "'");
-                emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(s.fields), ""));
-            }
-            infer(&tc, pair.c1, scope_p);
-        }
-        // Every column must be named — see typechecker.py for why.
-        int cur = s.fields;
-        while (cur != 0) {
-            Sym fs = sym_at(cur);
-            str fname = fs.name;
-            int seen = 0;
-            for (int j = 0; j < n; j = j + 1) {
-                Node pj = nv_get(&pairs, j);
-                if (str_eq(pj.s1, fname) == 1) { seen = 1; }
-            }
-            if (seen == 0) {
-                StringBuilder sb = sb_new();
-                sb_append(&sb, "Insert into '");
-                sb_append(&sb, st.s1);
-                sb_append(&sb, "' omits column '");
-                sb_append(&sb, fname);
-                sb_append(&sb, "'");
-                StringBuilder hb = sb_new();
-                sb_append(&hb, "Add '");
-                sb_append(&hb, fname);
-                sb_append(&hb, " = <value>' to the insert — '");
-                sb_append(&hb, fname);
-                sb_append(&hb, "' is '");
-                sb_append(&hb, ty_str(fs.ty));
-                sb_append(&hb, "' — or remove '");
-                sb_append(&hb, fname);
-                sb_append(&hb, "' from 'database ");
-                sb_append(&hb, st.s1);
-                sb_append(&hb, "'");
-                emit_hint(&tc, "E009", sb_to_str(&sb), st.line, st.col,
-                sb_to_str(&hb));
-            }
-            cur = fs.next;
-        }
-        return;
-    }
+    // An append is an insert that goes to a file instead of the table in
+    // memory, so it gets exactly the same rules: the table must exist, every
+    // column must be one of its columns, and every column must be named. A
+    // laxer write would produce files the reader then refuses.
+    if (k == 79) { check_stmt_insert(&tc, st, scope_p); return; }
+    if (k == 27) { check_stmt_insert(&tc, st, scope_p); return; }
 
     if (k == 76) {                                   // delete
         if (schema_find(tc.schemas, st.s1) == 0) {

@@ -163,11 +163,12 @@ as an oracle to compare against.
    the clock or the metadata lags.
 3. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-4. `scan` streams a FILE-backed table and holds one row. Postgres has no
-   equivalent: a Postgres-backed table is still loaded whole into memory, so
-   the working set has to fit, and there is no cursor and no connection pool
-   beyond one handle per process. A scan is also read-only — there is no
-   streaming write, and no way to update the row you are looking at.
+4. `scan` reads and `append` writes a FILE-backed table one row at a time, so
+   a job can read a file larger than memory and write one. Postgres has
+   neither: a Postgres-backed table is still loaded whole into memory, so the
+   working set has to fit, and there is no cursor and no connection pool
+   beyond one handle per process. Neither can UPDATE a stored row — an append
+   adds, and changing a row in place still means loading the table.
 5. A lockout is counted against the pair of account and source, which stops
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many

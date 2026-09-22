@@ -263,6 +263,45 @@ A scan makes the same checks a load makes — the header's table name, the
 column names and types, and every value — and refuses the file for the same
 reasons rather than being a quieter way into the same data.
 
+### `append` — writing a table too big to hold
+
+```text
+import io from std;
+
+database Reading { int sensor; float value; }
+database Kept    { int sensor; float doubled; }
+
+int main() {
+    int written = 0;
+    scan Reading from "readings.tsv" as r {
+        if (r.value > 500.0) {
+            append Kept to "kept.tsv" [sensor = r.sensor, doubled = r.value * 2.0];
+            written = written + 1;
+        }
+    }
+    print(str(written));
+    return 0;
+}
+```
+
+`Table <- [...]` puts a row in the table in memory, and `save` writes the
+whole table — so what a program could *produce* was bounded the same way what
+it could read used to be. An append writes one row and keeps nothing: the file
+stays open between rows, so the pair above reads a file larger than memory and
+writes one, at the cost of a row in and a row out.
+
+The rules are the ones an insert has: the table must exist, every column named
+must be one of its columns, and every column must be named. A laxer write
+would only produce files a scan then refuses.
+
+Two details worth knowing:
+
+- **Columns are written in the order the `database` declares them**, whatever
+  order you write them in. The header says schema order, and a reader trusts
+  it.
+- **The header is written once**, when the file is new or empty. Running the
+  same job twice adds rows rather than a header in the middle of the file.
+
 
 ### `::` — cast
 

@@ -1023,6 +1023,7 @@ def gen_stmt(Gen &g, Node st) {
     if (k == 30) { gen_for(&g, st); return; }
     if (k == 73) { gen_for_in(&g, st); return; }
     if (k == 78) { gen_scan(&g, st); return; }
+    if (k == 79) { gen_append(&g, st); return; }
 
     if (k == 28) {                                    // assignment
         StringBuilder sb = sb_new();
@@ -1619,6 +1620,106 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
     emit_raw(&g, "#endif");
 }
 
+// Writing a stored table one row at a time.
+//
+// `save` writes the table in memory, so what a program can PRODUCE was
+// bounded the way what it could read used to be. An append writes one row and
+// keeps nothing: the handle stays open between rows, so a job can emit a file
+// larger than memory the way a scan reads one.
+//
+// The header is written only when the file is new or empty, and it is the
+// same header `save` writes -- a file this produces is one `scan` and `load`
+// accept, with the same table name and the same column types.
+def gen_table_append(Gen &g, str name, int fields_vec) {
+    NodeVec fs = nv_at(fields_vec);
+    int n = fs.len;
+
+    StringBuilder d0 = sb_new();
+    sb_append(&d0, "static FILE* "); sb_append(&d0, name);
+    sb_append(&d0, "__append_file = NULL;");
+    emit_raw(&g, sb_to_str(&d0));
+    StringBuilder d1 = sb_new();
+    sb_append(&d1, "static char* "); sb_append(&d1, name);
+    sb_append(&d1, "__append_path = NULL;");
+    emit_raw(&g, sb_to_str(&d1));
+
+    StringBuilder c0 = sb_new();
+    sb_append(&c0, "static void "); sb_append(&c0, name);
+    sb_append(&c0, "__append_close(void) {");
+    emit_raw(&g, sb_to_str(&c0));
+    StringBuilder c1 = sb_new();
+    sb_append(&c1, "    if ("); sb_append(&c1, name);
+    sb_append(&c1, "__append_file) { fclose("); sb_append(&c1, name);
+    sb_append(&c1, "__append_file); "); sb_append(&c1, name);
+    sb_append(&c1, "__append_file = NULL; }");
+    emit_raw(&g, sb_to_str(&c1));
+    emit_raw(&g, "}");
+
+    StringBuilder o0 = sb_new();
+    sb_append(&o0, "static FILE* "); sb_append(&o0, name);
+    sb_append(&o0, "__append_open(const char* path) {");
+    emit_raw(&g, sb_to_str(&o0));
+    // The common case: the same file as the row before, already open.
+    StringBuilder o1 = sb_new();
+    sb_append(&o1, "    if ("); sb_append(&o1, name);
+    sb_append(&o1, "__append_file && "); sb_append(&o1, name);
+    sb_append(&o1, "__append_path && strcmp("); sb_append(&o1, name);
+    sb_append(&o1, "__append_path, path) == 0)");
+    emit_raw(&g, sb_to_str(&o1));
+    StringBuilder o2 = sb_new();
+    sb_append(&o2, "        return "); sb_append(&o2, name);
+    sb_append(&o2, "__append_file;");
+    emit_raw(&g, sb_to_str(&o2));
+    StringBuilder o3 = sb_new();
+    sb_append(&o3, "    if ("); sb_append(&o3, name);
+    sb_append(&o3, "__append_file) { fclose("); sb_append(&o3, name);
+    sb_append(&o3, "__append_file); "); sb_append(&o3, name);
+    sb_append(&o3, "__append_file = NULL; }");
+    emit_raw(&g, sb_to_str(&o3));
+    StringBuilder o4 = sb_new();
+    sb_append(&o4, "    free("); sb_append(&o4, name);
+    sb_append(&o4, "__append_path); "); sb_append(&o4, name);
+    sb_append(&o4, "__append_path = NULL;");
+    emit_raw(&g, sb_to_str(&o4));
+    // A header belongs at the top of a new file and nowhere else, so an
+    // appended-to file does not grow a header in the middle of itself.
+    emit_raw(&g, "    int fresh = 1;");
+    emit_raw(&g, "    FILE* probe = fopen(path, \"r\");");
+    emit_raw(&g, "    if (probe) { if (fgetc(probe) != EOF) fresh = 0; fclose(probe); }");
+    emit_raw(&g, "    FILE* f = fopen(path, \"a\");");
+    emit_raw(&g, "    if (!f) {");
+    StringBuilder o5 = sb_new();
+    sb_append(&o5, "        fprintf(stderr, \"[STRATA APPEND] ");
+    sb_append(&o5, name);
+    sb_append(&o5, ": cannot write '%s'\\n\", path);");
+    emit_raw(&g, sb_to_str(&o5));
+    emit_raw(&g, "        return NULL;");
+    emit_raw(&g, "    }");
+    StringBuilder hd = sb_new();
+    sb_append(&hd, "    if (fresh) fprintf(f, \"#strata\\t"); sb_append(&hd, name);
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        sb_append(&hd, "\\t"); sb_append(&hd, fd.s1); sb_append(&hd, ":");
+        sb_append(&hd, col_tchar(&g, fd));
+    }
+    sb_append(&hd, "\\n\");");
+    emit_raw(&g, sb_to_str(&hd));
+    emit_raw(&g, "    static int registered = 0;");
+    StringBuilder rg = sb_new();
+    sb_append(&rg, "    if (!registered) { atexit("); sb_append(&rg, name);
+    sb_append(&rg, "__append_close); registered = 1; }");
+    emit_raw(&g, sb_to_str(&rg));
+    StringBuilder o6 = sb_new();
+    sb_append(&o6, "    "); sb_append(&o6, name); sb_append(&o6, "__append_file = f;");
+    emit_raw(&g, sb_to_str(&o6));
+    StringBuilder o7 = sb_new();
+    sb_append(&o7, "    "); sb_append(&o7, name);
+    sb_append(&o7, "__append_path = strata_dup(path);");
+    emit_raw(&g, sb_to_str(&o7));
+    emit_raw(&g, "    return f;");
+    emit_raw(&g, "}");
+}
+
 // Reading a stored table one row at a time.
 //
 // A load brings the whole table into the process, which is right when it is
@@ -2188,7 +2289,8 @@ def gen_decl(Gen &g, Node d) {
         return;
     }
     if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
-        gen_table_io(&g, d.s1, d.v1); gen_table_scan(&g, d.s1, d.v1); return; }
+        gen_table_io(&g, d.s1, d.v1); gen_table_scan(&g, d.s1, d.v1);
+        gen_table_append(&g, d.s1, d.v1); return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
@@ -3409,6 +3511,73 @@ def gen_element(Gen &g, Node el) {
     StringBuilder close = sb_new();
     sb_append(&close, "</"); sb_append(&close, tag); sb_append(&close, ">");
     emit_fprintf(&g, sb_to_str(&close));
+}
+
+// `append T to "p" [col = expr, ...];` — one row, straight to a file.
+//
+// The columns are written in SCHEMA order whatever order they were written in,
+// because the header says schema order and a reader trusts it. The type
+// checker has already insisted every column is present.
+def gen_append(Gen &g, Node st) {
+    str dp = bind_get(g.schema_decls, st.s1);
+    if (str_len(dp) == 0) { return; }
+    Node decl = node_at(str_to_int(dp));
+    NodeVec fs = nv_at(decl.v1);
+    NodeVec pairs = nv_at(st.v1);
+    int nf = fs.len;
+    int np = pairs.len;
+
+    StringBuilder ps = sb_new();
+    sb_append(&ps, "\"");
+    sb_append(&ps, c_escape(st.s3));
+    sb_append(&ps, "\"");
+
+    cg_emit(&g, "{");
+    g.indent = g.indent + 1;
+    StringBuilder op = sb_new();
+    sb_append(&op, "FILE* _pf = "); sb_append(&op, st.s1);
+    sb_append(&op, "__append_open("); sb_append(&op, sb_to_str(&ps));
+    sb_append(&op, ");");
+    cg_emit(&g, sb_to_str(&op));
+    cg_emit(&g, "if (_pf) {");
+    g.indent = g.indent + 1;
+    for (int i = 0; i < nf; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (i > 0) { cg_emit(&g, "fputc(0x09, _pf);"); }
+        int found = 0;
+        for (int j = 0; j < np; j = j + 1) {
+            Node pair = nv_get(&pairs, j);
+            if (str_eq(pair.s1, fd.s1) == 1) {
+                if (found == 0) {
+                    found = 1;
+                    str ct = c_type(&g, fd.c1);
+                    str value = gen_expr(&g, pair.c1);
+                    StringBuilder w = sb_new();
+                    if (str_eq(ct, "strata_str") == 1) {
+                        sb_append(&w, "strata_write_escaped(_pf, ");
+                        sb_append(&w, value);
+                        sb_append(&w, ");");
+                    }
+                    if (str_eq(ct, "strata_str") == 0) {
+                        if (str_eq(ct, "strata_float") == 1) {
+                            sb_append(&w, "fprintf(_pf, \"%.17g\", (double)(");
+                        }
+                        if (str_eq(ct, "strata_float") == 0) {
+                            sb_append(&w, "fprintf(_pf, \"%lld\", (long long)(");
+                        }
+                        sb_append(&w, value);
+                        sb_append(&w, "));");
+                    }
+                    cg_emit(&g, sb_to_str(&w));
+                }
+            }
+        }
+    }
+    cg_emit(&g, "fputc(0x0a, _pf);");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
 }
 
 // `scan T from "p" as row { ... }`.

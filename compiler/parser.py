@@ -159,6 +159,25 @@ class InsertStmt(Node):
                                               for c,v in self.assignments]}
 
 @dataclass
+class AppendStmt(Node):
+    """`append T to "p" [col = expr, ...];` — one row, straight to a file.
+
+    An insert puts a row in the table in memory and `save` writes the table,
+    so the size of what a program can PRODUCE is bounded the same way the size
+    of what it can read used to be. An append writes the row and keeps
+    nothing: the file handle stays open between rows and the schema header is
+    written once, so a job can emit a file larger than memory the way `scan`
+    reads one.
+    """
+    target: str
+    path: str
+    assignments: List[Any]   # list of (column_name, expr)
+    def to_dict(self): return {"node":"AppendStmt","target":self.target,
+                               "path":self.path,
+                               "assignments":[{"column":c,"value":v.to_dict()}
+                                              for c,v in self.assignments]}
+
+@dataclass
 class ListLiteral(Node):
     elements: List[Any]
     def to_dict(self): return {"node":"ListLiteral","elements":[e.to_dict() for e in self.elements]}
@@ -878,6 +897,10 @@ class Parser:
             if self._check(TT.SEMICOLON): self._advance()
             return ExprStmt(t2.line,t2.col,CallExpr(t2.line,t2.col,'native',[StrLiteral(val.line,val.col,val.value)]))
 
+        # `append T to "p" [col = expr, ...];` — one row, straight to a file.
+        if self._at_word("append") and self._peek_at(1).type == TT.IDENT:
+            return self._parse_append()
+
         # `scan T from "p" as row { ... }` — streaming iteration.
         if self._at_word("scan") and self._peek_at(1).type == TT.IDENT \
            and self._peek_at(2).type == TT.KW_FROM:
@@ -1184,6 +1207,25 @@ class Parser:
             target = self._consume(TT.IDENT).value
             return CastExpr(expr.line, expr.col, expr, target)
         return expr
+
+    def _parse_append(self):
+        t = self._advance()                       # contextual `append`
+        table = self._consume(TT.IDENT).value
+        self._consume_word("to")
+        path = self._consume(TT.STR_LIT).value
+        self._consume(TT.L_BRACKET)
+        assignments = []
+        while not self._check(TT.R_BRACKET):
+            col = self._consume_name().value
+            self._consume(TT.ASSIGN)
+            assignments.append((col, self._parse_expr()))
+            if self._check(TT.COMMA):
+                self._advance()
+            else:
+                break
+        self._consume(TT.R_BRACKET)
+        self._consume(TT.SEMICOLON)
+        return AppendStmt(t.line, t.col, table, path, assignments)
 
     def _parse_scan(self):
         t = self._advance()                       # contextual `scan`

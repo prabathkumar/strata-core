@@ -430,6 +430,42 @@ compile_run_in("scan_refuses_another_tables_file",
 test("scan_of_an_undeclared_table_is_e004",
      'int main() { scan Ghost from "x.tsv" as r { } return 0; }', "E004")
 
+print("\n── Appending a row straight to a file ────────────────────────────")
+compile_run_in("append_then_scan_round_trip",
+    ['import io from std;\ndatabase A { int id; str who; float amt; }\n'
+     'int main() { append A to "a.tsv" [id = 1, who = "x", amt = 1.50];\n'
+     '  append A to "a.tsv" [id = 2, who = "y", amt = 2.50]; print("wrote"); return 0; }',
+     'import io from std;\ndatabase A { int id; str who; float amt; }\n'
+     'int main() { int n = 0; float t = 0.0;\n'
+     '  scan A from "a.tsv" as r { n = n + 1; t = t + r.amt; }\n'
+     '  print(str(n)); print(str(t)); return 0; }'],
+    "wrote\n2\n4.0")
+# The header belongs at the top of a new file and nowhere else. A second run
+# of the same program must add rows, not another header in the middle.
+compile_run_in("append_writes_one_header_across_runs",
+    ['import io from std;\ndatabase A { int id; }\n'
+     'int main() { append A to "a.tsv" [id = 1]; return 0; }',
+     'import io from std;\ndatabase A { int id; }\n'
+     'int main() { append A to "a.tsv" [id = 2]; return 0; }',
+     'import io from std;\ndatabase A { int id; }\n'
+     'int main() { int n = 0; scan A from "a.tsv" as r { n = n + r.id; } print(str(n)); return 0; }'],
+    "3")
+# The header says schema order, and a reader trusts it.
+compile_run_in("append_writes_columns_in_schema_order",
+    ['import io from std;\ndatabase A { int id; str who; }\n'
+     'int main() { append A to "a.tsv" [who = "z", id = 7]; print("wrote"); return 0; }',
+     'import io from std;\ndatabase A { int id; str who; }\n'
+     'int main() { scan A from "a.tsv" as r { print(str(r.id)); print(r.who); } return 0; }'],
+    "wrote\n7\nz")
+test("append_to_an_undeclared_table_is_e004",
+     'int main() { append Ghost to "x.tsv" [id = 1]; return 0; }', "E004")
+test("append_of_an_unknown_column_is_e004",
+     'database A { int id; }\nint main() { append A to "x.tsv" [id = 1, nope = 2]; return 0; }',
+     "E004")
+test("append_that_omits_a_column_is_e009",
+     'database A { int id; str who; }\nint main() { append A to "x.tsv" [id = 1]; return 0; }',
+     "E009")
+
 print("\n── Table persistence ─────────────────────────────────────────────")
 PERSIST = ('import io from std;\ndatabase A { int id; str holder; float balance; }\n'
            'int main() { load A from "/tmp/_p.tsv";\n'
