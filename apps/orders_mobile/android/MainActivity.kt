@@ -36,6 +36,9 @@ class MainActivity : Activity() {
     /** Tell Strata a tap happened; it decides what changes. */
     external fun act(action: String): Int
 
+    /** Called once before anything else, so a screen has rows to show. */
+    external fun start(): Int
+
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         setContentView(ScreenView(this))
@@ -43,6 +46,8 @@ class MainActivity : Activity() {
 
     inner class ScreenView(ctx: Activity) : View(ctx) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        init { start() }
 
         // The display list is in device-independent pixels against a 411-wide
         // screen; a real handset is wider or narrower, so everything is scaled

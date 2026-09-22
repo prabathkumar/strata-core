@@ -174,18 +174,29 @@ as an oracle to compare against.
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-6. Nothing has run on a handset. `apps/orders_mobile/android/` is reviewed
-   design, not tested code, and iOS has no shell at all.
-7. There is no registry and no version solving. A dependency is a path or a
+6. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
+   real bridge — `src/host.sta` compiles to a linkable object and Swift calls
+   its five C functions with no glue layer — but it has only ever been pointed
+   at the Simulator. `apps/orders_mobile/android/` is still reviewed design
+   rather than tested code: the machine here has no NDK, so the JNI wrappers
+   around those same five functions have never been compiled.
+7. A phone shell leaks. `host_item` returns a string per item — about sixty
+   per redraw — and Strata's runtime never frees anything, so a redraw costs a
+   few kilobytes that are not given back. A desktop run ends and the operating
+   system reclaims it; a phone app stays open for hours. The shell cannot free
+   the pointers itself either, because `host_hit` may return a string literal
+   and freeing one of those crashes. This is the general gap — Strata has no
+   deallocation at all — showing up where it finally matters.
+8. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
    and "^1.2" means nothing here.
-8. A layout has no event model. A button names a route it posts to; nothing
+9. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-9. `build`, `check`, `fmt` and `deps` are self-hosted, with
+10. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 

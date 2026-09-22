@@ -95,6 +95,20 @@ jobs:
     - name: Grammar Is One Grammar
       run: python3 test_suite/grammar_sync.py
 
+    # The Android and iOS shells read the same display list from the same five
+    # functions. Nothing makes them agree except care, and care does not
+    # survive six months.
+    - name: Phone Shells In Step
+      run: python3 test_suite/shell_sync.py
+
+    # The bridge the phone shells call has to keep compiling. It has no main,
+    # so this proves the compiler still emits a linkable object.
+    - name: Phone Bridge Compiles
+      run: |
+        bin/strata build apps/orders_mobile/src/host.sta \
+          -o apps/orders_mobile/build/host
+        test -f apps/orders_mobile/build/host.o
+
     # Stage 5: the build decisions, not just the code. A program's libraries
     # come from its own `foreign ... link` declarations, so the two compilers
     # must reach the same linker command from the same source.
