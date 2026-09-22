@@ -302,6 +302,42 @@ Two details worth knowing:
 - **The header is written once**, when the file is new or empty. Running the
   same job twice adds rows rather than a header in the middle of the file.
 
+### `rewrite` — changing a stored table in place
+
+```text
+import io  from std;
+import mem from std;
+
+database Order { int id; str status; float amount; }
+
+int main() {
+    rewrite Order from "orders.tsv" as r {
+        if (str_eq(r.status, "CANCELLED") == 1) { drop; }
+        if (str_eq(r.status, "OPEN") == 1) { r.status = "CLOSED"; }
+    }
+    print("done");
+    return 0;
+}
+```
+
+A scan reads and an append adds; neither can change a row that is already
+stored, and doing it by loading the table puts the size limit back. A rewrite
+streams the file through itself: each row is read, the body may change it or
+`drop` it, and what comes out replaces the original.
+
+`drop;` leaves the current row out and ends the body for that row — nothing
+after it runs for that row, which is why the example does not have to guard
+the second `if`.
+
+**The replacement is safe.** Rows are written to a temporary beside the
+original and renamed over it only when the last row has been read. A rename is
+atomic, so the file is either entirely the old table or entirely the new one:
+a job that dies half way leaves the original untouched, and a reader never
+sees a half-written table. If the rename itself fails — a full disk, a
+permission — the message says where the new rows are rather than losing them.
+
+Like a scan, it costs one row however many there are.
+
 
 ### `::` — cast
 

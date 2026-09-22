@@ -178,6 +178,31 @@ class AppendStmt(Node):
                                               for c,v in self.assignments]}
 
 @dataclass
+class RewriteStmt(Node):
+    """`rewrite T from "p" as row { ... }` — change a stored table in place.
+
+    A scan reads and an append adds; neither can change a row that is already
+    stored, and doing it by loading the table puts the size limit back. A
+    rewrite streams the file through: each row is read, the body may change it
+    or `drop` it, and what comes out replaces the original when the last row
+    has been read. Constant memory, and the file is either the old one or the
+    new one -- the replacement is a rename, so a job that dies half way
+    leaves the original untouched.
+    """
+    table: str
+    var: str
+    path: str
+    body: List[Any]
+    def to_dict(self): return {"node":"RewriteStmt","table":self.table,
+                               "var":self.var,"path":self.path,
+                               "body":[s.to_dict() for s in self.body]}
+
+@dataclass
+class DropStmt(Node):
+    """`drop;` — leave the current row out of what a rewrite writes."""
+    def to_dict(self): return {"node":"DropStmt"}
+
+@dataclass
 class ListLiteral(Node):
     elements: List[Any]
     def to_dict(self): return {"node":"ListLiteral","elements":[e.to_dict() for e in self.elements]}
@@ -897,6 +922,17 @@ class Parser:
             if self._check(TT.SEMICOLON): self._advance()
             return ExprStmt(t2.line,t2.col,CallExpr(t2.line,t2.col,'native',[StrLiteral(val.line,val.col,val.value)]))
 
+        # `rewrite T from "p" as row { ... }` — stream a table through itself.
+        if self._at_word("rewrite") and self._peek_at(1).type == TT.IDENT \
+           and self._peek_at(2).type == TT.KW_FROM:
+            return self._parse_rewrite()
+
+        # `drop;` — omit this row from what a rewrite writes.
+        if self._at_word("drop") and self._peek_at(1).type == TT.SEMICOLON:
+            t2 = self._advance()
+            self._advance()
+            return DropStmt(t2.line, t2.col)
+
         # `append T to "p" [col = expr, ...];` — one row, straight to a file.
         if self._at_word("append") and self._peek_at(1).type == TT.IDENT:
             return self._parse_append()
@@ -1207,6 +1243,16 @@ class Parser:
             target = self._consume(TT.IDENT).value
             return CastExpr(expr.line, expr.col, expr, target)
         return expr
+
+    def _parse_rewrite(self):
+        t = self._advance()                       # contextual `rewrite`
+        table = self._consume(TT.IDENT).value
+        self._consume(TT.KW_FROM)
+        path = self._consume(TT.STR_LIT).value
+        self._consume_word("as")
+        var = self._consume(TT.IDENT).value
+        body = self._parse_block()
+        return RewriteStmt(t.line, t.col, table, var, path, body)
 
     def _parse_append(self):
         t = self._advance()                       # contextual `append`

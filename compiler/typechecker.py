@@ -17,7 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt, ConstDecl,
-    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt, AppendStmt,
+    LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt, AppendStmt, RewriteStmt, DropStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
     IntLiteral, FloatLiteral, StrLiteral, BoolLiteral, Identifier,
@@ -542,6 +542,11 @@ class TypeChecker:
         elif isinstance(stmt,Element): self._check_element(stmt,scope)
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ScanStmt): self._check_scan(stmt,scope)
+        # A rewrite binds its row exactly as a scan does; the difference is
+        # what happens to the row afterwards, which is not the checker's
+        # business.
+        elif isinstance(stmt,RewriteStmt): self._check_scan(stmt,scope)
+        elif isinstance(stmt,DropStmt): pass
         elif isinstance(stmt,ExprStmt): self._infer_type(stmt.expr,scope)
         elif isinstance(stmt,VerifyBlock):
             inner=Scope(scope)

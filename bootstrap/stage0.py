@@ -13,7 +13,7 @@ from compiler.parser import (
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt, ConstDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
-    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt, AppendStmt,
+    AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt, AppendStmt, RewriteStmt, DropStmt,
     AssertStmt, RenderStmt, VerifyBlock,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -185,6 +185,7 @@ class CodeGen:
         self.query_depth = 0
         # Database fields by table name, for report rendering.
         self.schema_fields = {}
+        self.rewrite_depth = 0
         # Libraries named by foreign blocks, passed to the linker.
         self.link_libs = []
 
@@ -326,6 +327,7 @@ int main(int argc, char** argv) {
             self._gen_table_io(decl.name, decl.fields)
             self._gen_table_scan(decl.name, decl.fields)
             self._gen_table_append(decl.name, decl.fields)
+            self._gen_table_write_row(decl.name, decl.fields)
         elif isinstance(decl, ProtocolDecl):
             self._gen_struct(decl.name, decl.fields)
         elif isinstance(decl, ModelDecl):
@@ -673,6 +675,27 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    {name}__append_file = f;")
         self.emit_raw(f"    {name}__append_path = strata_dup(path);")
         self.emit_raw("    return f;")
+        self.emit_raw("}")
+
+    def _gen_table_write_row(self, name, fields):
+        """One row of this table, written the way `save` writes one.
+
+        A rewrite has a whole row in hand rather than a list of expressions,
+        so it needs this; keeping it in one place is also what stops the two
+        writers drifting into producing subtly different files.
+        """
+        self.emit_raw(f"static void {name}__write_row(FILE* f, const {name}* r) {{")
+        for i, fd in enumerate(fields):
+            ct = self._c_type(fd.field_type)
+            if i:
+                self.emit_raw("    fputc(0x09, f);")
+            if ct == "strata_str":
+                self.emit_raw(f"    strata_write_escaped(f, r->{fd.name});")
+            elif ct == "strata_float":
+                self.emit_raw(f'    fprintf(f, "%.17g", (double)r->{fd.name});')
+            else:
+                self.emit_raw(f'    fprintf(f, "%lld", (long long)r->{fd.name});')
+        self.emit_raw("    fputc(0x0a, f);")
         self.emit_raw("}")
 
     def _gen_table_scan(self, name, fields):
@@ -1391,6 +1414,73 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
 
+    def _gen_rewrite(self, node, param_names=None):
+        """`rewrite T from "p" as row { ... }`.
+
+        The file is streamed through a temporary beside it and the temporary
+        is renamed over the original once the last row is read. That is what
+        makes it safe: a job that dies half way leaves the original file
+        exactly as it was, because a rename is atomic and a half-written
+        temporary is never the table.
+        """
+        if param_names is None:
+            param_names = []
+        self.rewrite_depth += 1
+        d = self.rewrite_depth
+        self.var_types[node.var] = node.table + "*"
+        t = node.table
+        path = _c_string(node.path)
+        self.emit("{")
+        self.indent += 1
+        self.emit(f"int _wmap{d}[STRATA_MAX_COLS]; int _wncol{d} = 0;")
+        self.emit(f"FILE* _wf{d} = {t}__scan_open({path}, _wmap{d}, &_wncol{d});")
+        self.emit(f"if (_wf{d}) {{")
+        self.indent += 1
+        self.emit(f"char _wtmp{d}[4096];")
+        self.emit(f'snprintf(_wtmp{d}, sizeof(_wtmp{d}), "%s.strata-rewrite", {path});')
+        self.emit(f'FILE* _ww{d} = fopen(_wtmp{d}, "w");')
+        self.emit(f"if (!_ww{d}) {{")
+        self.indent += 1
+        self.emit('fprintf(stderr, "[STRATA REWRITE] ' + t +
+                  ': cannot write \'%s\'\\n", _wtmp' + str(d) + ');')
+        self.emit(f"fclose(_wf{d});")
+        self.indent -= 1
+        self.emit("} else {")
+        self.indent += 1
+        header = "\\t".join(
+            f"{fd.name}:{'s' if self._c_type(fd.field_type) == 'strata_str' else ('f' if self._c_type(fd.field_type) == 'strata_float' else 'i')}"
+            for fd in self.schema_fields.get(t, []))
+        self.emit(f'fprintf(_ww{d}, "#strata\\t{t}\\t{header}\\n");')
+        self.emit(f"{t} _wrow{d}; memset(&_wrow{d}, 0, sizeof({t}));")
+        self.emit(f"{t}* {cname(node.var)} = &_wrow{d};")
+        self.emit(f"strata_int _wno{d} = 0; int _wdrop{d} = 0;")
+        self.emit(f"while ({t}__scan_next(_wf{d}, _wmap{d}, _wncol{d}, &_wrow{d}, "
+                  f"{path}, ++_wno{d})) {{")
+        self.indent += 1
+        self.emit(f"_wdrop{d} = 0;")
+        for st in node.body:
+            self._gen_stmt(st, param_names)
+        self.emit(f"_wnext{d}:;")
+        self.emit(f"if (!_wdrop{d}) {t}__write_row(_ww{d}, &_wrow{d});")
+        self.indent -= 1
+        self.emit("}")
+        self.emit(f"{t}__scan_free(&_wrow{d});")
+        self.emit(f"fclose(_ww{d}); fclose(_wf{d});")
+        # Only now does the new file become the table.
+        self.emit(f"if (rename(_wtmp{d}, {path}) != 0) {{")
+        self.indent += 1
+        self.emit('fprintf(stderr, "[STRATA REWRITE] ' + t +
+                  ': could not replace \'%s\'; the new rows are in \'%s\'\\n", ' + path + ', _wtmp' + str(d) + ');')
+        self.indent -= 1
+        self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+        self.indent -= 1
+        self.emit("}")
+        self.rewrite_depth -= 1
+
     def _gen_append(self, node, param_names=None):
         """`append T to "p" [col = expr, ...];` — one row, straight to a file.
 
@@ -1630,6 +1720,15 @@ int main(int argc, char** argv) {
             self._gen_scan(stmt, param_names)
         elif isinstance(stmt, AppendStmt):
             self._gen_append(stmt, param_names)
+        elif isinstance(stmt, RewriteStmt):
+            self._gen_rewrite(stmt, param_names)
+        elif isinstance(stmt, DropStmt):
+            # Outside a rewrite the checker has nothing to object to and the
+            # generator has nowhere to jump, so it is a statement that does
+            # nothing rather than a compile error. Worth revisiting.
+            if self.rewrite_depth:
+                self.emit(f"{{ _wdrop{self.rewrite_depth} = 1; "
+                          f"goto _wnext{self.rewrite_depth}; }}")
         elif isinstance(stmt, ForInStmt):
             self._gen_for_in(stmt, param_names)
         elif isinstance(stmt, DeleteStmt):

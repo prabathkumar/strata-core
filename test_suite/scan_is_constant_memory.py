@@ -67,6 +67,23 @@ int main() {
 }
 '''
 
+REWRITE = '''import io  from std;
+import mem from std;
+
+database Big { int id; str name; float amount; }
+
+int main() {
+    int kept = 0;
+    rewrite Big from "copy.tsv" as r {
+        if (r.amount < 500.0) { drop; }
+        r.amount = r.amount * 2.0;
+        kept = kept + 1;
+    }
+    print(str(kept));
+    return 0;
+}
+'''
+
 LOAD = '''import io  from std;
 import mem from std;
 
@@ -123,7 +140,7 @@ def main():
 
         built = {}
         for label, source in (("noop", NOOP), ("scan", SCAN), ("load", LOAD),
-                              ("pipeline", PIPELINE)):
+                              ("pipeline", PIPELINE), ("rewrite", REWRITE)):
             src = os.path.join(tmp, f"{label}.sta")
             open(src, "w").write(source)
             out = os.path.join(tmp, label)
@@ -170,6 +187,28 @@ def main():
                 f"file has {kept_rows}")
         if kept_rows <= 0:
             failures.append("the pipeline wrote nothing")
+
+        # Changing a stored table in place, which is the third way a file can
+        # be handled and the third that must not grow with the file.
+        import shutil
+        shutil.copyfile(data, os.path.join(tmp, "copy.tsv"))
+        rw_out, rw_peak = peak_kb_of(built["rewrite"], tmp,
+                                     os.path.join(tmp, "rewrite.out"))
+        rw_peak = max(rw_peak - floor, 0)
+        copy = os.path.join(tmp, "copy.tsv")
+        copy_rows = (sum(1 for _ in open(copy)) - 1) if os.path.isfile(copy) else -1
+        print(f"  rewrite:  {rw_peak / 1024:.1f}MB of its own, "
+              f"left {copy_rows} rows, printed {rw_out.strip()!r}")
+        if rw_peak > SCAN_CEILING_KB:
+            failures.append(
+                f"the rewrite used {rw_peak / 1024:.1f}MB, over the "
+                f"{SCAN_CEILING_KB / 1024:.0f}MB ceiling — it is accumulating")
+        if rw_out.strip() != str(copy_rows):
+            failures.append(
+                f"the rewrite says it kept {rw_out.strip()!r} rows and the file "
+                f"has {copy_rows}")
+        if os.path.exists(copy + ".strata-rewrite"):
+            failures.append("the rewrite left its temporary file behind")
 
         if scan_out.strip() != load_out.strip():
             failures.append("a scan and a load give different answers:\n"

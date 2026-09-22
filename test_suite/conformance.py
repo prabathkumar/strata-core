@@ -466,6 +466,57 @@ test("append_that_omits_a_column_is_e009",
      'database A { int id; str who; }\nint main() { append A to "x.tsv" [id = 1]; return 0; }',
      "E009")
 
+print("\n── Rewriting a stored table in place ─────────────────────────────")
+_RW_W = ('import io from std;\ndatabase R { int id; str s; float amt; }\n'
+         'int main() { R <- [id = 1, s = "keep", amt = 10.0];\n'
+         '  R <- [id = 2, s = "go", amt = 20.0]; R <- [id = 3, s = "keep", amt = 30.0];\n'
+         '  save R to "r.tsv"; print("saved"); return 0; }')
+
+compile_run_in("rewrite_changes_every_row",
+    [_RW_W,
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { rewrite R from "r.tsv" as r { r.amt = r.amt * 2.0; } print("rewrote"); return 0; }',
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { float t = 0.0; scan R from "r.tsv" as r { t = t + r.amt; } print(str(t)); return 0; }'],
+    "saved\nrewrote\n120.0")
+compile_run_in("rewrite_can_drop_a_row",
+    [_RW_W,
+     'import io from std;\nimport mem from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { rewrite R from "r.tsv" as r { if (str_eq(r.s, "go") == 1) { drop; } } return 0; }',
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { int n = 0; scan R from "r.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+    "saved\n2")
+# A dropped row is dropped and nothing after `drop;` runs for it.
+compile_run_in("drop_ends_the_body_for_that_row",
+    [_RW_W,
+     'import io from std;\nimport mem from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { rewrite R from "r.tsv" as r {\n'
+     '    if (str_eq(r.s, "go") == 1) { drop; }\n'
+     '    r.amt = 1.0;\n } return 0; }',
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { float t = 0.0; scan R from "r.tsv" as r { t = t + r.amt; } print(str(t)); return 0; }'],
+    "saved\n2.0")
+compile_run_in("rewrite_leaves_a_readable_file",
+    [_RW_W,
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { rewrite R from "r.tsv" as r { r.id = r.id + 10; } return 0; }',
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { load R from "r.tsv"; print(str(strata_len(R <- [id > 10]))); return 0; }'],
+    "saved\n3")
+compile_run_in("rewrite_leaves_no_temporary_behind",
+    [_RW_W,
+     'import io from std;\ndatabase R { int id; str s; float amt; }\n'
+     'int main() { rewrite R from "r.tsv" as r { } '
+     '  if (file_exists("r.tsv.strata-rewrite") == 1) { print("left one"); } '
+     '  else { print("clean"); } return 0; }'],
+    "saved\nclean")
+compile_run_in("rewrite_of_a_missing_file_says_so",
+    ['import io from std;\ndatabase R { int id; }\n'
+     'int main() { rewrite R from "nope.tsv" as r { } print("done"); return 0; }'],
+    "done\n[STRATA LOAD] R: refusing to read 'nope.tsv' — there is no such file")
+test("rewrite_of_an_undeclared_table_is_e004",
+     'int main() { rewrite Ghost from "x.tsv" as r { } return 0; }', "E004")
+
 print("\n── Table persistence ─────────────────────────────────────────────")
 PERSIST = ('import io from std;\ndatabase A { int id; str holder; float balance; }\n'
            'int main() { load A from "/tmp/_p.tsv";\n'

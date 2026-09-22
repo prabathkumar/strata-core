@@ -53,6 +53,7 @@ database Gen {
     str target;       // "native" or "wasm"
     str query_row;    // table whose condition is being generated, else ""
     int query_depth;  // nesting of query expressions, for unique C names
+    int rewrite_depth; // nesting of rewrites, for unique C names and the drop label
     int schema_decls; // Bind list: table -> its declaration node, for field types
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
@@ -1024,6 +1025,20 @@ def gen_stmt(Gen &g, Node st) {
     if (k == 73) { gen_for_in(&g, st); return; }
     if (k == 78) { gen_scan(&g, st); return; }
     if (k == 79) { gen_append(&g, st); return; }
+    if (k == 80) { gen_rewrite(&g, st); return; }
+    // Outside a rewrite the checker has nothing to object to and the generator
+    // has nowhere to jump, so it is a statement that does nothing rather than
+    // a compile error. Worth revisiting.
+    if (k == 81) {
+        if (g.rewrite_depth > 0) {
+            StringBuilder dp = sb_new();
+            sb_append(&dp, "{ _wdrop"); sb_append(&dp, str(g.rewrite_depth));
+            sb_append(&dp, " = 1; goto _wnext"); sb_append(&dp, str(g.rewrite_depth));
+            sb_append(&dp, "; }");
+            cg_emit(&g, sb_to_str(&dp));
+        }
+        return;
+    }
 
     if (k == 28) {                                    // assignment
         StringBuilder sb = sb_new();
@@ -1618,6 +1633,43 @@ def gen_pg_load(Gen &g, str name, NodeVec fs, str select_sql, str key) {
     emit_raw(&g, "        return 1;");
     emit_raw(&g, "    }");
     emit_raw(&g, "#endif");
+}
+
+// One row of this table, written the way `save` writes one.
+//
+// A rewrite has a whole row in hand rather than a list of expressions, so it
+// needs this; keeping it in one place is also what stops the two writers
+// drifting into producing subtly different files.
+def gen_table_write_row(Gen &g, str name, int fields_vec) {
+    NodeVec fs = nv_at(fields_vec);
+    int n = fs.len;
+    StringBuilder h = sb_new();
+    sb_append(&h, "static void "); sb_append(&h, name);
+    sb_append(&h, "__write_row(FILE* f, const "); sb_append(&h, name);
+    sb_append(&h, "* r) {");
+    emit_raw(&g, sb_to_str(&h));
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        if (i > 0) { emit_raw(&g, "    fputc(0x09, f);"); }
+        str ct = c_type(&g, fd.c1);
+        StringBuilder w = sb_new();
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&w, "    strata_write_escaped(f, r->");
+            sb_append(&w, fd.s1); sb_append(&w, ");");
+        }
+        if (str_eq(ct, "strata_str") == 0) {
+            if (str_eq(ct, "strata_float") == 1) {
+                sb_append(&w, "    fprintf(f, \"%.17g\", (double)r->");
+            }
+            if (str_eq(ct, "strata_float") == 0) {
+                sb_append(&w, "    fprintf(f, \"%lld\", (long long)r->");
+            }
+            sb_append(&w, fd.s1); sb_append(&w, ");");
+        }
+        emit_raw(&g, sb_to_str(&w));
+    }
+    emit_raw(&g, "    fputc(0x0a, f);");
+    emit_raw(&g, "}");
 }
 
 // Writing a stored table one row at a time.
@@ -2290,7 +2342,8 @@ def gen_decl(Gen &g, Node d) {
     }
     if (d.kind == 3) { gen_struct(&g, d.s1, d.v1); gen_table_storage(&g, d.s1);
         gen_table_io(&g, d.s1, d.v1); gen_table_scan(&g, d.s1, d.v1);
-        gen_table_append(&g, d.s1, d.v1); return; }
+        gen_table_append(&g, d.s1, d.v1); gen_table_write_row(&g, d.s1, d.v1);
+        return; }
     if (d.kind == 4) { gen_struct(&g, d.s1, d.v1); return; }
     if (d.kind == 5) { gen_model(&g, d); return; }
     if (d.kind == 6) { gen_report(&g, d); return; }
@@ -3511,6 +3564,153 @@ def gen_element(Gen &g, Node el) {
     StringBuilder close = sb_new();
     sb_append(&close, "</"); sb_append(&close, tag); sb_append(&close, ">");
     emit_fprintf(&g, sb_to_str(&close));
+}
+
+// `rewrite T from "p" as row { ... }`.
+//
+// The file is streamed through a temporary beside it and the temporary is
+// renamed over the original once the last row is read. That is what makes it
+// safe: a job that dies half way leaves the original file exactly as it was,
+// because a rename is atomic and a half-written temporary is never the table.
+def gen_rewrite(Gen &g, Node node) {
+    g.rewrite_depth = g.rewrite_depth + 1;
+    str d = str(g.rewrite_depth);
+    str t = node.s1;
+
+    StringBuilder pt = sb_new();
+    sb_append(&pt, t); sb_append(&pt, "*");
+    g.var_types = bind_cons(node.s2, sb_to_str(&pt), g.var_types);
+
+    StringBuilder ps = sb_new();
+    sb_append(&ps, "\""); sb_append(&ps, c_escape(node.s3)); sb_append(&ps, "\"");
+    str path = sb_to_str(&ps);
+
+    cg_emit(&g, "{");
+    g.indent = g.indent + 1;
+    StringBuilder a0 = sb_new();
+    sb_append(&a0, "int _wmap"); sb_append(&a0, d);
+    sb_append(&a0, "[STRATA_MAX_COLS]; int _wncol"); sb_append(&a0, d);
+    sb_append(&a0, " = 0;");
+    cg_emit(&g, sb_to_str(&a0));
+    StringBuilder a1 = sb_new();
+    sb_append(&a1, "FILE* _wf"); sb_append(&a1, d); sb_append(&a1, " = ");
+    sb_append(&a1, t); sb_append(&a1, "__scan_open("); sb_append(&a1, path);
+    sb_append(&a1, ", _wmap"); sb_append(&a1, d); sb_append(&a1, ", &_wncol");
+    sb_append(&a1, d); sb_append(&a1, ");");
+    cg_emit(&g, sb_to_str(&a1));
+    StringBuilder a2 = sb_new();
+    sb_append(&a2, "if (_wf"); sb_append(&a2, d); sb_append(&a2, ") {");
+    cg_emit(&g, sb_to_str(&a2));
+    g.indent = g.indent + 1;
+    StringBuilder a3 = sb_new();
+    sb_append(&a3, "char _wtmp"); sb_append(&a3, d); sb_append(&a3, "[4096];");
+    cg_emit(&g, sb_to_str(&a3));
+    StringBuilder a4 = sb_new();
+    sb_append(&a4, "snprintf(_wtmp"); sb_append(&a4, d); sb_append(&a4, ", sizeof(_wtmp");
+    sb_append(&a4, d); sb_append(&a4, "), \"%s.strata-rewrite\", "); sb_append(&a4, path);
+    sb_append(&a4, ");");
+    cg_emit(&g, sb_to_str(&a4));
+    StringBuilder a5 = sb_new();
+    sb_append(&a5, "FILE* _ww"); sb_append(&a5, d); sb_append(&a5, " = fopen(_wtmp");
+    sb_append(&a5, d); sb_append(&a5, ", \"w\");");
+    cg_emit(&g, sb_to_str(&a5));
+    StringBuilder a6 = sb_new();
+    sb_append(&a6, "if (!_ww"); sb_append(&a6, d); sb_append(&a6, ") {");
+    cg_emit(&g, sb_to_str(&a6));
+    g.indent = g.indent + 1;
+    StringBuilder a7 = sb_new();
+    sb_append(&a7, "fprintf(stderr, \"[STRATA REWRITE] "); sb_append(&a7, t);
+    sb_append(&a7, ": cannot write '%s'\\n\", _wtmp"); sb_append(&a7, d);
+    sb_append(&a7, ");");
+    cg_emit(&g, sb_to_str(&a7));
+    StringBuilder a8 = sb_new();
+    sb_append(&a8, "fclose(_wf"); sb_append(&a8, d); sb_append(&a8, ");");
+    cg_emit(&g, sb_to_str(&a8));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "} else {");
+    g.indent = g.indent + 1;
+
+    str dp = bind_get(g.schema_decls, t);
+    Node decl = node_at(str_to_int(dp));
+    NodeVec fs = nv_at(decl.v1);
+    int nf = fs.len;
+    StringBuilder hd = sb_new();
+    sb_append(&hd, "fprintf(_ww"); sb_append(&hd, d);
+    sb_append(&hd, ", \"#strata\\t"); sb_append(&hd, t);
+    for (int i = 0; i < nf; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        sb_append(&hd, "\\t"); sb_append(&hd, fd.s1); sb_append(&hd, ":");
+        sb_append(&hd, col_tchar(&g, fd));
+    }
+    sb_append(&hd, "\\n\");");
+    cg_emit(&g, sb_to_str(&hd));
+
+    StringBuilder b0 = sb_new();
+    sb_append(&b0, t); sb_append(&b0, " _wrow"); sb_append(&b0, d);
+    sb_append(&b0, "; memset(&_wrow"); sb_append(&b0, d); sb_append(&b0, ", 0, sizeof(");
+    sb_append(&b0, t); sb_append(&b0, "));");
+    cg_emit(&g, sb_to_str(&b0));
+    StringBuilder b1 = sb_new();
+    sb_append(&b1, t); sb_append(&b1, "* "); sb_append(&b1, cname(node.s2));
+    sb_append(&b1, " = &_wrow"); sb_append(&b1, d); sb_append(&b1, ";");
+    cg_emit(&g, sb_to_str(&b1));
+    StringBuilder b2 = sb_new();
+    sb_append(&b2, "strata_int _wno"); sb_append(&b2, d);
+    sb_append(&b2, " = 0; int _wdrop"); sb_append(&b2, d); sb_append(&b2, " = 0;");
+    cg_emit(&g, sb_to_str(&b2));
+    StringBuilder b3 = sb_new();
+    sb_append(&b3, "while ("); sb_append(&b3, t); sb_append(&b3, "__scan_next(_wf");
+    sb_append(&b3, d); sb_append(&b3, ", _wmap"); sb_append(&b3, d);
+    sb_append(&b3, ", _wncol"); sb_append(&b3, d); sb_append(&b3, ", &_wrow");
+    sb_append(&b3, d); sb_append(&b3, ", "); sb_append(&b3, path);
+    sb_append(&b3, ", ++_wno"); sb_append(&b3, d); sb_append(&b3, ")) {");
+    cg_emit(&g, sb_to_str(&b3));
+    g.indent = g.indent + 1;
+    StringBuilder b4 = sb_new();
+    sb_append(&b4, "_wdrop"); sb_append(&b4, d); sb_append(&b4, " = 0;");
+    cg_emit(&g, sb_to_str(&b4));
+    NodeVec body = nv_at(node.v1);
+    int nb = body.len;
+    for (int i = 0; i < nb; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
+    StringBuilder b5 = sb_new();
+    sb_append(&b5, "_wnext"); sb_append(&b5, d); sb_append(&b5, ":;");
+    cg_emit(&g, sb_to_str(&b5));
+    StringBuilder b6 = sb_new();
+    sb_append(&b6, "if (!_wdrop"); sb_append(&b6, d); sb_append(&b6, ") ");
+    sb_append(&b6, t); sb_append(&b6, "__write_row(_ww"); sb_append(&b6, d);
+    sb_append(&b6, ", &_wrow"); sb_append(&b6, d); sb_append(&b6, ");");
+    cg_emit(&g, sb_to_str(&b6));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    StringBuilder c0 = sb_new();
+    sb_append(&c0, t); sb_append(&c0, "__scan_free(&_wrow"); sb_append(&c0, d);
+    sb_append(&c0, ");");
+    cg_emit(&g, sb_to_str(&c0));
+    StringBuilder c1 = sb_new();
+    sb_append(&c1, "fclose(_ww"); sb_append(&c1, d); sb_append(&c1, "); fclose(_wf");
+    sb_append(&c1, d); sb_append(&c1, ");");
+    cg_emit(&g, sb_to_str(&c1));
+    // Only now does the new file become the table.
+    StringBuilder c2 = sb_new();
+    sb_append(&c2, "if (rename(_wtmp"); sb_append(&c2, d); sb_append(&c2, ", ");
+    sb_append(&c2, path); sb_append(&c2, ") != 0) {");
+    cg_emit(&g, sb_to_str(&c2));
+    g.indent = g.indent + 1;
+    StringBuilder c3 = sb_new();
+    sb_append(&c3, "fprintf(stderr, \"[STRATA REWRITE] "); sb_append(&c3, t);
+    sb_append(&c3, ": could not replace '%s'; the new rows are in '%s'\\n\", ");
+    sb_append(&c3, path); sb_append(&c3, ", _wtmp"); sb_append(&c3, d);
+    sb_append(&c3, ");");
+    cg_emit(&g, sb_to_str(&c3));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    g.rewrite_depth = g.rewrite_depth - 1;
 }
 
 // `append T to "p" [col = expr, ...];` — one row, straight to a file.
