@@ -114,11 +114,19 @@ toml_value() {
 # that, editing the compiler and running `strata build` would silently use
 # yesterday's driver -- the kind of bug that costs an afternoon.
 driver_bin() {
-    local bin="$ROOT/build/strata-build"
+    # Per-platform, because build/ is not always one machine's. A folder
+    # shared between a Mac and a Linux VM -- or a repo on a USB stick, or a
+    # network home directory -- gets a driver built by whichever ran last, and
+    # the other then tries to execute a binary for the wrong operating system.
+    # "cannot execute binary file" is a baffling thing to be told by a
+    # compiler you just installed successfully, so the two no longer collide.
+    local bin="$ROOT/build/strata-build-$(uname -s)-$(uname -m)"
     local newest
     newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
     if [ ! -x "$bin" ] || [ -n "$newest" ]; then
         mkdir -p "$ROOT/build"
+        # Left by a version of this script that used one shared name.
+        rm -f "$ROOT/build/strata-build"
         if ! "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/driver.sta" \
                 -o "$bin" >/dev/null 2>&1; then
             return 1
