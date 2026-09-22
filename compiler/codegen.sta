@@ -644,7 +644,22 @@ str gen_expr(Gen &g, int p) {
     }
 
     if (k == 49) {
+        // Indexing a str yields the BYTE, 0..255.
+        //
+        // Plain `char` is signed on x86 and unsigned on ARM, so this used to
+        // answer -30 on one machine and 226 on the other for the same byte of
+        // the same file. The lexer's rule for "is this a UTF-8 continuation
+        // byte" was written against the signed answer and was simply wrong on
+        // ARM: every column number after a non-ASCII character on the line
+        // came out too large. The cast makes the language say what the value
+        // is instead of leaving it to the machine.
         StringBuilder sb = sb_new();
+        if (str_eq(expr_ctype(&g, e.c1), "strata_str") == 1) {
+            sb_append(&sb, "((strata_int)(unsigned char)");
+            sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "[");
+            sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "])");
+            return sb_to_str(&sb);
+        }
         sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "[");
         sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "]");
         return sb_to_str(&sb);

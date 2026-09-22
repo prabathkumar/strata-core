@@ -270,6 +270,21 @@ compile_run("a_layout_action_is_a_route",
      'int main() { print("ok"); return 0; }',
      "ok")
 
+print("\n── A byte is a byte on every machine ─────────────────────────────")
+# Plain `char` is signed on x86 and unsigned on ARM. Indexing a str used to
+# inherit that, so the same byte of the same file read as -30 on one machine
+# and 226 on another -- and the lexer's UTF-8 rule, written against the signed
+# answer, put every column after a non-ASCII character in the wrong place.
+compile_run("a_high_byte_reads_the_same_everywhere",
+    'import io from std;\nimport mem from std;\n'
+    'int main() { str e = "\u2014"; print(str(e[0])); print(str(e[1])); '
+    'print(str(str_len(e))); return 0; }',
+    "226\n128\n3")
+compile_run("an_ascii_byte_is_its_code_point",
+    'import io from std;\nimport mem from std;\n'
+    'int main() { str s = "Az"; print(str(s[0])); print(str(s[1])); return 0; }',
+    "65\n122")
+
 print("\n── Contextual keywords ───────────────────────────────────────────")
 compile_run("ctx_title_and_metrics_as_variables",
     'import io from std;\nint main() { str title = "T"; str metrics = "M"; print(title + metrics); return 0; }',

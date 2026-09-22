@@ -1719,8 +1719,21 @@ int main(int argc, char** argv) {
             return (f"({{ {et}* {tag} = ({et}*)strata_list_new({len(elems)}, "
                     f"sizeof({et})); {sets} {tag}; }})")
         if isinstance(expr, IndexExpr):
-            return (f"{self._gen_expr(expr.target, param_names)}"
-                    f"[{self._gen_expr(expr.index, param_names)}]")
+            target = self._gen_expr(expr.target, param_names)
+            index = self._gen_expr(expr.index, param_names)
+            # Indexing a str yields the BYTE, 0..255.
+            #
+            # Plain `char` is signed on x86 and unsigned on ARM, so this used
+            # to answer -30 on one machine and 226 on the other for the same
+            # byte of the same file. The lexer's rule for "is this a UTF-8
+            # continuation byte" was written against the signed answer and was
+            # simply wrong on ARM: every column number after a non-ASCII
+            # character on the line came out too large. The cast makes the
+            # language say what the value is instead of leaving it to the
+            # machine.
+            if self._expr_ctype(expr.target, param_names) == "strata_str":
+                return f"((strata_int)(unsigned char){target}[{index}])"
+            return f"{target}[{index}]"
         if isinstance(expr, MemberAccess):
             obj = self._gen_expr(expr.obj, param_names)
             ct = self._expr_ctype(expr.obj, param_names) or ""

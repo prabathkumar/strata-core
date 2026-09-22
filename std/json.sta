@@ -20,15 +20,12 @@ str json_str(str value) {
     sb_append(&sb, "\"");
     int n = str_len(value);
     for (int i = 0; i < n; i = i + 1) {
-        // A byte, not a character. Indexing a str yields a signed value, so
-        // every byte of a multi-byte character reads as negative -- and the
-        // control-character branch below then wrote each one out as a \u00XX
-        // escape of a negative number, which is not an escape and not the
-        // character either. An em dash in a compiler diagnostic came out as
-        // three pieces of garbage in the JSON payload. Bytes at or above 128
-        // are part of a UTF-8 sequence and belong in the output untouched.
+        // A byte, not a character: 0..255. Bytes at or above 128 are part of
+        // a UTF-8 sequence and belong in the output untouched -- the escaper
+        // used to send each one through the control-character branch, so an
+        // em dash in a compiler diagnostic arrived at the repair agent as
+        // three pieces of garbage.
         int c = value[i];
-        if (c < 0) { c = c + 256; }
         if (c > 127) { sb_append(&sb, char_from_code(c)); continue; }
         if (c == 34) { sb_append(&sb, "\\\""); }
         else {
