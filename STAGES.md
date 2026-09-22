@@ -153,32 +153,36 @@ as an oracle to compare against.
 
 ## All ten are closed. What is still not true
 
-1. A table is held in the process that loaded it, and reloaded only when the
+1. A load that meets a damaged row now refuses the whole file rather than
+   reading part of it: the table is left empty and the reason is on stderr.
+   A partial load would be worse, but a caller that ignores the return value
+   sees an empty table and no exception, because the language has none.
+2. A table is held in the process that loaded it, and reloaded only when the
    file on disk changes. That is right for one service on one machine and
    wrong the moment a second machine writes the same file over a share where
    the clock or the metadata lags.
-2. The Claude repair backend is not gated in CI, because CI has no Claude
+3. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-3. A Postgres-backed table is held entirely in memory once loaded, so the
+4. A Postgres-backed table is held entirely in memory once loaded, so the
    working set has to fit. A filtered load keeps that set small, but nothing
    streams: there is no cursor, and no connection pool beyond one handle per
    process.
-4. A lockout is counted against the pair of account and source, which stops
+5. A lockout is counted against the pair of account and source, which stops
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-5. Nothing has run on a handset. `apps/orders_mobile/android/` is reviewed
+6. Nothing has run on a handset. `apps/orders_mobile/android/` is reviewed
    design, not tested code, and iOS has no shell at all.
-6. There is no registry and no version solving. A dependency is a path or a
+7. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
    and "^1.2" means nothing here.
-7. A layout has no event model. A button names a route it posts to; nothing
+8. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-8. `build`, `check`, `fmt` and `deps` are self-hosted, with
+9. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 

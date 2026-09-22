@@ -112,6 +112,10 @@ jobs:
     - name: Machine-Readable Diagnostics Differential (Strata vs Python oracle)
       run: python3 test_suite/json_diag_diff.py
 
+    # The same question one level down: a service reading a damaged file.
+    - name: Damaged Data Is Refused, Not Misread
+      run: python3 test_suite/malformed_data.py
+
     # Break valid programs on purpose. Four bugs in one week were the error
     # path being untested; this goes looking rather than waiting for a fifth.
     - name: Malformed Input Is Rejected, Not Crashed On

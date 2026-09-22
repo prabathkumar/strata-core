@@ -1782,7 +1782,8 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
     emit_raw(&g, "    char _types[STRATA_MAX_COLS];");
     emit_raw(&g, "    int _map[STRATA_MAX_COLS];");
-    emit_raw(&g, "    int _ncol = strata_read_header(f, _names, _types, STRATA_MAX_COLS);");
+    emit_raw(&g, "    char _table[STRATA_NAME_CAP];");
+    emit_raw(&g, "    int _ncol = strata_read_header(f, _names, _types, STRATA_MAX_COLS, _table);");
     StringBuilder e0 = sb_new();
     sb_append(&e0, "    if (_ncol == -2) { fclose(f); "); sb_append(&e0, name);
     sb_append(&e0, "__count = 0; return 1; }");
@@ -1794,6 +1795,22 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&e1));
     emit_raw(&g, "        fclose(f); return 0;");
     emit_raw(&g, "    }");
+    // The header names the table it was written from. A file belonging to a
+    // different table has the wrong shape and the wrong meaning, and reading
+    // it positionally produced rows of plausible nonsense.
+    StringBuilder t0 = sb_new();
+    sb_append(&t0, "    if (_table[0] && strcmp(_table, \""); sb_append(&t0, name);
+    sb_append(&t0, "\") != 0) {");
+    emit_raw(&g, sb_to_str(&t0));
+    emit_raw(&g, "        char _why[192];");
+    emit_raw(&g, "        snprintf(_why, sizeof(_why), \"it was saved from '%s', not this table\", _table);");
+    StringBuilder t1 = sb_new();
+    sb_append(&t1, "        strata_load_refuse(\""); sb_append(&t1, name);
+    sb_append(&t1, "\", path, _why);");
+    emit_raw(&g, sb_to_str(&t1));
+    emit_raw(&g, "        fclose(f); return 0;");
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    int _matched = 0;");
     emit_raw(&g, "    for (int _c = 0; _c < _ncol; _c++) {");
     emit_raw(&g, "        _map[_c] = -1;");
     for (int i = 0; i < n; i = i + 1) {
@@ -1818,6 +1835,19 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         emit_raw(&g, sb_to_str(&m3));
         emit_raw(&g, "        }");
     }
+    emit_raw(&g, "        if (_map[_c] >= 0) _matched++;");
+    emit_raw(&g, "    }");
+    // A column the file carries and this table does not is a DROPPED column,
+    // which is supported: it is skipped and the rest loads. But a file where
+    // NOTHING matches is not this table's file at all, and reading it left
+    // every field at its default -- a row of zeroes arriving as though it
+    // were data.
+    emit_raw(&g, "    if (_ncol > 0 && _matched == 0) {");
+    StringBuilder u0 = sb_new();
+    sb_append(&u0, "        strata_load_refuse(\""); sb_append(&u0, name);
+    sb_append(&u0, "\", path, \"none of its columns are in this table\");");
+    emit_raw(&g, sb_to_str(&u0));
+    emit_raw(&g, "        fclose(f); return 0;");
     emit_raw(&g, "    }");
     StringBuilder z = sb_new();
     sb_append(&z, "    "); sb_append(&z, name); sb_append(&z, "__count = 0;");
@@ -1847,13 +1877,35 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         Node fd = nv_get(&fs, i);
         str ct = c_type(&g, fd.c1);
         StringBuilder cs = sb_new();
+        // A number that is not a number stops the load rather than becoming
+        // zero. atoll answers 0 for "notanint", so a corrupted digit in a
+        // stored file used to arrive as a silent zero -- in a money column, a
+        // balance quietly wrong instead of a load that failed. The temporary
+        // is because a column's C type is not always exactly strata_int, and
+        // taking its address is stricter than the cast this replaced.
         sb_append(&cs, "                case "); sb_append(&cs, str(i));
-        sb_append(&cs, ": r->"); sb_append(&cs, fd.s1); sb_append(&cs, " = ");
-        if (str_eq(ct, "strata_str") == 1) { sb_append(&cs, "strata_dup(buf);"); }
-        if (str_eq(ct, "strata_float") == 1) { sb_append(&cs, "strtod(buf, NULL);"); }
-        if (str_eq(ct, "strata_str") == 0) { if (str_eq(ct, "strata_float") == 0) {
-                sb_append(&cs, "(strata_int)atoll(buf);");
-            } }
+        sb_append(&cs, ": ");
+        if (str_eq(ct, "strata_str") == 1) {
+            sb_append(&cs, "r->"); sb_append(&cs, fd.s1);
+            sb_append(&cs, " = strata_dup(buf);");
+        }
+        if (str_eq(ct, "strata_str") == 0) {
+            if (str_eq(ct, "strata_float") == 1) { sb_append(&cs, "{ strata_float _v; if (!strata_parse_float(buf, &_v"); }
+            if (str_eq(ct, "strata_float") == 0) { sb_append(&cs, "{ strata_int _v; if (!strata_parse_int(buf, &_v"); }
+            sb_append(&cs, ")) { strata_load_bad_value(\"");
+            sb_append(&cs, name);
+            sb_append(&cs, "\", path, \"");
+            sb_append(&cs, fd.s1);
+            sb_append(&cs, "\", buf, ");
+            sb_append(&cs, name);
+            sb_append(&cs, "__count + 1); free(r); fclose(f); ");
+            sb_append(&cs, name);
+            sb_append(&cs, "__count = 0; return 0; } r->");
+            sb_append(&cs, fd.s1);
+            sb_append(&cs, " = (");
+            sb_append(&cs, ct);
+            sb_append(&cs, ")_v; }");
+        }
         sb_append(&cs, " break;");
         emit_raw(&g, sb_to_str(&cs));
     }

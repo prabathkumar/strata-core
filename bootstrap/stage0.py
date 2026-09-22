@@ -532,14 +532,26 @@ int main(int argc, char** argv) {
         self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
         self.emit_raw("    char _types[STRATA_MAX_COLS];")
         self.emit_raw("    int _map[STRATA_MAX_COLS];")
+        self.emit_raw("    char _table[STRATA_NAME_CAP];")
         self.emit_raw("    int _ncol = strata_read_header(f, _names, _types, "
-                      "STRATA_MAX_COLS);")
+                      "STRATA_MAX_COLS, _table);")
         self.emit_raw(f"    if (_ncol == -2) {{ fclose(f); {name}__count = 0; return 1; }}")
         self.emit_raw("    if (_ncol == -1) {")
         self.emit_raw(f'        strata_load_refuse("{name}", path, "no schema header; '
                       f'it was written before headers existed. Re-save it.");')
         self.emit_raw("        fclose(f); return 0;")
         self.emit_raw("    }")
+        # The header names the table it was written from. A file belonging
+        # to a different table has the wrong shape and the wrong meaning, and
+        # reading it positionally produced rows of plausible nonsense.
+        self.emit_raw(f'    if (_table[0] && strcmp(_table, "{name}") != 0) {{')
+        self.emit_raw("        char _why[192];")
+        self.emit_raw('        snprintf(_why, sizeof(_why), "it was saved from '
+                      '\'%s\', not this table", _table);')
+        self.emit_raw(f'        strata_load_refuse("{name}", path, _why);')
+        self.emit_raw("        fclose(f); return 0;")
+        self.emit_raw("    }")
+        self.emit_raw("    int _matched = 0;")
         self.emit_raw("    for (int _c = 0; _c < _ncol; _c++) {")
         self.emit_raw("        _map[_c] = -1;")
         for idx, fd in enumerate(fields):
@@ -551,6 +563,17 @@ int main(int argc, char** argv) {
             self.emit_raw("            }")
             self.emit_raw(f"            _map[_c] = {idx};")
             self.emit_raw("        }")
+        self.emit_raw("        if (_map[_c] >= 0) _matched++;")
+        self.emit_raw("    }")
+        # A column the file carries and this table does not is a DROPPED
+        # column, which is supported: it is skipped and the rest loads. But a
+        # file where NOTHING matches is not this table's file at all, and
+        # reading it left every field at its default -- a row of zeroes
+        # arriving as though it were data.
+        self.emit_raw("    if (_ncol > 0 && _matched == 0) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "none of its '
+                      f'columns are in this table");')
+        self.emit_raw("        fclose(f); return 0;")
         self.emit_raw("    }")
         self.emit_raw(f"    {name}__count = 0;")
         self.emit_raw("    while (1) {")
@@ -570,9 +593,22 @@ int main(int argc, char** argv) {
             if ct == "strata_str":
                 conv = f"r->{fd.name} = strata_dup(buf);"
             elif ct == "strata_float":
-                conv = f"r->{fd.name} = strtod(buf, NULL);"
+                conv = (f"{{ strata_float _v; if (!strata_parse_float(buf, &_v)) {{ "
+                        f'strata_load_bad_value("{name}", path, "{fd.name}", '
+                        f"buf, {name}__count + 1); free(r); fclose(f); "
+                        f"{name}__count = 0; return 0; }} r->{fd.name} = ({ct})_v; }}")
             else:
-                conv = f"r->{fd.name} = (strata_int)atoll(buf);"
+                # A number that is not a number stops the load rather than
+                # becoming zero. atoll answers 0 for "notanint", so a corrupted
+                # digit in a stored file used to arrive as a silent zero -- in a
+                # money column, a balance quietly wrong instead of a load that
+                # failed. The temporary is because a column's C type is not
+                # always exactly strata_int, and taking its address is stricter
+                # than the cast this replaced.
+                conv = (f"{{ strata_int _v; if (!strata_parse_int(buf, &_v)) {{ "
+                        f'strata_load_bad_value("{name}", path, "{fd.name}", '
+                        f"buf, {name}__count + 1); free(r); fclose(f); "
+                        f"{name}__count = 0; return 0; }} r->{fd.name} = ({ct})_v; }}")
             self.emit_raw(f"                case {idx}: {conv} break;")
         self.emit_raw("                default: break;   /* a column this "
                       "schema no longer has */")

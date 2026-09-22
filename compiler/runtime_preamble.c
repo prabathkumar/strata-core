@@ -425,14 +425,19 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
 /* Returns the number of columns in the header, -1 if the file has no header
    (written before headers existed), or -2 if the file is empty. */
 static int strata_read_header(FILE* f, char names[][STRATA_NAME_CAP],
-                              char* types, int cap) {
+                              char* types, int cap, char* table_out) {
     char buf[256];
     int n = 0, more;
+    if (table_out) table_out[0] = '\0';
     more = strata_read_field(f, buf, 256);
     if (more < 0) return -2;
     if (strcmp(buf, "#strata") != 0) return -1;
     if (more == 0) return 0;
     more = strata_read_field(f, buf, 256);          /* table name */
+    if (table_out) {
+        strncpy(table_out, buf, STRATA_NAME_CAP - 1);
+        table_out[STRATA_NAME_CAP - 1] = '\0';
+    }
     while (more > 0 && n < cap) {
         more = strata_read_field(f, buf, 256);
         char* colon = strchr(buf, ':');
@@ -452,6 +457,49 @@ static void strata_load_refuse(const char* table, const char* path,
                                const char* why) {
     fprintf(stderr, "[STRATA LOAD] %s: refusing to read '%s' — %s\n",
             table, path, why);
+}
+
+/* A number read from a stored row, or a refusal.
+ *
+ * atoll and strtod answer 0 for text that is not a number at all, so a
+ * corrupted digit in a saved file used to become a silent zero -- in a money
+ * column, a balance quietly wrong rather than a load that failed. These
+ * insist the whole field is consumed, so "12x" and "notanint" are rejected
+ * rather than read as 12 and 0. Empty is accepted as zero: a column the
+ * writer had nothing for is not corruption. */
+static int strata_parse_int(const char* s, strata_int* out) {
+    if (!s || !*s) { *out = 0; return 1; }
+    errno = 0;
+    char* end = NULL;
+    long long v = strtoll(s, &end, 10);
+    if (errno == ERANGE) return 0;
+    if (end == s) return 0;
+    while (*end == ' ' || *end == '\t' || *end == '\r') end++;
+    if (*end != '\0') return 0;
+    *out = (strata_int)v;
+    return 1;
+}
+
+static int strata_parse_float(const char* s, strata_float* out) {
+    if (!s || !*s) { *out = 0.0; return 1; }
+    errno = 0;
+    char* end = NULL;
+    double v = strtod(s, &end);
+    if (errno == ERANGE) return 0;
+    if (end == s) return 0;
+    while (*end == ' ' || *end == '\t' || *end == '\r') end++;
+    if (*end != '\0') return 0;
+    *out = (strata_float)v;
+    return 1;
+}
+
+/* A stored value that is not the type its column says it is. */
+static void strata_load_bad_value(const char* table, const char* path,
+                                  const char* column, const char* value,
+                                  strata_int row) {
+    fprintf(stderr, "[STRATA LOAD] %s: refusing to read '%s' — row %lld, "
+            "column '%s': '%s' is not a number\n",
+            table, path, (long long)row, column, value);
 }
 
 static strata_str strata_dup(const char* s) {
