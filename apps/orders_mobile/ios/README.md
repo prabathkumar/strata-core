@@ -26,7 +26,25 @@ For the Simulator on Apple silicon that object is already the right
 architecture. For a real handset it is not: it has to be rebuilt for
 `arm64-apple-ios`, which the driver does not target yet.
 
-## The Xcode project
+## The quick way
+
+    cd ~/strata-project
+    STRATA_CC="clang -target arm64-apple-ios15.0-simulator \
+      -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path)" \
+      bin/strata build apps/orders_mobile/src/host.sta \
+      -o apps/orders_mobile/build/host
+    open apps/orders_mobile/ios/Orders.xcodeproj
+
+Then press Run. `Orders.xcodeproj` is committed, so there is no project to
+create: the files, the bridging header and the link flag are already set.
+
+STRATA_CC exists so a build can be pinned to a specific toolchain, and it goes
+to the shell as written -- so it can carry flags as well as a compiler name.
+That is what retargets the object at the Simulator, which runs iOS on an
+arm64 Mac and will not link an object built for macOS. No change to the build
+driver was needed; it already had the door.
+
+## The Xcode project, by hand
 
 1. Xcode → File → New → Project → iOS → App.
    Product Name `Orders`, Interface **Storyboard**, Language **Swift**.
