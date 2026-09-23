@@ -55,20 +55,118 @@ static void __strata_line_buffer_output(void) {
     setvbuf(stderr, NULL, _IONBF, 0);
 }
 
+/* ── Scratch memory ───────────────────────────────────────────────────────
+ *
+ * Strata frees nothing. For a batch job that is correct and costs nothing:
+ * the program exits and the operating system takes the memory back. For a
+ * server or a phone app it is fatal, because the process stays alive and the
+ * working set only grows.
+ *
+ * Tracking every string individually is the expensive answer -- ownership
+ * rules, reference counts, cycles. This is the cheap one, and it works here
+ * because of a property the language already has: a value stored in a table
+ * is COPIED in (strata_dup on insert), so a table never points at a
+ * temporary. That makes the line between "must survive" and "may be thrown
+ * away" already true, rather than something to be invented.
+ *
+ * So temporaries -- concatenations, numbers rendered as text, slices, string
+ * builders, query result arrays -- come from a bump allocator, and the whole
+ * arena is reset at a point the program chooses: after a request, after a
+ * frame, never in a batch job. Tables, their indexes and strata_dup keep
+ * using malloc and are untouched by a reset.
+ *
+ * THE RULE, and it is the whole danger: after strata_scratch_reset() every
+ * temporary is gone. Anything that must outlive the reset has to be in a
+ * table. A reset in the wrong place is a use-after-free, which is why this
+ * is never called automatically.
+ *
+ * Chunks are kept, not freed, so a steady-state server stops calling malloc
+ * altogether once it has seen its busiest request. */
+
+typedef struct StrataChunk {
+    struct StrataChunk* next;
+    size_t cap;
+    size_t used;
+    char*  data;
+} StrataChunk;
+
+static StrataChunk* strata_scratch_head = NULL;
+static StrataChunk* strata_scratch_cur  = NULL;
+
+#define STRATA_CHUNK_MIN ((size_t)1 << 20)   /* 1 MiB */
+
+static StrataChunk* strata_chunk_new(size_t need) {
+    size_t cap = need > STRATA_CHUNK_MIN ? need : STRATA_CHUNK_MIN;
+    StrataChunk* c = (StrataChunk*)malloc(sizeof(StrataChunk));
+    if (!c) return NULL;
+    c->data = (char*)malloc(cap);
+    if (!c->data) { free(c); return NULL; }
+    c->cap = cap; c->used = 0; c->next = NULL;
+    return c;
+}
+
+/* Out of memory in the arena is not recoverable and not worth pretending
+ * about: the caller asked for room and there is none. */
+static void* strata_scratch_alloc(size_t n) {
+    n = (n + 15u) & ~(size_t)15u;            /* keep doubles aligned */
+    if (!strata_scratch_cur) {
+        strata_scratch_head = strata_chunk_new(n);
+        if (!strata_scratch_head) {
+            fprintf(stderr, "[strata] out of memory\n");
+            exit(70);
+        }
+        strata_scratch_cur = strata_scratch_head;
+    }
+    while (strata_scratch_cur->used + n > strata_scratch_cur->cap) {
+        if (!strata_scratch_cur->next) {
+            StrataChunk* c = strata_chunk_new(n);
+            if (!c) { fprintf(stderr, "[strata] out of memory\n"); exit(70); }
+            strata_scratch_cur->next = c;
+        }
+        strata_scratch_cur = strata_scratch_cur->next;
+    }
+    void* p = strata_scratch_cur->data + strata_scratch_cur->used;
+    strata_scratch_cur->used += n;
+    return p;
+}
+
+static void* strata_scratch_zalloc(size_t n) {
+    void* p = strata_scratch_alloc(n);
+    memset(p, 0, (n + 15u) & ~(size_t)15u);
+    return p;
+}
+
+/* Throw away every temporary made since the last reset. Chunks are kept for
+ * reuse, so this is a few pointer writes however much was allocated. */
+void strata_scratch_reset(void) {
+    StrataChunk* c = strata_scratch_head;
+    while (c) { c->used = 0; c = c->next; }
+    strata_scratch_cur = strata_scratch_head;
+}
+
+/* How much scratch is currently held, in bytes. For a server or a test that
+ * wants to prove the number stops growing. */
+strata_int strata_scratch_used(void) {
+    strata_int total = 0;
+    StrataChunk* c = strata_scratch_head;
+    while (c) { total += (strata_int)c->used; c = c->next; }
+    return total;
+}
+
 static strata_str strata_concat(strata_str a, strata_str b) {
     size_t la=strlen(a),lb=strlen(b);
-    strata_str r=(strata_str)malloc(la+lb+1);
+    strata_str r=(strata_str)strata_scratch_alloc(la+lb+1);
     memcpy(r,a,la); memcpy(r+la,b,lb+1); return r;
 }
 static strata_str strata_int_to_str(strata_int v) {
-    strata_str b=(strata_str)malloc(32);
+    strata_str b=(strata_str)strata_scratch_alloc(32);
     snprintf(b,32,"%lld",(long long)v); return b;
 }
 static strata_str strata_float_to_str(strata_float v) {
     /* %.17g round-trips, then trailing zeros are trimmed so 91.4 prints as
        "91.4" rather than "91.400000". A fixed 6-decimal format made every
        rendered float look padded. */
-    strata_str b=(strata_str)malloc(64);
+    strata_str b=(strata_str)strata_scratch_alloc(64);
     /* Shortest representation that reads back as the same double: %.17g always
        round-trips but shows binary noise (91.400000000000006), so try shorter
        precisions first. */
@@ -100,7 +198,7 @@ static strata_str str_slice(strata_str s, strata_int start, strata_int end) {
     strata_int len=(strata_int)strlen(s);
     if(start<0)start=0; if(end>len)end=len;
     strata_int sz=end-start; if(sz<=0)return "";
-    strata_str r=(strata_str)malloc(sz+1);
+    strata_str r=(strata_str)strata_scratch_alloc(sz+1);
     memcpy(r,s+start,sz); r[sz]='\0'; return r;
 }
 static strata_int str_index_of(strata_str h, strata_str n) {
@@ -124,10 +222,16 @@ static strata_int file_exists(strata_str path) {
 
 /* StringBuilder */
 typedef struct { char* buf; int64_t len; int64_t cap; } SB;
-static SB sb_new_f(void) { SB s; s.cap=4096;s.len=0;s.buf=(char*)malloc(4096);s.buf[0]='\0';return s; }
+static SB sb_new_f(void) { SB s; s.cap=4096;s.len=0;s.buf=(char*)strata_scratch_alloc(4096);s.buf[0]='\0';return s; }
 static void sb_append_f(SB* s, const char* t) {
     size_t tl=strlen(t);
-    while(s->len+(int64_t)tl+1>s->cap){s->cap*=2;s->buf=(char*)realloc(s->buf,s->cap);}
+    if(s->len+(int64_t)tl+1>s->cap){
+        int64_t want=s->cap; while(s->len+(int64_t)tl+1>want) want*=2;
+        /* No realloc in an arena: take a bigger block and copy. The old one is
+           reclaimed by the next reset, not now. */
+        char* nb=(char*)strata_scratch_alloc((size_t)want);
+        memcpy(nb,s->buf,(size_t)s->len+1); s->buf=nb; s->cap=want;
+    }
     memcpy(s->buf+s->len,t,tl+1); s->len+=(int64_t)tl;
 }
 static void sb_append_line_f(SB* s, const char* t) {
@@ -188,7 +292,7 @@ static void strata_table_full(const char* table) {
    strata_int is 8 bytes, so the data pointer stays 8-byte aligned and a
    double or a pointer can sit there. */
 static void* strata_list_new(strata_int count, size_t elem_size) {
-    strata_int* base = (strata_int*)calloc(1, sizeof(strata_int)
+    strata_int* base = (strata_int*)strata_scratch_zalloc(sizeof(strata_int)
                                               + (size_t)count * elem_size);
     if (!base) return NULL;
     base[0] = count;

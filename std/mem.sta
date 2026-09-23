@@ -44,3 +44,25 @@ int mem_alloc(int bytes) {
 def mem_free(int ptr) {
     native "free((void*)(uintptr_t)$ptr);";
 }
+
+// ── Scratch memory ────────────────────────────────────────────────────────
+//
+// Temporaries -- concatenations, numbers turned into text, string builders,
+// query results -- come from an arena. `scratch_reset` throws the whole arena
+// away at once, which is what lets a server or a phone app run for a week
+// instead of growing until it is killed.
+//
+// THE RULE: after scratch_reset() every temporary is gone. Whatever must
+// survive belongs in a table, which keeps its own copy. Call it at a boundary
+// where nothing temporary is still in hand -- the end of a request, the end of
+// a frame -- and never in the middle of building a value. A batch job that
+// runs and exits never needs it at all.
+def scratch_reset() {
+    native "strata_scratch_reset();";
+}
+
+// Bytes of scratch currently held. For proving the number stops growing
+// rather than believing it does.
+int scratch_used() {
+    native "return strata_scratch_used();";
+}

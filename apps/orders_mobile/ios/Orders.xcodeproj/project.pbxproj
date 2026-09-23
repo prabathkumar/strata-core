@@ -181,13 +181,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(SRCROOT)/../build/host.o",
-				);
+				OTHER_LDFLAGS = "$(SRCROOT)/../build/host.o";
 				PRODUCT_BUNDLE_IDENTIFIER = org.stratalang.orders;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "StrataBridge.h";
+				SWIFT_OBJC_BRIDGING_HEADER = StrataBridge.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -207,13 +205,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(SRCROOT)/../build/host.o",
-				);
+				OTHER_LDFLAGS = "$(SRCROOT)/../build/host.o";
 				PRODUCT_BUNDLE_IDENTIFIER = org.stratalang.orders;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "StrataBridge.h";
+				SWIFT_OBJC_BRIDGING_HEADER = StrataBridge.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

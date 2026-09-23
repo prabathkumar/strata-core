@@ -180,13 +180,16 @@ as an oracle to compare against.
    at the Simulator. `apps/orders_mobile/android/` is still reviewed design
    rather than tested code: the machine here has no NDK, so the JNI wrappers
    around those same five functions have never been compiled.
-7. A phone shell leaks. `host_item` returns a string per item — about sixty
-   per redraw — and Strata's runtime never frees anything, so a redraw costs a
-   few kilobytes that are not given back. A desktop run ends and the operating
-   system reclaims it; a phone app stays open for hours. The shell cannot free
-   the pointers itself either, because `host_hit` may return a string literal
-   and freeing one of those crashes. This is the general gap — Strata has no
-   deallocation at all — showing up where it finally matters.
+7. Memory is given back in one piece or not at all. Temporaries come from an
+   arena and `scratch_reset()` throws the whole arena away; tables keep their
+   own copies and survive it. Measured: four million temporaries with resets
+   peak at 1.4 MB, one million without at 93 MB. What this is NOT is
+   individual deallocation — there is still no way to free one value, and a
+   single request that builds something enormous holds it until the next
+   reset. The reset is also placed by hand, so calling it while a temporary is
+   still in use is a use-after-free that nothing catches. A phone shell and a
+   server both now have somewhere honest to put that call; neither has been
+   run for a week to prove it.
 8. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about

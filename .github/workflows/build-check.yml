@@ -98,6 +98,11 @@ jobs:
     # The Android and iOS shells read the same display list from the same five
     # functions. Nothing makes them agree except care, and care does not
     # survive six months.
+    # The difference between a language for batch jobs and one for servers.
+    # Measured, not trusted: the same work with and without resets.
+    - name: Scratch Memory Is Given Back
+      run: python3 test_suite/scratch_is_constant_memory.py
+
     - name: Phone Shells In Step
       run: python3 test_suite/shell_sync.py
 
