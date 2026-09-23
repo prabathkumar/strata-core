@@ -72,3 +72,30 @@ int str_to_int(str value) {
 float str_to_float(str value) {
     native "return strtod($value, NULL);";
 }
+
+// ── Errors ────────────────────────────────────────────────────────────────
+//
+// Strata has no exceptions. A load that meets a damaged file refuses it, says
+// so on stderr and leaves the table empty. A program that does not check
+// carries on with no rows and no idea -- so an error that is never checked
+// makes the program exit non-zero, with a message saying which one.
+//
+// Check it, act on it, then clear it. A handled failure is not a failure.
+int had_error() {
+    native "return strata_had_error();";
+}
+
+// The most recent error, or "" when there is none unchecked.
+str last_error() {
+    native "return strata_last_error();";
+}
+
+// Say the error has been dealt with; the program can then exit normally.
+def clear_error() {
+    native "strata_clear_error();";
+}
+
+// How many errors were reported during this run, checked or not.
+int error_count() {
+    native "return strata_error_count();";
+}

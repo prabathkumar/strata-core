@@ -100,6 +100,11 @@ jobs:
     # survive six months.
     # The difference between a language for batch jobs and one for servers.
     # Measured, not trusted: the same work with and without resets.
+    # No exceptions, so the accounting is at exit: a failure nobody looked
+    # at must not leave the process claiming success.
+    - name: Unchecked Errors Are Loud
+      run: python3 test_suite/unchecked_errors_are_loud.py
+
     - name: Scratch Memory Is Given Back
       run: python3 test_suite/scratch_is_constant_memory.py
 

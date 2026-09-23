@@ -421,11 +421,11 @@ compile_run_in("scan_leaves_the_table_in_memory_alone",
     "saved\n0")
 compile_run_in("scan_of_a_missing_file_says_so",
     ['import io from std;\ndatabase S { int id; }\n'
-     'int main() { int n = 0; scan S from "nope.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+     'int main() { int n = 0; scan S from "nope.tsv" as r { n = n + 1; } print(str(n)); if (had_error() == 1) { clear_error(); } if (had_error() == 1) { clear_error(); } return 0; }'],
     "0\n[STRATA LOAD] S: refusing to read 'nope.tsv' — there is no such file")
 compile_run_in("scan_refuses_another_tables_file",
     [_SCAN_W, 'import io from std;\ndatabase Other { int id; str who; float amt; }\n'
-     'int main() { int n = 0; scan Other from "s.tsv" as r { n = n + 1; } print(str(n)); return 0; }'],
+     'int main() { int n = 0; scan Other from "s.tsv" as r { n = n + 1; } print(str(n)); if (had_error() == 1) { clear_error(); } if (had_error() == 1) { clear_error(); } return 0; }'],
     "saved\n0\n[STRATA LOAD] Other: refusing to read 's.tsv' — it was saved from 'S', not this table")
 test("scan_of_an_undeclared_table_is_e004",
      'int main() { scan Ghost from "x.tsv" as r { } return 0; }', "E004")
@@ -512,7 +512,7 @@ compile_run_in("rewrite_leaves_no_temporary_behind",
     "saved\nclean")
 compile_run_in("rewrite_of_a_missing_file_says_so",
     ['import io from std;\ndatabase R { int id; }\n'
-     'int main() { rewrite R from "nope.tsv" as r { } print("done"); return 0; }'],
+     'int main() { rewrite R from "nope.tsv" as r { } print("done"); if (had_error() == 1) { clear_error(); } return 0; }'],
     "done\n[STRATA LOAD] R: refusing to read 'nope.tsv' — there is no such file")
 test("rewrite_of_an_undeclared_table_is_e004",
      'int main() { rewrite Ghost from "x.tsv" as r { } return 0; }', "E004")
@@ -717,11 +717,11 @@ compile_run_in("migrate_columns_reordered_match_by_name",
     "saved\nb 2.5")
 
 compile_run_in("migrate_type_change_is_refused",
-    [_W, 'import io from std;\ndatabase T { int id; str name; str amt; }\nint main() { int ok = 0; load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
+    [_W, 'import io from std;\ndatabase T { int id; str name; str amt; }\nint main() { int ok = 0; load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); if (had_error() == 1) { clear_error(); } return 0; }'],
     "saved\n0\n[STRATA LOAD] T: refusing to read 't.tsv' — column 'amt' changed type since it was saved")
 
 compile_run_in("migrate_headerless_file_is_refused",
-    ['import io from std;\ndatabase T { int id; str name; }\nint main() { load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
+    ['import io from std;\ndatabase T { int id; str name; }\nint main() { load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); if (had_error() == 1) { clear_error(); } return 0; }'],
     "0\n[STRATA LOAD] T: refusing to read 't.tsv' — no schema header; it was written before headers existed. Re-save it.",
     files={"t.tsv": "1\ta\n2\tb\n"})
 

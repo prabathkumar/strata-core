@@ -153,10 +153,16 @@ as an oracle to compare against.
 
 ## All ten are closed. What is still not true
 
-1. A load that meets a damaged row now refuses the whole file rather than
-   reading part of it: the table is left empty and the reason is on stderr.
-   A partial load would be worse, but a caller that ignores the return value
-   sees an empty table and no exception, because the language has none.
+1. A load that meets a damaged row refuses the whole file rather than reading
+   part of it: the table is left empty and the reason is on stderr. There are
+   still no exceptions, so a caller that ignores the failure carries on with
+   no rows — but it can no longer pretend it succeeded. The error is recorded,
+   `had_error()` and `clear_error()` handle it, and a program that reaches its
+   exit with one unchecked prints what it was and exits 65. What this does not
+   do is stop the run at the point of failure, or let a function report a
+   failure to its caller: the error is one global flag, so two failures before
+   a check leave only the second message, and library code cannot raise
+   anything.
 2. A table is held in the process that loaded it, and reloaded only when the
    file on disk changes. That is right for one service on one machine and
    wrong the moment a second machine writes the same file over a share where
