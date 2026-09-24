@@ -22,15 +22,59 @@ $ strata repair ledger.sta
   clean after 1 repair(s).
 ```
 
-That loop is real and runs today. Most of what surrounds it does not yet — see
-[Roadmap](#roadmap), which is exhaustive and blunt.
+That loop is real and runs today.
 
-> **Status: pre-release, under active development.** Nothing in this document
-> is claimed to work unless it is in [What works today](#what-works-today) or
-> marked **Done** in the [Roadmap](#roadmap), which is exhaustive and blunt
-> about what is not. Every code example below is compiled on every commit by
-> `test_suite/doc_examples.py`, so an example that stopped working would fail
-> the build rather than sit here.
+## Try it in sixty seconds
+
+```bash
+git clone https://github.com/prabathkumar/strata-core
+cd strata-core && bash tools/install.sh
+strata new myapp && cd myapp && strata run
+```
+
+## Why this is different
+
+**One language checks the database, the rules and the screen together.** Rename
+a column and every query, every business rule and every field on every screen
+that used it fails the build — not the deploy, not production. Most stacks
+check each tier separately and discover the mismatch at runtime; here it is one
+type system over all three.
+
+```text
+database Account { int id; str holder; float balance; }
+
+float overdrawn_total() {
+    list[Account] red = Account <- [balance < 0.0];
+    return sum(red.balance);          // rename `balance` and this line fails
+}
+```
+
+**The compiler proves things about itself.** Strata's own compiler is written
+in Strata, and every build checks three properties: the Strata compiler and a
+Python reference implementation produce byte-identical C across 97 cases; the
+compiler rebuilt from C it generated itself reproduces that C exactly; and 210
+conformance tests run on every commit. That machinery is there because a
+language written by AI and reviewed by humans has to be checkable by machine.
+
+**Memory is given back, and it is measured, not asserted.**
+
+| | peak memory |
+|---|---|
+| 4,000,000 temporaries, resetting | 1.4 MB |
+| 1,000,000 temporaries, no reset | 93 MB |
+| 60,000 frames of a phone screen | 1.28 MB |
+
+**Failures cannot pass for success.** There are no exceptions; a program that
+ignores a failed load prints which error it ignored and exits non-zero, so a
+silent wrong answer is not one of the outcomes.
+
+## What this is not, yet
+
+Pre-release, and the roadmap is exhaustive about the gaps rather than quiet
+about them. Nothing has run on a physical phone; there is no package registry;
+`ast`, `lex`, `test` and `repair` still go through Python. Every code example
+in this file is compiled on every commit, so an example that stopped working
+would fail the build rather than sit here looking plausible.
 
 ## For business readers
 
