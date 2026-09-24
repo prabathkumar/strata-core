@@ -789,8 +789,31 @@ run on a handset — see the roadmap.
 ```bash
 strata check file.sta --json    # machine-readable diagnostics
 strata deps                     # fetch the dependency graph
-strata repair file.sta          # rules-based fixes; --backend claude for more
+strata repair file.sta          # rules-based fixes: deterministic, no model
 ```
+
+### Repairing with a model on your own machine
+
+```bash
+ollama serve &                  # or LM Studio, llama.cpp, vLLM
+ollama pull qwen2.5-coder:7b
+python3 ai_self_repair.py myfile.sta --backend local
+```
+
+    STRATA_REPAIR_URL    default http://localhost:11434
+    STRATA_REPAIR_MODEL  default qwen2.5-coder:7b
+
+The source never leaves the machine, which for most enterprises decides
+whether an AI repair loop is allowed rather than merely what it costs. Try
+`--backend rules` first: it fixes the mechanical errors with no model at all,
+and the cheapest model is the one you do not call.
+
+What the model is sent is the compiler's own diagnostic — the code, the
+classification, the line, the hint and the remediation the language's authors
+wrote — so a small local model is being asked to apply a stated fix rather
+than to work out what is wrong. The compiler then rejects a wrong patch
+immediately, which is what makes a 7B model on a laptop a reasonable thing to
+trust here.
 
 ## 4. Toolchain
 

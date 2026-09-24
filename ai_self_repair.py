@@ -247,7 +247,65 @@ def _plausible_source(out: str, original: str, who: str):
     return out
 
 
-BACKENDS = {"rules": repair_rules, "llm": repair_llm, "claude": repair_claude}
+def repair_local(source: str, d: dict) -> str | None:
+    """Send the diagnostic to a model running on this machine.
+
+    Speaks /v1/chat/completions, which Ollama, LM Studio, llama.cpp's server
+    and vLLM all answer, so one code path reaches any of them. Standard
+    library only: a repair loop that needs a package installed before it works
+    is a repair loop most people never try.
+
+    Why local is the interesting case rather than the cheap one: the source
+    never leaves the machine. For most enterprises that is not a preference,
+    it is the difference between an AI repair loop being allowed and not. The
+    price per call being zero is a bonus.
+
+        STRATA_REPAIR_URL    default http://localhost:11434
+        STRATA_REPAIR_MODEL  default qwen2.5-coder:7b
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    base = os.environ.get("STRATA_REPAIR_URL", "http://localhost:11434").rstrip("/")
+    model = os.environ.get("STRATA_REPAIR_MODEL", "qwen2.5-coder:7b")
+    body = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": _repair_prompt(source, d)}],
+        "temperature": 0,          # a repair is not a place for invention
+        "stream": False,
+    }).encode()
+
+    req = urllib.request.Request(f"{base}/v1/chat/completions", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            payload = _json.loads(r.read().decode())
+    except urllib.error.URLError as e:
+        print(f"  [local] no model answered at {base}: {e.reason}. "
+              f"Start one (`ollama serve`) or set STRATA_REPAIR_URL.",
+              file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  [local] request failed: {e}", file=sys.stderr)
+        return None
+
+    try:
+        out = payload["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError):
+        print(f"  [local] unexpected reply shape: {str(payload)[:160]}",
+              file=sys.stderr)
+        return None
+
+    out = re.sub(r"^```[a-z]*\n|\n```$", "", out.strip())
+    # The same plausibility gate the other backends use. A small model is more
+    # likely to return an apology, a diff or half a file, and none of those
+    # should reach the source tree.
+    return _plausible_source(out, source, "local")
+
+
+BACKENDS = {"rules": repair_rules, "llm": repair_llm, "claude": repair_claude,
+            "local": repair_local}
 
 
 # ── Loop ──────────────────────────────────────────────────────────────────────
