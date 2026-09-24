@@ -19,7 +19,9 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STRATA = os.path.join(ROOT, "bin", "strata")
-DRIVER = os.path.join(ROOT, "build", "strata-build")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_path import driver_path
+DRIVER = driver_path(ROOT)
 SOURCE = "examples/aggregation.sta"
 
 failures = []

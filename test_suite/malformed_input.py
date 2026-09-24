@@ -28,7 +28,9 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DRIVER = os.path.join(ROOT, "build", "strata-build")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_path import driver_path
+DRIVER = driver_path(ROOT)
 SEED = 20260920
 SEEDS = [
     "examples/quickstart.sta",

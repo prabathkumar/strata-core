@@ -20,7 +20,9 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DRIVER = os.path.join(ROOT, "build", "strata-build")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_path import driver_path
+DRIVER = driver_path(ROOT)
 
 # A program from each corner of the language: business rules over tables, the
 # compiler's own front end, screens, the test harness, and a library unit with
