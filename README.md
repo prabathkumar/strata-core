@@ -516,7 +516,194 @@ Defined in `ERROR_TAXONOMY.json`, which is the contract repair agents consume.
 
 ---
 
-## 3. Toolchain
+### Memory that is given back
+
+Strata frees nothing one value at a time. Temporaries — concatenations,
+numbers turned into text, string builders, query results — come from an arena,
+and `scratch_reset()` throws the whole arena away at a point the program
+chooses. Tables keep their own copies of what they hold and survive the reset.
+
+```text
+import io  from std;
+import str from std;
+
+database Note { int id; str body; }
+
+int main() {
+    Note <- [id = 1, body = "this survives every reset"];
+
+    int r = 0;
+    while (r < 2000) {
+        int j = 0;
+        while (j < 2000) {
+            str line = str_concat("customer ", str(j));
+            j = j + 1;
+        }
+        scratch_reset();        // the frame, request or batch is over
+        r = r + 1;
+    }
+    return 0;
+}
+```
+
+Measured, because the claim is the point:
+
+| | peak memory | held at exit |
+|---|---|---|
+| 4,000,000 temporaries, resetting | 1.4 MB | 0 bytes |
+| 1,000,000 temporaries, no reset | 93 MB | 96 MB |
+
+Four times the work in a sixty-seventh of the memory. This is what lets a
+server run for a week rather than growing until something kills it.
+
+**The rule, and it is the whole danger:** after `scratch_reset()` every
+temporary is gone. Whatever must outlive it belongs in a table. The reset is
+placed by hand and calling it while a temporary is still in use is a
+use-after-free that nothing catches. A batch job that runs and exits never
+needs it at all.
+
+This is not individual deallocation. There is still no way to free one value,
+one request that builds something enormous holds it until the next reset, and
+rows removed by `delete` are not reclaimed — see the roadmap.
+
+### Errors that cannot pass for success
+
+There are no exceptions. A load that meets a damaged file refuses it, says why
+on stderr, and leaves the table empty. A program that did not check used to
+carry on with no rows and no idea.
+
+```text
+load Sale from "sales.tsv";
+
+if (had_error() == 1) {
+    print(last_error());
+    clear_error();              // handled; the program exits normally
+}
+```
+
+Handle it and nothing changes. Ignore it and the program prints which error
+went unchecked and **exits 65**, where a shell script, a CI job and an
+operator all notice. Halting at the point of failure would be wrong — a server
+should not die because one stored row is bad — so the run is untouched and the
+accounting is at the end.
+
+The error is a single global flag: two failures before a check leave only the
+second message, and a function still cannot report a failure to its caller.
+
+## 3. Workflows
+
+The short version of how the pieces above are actually used.
+
+### Build and run something
+
+```bash
+strata new myapp && cd myapp
+strata run                      # builds src/main.sta and runs it
+strata check src/main.sta       # types and contracts, no binary
+strata test                     # runs every verify block
+strata fmt src/*.sta --check    # canonical formatting, as CI enforces it
+```
+
+### A batch job
+
+Read, transform, write, exit. The arena is never reset, because the process
+ends and the operating system takes the memory back.
+
+```text
+import io  from std;
+import str from std;
+
+database Ledger { int id; float amount; str compliance_status; }
+
+int main() {
+    load Ledger from "ledger.tsv";
+    if (had_error() == 1) {
+        print(last_error());
+        return 1;
+    }
+
+    list[Ledger] flagged = Ledger <- [compliance_status == "REJECTED"];
+    print(str_concat("to review: ", str(count(flagged))));
+
+    save Ledger to "reviewed.tsv";
+    return 0;
+}
+```
+
+For a table too large to hold, `scan` reads it a row at a time, `append` adds
+one without loading the rest, and `rewrite` changes rows in place through an
+atomic rename — all at constant memory.
+
+### A service handling requests
+
+One reset per request is the whole memory story.
+
+```text
+import io  from std;
+import mem from std;
+import str from std;
+
+database Order { int id; str customer; }
+
+int handle(str message) {
+    Order <- [id = count(Order <- [id > 0]) + 1, customer = message];
+    return 1;
+}
+
+stream orders(str broker_url) {
+    handle(current_message());
+    scratch_reset();            // everything this request built is gone
+}
+
+int main() {
+    print("one reset per request is the whole memory story");
+    return 0;
+}
+```
+
+### A phone screen
+
+The shell asks Strata for a display list, paints it, and reports taps. Five C
+functions are the entire boundary, and the reset goes at the top of a frame.
+
+```text
+import io  from std;
+import mem from std;
+import str from std;
+
+database Row { int id; str text; }
+
+int build_frame() {
+    Row <- [id = 1, text = str_concat("drawn at ", str(1))];
+    return count(Row <- [id > 0]);
+}
+
+int host_draw() {
+    scratch_reset();            // last frame's strings
+    delete Row <- [id > 0];
+    return build_frame();
+}
+
+int main() {
+    print(str(host_draw()));
+    print(str(host_draw()));
+    return 0;
+}
+```
+
+`apps/orders_mobile/ios/` carries a committed Xcode project; the Android shell
+in `apps/orders_mobile/android/` is the same contract through JNI. Neither has
+run on a handset — see the roadmap.
+
+### When something is wrong
+
+```bash
+strata check file.sta --json    # machine-readable diagnostics
+strata deps                     # fetch the dependency graph
+strata repair file.sta          # rules-based fixes; --backend claude for more
+```
+
+## 4. Toolchain
 
 ### Installing it
 
@@ -647,7 +834,7 @@ model.
 
 ---
 
-## 4. Adoption
+## 5. Adoption
 
 **One file, one command.** A Strata program is a `.sta` file. `strata build`
 turns it into a native binary. There is no project scaffold to generate, no
@@ -702,7 +889,7 @@ transactions (see [Roadmap](#roadmap)).
 
 ---
 
-## 5. Where this is going
+## 6. Where this is going
 
 **Everything in this section is direction, not shipped behaviour.** It is here so
 the intent is legible. The [Roadmap](#roadmap) table states what actually exists.
@@ -761,7 +948,7 @@ non-integer, or indexing something that is not a list, is caught at build time.
 
 ---
 
-## 6. Roadmap
+## 7. Roadmap
 
 Designed, specified, and **not yet built**. Listed here so the boundary between
 what runs and what is planned is unambiguous.
@@ -781,6 +968,9 @@ what runs and what is planned is unambiguous.
 | `model` / `predict` execution | **A stack of dense layers.** A model declares hidden layers between its input and output, each with an activation — `relu`, `sigmoid` or `none`; the output layer is linear. `predict` runs the forward pass with weights loaded from a text file, laid out layer by layer, and a file with the wrong weight count is refused rather than loaded in part. Inference only: no training, no autograd, no convolution or attention, no accelerator, no framework interop. The WebAssembly target has no libm, so `exp` is implemented in the prelude; it agrees with libm to about 1e-15 relative. |
 | `report` / `render` | **Renders.** A report runs its datasource, evaluates its metrics with `rows` bound to the result, and writes Markdown: the title, each metric, the matching rows as a table, and a row count. Metrics are type-checked (E001) and the datasource gets the E004 column contract. Metrics see `rows`, not the columns of a row — there is no aggregation, so `sum(col)` does not exist. Markdown only; no other output format, no charts, no templates. |
 | `stream` blocks | **Dispatching.** Each `stream` handler registers under its own name as a channel; `strata_publish(channel, message)` enqueues and `strata_run()` drains the queue, returning the number delivered. Handlers may publish while the queue drains. This is a cooperative single-threaded loop: no separate stacks, no preemption, no parallelism, no I/O integration. Messages to an unknown channel are dropped. |
+| Memory | **Given back in one piece.** Temporaries come from an arena; `scratch_reset()` discards it at a boundary the program picks. Measured at 1.4 MB for four million temporaries against 93 MB for one million without. Tables survive a reset because they copy what they store. Not individual deallocation: one value cannot be freed, and a single huge request holds its memory until the next reset. |
+| Rows removed by `delete` | **Not reclaimed.** A delete drops the row from the table and leaves its memory, because a query result may still point at it. Measured at about 34 bytes per deleted row: 400,000 insert/delete cycles cost 13.7 MB, and 800,000 cost 26.2 MB. It is linear, so a screen that rebuilds its rows every frame or a service that churns a table will grow. The arena makes the fix possible — a query result is arena memory, so `scratch_reset()` is a moment when nothing can point at a deleted row — but it is not built. |
+| Errors | **Cannot pass for success.** No exceptions. A failure is recorded; `had_error()`, `last_error()` and `clear_error()` handle it; a program reaching exit with one unchecked prints it and exits 65. One global flag, so two failures before a check leave only the second, and a function cannot report a failure to its caller. |
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
 | Calls to undefined functions | **Caught as E002.** Imports are resolved before the type check, so the set of reachable names is known and a typo names the typo rather than a C symbol at link time. It is a `--json` diagnostic, so the repair loop can see it. The rule disarms for a file importing a module with no local checkout — that picture is incomplete. It checks that a name exists, not its signature: argument count and types are still unchecked across a module boundary. |
@@ -823,7 +1013,7 @@ disk. Nothing about the compiler has been benchmarked at all.
 
 ---
 
-## 7. Verification
+## 8. Verification
 
 ```
 python3 test_suite/conformance.py      # language conformance, E001-E009 + end-to-end
@@ -843,7 +1033,7 @@ compiled is documentation that will drift.
 
 ---
 
-## 8. Direction
+## 9. Direction
 
 The long-term goal is that a requirement goes in, a working system comes out,
 and developers review rather than type. That is only responsible if the compiler
