@@ -196,7 +196,9 @@ as an oracle to compare against.
    retired rather than freed on the spot, and a reset frees them once the
    arena that any query result lives in has gone. 400,000 insert/delete cycles
    held 13.7 MB before and 1.15 MB after, and 800,000 no longer cost more than
-   400,000. The reset is placed by hand, so calling it while a temporary — or
+   400,000. The phone bridge resets at the top of each frame: 60,000 frames of
+   a twenty-row screen hold 1.28 MB, where 20,000 frames without the reset
+   reached 326 MB. The reset is placed by hand, so calling it while a temporary — or
    a row — is still in use is a use-after-free that nothing catches. A phone shell and a
    server both now have somewhere honest to put that call; neither has been
    run for a week to prove it.

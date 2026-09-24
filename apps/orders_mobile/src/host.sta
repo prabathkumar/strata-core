@@ -16,7 +16,16 @@ import ui     from std;
 import screen from app;
 
 // Rebuild the display list. Returns how many items it holds.
+//
+// The reset is at the TOP, not the bottom, and the placement is the whole
+// point. Everything this frame builds -- the display list, the packed line
+// host_item hands back for each row -- is a temporary, and the shell is still
+// reading those until it asks for the next frame. Asking for a frame is
+// therefore the moment nothing from the last one is needed, and it is where a
+// phone app stops growing. Resetting at the end of the frame instead would
+// free the strings the shell is about to read.
 int host_draw() {
+    scratch_reset();
     draw_screen();
     list[UIItem] all = UIItem <- [id > 0];
     return count(all);
