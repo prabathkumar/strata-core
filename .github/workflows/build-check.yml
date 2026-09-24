@@ -374,3 +374,67 @@ jobs:
         curl -fsS http://127.0.0.1:8080/login | grep -q "password" \
           || { echo "::error::/login did not render the sign-in form"; exit 1; }
         docker rm -f orders-ci
+
+  # ── A Mac that has never seen this project ───────────────────────────────
+  #
+  # Everything above runs on Linux, in a container, and every environment bug
+  # this project has hit was a macOS one: an Intel Python first on the PATH of
+  # an Apple silicon machine, a build cache shared between two architectures,
+  # warnings only clang emits. CI never saw a Mac, so CI never saw any of them
+  # -- they were found by hand, one at a time, on the only Mac that exists
+  # here.
+  #
+  # Developers use Macs. This job is the clean machine: clone, install, make a
+  # project, run it. It is deliberately the getting-started path from the
+  # README rather than the test suite, because the question it answers is
+  # whether a stranger's first ten minutes work.
+  first-run-on-a-mac:
+    name: A Mac That Has Never Seen This Project
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout Code Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: What This Machine Has
+      run: |
+        uname -m
+        which -a python3 || true
+        clang --version | head -2
+
+    # The README says these three lines. If they do not work, nothing else
+    # about this project matters to somebody reading it for the first time.
+    - name: The Sixty-Second Install
+      run: bash tools/install.sh
+
+    - name: A New Project Builds And Runs
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        cd "$(mktemp -d)"
+        strata new myapp
+        cd myapp
+        strata run
+
+    # clang is the compiler here, not gcc, and it rejects things gcc accepts.
+    - name: Conformance On A Mac
+      run: python3 test_suite/conformance.py
+
+    - name: Documentation Examples On A Mac
+      run: python3 test_suite/doc_examples.py
+
+    - name: Memory Claims On A Mac
+      run: |
+        python3 test_suite/scratch_is_constant_memory.py || \
+          echo "::warning::no /usr/bin/time -v on macOS; memory claims are proven on Linux only"
+
+    - name: The Phone Bridge Builds For iOS
+      run: |
+        bin/strata build apps/orders_mobile/src/host.sta \
+          -o apps/orders_mobile/build/host
+        test -f apps/orders_mobile/build/host.o
+        file apps/orders_mobile/build/host.o

@@ -68,6 +68,48 @@ language written by AI and reviewed by humans has to be checkable by machine.
 ignores a failed load prints which error it ignored and exits non-zero, so a
 silent wrong answer is not one of the outcomes.
 
+## How this compares
+
+The honest version, because a comparison written by a language's own author is
+worth nothing if it sweeps every row.
+
+| | Strata | C# / .NET | Java | Python | Blazor |
+|---|---|---|---|---|---|
+| Ecosystem and libraries | **Almost none** | Vast | Vast | Vast | Vast (.NET) |
+| Production maturity | **Eleven days old** | Decades | Decades | Decades | Years |
+| IDE, debugger, profiler | **Syntax highlighting** | Excellent | Excellent | Excellent | Excellent |
+| Hiring pool | **One person** | Millions | Millions | Millions | Large |
+| Exceptions / error handling | **One global flag** | Full | Full | Full | Full |
+| Memory management | Arena, reset by hand | GC | GC | GC | GC |
+| Concurrency | **None** | Full | Full | Full (GIL caveats) | Full |
+| SQL queries checked at compile time | **Always, built in** | With EF Core LINQ; raw SQL and Dapper are not | With jOOQ codegen; JPQL/HQL strings are not | Rarely | Inherits C# |
+| Screen fields checked against the *database* schema | **Yes** | Against the C# model, not the database | Usually runtime | Runtime | Against the C# model |
+| One type system spanning database, rules and screens | **Yes** | Model-level, with the database a separate migration concern | Same | No | Same |
+| Diagnostics designed for a machine to repair | **Yes — coded, `--json`, repair loop** | Human-readable | Human-readable | Human-readable | Human-readable |
+| Compiler proves its own output | Two implementations byte-identical; self-rebuild exact | No | No | No | No |
+| Single native binary, no runtime | Yes (via C) | With AOT | With GraalVM | No | No |
+
+**Read the table honestly and it says one thing:** for almost any project you
+would start today, use C# or Java. They win on every row that decides whether a
+team ships — libraries, tooling, people who already know it, and the boring
+certainty that it works.
+
+Strata is interesting on exactly one axis. In a C# stack the compiler checks
+your code against your *model*, and the model against the *database* is a
+migration you hope was run. In Strata there is no gap to fall into: the
+database schema, the business rules and the screen fields are one type system,
+so renaming a column fails the build in all three at once. Add a column and
+every insert that does not name it fails too, rather than silently writing a
+zero into every row.
+
+That matters more as the code stops being written by hand. A human reviewer
+skims a diff and misses the third screen that used the old column name. A
+compiler does not, and it hands the model a coded diagnostic it can act on
+instead of a paragraph of English.
+
+Whether that one axis is worth giving up everything in the first four rows is
+a real question, and for most teams today the answer is no.
+
 ## What this is not, yet
 
 Pre-release, and the roadmap is exhaustive about the gaps rather than quiet
