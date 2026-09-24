@@ -137,9 +137,64 @@ static void* strata_scratch_zalloc(size_t n) {
     return p;
 }
 
+/* ── Rows waiting to be reclaimed ─────────────────────────────────────────
+ *
+ * `delete` drops a row from its table and used to leave the memory, on the
+ * grounds that a list a query returned a moment ago points at the same rows
+ * and the language had no way to know. That was right, and it cost about 34
+ * bytes per deleted row: a screen rebuilding its rows every frame grew for as
+ * long as it ran.
+ *
+ * The arena changes it. A query result is arena memory, so the moment the
+ * arena is thrown away is a moment when nothing can still be pointing at a
+ * deleted row. That is the safe point that did not exist before, and it is
+ * where deleted rows are freed.
+ *
+ * Which means the danger is exactly the arena's danger, not a new one:
+ * holding a row across a reset is holding a temporary across a reset. */
+
+typedef void (*StrataRowFree)(void*);
+
+typedef struct { void* ptr; StrataRowFree freer; } StrataRetired;
+
+static StrataRetired* strata_retired    = NULL;
+static size_t         strata_retired_n  = 0;
+static size_t         strata_retired_cap = 0;
+
+void strata_retire(void* row, StrataRowFree freer) {
+    if (!row) return;
+    if (strata_retired_n == strata_retired_cap) {
+        size_t cap = strata_retired_cap ? strata_retired_cap * 2 : 64;
+        StrataRetired* g = (StrataRetired*)realloc(strata_retired,
+                                                   cap * sizeof(StrataRetired));
+        /* Losing the record only means the row is not reclaimed. That is the
+         * old behaviour, and it is better than failing the program. */
+        if (!g) return;
+        strata_retired = g;
+        strata_retired_cap = cap;
+    }
+    strata_retired[strata_retired_n].ptr   = row;
+    strata_retired[strata_retired_n].freer = freer;
+    strata_retired_n++;
+}
+
+static void strata_reclaim_rows(void) {
+    for (size_t i = 0; i < strata_retired_n; i++) {
+        strata_retired[i].freer(strata_retired[i].ptr);
+    }
+    strata_retired_n = 0;
+}
+
+/* Rows deleted and not yet reclaimed. For a test that wants to prove they
+ * are, rather than believe it. */
+strata_int strata_retired_rows(void) { return (strata_int)strata_retired_n; }
+
 /* Throw away every temporary made since the last reset. Chunks are kept for
  * reuse, so this is a few pointer writes however much was allocated. */
 void strata_scratch_reset(void) {
+    /* Rows first: a retired row may be pointed at by a query result in the
+     * arena, and both die here together. */
+    strata_reclaim_rows();
     StrataChunk* c = strata_scratch_head;
     while (c) { c->used = 0; c = c->next; }
     strata_scratch_cur = strata_scratch_head;

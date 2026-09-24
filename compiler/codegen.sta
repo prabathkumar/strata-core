@@ -752,7 +752,8 @@ str gen_expr(Gen &g, int p) {
         sb_append(&db, e.s1); sb_append(&db, "__count; _di++) { ");
         sb_append(&db, e.s1); sb_append(&db, "* _row = "); sb_append(&db, e.s1);
         sb_append(&db, "__rows[_di]; if (!("); sb_append(&db, cond); sb_append(&db, ")) { ");
-        sb_append(&db, e.s1); sb_append(&db, "__rows[_kept++] = _row; } } strata_int _gone = ");
+        sb_append(&db, e.s1); sb_append(&db, "__rows[_kept++] = _row; } else { strata_retire(_row, ");
+        sb_append(&db, e.s1); sb_append(&db, "__row_free); } } strata_int _gone = ");
         sb_append(&db, e.s1); sb_append(&db, "__count - _kept; ");
         sb_append(&db, e.s1); sb_append(&db, "__count = _kept; _gone; })");
         return sb_to_str(&db);
@@ -1157,10 +1158,11 @@ def gen_stmt(Gen &g, Node st) {
 
     if (k == 76) {                                    // delete
         // The surviving rows are moved down and the count is reduced. The row
-        // is not freed: something else may still be holding it — a list a
-        // query returned a moment ago points at the same rows — and this
-        // language has no way to know. A leak is a better bug than a
-        // dangling pointer.
+        // is handed to strata_retire rather than freed here: something else
+        // may still be holding it — a list a query returned a moment ago
+        // points at the same rows — so it is freed at the next
+        // scratch_reset(), when the arena those lists live in goes too.
+        // Before the arena there was no such moment and the row just leaked.
         str prev_row = g.query_row;
         g.query_row = st.s1;
         str dcond = gen_expr(&g, st.c1);
@@ -1181,6 +1183,8 @@ def gen_stmt(Gen &g, Node st) {
         StringBuilder dk = sb_new();
         sb_append(&dk, "if (!("); sb_append(&dk, dcond); sb_append(&dk, ")) { ");
         sb_append(&dk, st.s1); sb_append(&dk, "__rows[_kept++] = _row; }");
+        sb_append(&dk, " else { strata_retire(_row, "); sb_append(&dk, st.s1);
+        sb_append(&dk, "__row_free); }");
         cg_emit(&g, sb_to_str(&dk));
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
@@ -1204,9 +1208,22 @@ def gen_stmt(Gen &g, Node st) {
         int n = pairs.len;
         for (int i = 0; i < n; i = i + 1) {
             Node pair = nv_get(&pairs, i);
+            // A str column takes a COPY. The value may be a temporary from
+            // the arena, and the arena is thrown away at the next
+            // scratch_reset() while the table is not -- so a table that
+            // merely pointed at one would be holding freed memory. It also
+            // makes every stored string the table's own, which is what lets
+            // a deleted row be freed.
+            StringBuilder fkey = sb_new();
+            sb_append(&fkey, st.s1); sb_append(&fkey, ".");
+            sb_append(&fkey, pair.s1);
+            str fct = bind_get(g.field_types, sb_to_str(&fkey));
             StringBuilder set = sb_new();
             sb_append(&set, "_r->"); sb_append(&set, pair.s1);
-            sb_append(&set, " = "); sb_append(&set, gen_expr(&g, pair.c1));
+            sb_append(&set, " = ");
+            if (str_eq(fct, "strata_str") == 1) { sb_append(&set, "strata_dup("); }
+            sb_append(&set, gen_expr(&g, pair.c1));
+            if (str_eq(fct, "strata_str") == 1) { sb_append(&set, ")"); }
             sb_append(&set, ";");
             cg_emit(&g, sb_to_str(&set));
         }
@@ -1805,6 +1822,21 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
         }
     }
     if (nstr == 0) { emit_raw(&g, "    (void)r;"); }
+    emit_raw(&g, "}");
+
+    // A deleted row is freed at the next scratch_reset, when nothing in the
+    // arena can still be pointing at it. This is the whole row, not just its
+    // strings.
+    StringBuilder rf = sb_new();
+    sb_append(&rf, "static void "); sb_append(&rf, name);
+    sb_append(&rf, "__row_free(void* p) {");
+    emit_raw(&g, sb_to_str(&rf));
+    StringBuilder rf2 = sb_new();
+    sb_append(&rf2, "    "); sb_append(&rf2, name);
+    sb_append(&rf2, "__scan_free(("); sb_append(&rf2, name);
+    sb_append(&rf2, "*)p);");
+    emit_raw(&g, sb_to_str(&rf2));
+    emit_raw(&g, "    free(p);");
     emit_raw(&g, "}");
 
     StringBuilder o0 = sb_new();

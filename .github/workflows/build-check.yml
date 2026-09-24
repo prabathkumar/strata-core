@@ -105,6 +105,11 @@ jobs:
     - name: Unchecked Errors Are Loud
       run: python3 test_suite/unchecked_errors_are_loud.py
 
+    # A table emptied and refilled must not grow, and must not lose the
+    # strings it was given.
+    - name: Deleted Rows Are Reclaimed
+      run: python3 test_suite/deleted_rows_are_reclaimed.py
+
     - name: Scratch Memory Is Given Back
       run: python3 test_suite/scratch_is_constant_memory.py
 

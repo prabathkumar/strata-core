@@ -562,9 +562,12 @@ placed by hand and calling it while a temporary is still in use is a
 use-after-free that nothing catches. A batch job that runs and exits never
 needs it at all.
 
+Rows removed by `delete` are reclaimed at the same moment, for the same
+reason: a query result pointing at a deleted row is itself arena memory, so
+both go together.
+
 This is not individual deallocation. There is still no way to free one value,
-one request that builds something enormous holds it until the next reset, and
-rows removed by `delete` are not reclaimed — see the roadmap.
+and one request that builds something enormous holds it until the next reset.
 
 ### Errors that cannot pass for success
 
@@ -969,7 +972,7 @@ what runs and what is planned is unambiguous.
 | `report` / `render` | **Renders.** A report runs its datasource, evaluates its metrics with `rows` bound to the result, and writes Markdown: the title, each metric, the matching rows as a table, and a row count. Metrics are type-checked (E001) and the datasource gets the E004 column contract. Metrics see `rows`, not the columns of a row — there is no aggregation, so `sum(col)` does not exist. Markdown only; no other output format, no charts, no templates. |
 | `stream` blocks | **Dispatching.** Each `stream` handler registers under its own name as a channel; `strata_publish(channel, message)` enqueues and `strata_run()` drains the queue, returning the number delivered. Handlers may publish while the queue drains. This is a cooperative single-threaded loop: no separate stacks, no preemption, no parallelism, no I/O integration. Messages to an unknown channel are dropped. |
 | Memory | **Given back in one piece.** Temporaries come from an arena; `scratch_reset()` discards it at a boundary the program picks. Measured at 1.4 MB for four million temporaries against 93 MB for one million without. Tables survive a reset because they copy what they store. Not individual deallocation: one value cannot be freed, and a single huge request holds its memory until the next reset. |
-| Rows removed by `delete` | **Not reclaimed.** A delete drops the row from the table and leaves its memory, because a query result may still point at it. Measured at about 34 bytes per deleted row: 400,000 insert/delete cycles cost 13.7 MB, and 800,000 cost 26.2 MB. It is linear, so a screen that rebuilds its rows every frame or a service that churns a table will grow. The arena makes the fix possible — a query result is arena memory, so `scratch_reset()` is a moment when nothing can point at a deleted row — but it is not built. |
+| Rows removed by `delete` | **Reclaimed at the next reset.** A delete retires the row rather than freeing it on the spot, because a query result may still point at it; the reset frees it once the arena those results live in has gone. 400,000 insert/delete cycles held 13.7 MB before and 1.15 MB after, and 800,000 now cost the same as 400,000 rather than twice. Fixing this exposed a second bug: an insert stored a str column's pointer without copying it, so a computed string pointed into the arena and read back empty after a reset — data loss with no error and no crash. Inserts copy now. |
 | Errors | **Cannot pass for success.** No exceptions. A failure is recorded; `had_error()`, `last_error()` and `clear_error()` handle it; a program reaching exit with one unchecked prints it and exits 65. One global flag, so two failures before a check leave only the second, and a function cannot report a failure to its caller. |
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |

@@ -726,6 +726,14 @@ int main(int argc, char** argv) {
             self.emit_raw("    (void)r;")
         self.emit_raw("}")
 
+        # A deleted row is freed at the next scratch_reset, when nothing in
+        # the arena can still be pointing at it. This is the whole row, not
+        # just its strings.
+        self.emit_raw(f"static void {name}__row_free(void* p) {{")
+        self.emit_raw(f"    {name}__scan_free(({name}*)p);")
+        self.emit_raw("    free(p);")
+        self.emit_raw("}")
+
         self.emit_raw(f"static FILE* {name}__scan_open(const char* path, "
                       "int* map, int* ncol) {")
         self.emit_raw('    FILE* f = fopen(path, "r");')
@@ -1389,9 +1397,11 @@ int main(int argc, char** argv) {
         """`delete T <- [cond];` — the surviving rows are moved down and the
         count is reduced, so the table holds exactly what is left.
 
-        The row is not freed. Something else may still be holding it — a list
-        a query returned a moment ago points at the same rows — and this
-        language has no way to know. A leak is a worse bug than a leak.
+        The row is handed to strata_retire rather than freed here. Something
+        else may still be holding it — a list a query returned a moment ago
+        points at the same rows — so it is freed at the next scratch_reset(),
+        when the arena those lists live in is thrown away too. Before the
+        arena existed there was no such moment, and the row simply leaked.
         """
         src = stmt.table
         if src not in self.schemas:
@@ -1407,7 +1417,8 @@ int main(int argc, char** argv) {
         self.emit(f"for (strata_int _di = 0; _di < {src}__count; _di++) {{")
         self.indent += 1
         self.emit(f"{src}* _row = {src}__rows[_di];")
-        self.emit(f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }}")
+        self.emit(f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }}"
+                  f" else {{ strata_retire(_row, {src}__row_free); }}")
         self.indent -= 1
         self.emit("}")
         self.emit(f"{src}__count = _kept;")
@@ -1899,8 +1910,18 @@ int main(int argc, char** argv) {
         self.emit("{")
         self.indent += 1
         self.emit(f"{stmt.target}* _r = ({stmt.target}*)calloc(1, sizeof({stmt.target}));")
+        # A str column takes a COPY. The value may be a temporary from the
+        # arena, and the arena is thrown away at the next scratch_reset()
+        # while the table is not -- so a table that merely pointed at one
+        # would be holding freed memory. It also makes every stored string
+        # the table's own, which is what lets a deleted row be freed.
+        types = {fd.name: self._c_type(fd.field_type)
+                 for fd in self.schema_fields.get(stmt.target, [])}
         for col, v in stmt.assignments:
-            self.emit(f"_r->{col} = {self._gen_expr(v, param_names)};")
+            val = self._gen_expr(v, param_names)
+            if types.get(col) == "strata_str":
+                val = f"strata_dup({val})"
+            self.emit(f"_r->{col} = {val};")
         t = stmt.target
         self.emit(f"if (!strata_table_room((void***)&{t}__rows, &{t}__cap, "
                   f'{t}__count + 1)) strata_table_full("{t}");')
@@ -2165,7 +2186,8 @@ int main(int argc, char** argv) {
             return (f"({{ strata_int _kept = 0; "
                     f"for (strata_int _di = 0; _di < {src}__count; _di++) {{ "
                     f"{src}* _row = {src}__rows[_di]; "
-                    f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }} }} "
+                    f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }}"
+                    f" else {{ strata_retire(_row, {src}__row_free); }} }} "
                     f"strata_int _gone = {src}__count - _kept; "
                     f"{src}__count = _kept; _gone; }})")
         # An expression with no rule used to become the literal 0. A program

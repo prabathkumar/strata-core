@@ -192,13 +192,12 @@ as an oracle to compare against.
    peak at 1.4 MB, one million without at 93 MB. What this is NOT is
    individual deallocation — there is still no way to free one value, and a
    single request that builds something enormous holds it until the next
-   reset. Rows removed by `delete` are not reclaimed either: measured at about
-   34 bytes each, 400,000 insert/delete cycles cost 13.7 MB and 800,000 cost
-   26.2 MB — linear, so a screen that rebuilds its rows every frame still
-   grows. The fix is now possible and not built: a query result is arena
-   memory, so a reset is a moment when nothing can point at a deleted row.
-   The reset is also placed by hand, so calling it while a temporary is
-   still in use is a use-after-free that nothing catches. A phone shell and a
+   reset. Rows removed by `delete` ARE reclaimed, at the same moment: they are
+   retired rather than freed on the spot, and a reset frees them once the
+   arena that any query result lives in has gone. 400,000 insert/delete cycles
+   held 13.7 MB before and 1.15 MB after, and 800,000 no longer cost more than
+   400,000. The reset is placed by hand, so calling it while a temporary — or
+   a row — is still in use is a use-after-free that nothing catches. A phone shell and a
    server both now have somewhere honest to put that call; neither has been
    run for a week to prove it.
 8. There is no registry and no version solving. A dependency is a path or a
