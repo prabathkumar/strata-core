@@ -176,17 +176,25 @@ as an oracle to compare against.
    no cursor and no connection pool beyond one handle per process. A rewrite
    also rewrites the WHOLE file to change one row, which is right for a batch
    pass and wrong for a single update in a service.
-5. A lockout is counted against the pair of account and source, which stops
+5. Passwords and sessions do not compile on macOS. `std/auth.sta` declares
+   crypt(3) as `foreign "crypt.h" link "crypt"`, and on a Mac that header does
+   not exist and there is no libcrypt — crypt lives in <unistd.h> and
+   libSystem. Two conformance cases fail there, both of them anything that
+   touches `auth`. It was invisible for as long as CI only ran Linux, and the
+   macOS job found it on its first run. The fix spans std/auth.sta, link_flags
+   in compiler/build.sta and its mirror in bootstrap/stage0.py, which
+   link_libs_diff.py holds byte-identical.
+6. A lockout is counted against the pair of account and source, which stops
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-6. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
+7. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
    real bridge — `src/host.sta` compiles to a linkable object and Swift calls
    its five C functions with no glue layer — but it has only ever been pointed
    at the Simulator. `apps/orders_mobile/android/` is still reviewed design
    rather than tested code: the machine here has no NDK, so the JNI wrappers
    around those same five functions have never been compiled.
-7. Memory is given back in one piece or not at all. Temporaries come from an
+8. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their
    own copies and survive it. Measured: four million temporaries with resets
    peak at 1.4 MB, one million without at 93 MB. What this is NOT is
@@ -202,16 +210,16 @@ as an oracle to compare against.
    a row — is still in use is a use-after-free that nothing catches. A phone shell and a
    server both now have somewhere honest to put that call; neither has been
    run for a week to prove it.
-8. There is no registry and no version solving. A dependency is a path or a
+9. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
    and "^1.2" means nothing here.
-9. A layout has no event model. A button names a route it posts to; nothing
+10. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-10. `build`, `check`, `fmt` and `deps` are self-hosted, with
+11. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
