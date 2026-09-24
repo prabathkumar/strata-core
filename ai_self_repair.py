@@ -128,7 +128,8 @@ def repair_rules(source: str, d: dict):
 def repair_llm(source: str, d: dict):
     """Send the diagnostic and source to a language model for a patch.
 
-    Requires ANTHROPIC_API_KEY and network access. The prompt carries the
+    Requires ANTHROPIC_API_KEY, and network access unless STRATA_REPAIR_URL
+    points at a model running locally. The prompt carries the
     taxonomy classification and remediation strategy straight from the
     compiler, so the model is told what kind of error this is and how the
     language's own authors say to fix it.
@@ -144,7 +145,14 @@ def repair_llm(source: str, d: dict):
 
     prompt = _repair_prompt(source, d)
     try:
-        client = anthropic.Anthropic()
+        # STRATA_REPAIR_URL points the loop at a local model instead of a
+        # hosted one: anything speaking the same protocol on localhost, run
+        # through Ollama, llama.cpp or a proxy. A repair that never leaves the
+        # machine costs nothing per call and keeps the source in the building,
+        # which for most enterprises is the part that decides whether an AI
+        # repair loop is allowed at all.
+        base = os.environ.get("STRATA_REPAIR_URL")
+        client = anthropic.Anthropic(base_url=base) if base else anthropic.Anthropic()
         msg = client.messages.create(
             model=os.environ.get("STRATA_REPAIR_MODEL", "claude-sonnet-4-5"),
             max_tokens=4096,
