@@ -141,8 +141,13 @@ there — rename a column and the next document says the new name, because there
 is no second source of truth to drift from.
 
 ```bash
-strata doc > ARCHITECTURE.md
+strata doc > docs/SYSTEM.md
 ```
+
+Point it at a file of its own. A generated document says what the shape of the
+system is; a written one says why it is that way, and the second is not
+something a compiler can produce. Overwriting the latter with the former loses
+the only part nobody else can write.
 
 **A screen and data inventory: 🔜 designed, not built.** Same argument. Every
 `layout` field resolves to a column at build time, so the list of what is
