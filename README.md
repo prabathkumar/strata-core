@@ -213,7 +213,7 @@ worth nothing if it sweeps every row.
 | | Strata | C# / .NET | Java | Python | Blazor |
 |---|---|---|---|---|---|
 | Ecosystem and libraries | **Almost none** | Vast | Vast | Vast | Vast (.NET) |
-| Production maturity | **Eleven days old** | Decades | Decades | Decades | Years |
+| Production maturity | **Weeks old** | Decades | Decades | Decades | Years |
 | IDE, debugger, profiler | **Syntax highlighting** | Excellent | Excellent | Excellent | Excellent |
 | Hiring pool | **One person** | Millions | Millions | Millions | Large |
 | Exceptions / error handling | **One global flag** | Full | Full | Full | Full |
