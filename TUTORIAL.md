@@ -25,6 +25,16 @@ of the two is missing rather than failing later for a confusing reason.
 strata version
 ```
 
+If that says `command not found`, the installer's shim is not on your path
+yet. Either open a new terminal, or add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Everything below says `strata`. From inside a clone of this repository,
+`./bin/strata` is the same program if you would rather not touch your path.
+
 ## 2. A project that runs
 
 ```bash

@@ -120,6 +120,11 @@ as a bug you did not have.
 
 ## If something is wrong
 
+A test file reaches your project's code by importing the module, the same way
+any other file does — `import rules from app;`. Without it the build fails
+with E002 naming the function it could not find, which means the file is not
+in scope rather than that the function is missing.
+
 ```bash
 strata check file.sta --json    # the diagnostic, machine-readable
 strata repair file.sta          # rules-based fix, no model involved

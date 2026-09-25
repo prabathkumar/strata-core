@@ -145,6 +145,29 @@ def main():
            "[id > 0]" in open(main_sta).read(), out[-200:])
         open(main_sta, "w").write(before)
 
+        # `strata test` printed "BUILD FAIL: <path>" and nothing else, having
+        # sent the compiler's output to /dev/null. The diagnostic was right
+        # there -- code, line, column and hint -- and a developer had to run
+        # `strata check` by hand to see it, from a toolchain whose whole claim
+        # is that the error tells you what to do.
+        broken = os.path.join(app, "tests", "broken_test.sta")
+        open(broken, "w").write(
+            "import io from std;\n\n"
+            "verify \"it calls something that is not there\" {\n"
+            "    assert mystery_function() == 1;\n"
+            "}\n")
+        r = run([STRATA, "test"], app)
+        out = r.stdout + r.stderr
+        ok("a test that will not build says why",
+           "E002" in out and "mystery_function" in out, out[-250:])
+        ok("and says where", "line 4" in out, out[-250:])
+        os.remove(broken)
+
+        r = run([STRATA, "test", "--help"], app)
+        ok("strata test --help is help, not a filename",
+           r.returncode == 0 and "Usage: strata test" in r.stdout,
+           (r.stdout + r.stderr)[:160])
+
         print("\n── every command the README names exists ────────────────────────")
         offered = set(re.findall(r"^    strata (\w+)", open(readme).read(),
                                  re.M))

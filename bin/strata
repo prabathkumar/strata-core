@@ -304,6 +304,17 @@ STA
 //
 // A generated project ships with one so that the first `strata test` a new
 // developer runs says something other than "0 passed".
+//
+// A test file is an ordinary Strata file: it reaches the project's code by
+// importing the module, exactly as `src/main.sta` does. `import schema from
+// app` below is that -- and a function living in another file of yours is
+// reached the same way:
+//
+//     import rules from app;      // then call anything rules.sta defines
+//
+// Without the import the build fails with E002 and names the function it
+// could not find, which is the compiler telling you the file is not in
+// scope rather than that the function does not exist.
 
 import io     from std;
 import str    from std;
@@ -373,6 +384,17 @@ cmd_test() {
     # `test_suite/*.sta` meant an application had no way to be tested at all,
     # which is why apps/orders had no tests until its journey demanded them.
     local dir="$1" base=""
+    case "$dir" in
+        -h|--help)
+            echo "Usage: strata test [dir]"
+            echo "  Builds and runs every verify block under [dir], or under"
+            echo "  the project containing the current directory."
+            echo
+            echo "  A test file reaches its project's code the same way any"
+            echo "  other file does -- by importing the module:"
+            echo "      import main from app;"
+            return 0 ;;
+    esac
     if [ -z "$dir" ]; then
         local proj; proj="$(find_project)" || true
         if [ -n "$proj" ]; then
@@ -403,8 +425,16 @@ cmd_test() {
         if [ -n "$base" ]; then
             src="${sta#$base/}"; run_in="$base"
         fi
-        if ! ( cd "$run_in" && "$PY3" "$ROOT/bootstrap/stage0.py" "$src" --test -o "$bin" ) >/dev/null 2>&1; then
-            echo "  BUILD FAIL: $sta"; f=$((f+1)); continue
+        # The compiler's output used to go to /dev/null and the loop printed
+        # "BUILD FAIL" and nothing else -- from a toolchain whose whole claim
+        # is that a diagnostic tells you what to do. The message was right
+        # there and thrown away: running `strata check` on the same file by
+        # hand gave the code, the line and the hint.
+        local why
+        if ! why="$( cd "$run_in" && "$PY3" "$ROOT/bootstrap/stage0.py" "$src" --test -o "$bin" 2>&1 )"; then
+            echo "  BUILD FAIL: $sta"
+            printf '%s\n' "$why" | sed 's/^/      /'
+            f=$((f+1)); continue
         fi
         if ( cd "$run_in" && "$bin" ); then
             echo "  PASS: $sta"; p=$((p+1))
