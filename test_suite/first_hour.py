@@ -125,6 +125,26 @@ def main():
            (r.stdout + r.stderr)[-200:])
         open(schema, "w").write(text)
 
+        # The README the generator writes tells a newcomer to run
+        # `strata repair src/main.sta`. It did nothing: a file inside a
+        # project was handed to the compiler from the Strata repository
+        # rather than from the project, so neither the file nor its
+        # `import schema from app` resolved. The loop saw a compiler failure
+        # instead of the E004 that was there and answered "backend produced
+        # no change" -- a model that could not help, rather than a loop that
+        # never looked. The first thing a newcomer is told to try was the
+        # thing that did not work.
+        main_sta = os.path.join(app, "src", "main.sta")
+        before = open(main_sta).read()
+        open(main_sta, "w").write(before.replace("[id > 0]", "[idd > 0]", 1))
+        r = run([STRATA, "repair", "src/main.sta"], app)
+        out = r.stdout + r.stderr
+        ok("repair finds the error in a generated project",
+           "E004" in out, out[-200:])
+        ok("repair fixes it, with no model involved",
+           "[id > 0]" in open(main_sta).read(), out[-200:])
+        open(main_sta, "w").write(before)
+
         print("\n── every command the README names exists ────────────────────────")
         offered = set(re.findall(r"^    strata (\w+)", open(readme).read(),
                                  re.M))

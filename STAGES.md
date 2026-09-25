@@ -167,15 +167,14 @@ as an oracle to compare against.
    file on disk changes. That is right for one service on one machine and
    wrong the moment a second machine writes the same file over a share where
    the clock or the metadata lags.
-3. The repair loop only repairs a single file. `strata repair` works on a
-   program that declares its own `database` block, and does nothing for a
-   project made by `strata new`, where the schema lives in `src/schema.sta`:
-   the diagnostic arrives at the `compile` stage rather than `typecheck` and
-   the rules backend does not act on it. It reports "backend produced no
-   change" rather than failing, so it looks like a model that could not help
-   rather than a loop that never looked. The generated project's README offers
-   the command regardless, so the first thing a newcomer is told to try is the
-   thing that does not work.
+3. The repair loop repairs a project now, and did not until the tutorial was
+   written and run. A file inside a project was handed to the compiler from
+   the Strata repository rather than from the project, so neither the file nor
+   its `import schema from app` resolved: the loop saw a compiler failure
+   instead of the E004 that was there and answered "backend produced no
+   change". The generated README had been telling every newcomer to run
+   exactly that command. `test_suite/first_hour.py` now breaks a generated
+   project and requires the loop to fix it.
 4. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
 5. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one

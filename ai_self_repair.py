@@ -477,7 +477,26 @@ def main():
     if not os.path.exists(a.file):
         print(f"[Strata Repair] no such file: {a.file}", file=sys.stderr)
         return 2
-    return repair(a.file, a.backend, a.max_passes, a.dry_run)
+    # Compile the file from ITS project, not from wherever the toolchain
+    # happens to live. Without this a file inside a `strata new` project was
+    # handed to the compiler from the Strata repository, where neither the
+    # file nor its `import schema from app` could be found -- so the loop got
+    # a compiler failure instead of the E004 that was actually there, and
+    # reported "backend produced no change". It looked like a model that could
+    # not help rather than a loop that never looked.
+    target = os.path.abspath(a.file)
+    root = os.path.dirname(target)
+    probe = root
+    for _ in range(6):
+        if os.path.exists(os.path.join(probe, "Strata.toml")):
+            root = probe
+            break
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return repair(os.path.relpath(target, root), a.backend, a.max_passes,
+                  a.dry_run, cwd=root)
 
 
 if __name__ == "__main__":

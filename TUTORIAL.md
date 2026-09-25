@@ -72,15 +72,25 @@ error gives you: the column you asked for, the columns that exist, and the
 line. That is a machine-readable fact, not a stack trace — `strata check
 src/main.sta --json` gives the same thing in a form a model can act on.
 
-Put `price` back and the build passes again.
+Put `price` back — or have the compiler put it back. Mistype a column in
+`src/main.sta` instead, say `id` as `idd`, and then:
 
-> **The repair loop does not work here yet.** `strata repair` fixes a file
-> that declares its own `database` block, and a project made by `strata new`
-> keeps the schema in `src/schema.sta` — where the diagnostic arrives at a
-> stage the rules backend does not act on, so it reports "backend produced no
-> change". The generated README offers the command anyway, which it should
-> not. It is on the list in [STAGES.md](STAGES.md). Until it is fixed, the
-> repair loop is worth trying on single-file programs.
+```bash
+strata repair src/main.sta
+```
+
+```
+  pass 1: 1 diagnostic(s) at stage 'typecheck'
+    E004 Database Schema Selector Violation (src/main.sta:8): Column 'idd' does not exist in 'Item'
+    patch applied, recompiling
+[Strata Repair] clean after 1 repair(s) across 1 file(s).
+```
+
+That was `--backend rules`, the default: a deterministic fix taken from the
+compiler's own hint, with no model involved and nothing sent anywhere. Most
+schema mistakes are this shape, and the cheapest model is the one you never
+call. For the ones that need judgement there is `--backend local`, which talks
+to a model on your own machine — see the README.
 
 ## 4. The part that is not like other stacks
 
