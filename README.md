@@ -307,7 +307,8 @@ already set out to put the tiers in one place.
 | Repairs its own errors with no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Runs its repair loop on a laptop CPU, source never leaving it | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Single native binary, no runtime | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Concurrency | 🔜 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
+| Requests served in parallel | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Shared-memory concurrency (threads or async) | 🔜 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
 | Package registry | 🔜 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 **And the row that is not in the table.** Java, C#, Python, Elixir, TypeScript
@@ -317,7 +318,13 @@ none of that, and none of it is something code can deliver — it arrives with
 time and users or it does not arrive. For almost any project you would start
 today, one of those is the right answer.
 
-**The ⚠️ marks mean what they say.** Strata's mobile tier compiles against its
+**The ⚠️ marks mean what they say.** Strata serves requests in parallel by
+forking a process per connection, which runs on every core, inherits the
+loaded tables copy-on-write and shares counters through memory mapped before
+the first fork. What it does not have is threads or async: nothing shares
+mutable memory, so a write takes a file lock and a slow request holds a
+process. That is a real concurrency model with real limits, not an absence.
+Strata's mobile tier compiles against its
 contract and has **never run on a physical handset**. In Java, jOOQ generates
 typed code from a real schema while JPQL strings are not checked; in C#, EF
 Core checks LINQ against your *model*, and the model against the database is a

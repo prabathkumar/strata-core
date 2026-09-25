@@ -60,11 +60,32 @@ as long as CI ran only Linux. It is fixed, and the lesson is not.
 If you add a `foreign` block, build it on every platform your team uses before
 you rely on it.
 
-### There is no concurrency
+### Concurrency is processes, not threads
 
-None. No threads, no async, no parallelism. The HTTP server forks a worker per
-connection and that is the whole story. If your problem needs concurrency,
-this is the wrong tool today.
+Requests do run in parallel. The HTTP server forks a process per connection,
+so a four-core machine serves four requests at once, each child inherits the
+parent's loaded tables copy-on-write, and counters live in memory mapped
+before the first fork so every child adds to the same numbers.
+
+What there is none of is **shared mutable memory**. No threads, no async, no
+parallelism inside one request. Which means:
+
+- A write takes a file lock (`lock_exclusive`) around the read-change-save,
+  so writes serialise across the whole service.
+- A child's changes to a table are its own. Nothing another child does is
+  visible until it reaches the file.
+- A slow request occupies a process for its whole life, and there are only
+  `MAX_CONNECTIONS` of them.
+- There is no in-memory cache shared between requests, and no way to build one
+  short of a file or mmap.
+
+That is a real model with real limits rather than an absence, and it is the
+same one nginx and Apache prefork have used for twenty years. If your problem
+is read-heavy and its writes are modest, it will do. If you need many threads
+over one shared heap, this is the wrong tool today and the reason is in the
+memory model rather than the scheduler: `scratch_reset()` is placed by hand
+and tables are global, so threads would need a per-thread arena and a lock on
+every table before they were safe.
 
 ### One writer, one machine
 
