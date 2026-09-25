@@ -3,7 +3,7 @@
 # Compiles .sta source files to C via Python bootstrap
 # Once compiler/compiler.sta compiles itself, this file is retired.
 from __future__ import annotations
-import sys, os, re, json, subprocess
+import sys, os, re, json, platform, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
@@ -2589,7 +2589,11 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
               file=sys.stderr)
     gen = CodeGen(ast, source_path, modules, target=target, test_mode=test_mode)
     c_source = gen.generate()
-    link_flags = [f"-l{l}" for l in dict.fromkeys(gen.link_libs)]
+    # There is no libcrypt on macOS: crypt(3) is in libSystem, so asking for
+    # it is a link error rather than a no-op.
+    _libs = [l for l in dict.fromkeys(gen.link_libs)
+             if not (l == "crypt" and platform.system() == "Darwin")]
+    link_flags = [f"-l{l}" for l in _libs]
     base = os.path.splitext(source_path)[0]
     c_path = base + ".c"
     with open(c_path, "w") as f: f.write(c_source)
@@ -2618,7 +2622,10 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     portability = ["-Wno-implicit-function-declaration",
                    "-Werror=int-conversion",
                    "-Werror=incompatible-pointer-types",
-                   "-Werror=return-type"]
+                   "-Werror=return-type",
+                   # glibc declares crypt(3) in <unistd.h> only under this.
+                   # macOS declares it there regardless and ignores the flag.
+                   "-D_GNU_SOURCE"]
     # Linking libpq is what turns the Postgres table backend on. The flag is
     # derived from the program's own `foreign ... link "pq"` -- which comes
     # from importing `postgres from std` -- so no program that does not ask

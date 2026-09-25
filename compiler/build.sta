@@ -87,6 +87,11 @@ int links_against(str libs, str name) {
 }
 
 // The list as linker flags: ",m,pq," becomes "-lm -lpq".
+// What `uname -s` says, cached nowhere because a build asks once.
+str host_os() {
+    return capture("uname -s");
+}
+
 str link_flags(str libs) {
     StringBuilder out = sb_new();
     int n = str_len(libs);
@@ -95,9 +100,17 @@ str link_flags(str libs) {
         str ch = str_slice(libs, i, i + 1);
         if (str_eq(ch, ",") == 1) {
             if (str_len(sb_to_str(&word)) > 0) {
-                if (str_len(sb_to_str(&out)) > 0) { sb_append(&out, " "); }
-                sb_append(&out, "-l");
-                sb_append(&out, sb_to_str(&word));
+                // There is no libcrypt on macOS: crypt(3) is in libSystem, so
+                // asking for it is a link error rather than a no-op.
+                int skip = 0;
+                if (str_eq(sb_to_str(&word), "crypt") == 1) {
+                    if (str_eq(host_os(), "Darwin") == 1) { skip = 1; }
+                }
+                if (skip == 0) {
+                    if (str_len(sb_to_str(&out)) > 0) { sb_append(&out, " "); }
+                    sb_append(&out, "-l");
+                    sb_append(&out, sb_to_str(&word));
+                }
                 word = sb_new();
             }
         }
@@ -131,7 +144,10 @@ str choose_cc() {
 // that failed CI built fine on a machine with an older gcc. Together they make
 // the strict compilers' errors errors everywhere.
 str portability_flags() {
-    return "-Wno-implicit-function-declaration -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=return-type";
+    // -D_GNU_SOURCE is what makes glibc declare crypt(3) in <unistd.h>. macOS
+    // declares it there anyway and ignores the flag, so one header works on
+    // both and std/auth.sta stops being Linux-only.
+    return "-Wno-implicit-function-declaration -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=return-type -D_GNU_SOURCE";
 }
 
 // Linking libpq is what turns the Postgres table backend on, and the flag is
