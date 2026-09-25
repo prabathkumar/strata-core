@@ -117,13 +117,36 @@ That is live instrumentation of a running service. It is not a monitoring
 product: no dashboard, no alerting, no time series, no retention, and nothing
 ships the numbers anywhere. You read them or you render them.
 
-### What Strata does not do
+### Documents the compiler could write, and one it could not
 
-Being plain about the rest of the list, because a platform claim invites it.
-Strata does not produce architecture documents, design artefacts or standard
-operating procedures, and has no opinion about how you work. The compiler
-holds one contract — the database, the rules and the screens agreeing — and
-that is the whole of what it enforces. Everything else is yours.
+A platform claim invites the rest of the list — architecture, design, standard
+operating procedures — so here is where each stands.
+
+**Architecture and data-flow documents: 🔜 designed, not built.** The compiler
+already holds everything such a document contains: the full schema, every
+module and its dependencies, which routes exist, which screens read which
+columns. Generated from the code it describes, that document cannot drift from
+it — which is the usual reason an architecture document is worthless six
+months after somebody wrote it. `strata deps` already walks the dependency
+graph; `report` already renders Markdown. This is joining what exists, not
+inventing a capability.
+
+**A screen and data inventory: 🔜 designed, not built.** Same argument. Every
+`layout` field resolves to a column at build time, so the list of what is
+shown, from where, is something the compiler computes to do its job and
+currently throws away.
+
+**Operating runbooks: 🔜 designed, not built.** What a service listens on,
+which tables it opens, which foreign libraries it needs, what its counters
+mean — all of that is in the program and can be written out with it. What
+Strata will not do is prescribe how your team reviews, releases and operates,
+because that is not in the code and a compiler with opinions about it would be
+confidently wrong. The runbook it can generate describes the system; the
+procedure around it stays yours.
+
+Today the compiler enforces exactly one contract: the database, the rules and
+the screens agreeing. Everything above is what that one contract makes
+possible next.
 
 ## For business readers
 
@@ -1232,6 +1255,9 @@ what runs and what is planned is unambiguous.
 | Memory | **Given back in one piece.** Temporaries come from an arena; `scratch_reset()` discards it at a boundary the program picks. Measured at 1.4 MB for four million temporaries against 93 MB for one million without. Tables survive a reset because they copy what they store. Not individual deallocation: one value cannot be freed, and a single huge request holds its memory until the next reset. |
 | Rows removed by `delete` | **Reclaimed at the next reset.** A delete retires the row rather than freeing it on the spot, because a query result may still point at it; the reset frees it once the arena those results live in has gone. 400,000 insert/delete cycles held 13.7 MB before and 1.15 MB after, and 800,000 now cost the same as 400,000 rather than twice. Fixing this exposed a second bug: an insert stored a str column's pointer without copying it, so a computed string pointed into the arena and read back empty after a reset — data loss with no error and no crash. Inserts copy now. |
 | Errors | **Cannot pass for success.** No exceptions. A failure is recorded; `had_error()`, `last_error()` and `clear_error()` handle it; a program reaching exit with one unchecked prints it and exits 65. One global flag, so two failures before a check leave only the second, and a function cannot report a failure to its caller. |
+| Architecture and data-flow documents | **Designed, not built.** The compiler already holds the schema, the module graph, the routes and which screens read which columns — everything such a document contains. Generated from the code it describes, it cannot drift from it, which is the usual reason one is worthless six months later. `strata deps` walks the graph and `report` renders Markdown, so this is joining what exists rather than inventing a capability. |
+| Screen and data inventory | **Designed, not built.** Every `layout` field resolves to a column at build time, so the list of what is shown and where it comes from is something the compiler computes to do its job and currently discards. |
+| Operating runbooks | **Designed, not built.** What a service listens on, which tables it opens, which foreign libraries it links and what its counters mean are all in the program. Prescribing how a team reviews, releases and operates is not, and is not planned: the runbook describes the system, the procedure stays the team's. |
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |
 | FFI | **Done.** A `foreign` block includes a C header, names the library to link, and declares signatures that are checked at call sites. No callbacks from C into Strata, no struct marshalling. |
 | Calls to undefined functions | **Caught as E002.** Imports are resolved before the type check, so the set of reachable names is known and a typo names the typo rather than a C symbol at link time. It is a `--json` diagnostic, so the repair loop can see it. The rule disarms for a file importing a module with no local checkout — that picture is incomplete. It checks that a name exists, not its signature: argument count and types are still unchecked across a module boundary. |
