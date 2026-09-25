@@ -249,53 +249,44 @@ a real question, and for most teams today the answer is no.
 
 ## Others who consolidate the tiers
 
-The table above compares Strata to the stacks most teams use. The fairer
-question is how it differs from the things that set out to do the same thing
-Strata does — put the tiers in one place. Several have, and some are far more
-mature. Descriptions here are of approach rather than feature lists, which
-move.
+The table further up answers "why not C# or Java". This one answers the
+sharper question: how Strata differs from the things that already set out to
+put the tiers in one place. ✅ yes, ⚠️ partly, ❌ no.
 
-**Low-code platforms — OutSystems, Mendix, and their kin.** The closest
-commercial answer, and the one a CIO will think of first. They genuinely do
-consolidate data, logic and screens into one model-driven environment, they
-are enterprise-proven, and they have support contracts. The differences are
-about what the artefact *is*: the application lives as a proprietary model in
-a vendor's platform rather than as text you own, which shapes what version
-control, code review and an AI writing code can do with it. Strata is plain
-text, compiled to C, and yours. Theirs works today at a scale Strata does not
-approach.
+| | Strata | Low-code<br>(OutSystems, Mendix) | Full-stack DSL<br>(Wasp) | LiveView<br>(Phoenix) | Blazor /<br>.NET MAUI | Typed queries<br>(jOOQ, Prisma) |
+|---|---|---|---|---|---|---|
+| Queries checked against the real schema at build time | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ |
+| Screen fields checked against the **database** schema | ✅ | ✅ | ⚠️ | ❌ | ❌ | ❌ |
+| One compiler over database, rules and screens | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Mobile from the same source | ⚠️ | ✅ | ❌ | ⚠️ | ✅ | ❌ |
+| The application is text you own, not a vendor's model | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Diagnostics built for a machine to repair | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Repairs its own errors, no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Mature ecosystem and libraries | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+| People you can hire who know it | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+| Production evidence | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
 
-**Full-stack DSLs — Wasp and similar.** Closest in spirit: declare the
-application once and generate the stack from it. The generated pieces are
-still React, Node and an ORM underneath, so a developer ends up working in
-those languages and the checking across the seam is partial. Strata does not
-generate a stack; it compiles the tiers itself, which is why a rename can fail
-in a query and a screen in one build.
+**Read the bottom four rows first.** Every one of these is ahead of Strata on
+the things that decide whether a team ships, and low-code platforms in
+particular do consolidate all the tiers, today, with support contracts behind
+them. The difference there is what the artefact *is*: their application lives
+as a model inside a vendor's platform, which shapes what version control, code
+review and an AI writing code can do with it. Strata is plain text, compiled
+to C, and yours.
 
-**One language across tiers — Phoenix LiveView, Rails, Blazor, .NET MAUI.**
-Mature, proven, and with real ecosystems and real concurrency — Elixir's
-especially, which Strata has no answer to at all. What they share is that the
-database remains a separate contract: your code is checked against your model,
-and the model against the schema is a migration somebody ran. That gap is the
-one Strata closes, and it is a narrow claim rather than a broad one.
+The ⚠️ marks are worth reading literally. Strata's mobile tier compiles
+against its contract and has **never run on a physical handset**. Wasp
+generates React, Node and an ORM, so the seam is checked in parts rather than
+by one compiler. Ecto and EF Core check against your *model*; the model
+against the database is a migration you hope somebody ran — which is the gap
+the second row is about.
 
-**Typed database access — jOOQ, sqlx, Prisma, Drizzle.** These do check
-queries against a real schema at build time, and do it well. They stop at the
-query. Nothing follows the column on to the screen.
-
-**Full-stack platforms built for AI — Darklang and others.** The same bet:
-that the tooling should be built for machines writing code. Worth watching,
-and the approaches differ in where the checking lives.
-
-**What is actually different here**, stated narrowly so it can be checked: one
-type system spanning the database schema, the business rules and the screen
-fields, with diagnostics carrying a code, a class and a remediation so a
-machine can act on them — in an artefact that is text, compiled, and not
-owned by a vendor.
-
-**What every one of them has that Strata does not**: users, libraries,
-employable experience, support, and years of production evidence. That is not
-a small gap and no amount of compiler design closes it.
+**The narrow claim**, stated so it can be checked: one type system spanning
+the database schema, the business rules and the screen fields, with
+diagnostics a machine can act on, in an artefact nobody owns but you. That row
+and the two below it are the whole argument. The rest of the table is the
+price.
 
 ## Licence and ownership
 
