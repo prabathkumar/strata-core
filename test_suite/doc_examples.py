@@ -28,7 +28,7 @@ import os, re, subprocess, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STAGE0 = os.path.join(ROOT, "bootstrap", "stage0.py")
 
-DOCS = ["README.md", "LANGUAGE_SPECIFICATION.md"]
+DOCS = ["README.md", "LANGUAGE_SPECIFICATION.md", "FOR_DEVELOPERS.md"]
 
 # block id -> why it does not compile today.
 KNOWN_BROKEN = {

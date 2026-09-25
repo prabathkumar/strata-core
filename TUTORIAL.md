@@ -204,7 +204,9 @@ if (had_error() == 1) {
 
 ## 7. What is not here yet
 
-[STAGES.md](STAGES.md) is the honest list and it is kept current. The short
+[FOR_DEVELOPERS.md](FOR_DEVELOPERS.md) is the list written for you: what
+you can build, what will bite you, and what is missing. [STAGES.md](STAGES.md)
+is the fuller version and it is kept current. The short
 version: no package registry, no concurrency, nothing has run on a physical
 phone, Postgres has no streaming, and the ecosystem is essentially this
 repository. For almost anything you would start today, C# or Java is the right

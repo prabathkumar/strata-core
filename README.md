@@ -1237,6 +1237,11 @@ commit, so one that stopped working would fail the build rather than sit here
 looking plausible — which is the same reason the gaps are written down instead
 of left to be discovered.
 
+**If you are about to build something, read
+[FOR_DEVELOPERS.md](FOR_DEVELOPERS.md).** It is this list aimed at you rather
+than at the compiler: what you can build today, what will bite you, and what
+is simply not here.
+
 [STAGES.md](STAGES.md) is the working list of gaps and is kept
 current, including the sharp edges: `scratch_reset()` in the wrong place
 is a use-after-free that nothing catches, and a `foreign` block is only
