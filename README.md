@@ -70,6 +70,61 @@ language written by AI and reviewed by humans has to be checkable by machine.
 ignores a failed load prints which error it ignored and exits non-zero, so a
 silent wrong answer is not one of the outcomes.
 
+## One platform, not four
+
+A business system today is four stacks with four toolchains, four sets of
+types, and four teams who find out about each other's changes from an
+incident. Strata is one language across all four, and one compiler that checks
+them together.
+
+| Tier | In Strata | Where it stands |
+|---|---|---|
+| **Database** | `database` blocks; tab-separated files or PostgreSQL, with schema migration | Working. No index, no joins, and a table loads whole unless you stream it with `scan`/`append`/`rewrite`. |
+| **Backend** | `stream` handlers, an HTTP server in `std/http.sta`, sessions and password hashing in `std/auth.sta` | Working. Forked worker per connection; no async, no concurrency. |
+| **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
+| **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | Compiles and runs against the contract. **Never run on a physical handset.** |
+
+The point is not that one language can reach four places. It is that a rename
+in the database block fails the build in the query, the aggregate and the line
+of screen that rendered it — at once, before anything deploys. Four stacks
+cannot do that, because no single compiler sees all four.
+
+### Built by AI, checked by machine
+
+The consolidation is what makes the AI part work rather than the other way
+round. A model writing across four stacks has four chances to get the seam
+wrong and no way to know. Here the seam is a type error.
+
+- **Diagnostics a machine can act on.** Every error has a code, a
+  classification, a line, the valid alternatives and a remediation strategy,
+  and `--json` hands it over in that shape.
+- **It fixes its own mistakes.** `strata repair` takes the diagnostic and
+  patches the file. `--backend rules` is deterministic and involves no model
+  at all; `--backend local` talks to a model on your own machine, so the
+  source never leaves it.
+- **The repair is checked, not trusted.** A patch that does not compile is
+  rejected. The model proposes; the compiler decides.
+
+### What it tells you while it runs
+
+`std/metrics.sta` keeps counters in shared memory mapped before the first
+fork, with atomic increments, so every worker adds to the same numbers and the
+parent can read the total — request counts, statuses and latencies from a
+service that forks per connection. `report` blocks render a datasource and its
+metrics to Markdown on demand.
+
+That is live instrumentation of a running service. It is not a monitoring
+product: no dashboard, no alerting, no time series, no retention, and nothing
+ships the numbers anywhere. You read them or you render them.
+
+### What Strata does not do
+
+Being plain about the rest of the list, because a platform claim invites it.
+Strata does not produce architecture documents, design artefacts or standard
+operating procedures, and has no opinion about how you work. The compiler
+holds one contract — the database, the rules and the screens agreeing — and
+that is the whole of what it enforces. Everything else is yours.
+
 ## For business readers
 
 Three sentences, then a picture.
