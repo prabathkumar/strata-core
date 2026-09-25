@@ -188,6 +188,7 @@ class CodeGen:
         self.rewrite_depth = 0
         # Libraries named by foreign blocks, passed to the linker.
         self.link_libs = []
+        self._foreign_headers = set()
 
     def emit(self, line=""):
         self.out.append("    " * self.indent + line)
@@ -1067,7 +1068,16 @@ int main(int argc, char** argv) {
         No prototypes are emitted: the header already declares them, and
         re-declaring risks conflicting with the real signature.
         """
-        self.emit_raw(f"#include <{decl.header}>")
+        # Each header once, however many modules declare it. std/http.sta and
+        # std/auth.sta both name <unistd.h>, and emitting it twice is harmless
+        # C but not byte-identical to what codegen.sta produces -- and the two
+        # being byte-identical is the property the differential tests exist to
+        # hold. The Strata generator already de-duplicated; this is the oracle
+        # catching up, which the differential found the moment auth.sta
+        # stopped being the only user of its header.
+        if decl.header not in self._foreign_headers:
+            self._foreign_headers.add(decl.header)
+            self.emit_raw(f"#include <{decl.header}>")
         if decl.link:
             self.link_libs.append(decl.link)
         # Record return types so conversions dispatch correctly: without this
