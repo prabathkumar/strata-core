@@ -99,3 +99,25 @@ def clear_error() {
 int error_count() {
     native "return strata_error_count();";
 }
+
+// Report a failure from your own code.
+//
+// Not an exception: nothing unwinds, the function still returns, and the
+// caller still decides what to do. What it buys is that a function which
+// knows it failed can say so, and a caller that ignores it is not doing so
+// silently — an unchecked error is still an exit 65.
+def fail(str message) {
+    native "strata_fail($message);";
+}
+
+// One of the errors reported during this run, oldest first. Errors are kept
+// rather than overwritten, so two failures before a check both survive.
+str error_at(int i) {
+    native "return strata_error_at($i);";
+}
+
+// How many are held. At most sixteen, and possibly fewer than error_count()
+// reported, because past that the oldest are dropped.
+int errors_held() {
+    native "return strata_errors_held();";
+}

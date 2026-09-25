@@ -631,8 +631,22 @@ static int strata_read_header(FILE* f, char names[][STRATA_NAME_CAP],
  * A developer who handles errors sees no difference. A developer who ignores
  * them cannot also ignore the exit code. */
 
+/* Errors are kept, not overwritten. One slot meant that two failures before a
+ * check left only the second message, so a program that lost a file and then
+ * lost a row could only ever tell you about the row. These are fixed buffers
+ * rather than allocations: an error path is the worst place to need memory,
+ * and they must outlive a scratch_reset() like anything else the program is
+ * still holding. Past STRATA_ERR_KEPT the oldest are dropped and the count
+ * still rises, because the first failures are usually the interesting ones
+ * and a runaway loop should not be able to exhaust anything. */
+
+#define STRATA_ERR_KEPT 16
+#define STRATA_ERR_LEN  512
+
 static int   strata_err_pending = 0;
-static char  strata_err_msg[512];
+static char  strata_err_msg[STRATA_ERR_LEN];
+static char  strata_err_kept[STRATA_ERR_KEPT][STRATA_ERR_LEN];
+static int   strata_err_held = 0;
 static long long strata_err_count = 0;
 
 static void strata_error_set(const char* fmt, ...) {
@@ -640,9 +654,34 @@ static void strata_error_set(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(strata_err_msg, sizeof strata_err_msg, fmt, ap);
     va_end(ap);
+    if (strata_err_held < STRATA_ERR_KEPT) {
+        memcpy(strata_err_kept[strata_err_held], strata_err_msg,
+               sizeof strata_err_msg);
+        strata_err_held++;
+    }
     strata_err_pending = 1;
     strata_err_count++;
 }
+
+/* Report a failure from Strata code. Until this, only the runtime could say
+ * something had gone wrong, so a function that knew it had failed had no way
+ * to tell its caller except a return value the caller could ignore in
+ * silence. This is not an exception: nothing unwinds, the function still
+ * returns, and the caller still decides. What changes is that ignoring it is
+ * no longer silent, because an unchecked error is still an exit 65. */
+void strata_fail(strata_str message) {
+    strata_error_set("%s", message ? message : "");
+}
+
+/* One of the errors held, oldest first. Out of range gives "". */
+strata_str strata_error_at(strata_int i) {
+    if (i < 0 || i >= (strata_int)strata_err_held) { return (char*)""; }
+    return strata_err_kept[i];
+}
+
+/* How many are held, which is at most STRATA_ERR_KEPT and may be fewer than
+ * strata_error_count() reported. */
+strata_int strata_errors_held(void) { return (strata_int)strata_err_held; }
 
 /* 1 when something failed and has not been looked at. Reading it does NOT
  * clear it: a program may want to ask twice. clear_error() clears. */
@@ -654,7 +693,7 @@ strata_str strata_last_error(void) {
 
 /* Say that the error has been dealt with. After this the program exits
  * normally, because a handled failure is not a failure. */
-void strata_clear_error(void) { strata_err_pending = 0; }
+void strata_clear_error(void) { strata_err_pending = 0; strata_err_held = 0; }
 
 /* How many errors have been recorded, checked or not. */
 strata_int strata_error_count(void) { return (strata_int)strata_err_count; }

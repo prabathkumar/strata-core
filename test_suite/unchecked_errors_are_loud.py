@@ -47,6 +47,26 @@ int main() {
 }
 '''
 
+KEEPS = '''import io from std;
+import str from std;
+int charge(int amount) {
+    if (amount <= 0) {
+        fail("charge: amount must be positive");
+        return 0;
+    }
+    return amount;
+}
+int main() {
+    charge(-5);
+    charge(0);
+    print(str_concat("held ", str(errors_held())));
+    print(str_concat("first ", error_at(0)));
+    clear_error();
+    print(str_concat("cleared ", str(errors_held())));
+    return 0;
+}
+'''
+
 CLEAN = '''import io from std;
 import str from std;
 database Sale { int id; int amount; }
@@ -108,6 +128,26 @@ def main():
                 failures.append("had_error() did not report the failure to the program")
             print(f"  handled  -> exit {code}, saw the error: "
                   f"{'yes' if 'handled' in out else 'NO'}")
+
+        # A function that knows it failed can say so, and two failures before
+        # a check both survive. One slot meant the first was lost, which is
+        # the case a program hits when one failure causes the next.
+        code, out, err = run(tmp, "keeps", KEEPS)
+        if code is None:
+            failures.append(f"the reporting program did not build: {err.strip()[:120]}")
+        else:
+            if "held 2" not in out:
+                failures.append(
+                    f"two reported failures did not both survive: {out.strip()!r}")
+            if "first charge: amount must be positive" not in out:
+                failures.append("the earliest error is not readable")
+            if "cleared 0" not in out:
+                failures.append("clear_error() did not drop the held errors")
+            if code != 0:
+                failures.append(f"a handled failure exited {code}")
+            print(f"  reported -> exit {code}, held "
+                  f"{'2' if 'held 2' in out else '?'}, cleared "
+                  f"{'yes' if 'cleared 0' in out else 'NO'}")
 
         code, out, err = run(tmp, "clean", CLEAN)
         if code is None:
