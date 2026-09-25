@@ -254,14 +254,14 @@ already set out to put the tiers in one place.
 
 ✅ yes · ⚠️ partly · 🔜 designed, not built · ❌ no
 
-| | Strata | Java | C# / .NET | Python | Low-code<br>(OutSystems,<br>Mendix) | Full-stack DSL<br>(Wasp) | LiveView<br>(Phoenix) | Typed queries<br>(jOOQ, Prisma) |
+| | Strata | Java | C# / .NET | Python | Elixir<br>(Phoenix<br>LiveView) | TypeScript<br>(Wasp,<br>Next.js) | Visual low-code<br>(OutSystems,<br>Mendix) | Typed SQL libraries<br>(jOOQ · Java,<br>Prisma · TypeScript) |
 |---|---|---|---|---|---|---|---|---|
-| Queries checked against the real schema at build time | ✅ | ⚠️ | ⚠️ | ❌ | ✅ | ✅ | ⚠️ | ✅ |
-| Screen fields checked against the **database** schema | ✅ | ❌ | ❌ | ❌ | ✅ | ⚠️ | ❌ | ❌ |
-| One compiler over database, rules and screens | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| An insert that omits a column fails the build | ✅ | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
-| Mobile from the same source | ⚠️ | ⚠️ | ✅ | ❌ | ✅ | ❌ | ⚠️ | ❌ |
-| The application is text you own, not a vendor's model | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Queries checked against the real schema at build time | ✅ | ⚠️ | ⚠️ | ❌ | ⚠️ | ✅ | ✅ | ✅ |
+| Screen fields checked against the **database** schema | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ | ❌ |
+| One compiler over database, rules and screens | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| An insert that omits a column fails the build | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
+| Mobile from the same source | ⚠️ | ⚠️ | ✅ | ❌ | ⚠️ | ❌ | ✅ | ❌ |
+| The application is text you own, not a vendor's model | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Diagnostics built for a machine to repair | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Repairs its own errors with no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Runs its repair loop on a laptop CPU, source never leaving it | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -269,19 +269,21 @@ already set out to put the tiers in one place.
 | Concurrency | 🔜 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
 | Package registry | 🔜 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-**And the row that is not in the table.** Java, C#, Python, the low-code
-platforms and Phoenix all have mature ecosystems, libraries for everything,
+**And the row that is not in the table.** Java, C#, Python, Elixir, TypeScript
+and the low-code platforms all have mature ecosystems, libraries for everything,
 developers you can hire tomorrow, and years of production evidence. Strata has
 none of that, and none of it is something code can deliver — it arrives with
 time and users or it does not arrive. For almost any project you would start
 today, one of those is the right answer.
 
 **The ⚠️ marks mean what they say.** Strata's mobile tier compiles against its
-contract and has **never run on a physical handset**. jOOQ generates typed
-code from a real schema and JPQL strings are not checked; EF Core checks LINQ
-against your *model*, and the model against the database is a migration
-somebody ran — which is what the second row is about. Wasp generates React,
-Node and an ORM, so the seam is checked in parts rather than by one compiler.
+contract and has **never run on a physical handset**. In Java, jOOQ generates
+typed code from a real schema while JPQL strings are not checked; in C#, EF
+Core checks LINQ against your *model*, and the model against the database is a
+migration somebody ran — which is what the second row is about. Elixir's Ecto
+does the same against a schema module. Wasp generates React, Node and an ORM
+from its declaration, so the seam is checked in parts rather than by one
+compiler.
 
 **The 🔜 marks are design work with nothing built**, which is a promise rather
 than a fact, and worth treating as one.
