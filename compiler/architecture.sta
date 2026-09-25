@@ -1,0 +1,151 @@
+// An architecture document, written by the compiler that already knows.
+//
+// The usual reason an architecture document is worthless six months after
+// somebody wrote it is that it was written by hand and nothing keeps it
+// honest. This one is derived from the same parse the build uses, so it
+// cannot describe a system that is not there: rename a column and the next
+// document says the new name, because there is no second source of truth to
+// drift from.
+//
+// It reports what the compiler holds and nothing else. There is no guessing
+// about intent, no inferred layering and no prose -- a reader who wants to
+// know why something is the way it is still has to ask a person.
+
+import io     from std;
+import mem    from std;
+import os     from std;
+import str    from std;
+import lexer  from compiler;
+import parser from compiler;
+
+// A type as it was written, rather than as C sees it.
+str type_text(int tnode) {
+    if (tnode == 0) { return "void"; }
+    Node t = node_at(tnode);
+    if (t.kind == 11) { return t.s1; }
+    if (t.kind == 12) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "list[");
+        sb_append(&sb, type_text(t.c1));
+        sb_append(&sb, "]");
+        return sb_to_str(&sb);
+    }
+    if (t.kind == 13) { return "matrix"; }
+    return "?";
+}
+
+// `int name(str a, int b)` as one line.
+str signature(Node fn) {
+    StringBuilder sb = sb_new();
+    if (str_eq(fn.s1, "def") == 1) { sb_append(&sb, "def"); }
+    if (str_eq(fn.s1, "def") == 0) { sb_append(&sb, type_text(fn.c1)); }
+    sb_append(&sb, " ");
+    sb_append(&sb, fn.s2);
+    sb_append(&sb, "(");
+    NodeVec ps = nv_at(fn.v1);
+    for (int i = 0; i < ps.len; i = i + 1) {
+        Node p = nv_get(&ps, i);
+        if (i > 0) { sb_append(&sb, ", "); }
+        sb_append(&sb, type_text(p.c1));
+        sb_append(&sb, " ");
+        sb_append(&sb, p.s1);
+    }
+    sb_append(&sb, ")");
+    return sb_to_str(&sb);
+}
+
+// The tables a file declares, with every column and its type.
+str tables_of(Node unit) {
+    StringBuilder out = sb_new();
+    NodeVec decls = nv_at(unit.v2);
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind != 3) { continue; }
+        sb_append(&out, "\n### ");
+        sb_append(&out, d.s1);
+        sb_append(&out, "\n\n| Column | Type |\n|---|---|\n");
+        NodeVec fs = nv_at(d.v1);
+        for (int j = 0; j < fs.len; j = j + 1) {
+            Node f = nv_get(&fs, j);
+            sb_append(&out, "| `");
+            sb_append(&out, f.s1);
+            sb_append(&out, "` | `");
+            sb_append(&out, type_text(f.c1));
+            sb_append(&out, "` |\n");
+        }
+    }
+    return sb_to_str(&out);
+}
+
+// Everything else a file declares, named by what it is.
+str decls_of(Node unit, int want_kind, str label) {
+    StringBuilder out = sb_new();
+    NodeVec decls = nv_at(unit.v2);
+    int found = 0;
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind != want_kind) { continue; }
+        if (found == 0) {
+            sb_append(&out, "\n**");
+            sb_append(&out, label);
+            sb_append(&out, ":** ");
+        }
+        if (found > 0) { sb_append(&out, ", "); }
+        sb_append(&out, "`");
+        sb_append(&out, d.s1);
+        sb_append(&out, "`");
+        found = found + 1;
+    }
+    if (found > 0) { sb_append(&out, "\n"); }
+    return sb_to_str(&out);
+}
+
+// What this file depends on, and where each module comes from.
+str imports_of(Node unit) {
+    StringBuilder out = sb_new();
+    NodeVec imps = nv_at(unit.v1);
+    if (imps.len == 0) { return ""; }
+    sb_append(&out, "\n**Imports:** ");
+    for (int i = 0; i < imps.len; i = i + 1) {
+        Node im = nv_get(&imps, i);
+        if (i > 0) { sb_append(&out, ", "); }
+        sb_append(&out, "`");
+        sb_append(&out, im.s1);
+        sb_append(&out, "` (");
+        sb_append(&out, im.s2);
+        sb_append(&out, ")");
+    }
+    sb_append(&out, "\n");
+    return sb_to_str(&out);
+}
+
+str functions_of(Node unit) {
+    StringBuilder out = sb_new();
+    NodeVec fns = nv_at(unit.v3);
+    if (fns.len == 0) { return ""; }
+    sb_append(&out, "\n**Functions**\n\n");
+    for (int i = 0; i < fns.len; i = i + 1) {
+        Node fn = nv_get(&fns, i);
+        sb_append(&out, "- `");
+        sb_append(&out, signature(fn));
+        sb_append(&out, "`\n");
+    }
+    return sb_to_str(&out);
+}
+
+// One file, described.
+str describe_file(str path, str shown_as) {
+    Node unit = parse_source(file_read(path));
+    StringBuilder out = sb_new();
+    sb_append(&out, "\n## ");
+    sb_append(&out, shown_as);
+    sb_append(&out, "\n");
+    sb_append(&out, imports_of(unit));
+    sb_append(&out, decls_of(unit, 74, "Foreign libraries"));
+    sb_append(&out, decls_of(unit, 6, "Reports"));
+    sb_append(&out, decls_of(unit, 70, "Screens"));
+    sb_append(&out, decls_of(unit, 5, "Models"));
+    sb_append(&out, tables_of(unit));
+    sb_append(&out, functions_of(unit));
+    return sb_to_str(&out);
+}

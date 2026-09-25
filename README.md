@@ -132,14 +132,17 @@ ships the numbers anywhere. You read them or you render them.
 A platform claim invites the rest of the list — architecture, design, standard
 operating procedures — so here is where each stands.
 
-**Architecture and data-flow documents: 🔜 designed, not built.** The compiler
-already holds everything such a document contains: the full schema, every
-module and its dependencies, which routes exist, which screens read which
-columns. Generated from the code it describes, that document cannot drift from
-it — which is the usual reason an architecture document is worthless six
-months after somebody wrote it. `strata deps` already walks the dependency
-graph; `report` already renders Markdown. This is joining what exists, not
-inventing a capability.
+**Architecture documents: done — `strata doc`.** The compiler
+already held everything such a document contains, and threw it away. `strata
+doc` writes it out: tables and columns with their types, screens, reports,
+models, foreign libraries, imports and function signatures. Derived from the
+code rather than written beside it, so it cannot describe a system that is not
+there — rename a column and the next document says the new name, because there
+is no second source of truth to drift from.
+
+```bash
+strata doc > ARCHITECTURE.md
+```
 
 **A screen and data inventory: 🔜 designed, not built.** Same argument. Every
 `layout` field resolves to a column at build time, so the list of what is
@@ -1270,7 +1273,7 @@ what runs and what is planned is unambiguous.
 | Memory | **Given back in one piece.** Temporaries come from an arena; `scratch_reset()` discards it at a boundary the program picks. Measured at 1.4 MB for four million temporaries against 93 MB for one million without. Tables survive a reset because they copy what they store. Not individual deallocation: one value cannot be freed, and a single huge request holds its memory until the next reset. |
 | Rows removed by `delete` | **Reclaimed at the next reset.** A delete retires the row rather than freeing it on the spot, because a query result may still point at it; the reset frees it once the arena those results live in has gone. 400,000 insert/delete cycles held 13.7 MB before and 1.15 MB after, and 800,000 now cost the same as 400,000 rather than twice. Fixing this exposed a second bug: an insert stored a str column's pointer without copying it, so a computed string pointed into the arena and read back empty after a reset — data loss with no error and no crash. Inserts copy now. |
 | Errors | **Cannot pass for success.** No exceptions. A failure is recorded; `had_error()`, `last_error()` and `clear_error()` handle it; a program reaching exit with one unchecked prints it and exits 65. One global flag, so two failures before a check leave only the second, and a function cannot report a failure to its caller. |
-| Architecture and data-flow documents | **Designed, not built.** The compiler already holds the schema, the module graph, the routes and which screens read which columns — everything such a document contains. Generated from the code it describes, it cannot drift from it, which is the usual reason one is worthless six months later. `strata deps` walks the graph and `report` renders Markdown, so this is joining what exists rather than inventing a capability. |
+| Architecture documents | **`strata doc`.** Writes Markdown from the same parse the build uses: every table and column with its type, the screens, reports, models and foreign libraries a file declares, its imports and where each module comes from, and every function signature. Derived rather than written, so it cannot describe a system that is not there — the test renames a column and requires the document to follow. It says what the shape is, not why it is that way; that still comes from a person. |
 | Screen and data inventory | **Designed, not built.** Every `layout` field resolves to a column at build time, so the list of what is shown and where it comes from is something the compiler computes to do its job and currently discards. |
 | Operating runbooks | **Designed, not built.** What a service listens on, which tables it opens, which foreign libraries it links and what its counters mean are all in the program. Prescribing how a team reviews, releases and operates is not, and is not planned: the runbook describes the system, the procedure stays the team's. |
 | Virtual Event Fibers | Design only. No scheduler exists — `stream` dispatch above is a queue drain, not fibers. |

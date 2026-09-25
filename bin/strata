@@ -44,6 +44,7 @@ usage() {
     echo "  strata test  [dir]"
     echo "  strata repair <file.sta> | --project <dir>   [--backend rules|claude|llm]"
     echo "  strata fmt   <file.sta>... [--check]   canonical formatting"
+    echo "  strata doc   [dir]            an architecture document for a project"
     echo "  strata version"
 }
 
@@ -447,6 +448,44 @@ cmd_test() {
     [ "$f" -eq 0 ] || exit 1
 }
 
+cmd_doc() {
+    # An architecture document from the same parse the build uses. The point
+    # is that it cannot drift: there is no second description of the system
+    # to fall out of date, because this one is derived from the first.
+    local dir="$1"
+    case "$dir" in
+        -h|--help)
+            echo "Usage: strata doc [dir]"
+            echo "  Writes an architecture document for the project to stdout:"
+            echo "  its tables and columns, screens, reports, foreign libraries,"
+            echo "  imports and function signatures."
+            echo "      strata doc > ARCHITECTURE.md"
+            return 0 ;;
+    esac
+    if [ -z "$dir" ]; then
+        dir="$(find_project)" || { echo "no Strata.toml here or above" >&2; return 1; }
+    fi
+    dir="$(cd "$dir" && pwd)"
+
+    local bin="$ROOT/build/strata-doc-$(uname -s)-$(uname -m)"
+    local newest
+    newest="$(find "$ROOT/compiler" "$ROOT/std" -name '*.sta' -newer "$bin" -print -quit 2>/dev/null || true)"
+    if [ ! -x "$bin" ] || [ -n "$newest" ]; then
+        mkdir -p "$ROOT/build"
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/doc_cli.sta" \
+            -o "$bin" >/dev/null || { echo "could not build strata doc" >&2; return 1; }
+    fi
+
+    local files=()
+    local f
+    while IFS= read -r f; do files+=("$f"); done < <(
+        cd "$dir" && find . -name '*.sta' -not -path './build/*' -not -path '*/_to_delete/*' -not -path '*/.*/*' | sed 's|^\./||' | sort)
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "no .sta files under $dir" >&2; return 1
+    fi
+    ( cd "$dir" && "$bin" "$dir" "${files[@]}" )
+}
+
 cmd_version() {
     echo "Strata v0.4.0-alpha | self-hosting front end"
     echo "  Stage 0: Python bootstrap (bootstrap/stage0.py)"
@@ -556,6 +595,7 @@ case "$CMD" in
     new)     cmd_new   "$@" ;;
     test)    cmd_test  "$@" ;;
     repair)  exec "$PY3" "$ROOT/ai_self_repair.py" "$@" ;;
+    doc)     cmd_doc "$@" ;;
     fmt)     cmd_fmt   "$@" ;;
     version) cmd_version ;;
     ""|help) usage ;;

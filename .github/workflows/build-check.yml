@@ -104,6 +104,11 @@ jobs:
     # at must not leave the process claiming success.
     # Both of these were documented, neither was true, and a developer who
     # had never seen the project found them in twenty minutes.
+    # The document is only worth having if it cannot drift, so the test
+    # renames a column and requires the document to follow.
+    - name: The Architecture Document Tracks The Code
+      run: python3 test_suite/doc_describes_the_project.py
+
     - name: The Tools Do What The Docs Say
       run: python3 test_suite/repair_and_json_are_honest.py
 
