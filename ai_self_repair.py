@@ -160,7 +160,7 @@ def repair_llm(source: str, d: dict):
         )
         out = msg.content[0].text.strip()
         out = re.sub(r"^```[a-z]*\n|\n```$", "", out)
-        return _plausible_source(out, source, "llm")
+        return _splice(out, source, d, "llm")
     except Exception as e:
         print(f"  [llm] request failed: {e}", file=sys.stderr)
         return None
@@ -181,13 +181,41 @@ The Strata compiler rejected it with this diagnostic:
   hint:        {d.get('hint')}
   remediation: {d.get('remediation_strategy')}
 
-Full source:
-```
-{source}
-```
+{_window(source, d)}
 
-Return the complete corrected source and nothing else. No explanation, no
-code fences. Change only what the diagnostic requires."""
+Return ONLY the corrected version of line {d.get('line')} and nothing else.
+No explanation, no code fences, no other lines. If the fix needs more than one
+line, return those lines and nothing else. Change only what the diagnostic
+requires."""
+
+
+WINDOW = 8
+
+
+def _window(source: str, d: dict) -> str:
+    """The lines around the error, numbered, instead of the whole file.
+
+    Sending the file made a repair cost the size of the codebase rather than
+    the size of the mistake, and a local model's context is small -- 4096
+    tokens by default in Ollama -- so a real file silently truncated and the
+    model looked unreliable when it was simply being shown half a program.
+
+    It is also a correctness argument rather than a cost one. A model that can
+    only see eight lines either side cannot quietly reformat something forty
+    lines away, and the diagnostic already carries what the fix needs: the
+    code, the line, the column, the hint and the remediation.
+    """
+    lines = source.splitlines()
+    n = d.get("line")
+    if not isinstance(n, int) or not (1 <= n <= len(lines)):
+        return "Full source:\n```\n" + source + "\n```"
+    lo = max(1, n - WINDOW)
+    hi = min(len(lines), n + WINDOW)
+    shown = "\n".join(
+        f"{i:>4} {'>' if i == n else ' '} {lines[i - 1]}"
+        for i in range(lo, hi + 1))
+    return (f"The lines around it, with the offending one marked `>`:\n"
+            f"```\n{shown}\n```")
 
 
 def repair_claude(source: str, d: dict):
@@ -223,7 +251,54 @@ def repair_claude(source: str, d: dict):
     # A model asked for source sometimes wraps it in a fence anyway.
     out = re.sub(r"^```[a-z]*\n", "", out)
     out = re.sub(r"\n```$", "", out)
-    return _plausible_source(out, source, "claude")
+    return _splice(out, source, d, "claude")
+
+
+def _splice(out: str, original: str, d: dict, who: str):
+    """Put the model's replacement line(s) back into the file.
+
+    The backends still hand the loop a whole file, so only the prompt and this
+    changed -- the repair loop, the plausibility rules and the three backends
+    are otherwise untouched.
+    """
+    n = d.get("line")
+    lines = original.splitlines()
+    if not isinstance(n, int) or not (1 <= n <= len(lines)):
+        # No line to splice into: the prompt asked for the whole file.
+        return _plausible_source(out, original, who)
+
+    out = re.sub(r"^```[a-z]*\n|\n```$", "", out.strip())
+    # A model asked for one line sometimes says "Here is the corrected line:"
+    # first. Anything before a line that looks like code is not the answer.
+    candidate = [l for l in out.splitlines() if l.strip()]
+    if not candidate:
+        print(f"  [{who}] the answer was empty; ignoring it", file=sys.stderr)
+        return None
+    # A reply that restates the whole file is still a usable answer -- take it
+    # rather than throwing away a correct repair on a formatting quibble.
+    if len(candidate) > 2 * WINDOW + 2:
+        return _plausible_source(out, original, who)
+    if any(re.match(r"^\s*(here|the|this|i |sure|certainly)\b", l, re.I)
+           and "=" not in l and ";" not in l for l in candidate):
+        print(f"  [{who}] the answer is prose, not a line of code; ignoring it",
+              file=sys.stderr)
+        return None
+
+    # Models hand back the code without its indentation, because they were
+    # shown a numbered window and the number stood where the whitespace was.
+    # Left alone that de-indents the line, the file stops being canonically
+    # formatted, and CI fails the build over a repair that was otherwise
+    # right. Keep the original line's indent when the answer brought none.
+    replacement = out.splitlines()
+    indent = re.match(r"^[ \t]*", lines[n - 1]).group(0)
+    if indent and replacement and not replacement[0][:1].isspace():
+        replacement = [indent + replacement[0]] + replacement[1:]
+
+    patched = lines[:n - 1] + replacement + lines[n:]
+    result = "\n".join(patched) + ("\n" if original.endswith("\n") else "")
+    if result == original:
+        return None
+    return result
 
 
 def _plausible_source(out: str, original: str, who: str):
@@ -301,7 +376,7 @@ def repair_local(source: str, d: dict) -> str | None:
     # The same plausibility gate the other backends use. A small model is more
     # likely to return an apology, a diff or half a file, and none of those
     # should reach the source tree.
-    return _plausible_source(out, source, "local")
+    return _splice(out, source, d, "local")
 
 
 BACKENDS = {"rules": repair_rules, "llm": repair_llm, "claude": repair_claude,

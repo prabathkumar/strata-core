@@ -810,10 +810,24 @@ and the cheapest model is the one you do not call.
 
 What the model is sent is the compiler's own diagnostic — the code, the
 classification, the line, the hint and the remediation the language's authors
-wrote — so a small local model is being asked to apply a stated fix rather
-than to work out what is wrong. The compiler then rejects a wrong patch
-immediately, which is what makes a 7B model on a laptop a reasonable thing to
-trust here.
+wrote — plus eight lines either side of the offending one, with that line
+marked. It returns the corrected line, not the file. So a small local model is
+being asked to apply a stated fix rather than to work out what is wrong, and
+the compiler rejects a wrong patch immediately. That is what makes a 7B model
+on a laptop a reasonable thing to trust here.
+
+It also means a repair costs the size of the mistake rather than the size of
+the codebase:
+
+| file | whole file | window |
+|---|---|---|
+| 50 lines | 1,481 chars | 741 |
+| 500 lines | 10,383 chars | 761 |
+| 5,000 lines | 108,385 chars | 977 |
+
+The prompt stops growing, which matters most locally: Ollama's default context
+is 4,096 tokens, so sending whole files meant a real program was silently
+truncated and the model was blamed for being shown half a program.
 
 ## 4. Toolchain
 
