@@ -167,34 +167,44 @@ as an oracle to compare against.
    file on disk changes. That is right for one service on one machine and
    wrong the moment a second machine writes the same file over a share where
    the clock or the metadata lags.
-3. The Claude repair backend is not gated in CI, because CI has no Claude
+3. The repair loop only repairs a single file. `strata repair` works on a
+   program that declares its own `database` block, and does nothing for a
+   project made by `strata new`, where the schema lives in `src/schema.sta`:
+   the diagnostic arrives at the `compile` stage rather than `typecheck` and
+   the rules backend does not act on it. It reports "backend produced no
+   change" rather than failing, so it looks like a model that could not help
+   rather than a loop that never looked. The generated project's README offers
+   the command regardless, so the first thing a newcomer is told to try is the
+   thing that does not work.
+4. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-4. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one
+5. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one
    row at a time, so reading, producing and updating a table are all possible
    without holding it. Postgres has none of them: a Postgres-backed table is
    still loaded whole into memory, so the working set has to fit, and there is
    no cursor and no connection pool beyond one handle per process. A rewrite
    also rewrites the WHOLE file to change one row, which is right for a batch
    pass and wrong for a single update in a service.
-5. Passwords and sessions do not compile on macOS. `std/auth.sta` declares
-   crypt(3) as `foreign "crypt.h" link "crypt"`, and on a Mac that header does
-   not exist and there is no libcrypt — crypt lives in <unistd.h> and
-   libSystem. Two conformance cases fail there, both of them anything that
-   touches `auth`. It was invisible for as long as CI only ran Linux, and the
-   macOS job found it on its first run. The fix spans std/auth.sta, link_flags
-   in compiler/build.sta and its mirror in bootstrap/stage0.py, which
-   link_libs_diff.py holds byte-identical.
-6. A lockout is counted against the pair of account and source, which stops
+6. Passwords and sessions now compile on macOS, and did not until the macOS
+   CI job was added and failed on its first run. `std/auth.sta` declared
+   crypt(3) as `foreign "crypt.h" link "crypt"`; on a Mac that header does not
+   exist and there is no libcrypt. It is now <unistd.h> on both, with
+   -D_GNU_SOURCE for glibc and no -lcrypt on Darwin — 210/210 on a Mac where
+   two cases used to fail. What that episode leaves behind is the real entry:
+   anything reached through a `foreign` block is only known to work on a
+   platform something has actually built it on, and the only two are Linux and
+   macOS.
+7. A lockout is counted against the pair of account and source, which stops
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-7. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
+8. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
    real bridge — `src/host.sta` compiles to a linkable object and Swift calls
    its five C functions with no glue layer — but it has only ever been pointed
    at the Simulator. `apps/orders_mobile/android/` is still reviewed design
    rather than tested code: the machine here has no NDK, so the JNI wrappers
    around those same five functions have never been compiled.
-8. Memory is given back in one piece or not at all. Temporaries come from an
+9. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their
    own copies and survive it. Measured: four million temporaries with resets
    peak at 1.4 MB, one million without at 93 MB. What this is NOT is
@@ -210,16 +220,16 @@ as an oracle to compare against.
    a row — is still in use is a use-after-free that nothing catches. A phone shell and a
    server both now have somewhere honest to put that call; neither has been
    run for a week to prove it.
-9. There is no registry and no version solving. A dependency is a path or a
+10. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
    and "^1.2" means nothing here.
-10. A layout has no event model. A button names a route it posts to; nothing
+11. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-11. `build`, `check`, `fmt` and `deps` are self-hosted, with
+12. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
