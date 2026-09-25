@@ -5,6 +5,16 @@
 *An independent project by Prabath Kumar. Not a product of, and not owned by,
 any employer or client.*
 
+> **GitHub says this repository is Python. It is not.** GitHub detects
+> languages with Linguist, which has never heard of `.sta`, so it counts what
+> it recognises and ignores 15,830 lines across 117 Strata files — the
+> compiler, the standard library and the applications. The 14,410 lines of
+> Python it does count are the reference implementation that the Strata
+> compiler is checked against on every commit, and the test suite that does
+> the checking. A grammar for `.sta` lives in `editor/strata-grammar/` as a
+> repository of its own, which is the shape Linguist wants; being listed also
+> needs usage a project this age does not have.
+
 Strata is a systems language for a world where most code is written by machines.
 Describe what you want, let a model write it, and let the compiler — not a tired
 human on a Friday afternoon — prove the pieces actually fit. When it doesn't fit,
