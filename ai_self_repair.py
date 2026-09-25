@@ -103,25 +103,30 @@ def repair_rules(source: str, d: dict):
                     digits += ".0"
                 return _replace_line(source, line_no,
                                      re.sub(r'"[^"]*"', digits, line, count=1))
-    # E009: an insert that does not name every column. The column and its
-    # declared type are both in the hint, so the fix is unambiguous: name it
-    # with the zero value of its type and let a human decide the real one.
+    # E009 is deliberately NOT repaired, and this is the one rule worth
+    # explaining at length.
+    #
+    # An insert that omits a column is the error the language exists to
+    # prevent: without it, adding a column writes an empty value into every
+    # row the statement creates, nothing breaks, and everything is quietly
+    # wrong. The hint names the column and its type, so filling in a zero is
+    # trivially possible -- and that is exactly the corruption E009 was
+    # raised about. This rule used to do it, report "clean" and exit 0. A
+    # developer under a deadline ran `repair`, got a green build, and shipped
+    # empty strings.
+    #
+    # There is no safe automatic answer, because only the person adding the
+    # column knows what the existing rows should hold. A tool whose pitch is
+    # that the compiler refuses rather than guessing must not ship a companion
+    # that guesses, guesses wrong and calls it success.
     if code == "E009":
         m = re.search(r"omits column '([^']+)'", d.get("message", ""))
-        t = re.search(r"is '(\w+)'", d.get("hint", ""))
-        if m and t:
-            default = {"int": "0", "float": "0.0", "str": '""'}.get(t.group(1))
-            if default:
-                lines = source.splitlines()
-                # The insert may span several lines; the closing bracket is
-                # what the new column goes before.
-                for n in range(line_no, min(line_no + 8, len(lines)) + 1):
-                    cur = lines[n - 1]
-                    if "]" in cur:
-                        head, sep, tail = cur.rpartition("]")
-                        return _replace_line(
-                            source, n,
-                            f"{head.rstrip()}, {m.group(1)} = {default}{sep}{tail}")
+        col = m.group(1) if m else "the missing column"
+        print(f"  [rules] E009 needs a decision, not a default: only you know "
+              f"what '{col}' should hold in rows that already exist. Filling "
+              f"it with a zero is the corruption E009 exists to catch.",
+              file=sys.stderr)
+        return None
     return None
 
 

@@ -198,8 +198,31 @@ cmd_check() {
     # implementation of "which diagnostics stop a build" is a second thing to
     # get wrong -- `strata check` once treated the E007 advisory as an error,
     # which is the opposite of what the taxonomy says.
-    local f="$1"
-    if [ -z "$f" ]; then echo "Usage: strata check <file.sta>"; exit 1; fi
+    local f="" want_json=0
+    local a
+    for a in "$@"; do
+        case "$a" in
+            --json) want_json=1 ;;
+            *) [ -z "$f" ] && f="$a" ;;
+        esac
+    done
+    if [ -z "$f" ]; then echo "Usage: strata check <file.sta> [--json]"; exit 1; fi
+
+    # --json was accepted and silently ignored: `strata check x.sta --json`
+    # printed the same human text, while three documents promised a payload a
+    # model could act on -- and that payload is the project's central claim.
+    #
+    # It goes through the bootstrap rather than compiler/json_cli.sta, which
+    # is the self-hosted emitter and the one this should eventually use. In a
+    # project created by `strata new`, json_cli reports `std` as unresolved
+    # while `strata build` compiles the same file without complaint. A checker
+    # that disagrees with the compiler is worse than no checker, so the
+    # correct answer wins over the self-hosted one until json_cli resolves
+    # imports the way the compiler does. It is on the list in STAGES.md.
+    if [ "$want_json" = "1" ]; then
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$f" --json
+        return $?
+    fi
 
     local cache="$ROOT/build"
     if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then

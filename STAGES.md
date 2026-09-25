@@ -175,16 +175,23 @@ as an oracle to compare against.
    change". The generated README had been telling every newcomer to run
    exactly that command. `test_suite/first_hour.py` now breaks a generated
    project and requires the loop to fix it.
-4. The Claude repair backend is not gated in CI, because CI has no Claude
+4. `strata check --json` goes through the bootstrap, not the self-hosted
+   emitter. `compiler/json_cli.sta` exists and the two agree on the test
+   corpus, but in a project created by `strata new` it reports `std` as
+   unresolved while `strata build` compiles the same file without complaint.
+   A checker that disagrees with the compiler is worse than no checker, so
+   the flag uses the answer that is right until json_cli resolves imports the
+   way the compiler does.
+5. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
-5. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one
+6. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one
    row at a time, so reading, producing and updating a table are all possible
    without holding it. Postgres has none of them: a Postgres-backed table is
    still loaded whole into memory, so the working set has to fit, and there is
    no cursor and no connection pool beyond one handle per process. A rewrite
    also rewrites the WHOLE file to change one row, which is right for a batch
    pass and wrong for a single update in a service.
-6. Passwords and sessions now compile on macOS, and did not until the macOS
+7. Passwords and sessions now compile on macOS, and did not until the macOS
    CI job was added and failed on its first run. `std/auth.sta` declared
    crypt(3) as `foreign "crypt.h" link "crypt"`; on a Mac that header does not
    exist and there is no libcrypt. It is now <unistd.h> on both, with
@@ -193,17 +200,17 @@ as an oracle to compare against.
    anything reached through a `foreign` block is only known to work on a
    platform something has actually built it on, and the only two are Linux and
    macOS.
-7. A lockout is counted against the pair of account and source, which stops
+8. A lockout is counted against the pair of account and source, which stops
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-8. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
+9. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
    real bridge — `src/host.sta` compiles to a linkable object and Swift calls
    its five C functions with no glue layer — but it has only ever been pointed
    at the Simulator. `apps/orders_mobile/android/` is still reviewed design
    rather than tested code: the machine here has no NDK, so the JNI wrappers
    around those same five functions have never been compiled.
-9. Memory is given back in one piece or not at all. Temporaries come from an
+10. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their
    own copies and survive it. Measured: four million temporaries with resets
    peak at 1.4 MB, one million without at 93 MB. What this is NOT is
@@ -219,16 +226,16 @@ as an oracle to compare against.
    a row — is still in use is a use-after-free that nothing catches. A phone shell and a
    server both now have somewhere honest to put that call; neither has been
    run for a week to prove it.
-10. There is no registry and no version solving. A dependency is a path or a
+11. There is no registry and no version solving. A dependency is a path or a
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
    and "^1.2" means nothing here.
-11. A layout has no event model. A button names a route it posts to; nothing
+12. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
    than, as before, a clean type check followed by a C compiler error.
-12. `build`, `check`, `fmt` and `deps` are self-hosted, with
+13. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
