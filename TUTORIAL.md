@@ -187,6 +187,14 @@ strata test      # runs the verify blocks
 strata fmt src/*.sta   # canonical formatting, as CI enforces it
 ```
 
+`str_concat` joins exactly two pieces, so for a line made of several use
+`str_cat`, and `str_join` when you want something between them:
+
+```text
+print(str_cat(["item ", str(i.id), " — ", i.name]));
+print(str_join(["north", "south", "east"], ", "));
+```
+
 ## 6. Before you build anything real
 
 Two things will bite you, and they are better read now than discovered.

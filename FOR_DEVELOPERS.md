@@ -83,6 +83,11 @@ second machine writes the same file.
 - **A query is a scan.** No index, no joins, no ordering, no `GROUP BY`.
   Aggregates read a list that already exists.
 - **The standard library is small.** `std/` is what there is.
+- **A float saved to a file loses a trailing `.0`.** A column holding `225.0`
+  is written as `225` while `62.5` keeps its point. It reloads as the same
+  number and the file's header still says the column is a float, so nothing
+  is lost — but anything downstream reading that column by eye or by regex
+  will notice.
 - **No client-side interactivity**, because no JavaScript is emitted.
 - **`ast`, `lex`, `test` and `repair` still go through Python.** `build`,
   `check`, `fmt` and `deps` are self-hosted.

@@ -1,0 +1,30 @@
+// str_cat and str_join, including the shapes that are easy to get wrong:
+// one element, and none at all.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+verify "str_cat joins every piece with nothing between" {
+    assert str_eq(str_cat(["a", "b", "c"]), "abc") == 1;
+}
+
+verify "str_cat of one piece is that piece" {
+    assert str_eq(str_cat(["only"]), "only") == 1;
+}
+
+verify "str_cat of nothing is empty" {
+    assert str_eq(str_cat([]), "") == 1;
+}
+
+verify "str_join puts the separator between and not on the ends" {
+    assert str_eq(str_join(["a", "b", "c"], ", "), "a, b, c") == 1;
+}
+
+verify "str_join of one piece has no separator" {
+    assert str_eq(str_join(["only"], ", "), "only") == 1;
+}
+
+verify "str_join of nothing is empty" {
+    assert str_eq(str_join([], ", "), "") == 1;
+}

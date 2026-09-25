@@ -80,3 +80,36 @@ str str_fixed(float value, int places) {
     return strata_dup(buf);
     ";
 }
+
+// ── Joining several pieces ────────────────────────────────────────────────
+//
+// str_concat takes exactly two arguments, so a line built from three pieces
+// nests: str_concat("a ", str_concat(b, str_concat(" ", c))). That is merely
+// ugly at ten lines and unreadable at six hundred, and it is the first thing
+// a developer writing a report hits.
+//
+// These are the two shapes that come up. Neither is a language change: a
+// StringBuilder already does this, and these just stop every program from
+// writing the same loop.
+
+// Several pieces, one after another, with nothing between them.
+str str_cat(list[str] parts) {
+    StringBuilder sb = sb_new();
+    for p in parts {
+        sb_append(&sb, p);
+    }
+    return sb_to_str(&sb);
+}
+
+// Several pieces with a separator between them, and none on the ends —
+// str_join(["a", "b", "c"], ", ") is "a, b, c".
+str str_join(list[str] parts, str between) {
+    StringBuilder sb = sb_new();
+    int first = 1;
+    for p in parts {
+        if (first == 0) { sb_append(&sb, between); }
+        sb_append(&sb, p);
+        first = 0;
+    }
+    return sb_to_str(&sb);
+}
