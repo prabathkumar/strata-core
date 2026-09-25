@@ -162,15 +162,43 @@ def main():
         files = {d["file"] for d in payload["diagnostics"] if d["code"] == "E009"}
         ok("across both files that insert rows", len(files) >= 2, str(files))
 
-        print("\n── The repair loop closes it ────────────────────────────────────")
+        print("\n── The repair loop refuses this one, and says why ───────────────")
+        # It used to close E009 by writing the zero value of the column into
+        # every insert, report "clean" and exit 0 -- which is the corruption
+        # E009 exists to catch, committed by the tool that exists to fix it.
+        # Only the person adding a column knows what rows already written
+        # should hold, so there is no safe automatic answer and refusing is
+        # the whole point.
+        before_repair = {f: open(os.path.join(app, "src", f)).read()
+                         for f in ("main.sta", "rules.sta")}
         r = run([sys.executable, os.path.join(work, "ai_self_repair.py"),
                  "--project", app, "--max-passes", "12"], work)
-        ok("the loop reports clean", "clean after" in r.stdout,
-           (r.stdout + r.stderr)[-400:])
-        m = re.search(r"clean after (\d+) repair\(s\) across (\d+) file", r.stdout)
-        ok("having repaired every site, in both files",
-           bool(m) and int(m.group(1)) >= 4 and int(m.group(2)) >= 2,
-           r.stdout[-300:])
+        out_r = r.stdout + r.stderr
+        ok("the loop does not claim to have fixed it",
+           "clean after" not in r.stdout, out_r[-300:])
+        ok("it names E009 and says a default is not an answer",
+           "E009" in out_r and "decision" in out_r, out_r[-300:])
+        ok("it exits non-zero", r.returncode != 0, str(r.returncode))
+        ok("and it changed nothing",
+           all(open(os.path.join(app, "src", f)).read() == t
+               for f, t in before_repair.items()))
+
+        print("\n── The developer says what the column holds ─────────────────────")
+        # What a person does next: decide, and name it at every site. This is
+        # the work the compiler insisted on rather than let happen silently.
+        for f in ("main.sta", "rules.sta"):
+            path = os.path.join(app, "src", f)
+            text = open(path).read()
+            # Only where the insert ends -- `o.status = "CLOSED";` is a field
+            # assignment on a row already in hand, and adding a column to
+            # that is a parse error. The compiler caught it; a text edit that
+            # looked right did not.
+            text = re.sub(r'(status = "(?:OPEN|CLOSED)")\]',
+                          r'\1, priority = "normal"]', text)
+            open(path, "w").write(text)
+        r = run([strata, "build"], app)
+        ok("naming it at every site builds", r.returncode == 0,
+           (r.stdout + r.stderr)[-300:])
 
         r = run([strata, "build"], app)
         ok("the build passes", r.returncode == 0, (r.stdout + r.stderr)[-300:])

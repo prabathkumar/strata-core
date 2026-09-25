@@ -69,6 +69,27 @@ def main():
         print(f"  follows a rename in the schema:              "
               f"{'yes' if '`unit_price`' in out2 else 'NO'}")
 
+        # Writes are found by walking statements AND the expressions in
+        # returns and declarations. The first version walked statements only
+        # and missed `int save_orders() { return save Order to "..."; }`,
+        # reporting a file as writing two tables when it wrote three.
+        main = os.path.join(app, "src", "main.sta")
+        original = open(main).read()
+        open(main, "w").write(original.replace(
+            "int main() {",
+            "int stash() { return save Item to \"build/items.tsv\"; }\n\nint main() {", 1))
+        code3, out3, err3 = doc(app)
+        writes = [l for l in out3.splitlines() if l.startswith("**Writes:**")]
+        if not writes:
+            failures.append(
+                f"no Writes line for a file that inserts and saves: "
+                f"{err3.strip()[-160:]}")
+        elif not any("`Item`" in l for l in writes):
+            failures.append(f"the Writes line does not name Item: {writes}")
+        open(main, "w").write(original)
+        print(f"  finds a write inside a return:               "
+              f"{'yes' if writes and any('`Item`' in l for l in writes) else 'NO'}")
+
         r = subprocess.run([STRATA, "doc", "--help"], capture_output=True,
                            text=True, cwd=app)
         if r.returncode != 0 or "Usage: strata doc" not in r.stdout:

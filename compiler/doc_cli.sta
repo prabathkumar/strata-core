@@ -42,9 +42,17 @@ int main() {
 
     sb_append(&out, "\n---\n\n");
     sb_append(&out, str(described));
-    sb_append(&out, " file(s) described. What this document does not say: why\n");
-    sb_append(&out, "anything is the way it is. The compiler knows the shape of the\n");
-    sb_append(&out, "system, not the reasons for it — those still come from a person.\n");
+    sb_append(&out, " file(s) described.\n\n");
+    sb_append(&out, "**Writes** lists the tables a file inserts into, saves, deletes\n");
+    sb_append(&out, "from, appends to, rewrites or drops, found by walking every\n");
+    sb_append(&out, "statement and the expressions in returns and declarations. It is a\n");
+    sb_append(&out, "thorough search rather than a proof: a write buried in some other\n");
+    sb_append(&out, "expression position would not appear here. Reads are not listed at\n");
+    sb_append(&out, "all — a query can appear anywhere an expression can, and a\n");
+    sb_append(&out, "half-complete list of who reads what is worse than none.\n\n");
+    sb_append(&out, "What this document does not say is why anything is the way it is.\n");
+    sb_append(&out, "The compiler knows the shape of the system, not the reasons for\n");
+    sb_append(&out, "it — those still come from a person.\n");
     print(sb_to_str(&out));
     return 0;
 }

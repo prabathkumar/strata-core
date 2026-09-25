@@ -133,6 +133,106 @@ str functions_of(Node unit) {
     return sb_to_str(&out);
 }
 
+// ── Which tables a file writes ────────────────────────────────────────────
+//
+// Every place that changes stored data: an insert, a save, a delete, an
+// append, a rewrite, a drop.
+//
+// Most are statements and are found by walking the block structure. Some are
+// not: `int save_orders() { return save Order to "..."; }` puts one inside a
+// return, where the first version of this walk missed it -- it reported that
+// apps/orders/src/rules.sta writes Order and Attempt while the file plainly
+// also saves Session two lines up. So the expressions in returns and in
+// declarations are walked too.
+//
+// What this means for a reader: this is a thorough search, not a proof. A
+// write buried in some other expression position would not appear. That is
+// worth saying plainly in a generated document, because the value of one is
+// that nobody has to wonder how much of it to believe.
+//
+// Reads are deliberately NOT listed. A query is an expression and can appear
+// anywhere one can: in a declaration, an argument, a comparison. Walking
+// every expression is more than this does, and a half-complete list of who
+// reads what is worse than no list, because somebody would trust it. When
+// reads are listed here it will be because they are as exact as these.
+
+def note_table(StringBuilder &acc, str name) {
+    if (str_len(name) == 0) { return; }
+    StringBuilder probe = sb_new();
+    sb_append(&probe, "`");
+    sb_append(&probe, name);
+    sb_append(&probe, "`");
+    str tag = sb_to_str(&probe);
+    if (str_index_of(sb_to_str(&acc), tag) >= 0) { return; }
+    if (str_len(sb_to_str(&acc)) > 0) { sb_append(&acc, ", "); }
+    sb_append(&acc, tag);
+}
+
+// Walk a block, and anything nested inside it. A v-field is always a vector
+// of nodes when it is set, so recursing into all three is safe even where a
+// statement uses one for something other than a body -- an insert's column
+// list holds nodes whose kinds are not statements, and they simply do not
+// match anything below.
+// An expression, and anything inside it. c-fields are followed only when
+// positive: some statements use one as a flag with -1 for "absent".
+def walk_expr(int nodep, StringBuilder &acc) {
+    if (nodep <= 0) { return; }
+    Node e = node_at(nodep);
+    int k = e.kind;
+    if (k == 27) { note_table(&acc, e.s1); }
+    if (k == 76) { note_table(&acc, e.s1); }
+    if (k == 79) { note_table(&acc, e.s1); }
+    if (k == 80) { note_table(&acc, e.s1); }
+    if (k == 81) { note_table(&acc, e.s1); }
+    if (k == 75) { if (str_eq(e.s1, "save") == 1) { note_table(&acc, e.s2); } }
+    walk_expr(e.c1, &acc);
+    walk_expr(e.c2, &acc);
+    walk_expr(e.c3, &acc);
+}
+
+def walk_writes(int vecp, StringBuilder &acc) {
+    if (vecp == 0) { return; }
+    NodeVec body = nv_at(vecp);
+    for (int i = 0; i < body.len; i = i + 1) {
+        Node st = nv_get(&body, i);
+        int k = st.kind;
+        if (k == 27) { note_table(&acc, st.s1); }        // insert
+        if (k == 76) { note_table(&acc, st.s1); }        // delete
+        if (k == 79) { note_table(&acc, st.s1); }        // append
+        if (k == 80) { note_table(&acc, st.s1); }        // rewrite
+        if (k == 81) { note_table(&acc, st.s1); }        // drop
+        if (k == 75) {                                   // save / load
+            if (str_eq(st.s1, "save") == 1) { note_table(&acc, st.s2); }
+        }
+        if (k == 21) { walk_expr(st.c1, &acc); }         // return <expr>
+        if (k == 20) { walk_expr(st.c2, &acc); }         // decl = <expr>
+        walk_writes(st.v1, &acc);
+        walk_writes(st.v2, &acc);
+        walk_writes(st.v3, &acc);
+    }
+}
+
+str writes_of(Node unit) {
+    StringBuilder acc = sb_new();
+    NodeVec fns = nv_at(unit.v3);
+    for (int i = 0; i < fns.len; i = i + 1) {
+        Node fn = nv_get(&fns, i);
+        walk_writes(fn.v2, &acc);
+    }
+    NodeVec decls = nv_at(unit.v2);
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        walk_writes(d.v2, &acc);
+    }
+    str found = sb_to_str(&acc);
+    if (str_len(found) == 0) { return ""; }
+    StringBuilder out = sb_new();
+    sb_append(&out, "\n**Writes:** ");
+    sb_append(&out, found);
+    sb_append(&out, "\n");
+    return sb_to_str(&out);
+}
+
 // One file, described.
 str describe_file(str path, str shown_as) {
     Node unit = parse_source(file_read(path));
@@ -145,6 +245,7 @@ str describe_file(str path, str shown_as) {
     sb_append(&out, decls_of(unit, 6, "Reports"));
     sb_append(&out, decls_of(unit, 70, "Screens"));
     sb_append(&out, decls_of(unit, 5, "Models"));
+    sb_append(&out, writes_of(unit));
     sb_append(&out, tables_of(unit));
     sb_append(&out, functions_of(unit));
     return sb_to_str(&out);
