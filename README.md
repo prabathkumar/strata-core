@@ -249,44 +249,47 @@ a real question, and for most teams today the answer is no.
 
 ## Others who consolidate the tiers
 
-The table further up answers "why not C# or Java". This one answers the
-sharper question: how Strata differs from the things that already set out to
-put the tiers in one place. ✅ yes, ⚠️ partly, ❌ no.
+How Strata differs from the stacks most teams use, and from the things that
+already set out to put the tiers in one place.
 
-| | Strata | Low-code<br>(OutSystems, Mendix) | Full-stack DSL<br>(Wasp) | LiveView<br>(Phoenix) | Blazor /<br>.NET MAUI | Typed queries<br>(jOOQ, Prisma) |
-|---|---|---|---|---|---|---|
-| Queries checked against the real schema at build time | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ |
-| Screen fields checked against the **database** schema | ✅ | ✅ | ⚠️ | ❌ | ❌ | ❌ |
-| One compiler over database, rules and screens | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Mobile from the same source | ⚠️ | ✅ | ❌ | ⚠️ | ✅ | ❌ |
-| The application is text you own, not a vendor's model | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Diagnostics built for a machine to repair | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Repairs its own errors, no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Concurrency | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Mature ecosystem and libraries | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
-| People you can hire who know it | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
-| Production evidence | ❌ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+✅ yes · ⚠️ partly · 🔜 designed, not built · ❌ no
 
-**Read the bottom four rows first.** Every one of these is ahead of Strata on
-the things that decide whether a team ships, and low-code platforms in
-particular do consolidate all the tiers, today, with support contracts behind
-them. The difference there is what the artefact *is*: their application lives
-as a model inside a vendor's platform, which shapes what version control, code
-review and an AI writing code can do with it. Strata is plain text, compiled
-to C, and yours.
+| | Strata | Java | C# / .NET | Python | Low-code<br>(OutSystems,<br>Mendix) | Full-stack DSL<br>(Wasp) | LiveView<br>(Phoenix) | Typed queries<br>(jOOQ, Prisma) |
+|---|---|---|---|---|---|---|---|---|
+| Queries checked against the real schema at build time | ✅ | ⚠️ | ⚠️ | ❌ | ✅ | ✅ | ⚠️ | ✅ |
+| Screen fields checked against the **database** schema | ✅ | ❌ | ❌ | ❌ | ✅ | ⚠️ | ❌ | ❌ |
+| One compiler over database, rules and screens | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| An insert that omits a column fails the build | ✅ | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
+| Mobile from the same source | ⚠️ | ⚠️ | ✅ | ❌ | ✅ | ❌ | ⚠️ | ❌ |
+| The application is text you own, not a vendor's model | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Diagnostics built for a machine to repair | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Repairs its own errors with no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Runs its repair loop on a laptop CPU, source never leaving it | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Single native binary, no runtime | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency | 🔜 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
+| Package registry | 🔜 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-The ⚠️ marks are worth reading literally. Strata's mobile tier compiles
-against its contract and has **never run on a physical handset**. Wasp
-generates React, Node and an ORM, so the seam is checked in parts rather than
-by one compiler. Ecto and EF Core check against your *model*; the model
-against the database is a migration you hope somebody ran — which is the gap
-the second row is about.
+**And the row that is not in the table.** Java, C#, Python, the low-code
+platforms and Phoenix all have mature ecosystems, libraries for everything,
+developers you can hire tomorrow, and years of production evidence. Strata has
+none of that, and none of it is something code can deliver — it arrives with
+time and users or it does not arrive. For almost any project you would start
+today, one of those is the right answer.
+
+**The ⚠️ marks mean what they say.** Strata's mobile tier compiles against its
+contract and has **never run on a physical handset**. jOOQ generates typed
+code from a real schema and JPQL strings are not checked; EF Core checks LINQ
+against your *model*, and the model against the database is a migration
+somebody ran — which is what the second row is about. Wasp generates React,
+Node and an ORM, so the seam is checked in parts rather than by one compiler.
+
+**The 🔜 marks are design work with nothing built**, which is a promise rather
+than a fact, and worth treating as one.
 
 **The narrow claim**, stated so it can be checked: one type system spanning
 the database schema, the business rules and the screen fields, with
-diagnostics a machine can act on, in an artefact nobody owns but you. That row
-and the two below it are the whole argument. The rest of the table is the
-price.
+diagnostics a machine can act on, in an artefact nobody owns but you. Those
+rows are the argument. The rest of the table is the price.
 
 ## Licence and ownership
 
