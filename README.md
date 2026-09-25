@@ -247,6 +247,56 @@ instead of a paragraph of English.
 Whether that one axis is worth giving up everything in the first four rows is
 a real question, and for most teams today the answer is no.
 
+## Others who consolidate the tiers
+
+The table above compares Strata to the stacks most teams use. The fairer
+question is how it differs from the things that set out to do the same thing
+Strata does — put the tiers in one place. Several have, and some are far more
+mature. Descriptions here are of approach rather than feature lists, which
+move.
+
+**Low-code platforms — OutSystems, Mendix, and their kin.** The closest
+commercial answer, and the one a CIO will think of first. They genuinely do
+consolidate data, logic and screens into one model-driven environment, they
+are enterprise-proven, and they have support contracts. The differences are
+about what the artefact *is*: the application lives as a proprietary model in
+a vendor's platform rather than as text you own, which shapes what version
+control, code review and an AI writing code can do with it. Strata is plain
+text, compiled to C, and yours. Theirs works today at a scale Strata does not
+approach.
+
+**Full-stack DSLs — Wasp and similar.** Closest in spirit: declare the
+application once and generate the stack from it. The generated pieces are
+still React, Node and an ORM underneath, so a developer ends up working in
+those languages and the checking across the seam is partial. Strata does not
+generate a stack; it compiles the tiers itself, which is why a rename can fail
+in a query and a screen in one build.
+
+**One language across tiers — Phoenix LiveView, Rails, Blazor, .NET MAUI.**
+Mature, proven, and with real ecosystems and real concurrency — Elixir's
+especially, which Strata has no answer to at all. What they share is that the
+database remains a separate contract: your code is checked against your model,
+and the model against the schema is a migration somebody ran. That gap is the
+one Strata closes, and it is a narrow claim rather than a broad one.
+
+**Typed database access — jOOQ, sqlx, Prisma, Drizzle.** These do check
+queries against a real schema at build time, and do it well. They stop at the
+query. Nothing follows the column on to the screen.
+
+**Full-stack platforms built for AI — Darklang and others.** The same bet:
+that the tooling should be built for machines writing code. Worth watching,
+and the approaches differ in where the checking lives.
+
+**What is actually different here**, stated narrowly so it can be checked: one
+type system spanning the database schema, the business rules and the screen
+fields, with diagnostics carrying a code, a class and a remediation so a
+machine can act on them — in an artefact that is text, compiled, and not
+owned by a vendor.
+
+**What every one of them has that Strata does not**: users, libraries,
+employable experience, support, and years of production evidence. That is not
+a small gap and no amount of compiler design closes it.
+
 ## Licence and ownership
 
 Strata is an independent project by Prabath Kumar, licensed **Apache-2.0** —
@@ -843,6 +893,32 @@ python3 ai_self_repair.py myfile.sta --backend local
 
     STRATA_REPAIR_URL    default http://localhost:11434
     STRATA_REPAIR_MODEL  default qwen2.5-coder:7b
+
+Any runner that answers `/v1/chat/completions` works — Ollama, LM Studio,
+llama.cpp's server, vLLM — so Llama, Qwen, Mistral or whatever you already
+have is a matter of naming it in `STRATA_REPAIR_MODEL`.
+
+### It does not need a GPU
+
+A 7B model on an Apple silicon GPU answers a repair in seconds. The same model
+on CPU alone answers in tens of seconds, which is slower than a compile and
+faster than a developer noticing. For the errors this loop handles, a much
+smaller model is usually enough:
+
+```bash
+ollama pull qwen2.5-coder:1.5b     # about 1 GB
+STRATA_REPAIR_MODEL=qwen2.5-coder:1.5b strata repair src/main.sta
+```
+
+The reason a small model on a laptop CPU is a reasonable thing to rely on is
+that it is not the part doing the thinking. The compiler has already decided
+what is wrong, which line it is on and what the valid alternatives are; the
+model applies a stated fix to eight lines of context; and the compiler rejects
+the patch if it does not build. Narrow job, checked answer.
+
+And `--backend rules` handles the common shapes with no model at all, which is
+the cheapest inference there is. Reach for a model when the rules cannot help,
+not before.
 
 The source never leaves the machine, which for most enterprises decides
 whether an AI repair loop is allowed rather than merely what it costs. Try
