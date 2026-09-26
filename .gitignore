@@ -39,3 +39,8 @@ editor/vscode-strata/node_modules/
 .strata/
 .DS_Store
 /main
+
+# Xcode writes per-developer state into the project bundle.
+xcuserdata/
+*.xcuserstate
+DerivedData/
