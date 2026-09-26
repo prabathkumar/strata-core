@@ -138,6 +138,11 @@ wrong and no way to know. Here the seam is a type error.
 - **Diagnostics a machine can act on.** Every error has a code, a
   classification, a line, the valid alternatives and a remediation strategy,
   and `--json` hands it over in that shape.
+- **A value of the wrong type is an error, not a conversion.** A float written
+  into an `int` column, or a column compared against the wrong type, stops the
+  build with `E010`. Nothing is quietly truncated and no query is left that
+  can never match — the two ways a generated program produces a confident
+  wrong answer.
 - **It fixes its own mistakes.** `strata repair` takes the diagnostic and
   patches the file. `--backend rules` is deterministic and involves no model
   at all; `--backend local` talks to a model on your own machine, so the

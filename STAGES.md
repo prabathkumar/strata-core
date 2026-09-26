@@ -32,8 +32,8 @@ never counted as closed.
 
 | # | Stage | State | Proven by |
 |---|---|---|---|
-| 1 | Write — the language surface | closed | `conformance.py` 182/182, `doc_examples.py`, `stdlib_compiles.py` |
-| 2 | Check — E001–E009, the cross-tier contract | closed | `typecheck_diff.py`, 101 files identical to the oracle; `first_hour.py` holds `strata check` to what `strata build` accepts |
+| 1 | Write — the language surface | closed | `conformance.py` 210/210, `doc_examples.py`, `stdlib_compiles.py` |
+| 2 | Check — E000–E011, the cross-tier contract | closed | `typecheck_diff.py`, 133 files identical to the oracle; `json_diag_diff.py` 21/21; `first_hour.py` holds `strata check` to what `strata build` accepts |
 | 3 | Repair — diagnostics to a patch | closed | `self_repair.py` — 48 checks gated in CI on the deterministic backend, plus 4 on the Claude backend where the CLI is usable |
 | 4 | Format — one canonical form | closed | `strata fmt --check` in CI, `fmt.py` |
 | 5 | Build — C, self-hosted, reproducible | closed | four differentials byte-identical, `fixpoint.py` |
@@ -239,7 +239,41 @@ as an oracle to compare against.
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
+14. Function calls are not type-checked. Arity, argument types and the return
+   type of a call inside a `layout` are all left to the C compiler, so
+   `str_concat("a")` passes `strata check` and then fails the build in
+   generated C. This is the last family of mistakes that reaches the C
+   compiler without a Strata diagnostic, and it is being closed next.
+
 ### Corrected rather than deleted
+
+Two blind pilots were run against a fresh public clone on 26 September: a
+developer seeing the language for the first time, and a manager testing the
+claims rather than the tutorial. Both found the same two holes, and both were
+of the kind this project exists to prevent — a wrong answer with a clean
+build and exit 0.
+
+The type checker walked only the first element of a bracketed list, so a bad
+column inside a call anywhere after it passed `strata check` and came back as
+a C compiler error naming generated code. The demo's own phone screen used
+that shape three times, which means the cross-tier rename proof had been
+reporting two of its three hits and calling it complete.
+
+Column types were not checked at all. A float written into an `int` column
+was truncated silently, and a column compared against the wrong type built a
+query that could never match — clean check, clean build, exit 0 in both
+cases. Both are now `E010`.
+
+Undefined names were reported as `E001` and `E002`, whose remediation
+strategies describe entirely different errors. The repair loop hands that
+strategy to a model, so the taxonomy was actively steering repairs at the
+wrong thing. They are now `E011`, and `E000` — emitted for parse errors since
+the beginning — is in the taxonomy at last.
+
+`json_diag_diff.py` built its binary only when the file was absent, so from
+its first run onward it compared every later change against that first build.
+It had been passing without looking. It now rebuilds whenever a compiler
+source is newer.
 
 This list said "the Kubernetes manifest under `deploy/` has never been applied
 to anything." There is no Kubernetes manifest. It was removed by the claims
