@@ -53,6 +53,45 @@ def driver_command(path, out, target, test_mode):
     return r.stdout.strip()
 
 
+def a_pinned_compiler_may_carry_flags():
+    """STRATA_CC is taken as written by both compilers, flags and all.
+
+    Retargeting the phone object at the iOS Simulator is
+
+        STRATA_CC="clang -target arm64-apple-ios26.0-simulator -isysroot ..."
+
+    The driver handed that to a shell and it worked. The bootstrap ran `which`
+    over the whole string, decided it was not a command name and stopped with
+    "No C compiler found" -- so the same environment variable meant different
+    things depending on whether the self-hosted driver happened to be built for
+    your machine. That is the divergence these tests exist for, and nothing was
+    checking how the two read the environment rather than the source.
+    """
+    import tempfile
+    problems = []
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "pinned.sta")
+        with open(src, "w") as f:
+            f.write("import io from std;\nint helper() { return 7; }\n")
+        env = dict(os.environ, STRATA_CC="cc -DSTRATA_PINNED_FLAG=1")
+
+        b = subprocess.run([sys.executable,
+                            os.path.join(ROOT, "bootstrap", "stage0.py"),
+                            src, "-o", os.path.join(tmp, "boot")],
+                           capture_output=True, text=True, cwd=ROOT, env=env)
+        if b.returncode != 0:
+            problems.append("the bootstrap rejected a STRATA_CC carrying flags: "
+                            + (b.stderr or b.stdout).strip()[-140:])
+
+        d = subprocess.run([os.path.join(ROOT, "bin", "strata"), "build", src,
+                            "-o", os.path.join(tmp, "drv")],
+                           capture_output=True, text=True, cwd=ROOT, env=env)
+        if d.returncode != 0:
+            problems.append("the driver rejected a STRATA_CC carrying flags: "
+                            + (d.stderr or d.stdout).strip()[-140:])
+    return problems
+
+
 def main():
     if not os.path.isfile(CLI):
         print(f"  building {os.path.relpath(CLI, ROOT)}")
@@ -96,8 +135,14 @@ def main():
     if len(divergent) > 10:
         print(f"  ... and {len(divergent) - 10} more")
     print(f"  {same}/{checked} agree, {len(divergent)} divergent, {skipped} skipped")
+
+    pinned = a_pinned_compiler_may_carry_flags()
+    for p in pinned:
+        print(f"  {p}")
+    print(f"  a pinned compiler may carry flags: "
+          f"{'yes' if not pinned else 'NO'}")
     print("=" * 62)
-    if divergent:
+    if divergent or pinned:
         print("  The two compilers disagree about how to invoke cc. FAIL")
         return 1
     print("  Both compilers invoke the C compiler identically. OK")

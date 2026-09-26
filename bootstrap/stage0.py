@@ -3,7 +3,7 @@
 # Compiles .sta source files to C via Python bootstrap
 # Once compiler/compiler.sta compiles itself, this file is retired.
 from __future__ import annotations
-import sys, os, re, json, platform, subprocess
+import sys, os, re, json, platform, shlex, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from compiler.lexer import Lexer, Token, TT, LexError, tokenise_file
@@ -2611,11 +2611,30 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
         print(f"  C source: {c_path}")
     # STRATA_CC pins the backend compiler, so a build can be reproduced against
     # a specific toolchain rather than whichever one happens to be installed.
+    # STRATA_CC pins the backend compiler, and is taken as written because it
+    # carries flags as often as it carries a name: retargeting the phone
+    # object at the iOS Simulator is
+    #
+    #   STRATA_CC="clang -target arm64-apple-ios26.0-simulator -isysroot ..."
+    #
+    # This used to run `which` over the whole string, which is not a command
+    # name, so a flag-carrying value was rejected with "No C compiler found."
+    # compiler/build.sta has always taken a forced value as-is, so the two
+    # compilers disagreed about the same environment variable -- and which
+    # answer you got depended on whether the self-hosted driver happened to be
+    # built for your machine. The bootstrap now does what the driver does.
     forced = os.environ.get("STRATA_CC")
-    candidates = (forced,) if forced else ("clang", "gcc", "cc")
-    cc = next((c for c in candidates
-               if subprocess.run(["which", c], capture_output=True).returncode == 0), None)
+    if forced:
+        cc = forced
+    else:
+        cc = next((c for c in ("clang", "gcc", "cc")
+                   if subprocess.run(["which", c],
+                                     capture_output=True).returncode == 0), None)
     if not cc: print("[STRATA ERROR] No C compiler found.", file=sys.stderr); sys.exit(1)
+    # The driver hands its command to a shell, which splits words for it. This
+    # builds an argument list, so it has to split them itself -- otherwise a
+    # pinned compiler carrying flags is looked up as one long filename.
+    cc_argv = shlex.split(cc)
     # A unit with no main() is a library, not a program: link it as an object
     # file rather than asking the linker for an entry point it cannot have.
     # In test mode the generated entry point is main(), so the unit is a
@@ -2658,16 +2677,16 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
         # Debian keeps libpq-fe.h in a subdirectory of the include dir.
         portability = portability + ["-I/usr/include/postgresql"]
     if target == "wasm":
-        flags = ([cc,"-Oz","--target=wasm32","-nostdlib",
+        flags = (cc_argv + ["-Oz","--target=wasm32","-nostdlib",
                   "-Wl,--no-entry","-Wl,--strip-all",
                   "-Wl,--export-dynamic","-Wl,--allow-undefined"] + portability +
                  ["-o",output_path,c_path])
     elif is_library:
         if not output_path.endswith(".o"):
             output_path += ".o"
-        flags = [cc,"-O2","-c"] + portability + ["-o",output_path,c_path]
+        flags = cc_argv + ["-O2","-c"] + portability + ["-o",output_path,c_path]
     else:
-        flags = [cc,"-O2"] + portability + ["-o",output_path,c_path,"-lm"] + link_flags
+        flags = cc_argv + ["-O2"] + portability + ["-o",output_path,c_path,"-lm"] + link_flags
     if verbose: print(f"  CC: {' '.join(flags)}")
     r = subprocess.run(flags, capture_output=True, text=True)
     if r.returncode != 0:
