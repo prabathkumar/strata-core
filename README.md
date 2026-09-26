@@ -1009,6 +1009,12 @@ The prompt stops growing, which matters most locally: Ollama's default context
 is 4,096 tokens, so sending whole files meant a real program was silently
 truncated and the model was blamed for being shown half a program.
 
+Measured against a 7B on an Apple M5 Pro, every repair in the benchmark sent
+between 274 and 379 tokens and got back between 10 and 22 — a corrected line,
+not a rewritten file — in 0.5 to 0.7 seconds a call. Under a tenth of the
+context, which is the headroom that makes a small model on a laptop a
+reasonable thing to rely on rather than a demo.
+
 ## 4. Toolchain
 
 ### Installing it
