@@ -137,9 +137,14 @@ an error. Check it, act, clear it:
 load Ledger from "ledger.tsv";
 if (had_error() == 1) {
     print(last_error());
+    clear_error();
     return 1;
 }
 ```
+
+`clear_error()` is what says you have dealt with it. Leave it out and the
+program still exits 65 at the end, reporting an error nobody checked — even
+though you just did.
 
 A program that reaches its exit with an error nobody checked prints which one
 and exits 65. Your own code reports failure with `fail("...")`. Up to sixteen

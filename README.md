@@ -41,8 +41,11 @@ softening it, and is worth reading before you decide anything.
 ```bash
 git clone https://github.com/prabathkumar/strata-core
 cd strata-core && bash tools/install.sh
+export PATH="$HOME/.local/bin:$PATH"      # the installer prints this line too
 strata new myapp && cd myapp && strata run
 ```
+
+The `export` is needed once per shell, until you add it to your shell profile.
 
 ## Why this is different
 

@@ -42,7 +42,7 @@ usage() {
     echo "  strata run   <file.sta>"
     echo "  strata new   <project_name>"
     echo "  strata test  [dir]"
-    echo "  strata repair <file.sta> | --project <dir>   [--backend rules|claude|llm]"
+    echo "  strata repair <file.sta> | --project <dir>   [--backend rules|local|claude|llm]"
     echo "  strata fmt   <file.sta>... [--check]   canonical formatting"
     echo "  strata doc   [dir]            an architecture document for a project"
     echo "  strata version"
@@ -599,5 +599,6 @@ case "$CMD" in
     fmt)     cmd_fmt   "$@" ;;
     version) cmd_version ;;
     ""|help) usage ;;
+    --help|-h|help) usage; exit 0 ;;
     *) echo "Unknown: $CMD"; usage; exit 1 ;;
 esac

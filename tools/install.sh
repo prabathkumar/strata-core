@@ -74,7 +74,10 @@ export STRATA_PYTHON="$PY3"
 # Read after the prerequisite checks above, not before: a machine missing a
 # compiler should be told that, and an earlier version of this script failed
 # on the version line first and reported the wrong problem.
-VERSION="$(sed -n 's/^.*Strata toolchain \([0-9][^"]*\)".*$/\1/p;/Strata toolchain/q' "$SRC/bin/strata")"
+# The version lives in the `usage` banner. The old pattern also quit at the
+# file's own header comment, which mentions "Strata toolchain" two lines in,
+# so it never reached the banner and every install announced "unknown".
+VERSION="$(sed -n 's/^ *echo "Strata toolchain \([0-9A-Za-z.-]*\).*$/\1/p' "$SRC/bin/strata" | head -1)"
 [ -n "$VERSION" ] || VERSION="unknown"
 
 echo "installing Strata $VERSION"
