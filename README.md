@@ -94,6 +94,22 @@ them together.
 | **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
 | **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on the iOS Simulator** — Swift calls the compiler's own object through a bridging header, with no glue layer. Never run on a physical handset; the Android side has never been compiled. |
 
+#### The web tier, running
+
+**[prabathkumar.github.io/strata-core](https://prabathkumar.github.io/strata-core/)**
+
+A live site, on a public URL. Nothing about it is hand-written HTML: GitHub
+builds the Strata compiler from source on a clean machine, the compiler renders
+the pages from `layout` blocks, and the result is published. There is no
+template engine, no framework and no JavaScript on the page.
+
+<img src="docs/images/demo-site.png" width="720" alt="The Selasih Mobile demo site, rendered by the Strata compiler" />
+
+The build also runs the proof: it renames one column in the `database` block
+and asks for a build. Six failures come back at once — from the web page, from
+the phone screen and from the data — and nothing deploys. If that step ever
+stops failing, the build goes red.
+
 #### The mobile tier, running
 
 The order list below is not a mock-up and not a web view. The rows come from

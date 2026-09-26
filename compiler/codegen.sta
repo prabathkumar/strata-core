@@ -3096,6 +3096,10 @@ str css_for(Gen &g, Node el) {
         sb_append(&sb, "display:flex;flex-direction:column"); first = 0;
     }
     if (str_eq(el.s1, "grid") == 1) { sb_append(&sb, "display:grid"); first = 0; }
+    // A spacer asks for the leftover room. Without flex:1 the browser gives
+    // an empty div zero width and the row packs together, which is what the
+    // phone renderer would never do.
+    if (str_eq(el.s1, "spacer") == 1) { sb_append(&sb, "flex:1"); first = 0; }
     NodeVec props = nv_at(el.v1);
     int n = props.len;
     for (int i = 0; i < n; i = i + 1) {

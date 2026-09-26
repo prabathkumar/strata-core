@@ -1003,6 +1003,10 @@ int main(int argc, char** argv) {
         if el.tag == "row":    parts.append("display:flex;flex-direction:row;align-items:center")
         if el.tag == "column": parts.append("display:flex;flex-direction:column")
         if el.tag == "grid":   parts.append("display:grid")
+        # A spacer asks for the leftover room. Without flex:1 the browser
+        # gives an empty div zero width and the row packs together, which
+        # is what the phone renderer would never do.
+        if el.tag == "spacer": parts.append("flex:1")
         for p in el.props:
             spec = self.CSS_PROPS.get(p.name)
             if spec is None:
