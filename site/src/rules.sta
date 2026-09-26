@@ -1,0 +1,62 @@
+// The business tier. One place where what the company charges is decided, and
+// it is checked against the same schema the screens are.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import schema from app;
+
+const float OVERAGE_PER_GB = 10.00;
+
+// What a subscriber has gone over their allowance, in GB. Never negative.
+float over_quota(float used, float quota) {
+    if (used <= quota) { return 0.0; }
+    return used - quota;
+}
+
+// The charge for going over. Rename `monthly_quota_gb` in the schema and this
+// function stops compiling, which is the point.
+float overage_for(int plan_id, float used) {
+    list[Plan] found = Plan <- [id == plan_id];
+    for p in found {
+        return over_quota(used, p.monthly_quota_gb) * OVERAGE_PER_GB;
+    }
+    return 0.0;
+}
+
+float plan_price(int plan_id) {
+    list[Plan] found = Plan <- [id == plan_id];
+    for p in found { return p.monthly_price; }
+    return 0.0;
+}
+
+str plan_name(int plan_id) {
+    list[Plan] found = Plan <- [id == plan_id];
+    for p in found { return p.name; }
+    return "—";
+}
+
+// How many tenths of the allowance are used, 0..10. Counted rather than cast,
+// because Strata has no float-to-int cast and a loop says what is meant.
+int tenths_used(float used, float quota) {
+    if (quota <= 0.0) { return 0; }
+    float step = quota / 10.0;
+    float mark = step;
+    int n = 0;
+    for (int i = 1; i <= 10; i = i + 1) {
+        if (used >= mark) { n = i; }
+        mark = mark + step;
+    }
+    return n;
+}
+
+// A quota bar, as text, because a layout has no graphics: "████░░░░░░".
+str usage_bar(float used, float quota) {
+    int filled = tenths_used(used, quota);
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < 10; i = i + 1) {
+        if (i < filled) { sb_append(&sb, "█"); }
+        if (i >= filled) { sb_append(&sb, "░"); }
+    }
+    return sb_to_str(&sb);
+}

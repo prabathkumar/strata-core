@@ -45,9 +45,25 @@ jobs:
         mkdir -p public
         strata build
         ./build/site
-        test -s public/orders.html
-        test -s public/regions.html
+        test -s public/plans.html
+        test -s public/account.html
+        test -s public/bill.html
         test -s public/index.html
+
+    # The demo's whole claim is that one rename breaks every tier at once. If
+    # that stopped being true the site would still deploy and still look fine,
+    # which is the failure worth catching.
+    - name: One rename breaks the web page and the phone screen
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        cd site
+        cp src/schema.sta /tmp/schema.bak
+        sed -i 's/float used_gb;/float data_used_gb;/' src/schema.sta
+        out="$(strata build 2>&1 || true)"
+        cp /tmp/schema.bak src/schema.sta
+        echo "$out" | grep -q "views.sta" || { echo "::error::the web page did not fail"; exit 1; }
+        echo "$out" | grep -q "phone.sta" || { echo "::error::the phone screen did not fail"; exit 1; }
+        echo "both tiers failed on one rename, as claimed"
 
     - uses: actions/configure-pages@v5
     - uses: actions/upload-pages-artifact@v3

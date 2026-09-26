@@ -1,34 +1,38 @@
-// Builds the public demo: real rows, real queries, real screens, written out
-// as HTML files a static host can serve.
-//
-// Nothing here is a mock-up. The pages under public/ are produced by the
-// Strata compiler from the `layout` blocks in src/views.sta, checked against
-// the `database` blocks in src/schema.sta on every build.
+// Builds the demo: three web pages and one phone screen, from one schema.
 
 import io     from std;
 import str    from std;
 import mem    from std;
+import ui     from std;
 import schema from app;
+import rules  from app;
 import views  from app;
+import phone  from app;
 
 int seed() {
-    Order <- [id = 1, customer = "Acme Bhd",      region = "apac", amount = 1250.50, status = "OPEN"];
-    Order <- [id = 2, customer = "Globex",        region = "emea", amount =  340.00, status = "OPEN"];
-    Order <- [id = 3, customer = "Initech",       region = "amer", amount =  980.75, status = "CLOSED"];
-    Order <- [id = 4, customer = "Kestrel Ltd",   region = "apac", amount = 4820.00, status = "OPEN"];
-    Order <- [id = 5, customer = "Umbrella Corp", region = "emea", amount =   75.25, status = "OPEN"];
-    Order <- [id = 6, customer = "Stark Ind",     region = "apac", amount = 9999.99, status = "OPEN"];
+    Plan <- [id = 1, name = "Lite 30",  monthly_price =  35.00, monthly_quota_gb =  30.0, speed_mbps =  30, audience = "light use"];
+    Plan <- [id = 2, name = "Core 60",  monthly_price =  59.00, monthly_quota_gb =  60.0, speed_mbps =  60, audience = "most people"];
+    Plan <- [id = 3, name = "Max 120",  monthly_price =  89.00, monthly_quota_gb = 120.0, speed_mbps = 100, audience = "heavy use"];
+    Plan <- [id = 4, name = "Unlimited", monthly_price = 129.00, monthly_quota_gb = 500.0, speed_mbps = 300, audience = "a household"];
 
-    Region <- [id = 1, name = "APAC", booked = 16070.49, open_orders = 3];
-    Region <- [id = 2, name = "EMEA", booked =   415.25, open_orders = 2];
-    Region <- [id = 3, name = "AMER", booked =   980.75, open_orders = 0];
+    Subscriber <- [id = 1, msisdn = "011-2xx xxxx", full_name = "Aisyah Rahman",
+    plan_id = 2, used_gb = 71.4, state = "ACTIVE"];
+
+    Invoice <- [id = 1, subscriber_id = 1, period = "September 2026",
+    plan_charge = 59.00, overage_charge = 114.00, status = "DUE"];
     return 1;
 }
 
 int main() {
     seed();
-    render OrdersBoard  to "public/orders.html";
-    render RegionsBoard to "public/regions.html";
-    print("rendered public/orders.html and public/regions.html");
+
+    render PlansPage   to "public/plans.html";
+    render AccountPage to "public/account.html";
+    render BillPage    to "public/bill.html";
+
+    // The same rows, drawn for a phone rather than a browser.
+    int items = draw_account();
+    print(str_cat(["rendered 3 pages; the phone screen holds ",
+    str(items), " things to draw"]));
     return 0;
 }

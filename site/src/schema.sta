@@ -1,18 +1,34 @@
-// The data tier for the public demo. One declaration; every screen below is
-// checked against it, and renaming a column here fails the build in the page
-// that rendered it rather than in a browser.
+// The data tier for the demo: a mobile network operator.
+//
+// Declared once. The web pages in src/views.sta and the phone screen in
+// src/phone.sta are both checked against these columns at build time, so
+// renaming `monthly_quota_gb` below fails the build in the plan comparison,
+// in the usage calculation and on the phone screen — not in a browser and not
+// in a customer's hand.
 
-database Order {
-    int   id;
-    str   customer;
-    str   region;
-    float amount;
-    str   status;
-}
-
-database Region {
+database Plan {
     int   id;
     str   name;
-    float booked;
-    int   open_orders;
+    float monthly_price;
+    float monthly_quota_gb;
+    int   speed_mbps;
+    str   audience;
+}
+
+database Subscriber {
+    int   id;
+    str   msisdn;
+    str   full_name;
+    int   plan_id;
+    float used_gb;
+    str   state;
+}
+
+database Invoice {
+    int   id;
+    int   subscriber_id;
+    str   period;
+    float plan_charge;
+    float overage_charge;
+    str   status;
 }

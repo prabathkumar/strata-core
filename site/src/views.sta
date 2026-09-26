@@ -1,69 +1,131 @@
-// The screens. Every field below resolves to a column in src/schema.sta at
-// build time -- rename one there and this file fails to compile, which is the
-// whole argument this site exists to demonstrate.
+// Three screens. Every field below resolves to a column in src/schema.sta at
+// build time, and every number comes from src/rules.sta.
 
 import io     from std;
 import str    from std;
 import mem    from std;
 import schema from app;
+import rules  from app;
 
-layout OrdersBoard() {
-    window "Orders — live from the schema" [width = 980, height = 720] {
+layout PlansPage() {
+    window "Selasih Mobile — Plans" [width = 960, height = 760] {
 
-        row [background = "#0b1020", padding_y = 18, padding_x = 26] {
-            text "ORDERS" [color = "#7dd3fc", weight = "bold", size = 18];
+        row [background = "#10233f", padding_y = 20, padding_x = 28] {
+            text "SELASIH MOBILE" [color = "#7fd4ff", weight = "bold", size = 19];
             spacer;
-            text "rendered by the Strata compiler" [color = "#64748b", size = 13];
+            text "Plans" [color = "#c7d6e8", size = 14];
         }
 
-        column [padding = 26, background = "#f8fafc"] {
+        column [padding = 28, background = "#f7f9fc"] {
+            text "Choose a plan" [color = "#10233f", weight = "bold", size = 22];
+            text "Every figure on this page is a column in the database block." [color = "#5b6b80", size = 13];
 
-            text "Every row below came from a `database Order` block." [color = "#334155", size = 14];
+            list[Plan] all = Plan <- [id > 0];
 
-            // Checked against the schema: a typo here is E004 at build time.
-            list[Order] open_orders = Order <- [status == "OPEN"];
-
-            column [padding_y = 14] {
-                for Row in open_orders {
-                    row [padding = 12, background = "#ffffff"] {
-                        text Row.customer [color = "#0f172a", weight = "bold"];
+            column [padding_y = 16] {
+                for P in all {
+                    row [padding = 14, background = "#ffffff"] {
+                        text P.name [color = "#10233f", weight = "bold", size = 16];
                         spacer;
-                        text Row.region [color = "#475569"];
+                        text str_fixed(P.monthly_quota_gb, 0) [color = "#5b6b80"];
+                        text " GB" [color = "#5b6b80"];
                         spacer;
-                        text str_fixed(Row.amount, 2) [color = "#047857", weight = "bold"];
+                        text str(P.speed_mbps) [color = "#5b6b80"];
+                        text " Mbps" [color = "#5b6b80"];
+                        spacer;
+                        text P.audience [color = "#8a97a8", size = 13];
+                        spacer;
+                        text "RM " [color = "#0a7d4b", weight = "bold"];
+                        text str_fixed(P.monthly_price, 2) [color = "#0a7d4b", weight = "bold", size = 17];
                     }
                 }
             }
 
-            row [padding_y = 10] {
-                text "open orders:" [color = "#475569"];
-                text str(count(open_orders)) [color = "#0f172a", weight = "bold"];
-                spacer;
-                text "booked:" [color = "#475569"];
-                text str_fixed(sum(open_orders.amount), 2) [color = "#047857", weight = "bold"];
+            text "Going over your allowance is charged per GB, once, in one place." [color = "#5b6b80", size = 13];
+        }
+    }
+}
+
+layout AccountPage() {
+    window "Selasih Mobile — My account" [width = 960, height = 700] {
+
+        row [background = "#10233f", padding_y = 20, padding_x = 28] {
+            text "SELASIH MOBILE" [color = "#7fd4ff", weight = "bold", size = 19];
+            spacer;
+            text "My account" [color = "#c7d6e8", size = 14];
+        }
+
+        column [padding = 28, background = "#f7f9fc"] {
+            list[Subscriber] mine = Subscriber <- [state == "ACTIVE"];
+
+            for S in mine {
+                column [padding = 16, background = "#ffffff"] {
+                    row {
+                        text S.full_name [color = "#10233f", weight = "bold", size = 18];
+                        spacer;
+                        text S.msisdn [color = "#5b6b80"];
+                    }
+                    row [padding_y = 8] {
+                        text "Plan: " [color = "#5b6b80"];
+                        text plan_name(S.plan_id) [color = "#10233f", weight = "bold"];
+                        spacer;
+                        text "RM " [color = "#5b6b80"];
+                        text str_fixed(plan_price(S.plan_id), 2) [color = "#10233f"];
+                    }
+                    row [padding_y = 6] {
+                        text usage_bar(S.used_gb, 60.0) [color = "#0a7d4b"];
+                        spacer;
+                        text str_fixed(S.used_gb, 1) [color = "#10233f", weight = "bold"];
+                        text " GB used" [color = "#5b6b80"];
+                    }
+                    row [padding_y = 6] {
+                        text "Over allowance this month: RM " [color = "#5b6b80"];
+                        text str_fixed(overage_for(S.plan_id, S.used_gb), 2) [color = "#b23a2f", weight = "bold"];
+                    }
+                }
             }
         }
     }
 }
 
-layout RegionsBoard() {
-    window "Regions" [width = 980, height = 620] {
+layout BillPage() {
+    window "Selasih Mobile — Bill" [width = 960, height = 620] {
 
-        row [background = "#0b1020", padding_y = 18, padding_x = 26] {
-            text "REGIONS" [color = "#7dd3fc", weight = "bold", size = 18];
+        row [background = "#10233f", padding_y = 20, padding_x = 28] {
+            text "SELASIH MOBILE" [color = "#7fd4ff", weight = "bold", size = 19];
             spacer;
-            text "same schema, a second screen" [color = "#64748b", size = 13];
+            text "Bill" [color = "#c7d6e8", size = 14];
         }
 
-        column [padding = 26, background = "#f8fafc"] {
-            list[Region] all = Region <- [id > 0];
-            for R in all {
-                row [padding = 12, background = "#ffffff"] {
-                    text R.name [color = "#0f172a", weight = "bold"];
-                    spacer;
-                    text str(R.open_orders) [color = "#475569"];
-                    spacer;
-                    text str_fixed(R.booked, 2) [color = "#047857", weight = "bold"];
+        column [padding = 28, background = "#f7f9fc"] {
+            list[Invoice] bills = Invoice <- [status == "DUE"];
+
+            for B in bills {
+                column [padding = 16, background = "#ffffff"] {
+                    row {
+                        text "Billing period " [color = "#5b6b80"];
+                        text B.period [color = "#10233f", weight = "bold", size = 16];
+                        spacer;
+                        text B.status [color = "#b23a2f", weight = "bold"];
+                    }
+                    row [padding_y = 6] {
+                        text "Plan charge" [color = "#5b6b80"];
+                        spacer;
+                        text "RM " [color = "#10233f"];
+                        text str_fixed(B.plan_charge, 2) [color = "#10233f"];
+                    }
+                    row [padding_y = 6] {
+                        text "Data over allowance" [color = "#5b6b80"];
+                        spacer;
+                        text "RM " [color = "#10233f"];
+                        text str_fixed(B.overage_charge, 2) [color = "#10233f"];
+                    }
+                    row [padding_y = 10, background = "#eef3f9"] {
+                        text "Total due" [color = "#10233f", weight = "bold"];
+                        spacer;
+                        text "RM " [color = "#0a7d4b", weight = "bold"];
+                        text str_fixed(B.plan_charge + B.overage_charge, 2) [color = "#0a7d4b", weight = "bold", size = 18];
+                    }
                 }
             }
         }

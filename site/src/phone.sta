@@ -1,0 +1,53 @@
+// The same account, on a phone.
+//
+// This is the point of the whole demo: the screen below and the web page in
+// src/views.sta read the same columns of the same `database` block. Rename
+// `used_gb` in src/schema.sta and BOTH stop compiling — the web page and the
+// phone, in one build, before either reaches anybody.
+//
+// A phone shell draws this through the five-function bridge in
+// apps/orders_mobile/src/host.sta; nothing here knows what a phone is.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import ui     from std;
+import schema from app;
+import rules  from app;
+
+const int INK   = 1057087;
+const int PAPER = 16316664;
+const int WHITE = 16777215;
+const int MUTED = 6449536;
+const int GREEN =  695115;
+const int RED   = 11680303;
+
+int draw_account() {
+    ui_begin();
+    ui_rect(0, 0, 411, 64, INK);
+    ui_text(16, 22, "SELASIH MOBILE", WHITE, 2);
+
+    int y = 84;
+    list[Subscriber] mine = Subscriber <- [state == "ACTIVE"];
+    for S in mine {
+        ui_rect(12, y, 387, 150, WHITE);
+        ui_text(26, y + 16, S.full_name, INK, 2);
+        ui_text(26, y + 40, S.msisdn, MUTED, 1);
+        ui_text(26, y + 62, str_cat(["Plan: ", plan_name(S.plan_id)]), INK, 1);
+        ui_text(26, y + 84, usage_bar(S.used_gb, 60.0), GREEN, 1);
+        ui_text(26, y + 106,
+        str_cat([str_fixed(S.used_gb, 1), " GB used"]), INK, 1);
+        ui_text(26, y + 128,
+        str_cat(["Over allowance: RM ",
+        str_fixed(overage_for(S.plan_id, S.used_gb), 2)]),
+        RED, 1);
+        ui_touch(12, y, 387, 150, "open:account");
+        y = y + 166;
+    }
+
+    ui_rect(12, y, 387, 44, WHITE);
+    ui_text(26, y + 16, "View plans", INK, 1);
+    ui_touch(12, y, 387, 44, "go:plans");
+
+    return count(UIItem <- [id > 0]);
+}

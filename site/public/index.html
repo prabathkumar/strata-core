@@ -29,33 +29,50 @@
 </style>
 <div class="wrap">
 
-  <h1>The compiler is the code reviewer.</h1>
-  <p class="sub">Strata checks your database, your business rules and your
-  screens as one thing. Rename a column and the build fails in the query, the
-  total and the line of screen that showed it — before anything ships.</p>
+  <h1>One schema. A website and a phone app.</h1>
+  <p class="sub">Selasih Mobile is an invented mobile operator, built in Strata
+  to show one thing: the database, the billing rules, the web pages and the
+  phone screen are checked together, in one build.</p>
 
-  <h2>See it</h2>
-  <p>These two pages were produced by the Strata compiler from
-  <code>layout</code> blocks, using rows from a <code>database</code> block.
-  No template engine, no framework.</p>
+  <h2>The screens</h2>
+  <p>Produced by the Strata compiler from <code>layout</code> blocks, using
+  rows from a <code>database</code> block and prices from one rules file. No
+  template engine, no framework, no JavaScript.</p>
 
   <div class="demo">
-    <a href="orders.html">Orders board →</a>
-    <a href="regions.html">Regions board →</a>
+    <a href="plans.html">Plans →</a>
+    <a href="account.html">My account →</a>
+    <a href="bill.html">Bill →</a>
   </div>
 
-  <h2>Why that is unusual</h2>
-  <p>In a typical stack the compiler checks your code against your <em>model</em>,
-  and whether the model matches the <em>database</em> is a migration somebody
-  hopefully ran. Strata closes that gap: schema, rules and screens are one type
-  system, so the mismatch is a build error rather than a customer's problem.</p>
+  <h2>Now rename one column</h2>
+  <p><code>used_gb</code> lives in the <code>Subscriber</code> table. Rename it
+  and ask for a build:</p>
 
-<pre>database Order { int id; str customer; float amount; str status; }
+<pre>E004 src/views.sta:76  Field 'used_gb' not in 'Subscriber'   <span style="color:#7dd3fc">the web page</span>
+E004 src/views.sta:78  Field 'used_gb' not in 'Subscriber'
+E004 src/views.sta:83  Field 'used_gb' not in 'Subscriber'
+E004 src/phone.sta:37  Field 'used_gb' not in 'Subscriber'   <span style="color:#7dd3fc">the phone screen</span>
+E004 src/phone.sta:39  Field 'used_gb' not in 'Subscriber'
+E009 src/main.sta:18   Insert omits column 'data_used_gb'    <span style="color:#7dd3fc">the data</span></pre>
 
-layout OrdersBoard() {
-    list[Order] open = Order &lt;- [status == "OPEN"];
-    for Row in open { text Row.customer; }   // rename `customer` → this fails
+  <p>Six failures, one build, nothing deployed. In a normal stack that rename
+  compiles cleanly and the account page shows a blank where the customer's
+  usage should be — found by a customer, on a Saturday.</p>
+
+  <h2>Where the money is decided</h2>
+  <p>Once, in one file, checked against the same schema:</p>
+
+<pre>float overage_for(int plan_id, float used) {
+    list[Plan] found = Plan &lt;- [id == plan_id];
+    for p in found {
+        return over_quota(used, p.monthly_quota_gb) * OVERAGE_PER_GB;
+    }
+    return 0.0;
 }</pre>
+
+  <p>The web page and the phone screen both call it. Neither has its own copy
+  of the arithmetic, so neither can disagree with the bill.</p>
 
   <h2>Try it</h2>
 <pre>git clone https://github.com/prabathkumar/strata-core
@@ -64,14 +81,16 @@ strata new myapp &amp;&amp; cd myapp &amp;&amp; strata run</pre>
 
   <h2>What it is not</h2>
   <p class="note">Pre-release, weeks old, written by one person. No package
-  registry, no threads, no joins, and an ecosystem consisting of one
-  repository. For almost any project you would start today, C# or Java is the
-  right answer — the README says so in a comparison table that concedes every
-  row it should.</p>
+  registry, no threads, no joins, no JavaScript, and an ecosystem consisting of
+  one repository. Selasih Mobile is invented and is not a real operator. For
+  almost any project you would start today, C# or Java is the right answer —
+  the README says so in a comparison table that concedes every row it should.</p>
 
   <footer>
-    <p>This page is hand-written HTML. The two demo pages above are not — they
-    are compiler output, which is the part worth looking at.</p>
+    <p>This page is hand-written HTML. The three screens linked above are not —
+    they are compiler output, which is the part worth looking at. They are
+    rebuilt on every push, so a screen that stopped compiling would stop
+    appearing here.</p>
     <p><a href="https://github.com/prabathkumar/strata-core">Source on GitHub</a>
     · an independent project by Prabath Kumar</p>
   </footer>
