@@ -183,7 +183,7 @@ def main():
             r = run([strata, "check", broken], cwd=work)
             text = r.stdout + r.stderr
             ok("the compiler reports both mistakes",
-               "E001" in text and "E002" in text, text[-200:])
+               "E001" in text and "E011" in text, text[-200:])
 
             script = os.path.join(tmp, "parse.js")
             open(script, "w").write(
@@ -198,7 +198,7 @@ def main():
             ok("the parser runs", r.returncode == 0, r.stderr[-200:])
             got = json.loads(r.stdout) if r.returncode == 0 else []
             codes = [d["code"] for d in got]
-            ok("it found both diagnostics", codes == ["E001", "E002"],
+            ok("it found both diagnostics", codes == ["E001", "E011"],
                str(codes))
             ok("on the right lines",
                [d["line"] for d in got] == [2, 3], str(got))
