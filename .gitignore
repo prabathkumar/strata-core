@@ -38,3 +38,4 @@ editor/vscode-strata/node_modules/
 # the checkouts themselves are not.
 .strata/
 .DS_Store
+/main
