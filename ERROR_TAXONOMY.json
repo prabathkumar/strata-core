@@ -3,6 +3,12 @@
   "standard_authority": "Strata Core Architecture Board",
   "version": "1.2.0",
   "taxonomy": {
+    "E000": {
+      "classification": "Syntax Violation",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "The source could not be parsed, so nothing further about it is known. The reported position is where the parser stopped, which is at or just after the mistake.",
+      "ai_remediation_strategy": "Correct the syntax at or immediately before the reported position. Do not attempt any other repair until the file parses, because no other diagnostic is trustworthy while it does not."
+    },
     "E001": {
       "classification": "Variable Mutation Mismatch",
       "severity": "CRITICAL_HALT",
@@ -56,6 +62,18 @@
       "severity": "CRITICAL_HALT",
       "diagnostic": "An insert does not name every column of the table. The unnamed columns would be written as a zero or an empty string, in every row the statement creates, with no other sign that they were forgotten.",
       "ai_remediation_strategy": "Add the named column to the insert with a value of the column's declared type, taking it from the surrounding scope where one exists; if the column does not belong on this row, remove it from the database declaration instead."
+    },
+    "E010": {
+      "classification": "Column Type Mismatch",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "A value written into a column, or compared against one, is not of the column's declared type. Where the machine can convert it the value is silently changed \u2014 a float written into an int column loses its fraction \u2014 and where it cannot, the query simply never matches. Either way the program runs and the answer is wrong.",
+      "ai_remediation_strategy": "Convert the value to the column's declared type, or change the column's type in the database declaration if the new type is what the data actually is. Never widen the column merely to silence the error."
+    },
+    "E011": {
+      "classification": "Unresolved Symbol",
+      "severity": "CRITICAL_HALT",
+      "diagnostic": "A name was used that is not declared anywhere in scope, and is not imported. This covers both functions and variables.",
+      "ai_remediation_strategy": "Declare the name, import the module that defines it, or correct the spelling to a name that exists in scope. Prefer an existing near-match over introducing a new declaration."
     }
   }
 }

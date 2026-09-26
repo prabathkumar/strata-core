@@ -735,7 +735,9 @@ int infer(TC &tc, int node_p, int scope_p) {
                 sb_append(&sb, "Undefined identifier '");
                 sb_append(&sb, e.s1);
                 sb_append(&sb, "'");
-                emit_hint(&tc, "E001", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' before use"));
+                // E011, not E001: E001 is a mutation mismatch, and its
+                // remediation steers a repair model at the wrong thing.
+                emit_hint(&tc, "E011", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' before use"));
             }
             return 0;
         }
@@ -752,7 +754,15 @@ int infer(TC &tc, int node_p, int scope_p) {
     if (k == 47) {                                   // ListLiteral
         NodeVec els = nv_at(e.v1);
         if (els.len == 0) { return ty_ptr(ty_list(ty_new("void"))); }
-        int first = infer(&tc, node_ptr(nv_get(&els, 0)), scope_p);
+        // Every element is walked, not just the first. Walking only element
+        // zero meant a bad column inside a call in any later element passed
+        // the check and surfaced as a C compiler error naming generated
+        // code — str_cat([label, f(row.typo)]) is the everyday shape of it.
+        int first = 0;
+        for (int i = 0; i < els.len; i = i + 1) {
+            int t = infer(&tc, node_ptr(nv_get(&els, i)), scope_p);
+            if (i == 0) { first = t; }
+        }
         if (first == 0) { return 0; }
         return ty_ptr(ty_list(ty_at(first)));
     }
@@ -837,7 +847,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, hint_quoted("Declare 'database ", e.s1, "' first"));
             return 0;
         }
-        validate_query(&tc, e.c1, e.s1, e.line, e.col);
+        validate_query(&tc, e.c1, e.s1, e.line, e.col, scope_p);
         validate_query_scoped(&tc, e.c1, e.s1, e.line, e.col, scope_p);
         return ty_ptr(ty_list(ty_new(e.s1)));
     }
@@ -861,6 +871,14 @@ int is_comparison_op(str op) {
     if (str_eq(op, "&&")) { return 1; }
     if (str_eq(op, "||")) { return 1; }
     return 0;
+}
+
+// The operators that compare a column with a value. `&&` and `||` join two
+// filters rather than comparing anything, so they are not here.
+int is_query_comparison(str op) {
+    if (str_eq(op, "&&")) { return 0; }
+    if (str_eq(op, "||")) { return 0; }
+    return is_comparison_op(op);
 }
 
 int infer_binary(TC &tc, Node e, int scope_p) {
@@ -1049,7 +1067,8 @@ int infer_call(TC &tc, Node e, int scope_p) {
                         sb_append(&sb, "Undefined function '");
                         sb_append(&sb, e.s1);
                         sb_append(&sb, "'");
-                        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' or import the module that defines it"));
+                        // E011, not E002: E002 is a return-contract breach.
+                        emit_hint(&tc, "E011", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' or import the module that defines it"));
                     }
                 }
             }
@@ -1158,7 +1177,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, hint_quoted("Declare 'database ", qval.s1, "' first"));
         }
         if (qsch != 0) {
-            validate_query(&tc, qval.c1, qval.s1, st.line, st.col);
+            validate_query(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
             validate_query_scoped(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
         }
         // A query into a single record used to mean "the first row that
@@ -1297,7 +1316,8 @@ int scope_p) {
     }
 }
 
-def validate_query(TC &tc, int cond_p, str schema, int line, int col) {
+def validate_query(TC &tc, int cond_p, str schema, int line, int col,
+int scope_p) {
     if (cond_p == 0) { return; }
     Node c = node_at(cond_p);
     if (c.kind != 40) { return; }
@@ -1314,9 +1334,39 @@ def validate_query(TC &tc, int cond_p, str schema, int line, int col) {
             sb_append(&sb, "'");
             emit_hint(&tc, "E004", sb_to_str(&sb), line, col, hint_quoted("Valid columns: ", sym_names_repr(s.fields), ""));
         }
+        // A column compared against the wrong type can never match. The
+        // query still builds and still runs; it just quietly returns
+        // nothing, which is the hardest kind of bug to see.
+        int lsym = sym_find(s.fields, left.s1);
+        if (scope_p != 0 && lsym != 0 && is_query_comparison(c.s1) == 1) {
+            Sym lf = sym_at(lsym);
+            int got = infer(&tc, c.c2, scope_p);
+            if (got != 0) {
+                if (ty_compatible(lf.ty, got) == 0 && ty_compatible(got, lf.ty) == 0) {
+                    StringBuilder sb = sb_new();
+                    sb_append(&sb, "Column '");
+                    sb_append(&sb, left.s1);
+                    sb_append(&sb, "' in '");
+                    sb_append(&sb, schema);
+                    sb_append(&sb, "' is '");
+                    sb_append(&sb, ty_str(lf.ty));
+                    sb_append(&sb, "' but is compared with '");
+                    sb_append(&sb, ty_str(got));
+                    sb_append(&sb, "'");
+                    StringBuilder hb = sb_new();
+                    sb_append(&hb, "Compare '");
+                    sb_append(&hb, left.s1);
+                    sb_append(&hb, "' with a '");
+                    sb_append(&hb, ty_str(lf.ty));
+                    sb_append(&hb, "' value — this query can never match a row");
+                    emit_hint(&tc, "E010", sb_to_str(&sb), line, col,
+                    sb_to_str(&hb));
+                }
+            }
+        }
     }
-    validate_query(&tc, c.c1, schema, line, col);
-    validate_query(&tc, c.c2, schema, line, col);
+    validate_query(&tc, c.c1, schema, line, col, scope_p);
+    validate_query(&tc, c.c2, schema, line, col, scope_p);
 }
 
 // The shared rules for writing a row: the table exists, every named column
@@ -1347,7 +1397,41 @@ def check_stmt_insert(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "'");
             emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(s.fields), ""));
         }
-        infer(&tc, pair.c1, scope_p);
+        int at = infer(&tc, pair.c1, scope_p);
+        // The column's declared type is checked too. Without this a float
+        // written into an int column was truncated silently, with a clean
+        // check, a clean build and exit 0 everywhere — the quiet wrong
+        // answer this language exists to prevent.
+        int fsym = sym_find(s.fields, pair.s1);
+        if (fsym != 0 && at != 0) {
+            Sym fsy = sym_at(fsym);
+            if (ty_compatible(fsy.ty, at) == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "Column '");
+                sb_append(&sb, pair.s1);
+                sb_append(&sb, "' in '");
+                sb_append(&sb, st.s1);
+                sb_append(&sb, "' is '");
+                sb_append(&sb, ty_str(fsy.ty));
+                sb_append(&sb, "' but the value is '");
+                sb_append(&sb, ty_str(at));
+                sb_append(&sb, "'");
+                StringBuilder hb = sb_new();
+                sb_append(&hb, "Give '");
+                sb_append(&hb, pair.s1);
+                sb_append(&hb, "' a value of type '");
+                sb_append(&hb, ty_str(fsy.ty));
+                sb_append(&hb, "', or change '");
+                sb_append(&hb, pair.s1);
+                sb_append(&hb, "' in 'database ");
+                sb_append(&hb, st.s1);
+                sb_append(&hb, "' to '");
+                sb_append(&hb, ty_str(at));
+                sb_append(&hb, "'");
+                emit_hint(&tc, "E010", sb_to_str(&sb), st.line, st.col,
+                sb_to_str(&hb));
+            }
+        }
     }
     // Every column must be named — see typechecker.py for why.
     int cur = s.fields;
@@ -1493,7 +1577,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
             return;
         }
-        validate_query(&tc, st.c1, st.s1, st.line, st.col);
+        validate_query(&tc, st.c1, st.s1, st.line, st.col, scope_p);
         validate_query_scoped(&tc, st.c1, st.s1, st.line, st.col, scope_p);
         return;
     }
@@ -1567,7 +1651,7 @@ def check_report(TC &tc, Node decl) {
         emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, hint_quoted("Declare 'database ", q.s1, "' first"));
         return;
     }
-    validate_query(&tc, q.c1, q.s1, decl.line, decl.col);
+    validate_query(&tc, q.c1, q.s1, decl.line, decl.col, 0);
 
     Scp ms = scp_new(tc.globals);
     scp_define(&ms, "rows", ty_ptr(ty_list(ty_new(q.s1))));

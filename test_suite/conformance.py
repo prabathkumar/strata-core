@@ -169,7 +169,7 @@ test("e001_float_gets_str", 'int main() { float x = "bad"; return 0; }', "E001")
 test("e001_int_gets_float_ok", 'int main() { float x = 3; return 0; }')
 test("e001_valid_int", 'int main() { int x = 42; return 0; }')
 test("e001_valid_str", 'int main() { str x = "hello"; return 0; }')
-test("e001_undefined_var", 'int main() { return x; }', "E001")
+test("e011_undefined_var", 'int main() { return x; }', "E011")
 
 print("\n── E002: Return Type Mismatch ────────────────────────────────────")
 test("e002_int_returns_str", 'int add(int a, int b) { return "wrong"; }', "E002")
@@ -303,7 +303,7 @@ test("ctx_report_block_still_parses",
 # column across a result set. Nothing checked metrics, so it passed.
 test("report_metric_cannot_name_a_column",
     'database L { int id; str status; }\nreport R { title: "T", datasource: L <- [status == "X"], metrics: { int t = id; } }',
-    "E001")
+    "E011")
 
 print("\n── Database runtime ──────────────────────────────────────────────")
 compile_run("db_insert_and_query",
@@ -811,9 +811,9 @@ _builtin_lists_agree()
 
 _STD = 'import io from std;\n'
 
-check_codes("undefined_call_is_E002",
+check_codes("undefined_call_is_E011",
     _STD + 'int main() { return undefined_thing(1); }',
-    expect="E002 Undefined function 'undefined_thing'")
+    expect="E011 Undefined function 'undefined_thing'")
 
 check_codes("a_typo_names_the_typo_not_a_C_symbol",
     _STD + 'int helper() { return 1; }\nint main() { return helpr(); }',

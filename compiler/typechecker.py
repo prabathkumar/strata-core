@@ -424,7 +424,18 @@ class TypeChecker:
                     f"Column '{col}' does not exist in '{stmt.target}'",
                     stmt.line,stmt.col,
                     f"Valid columns: {sorted(fields)}")
-            self._infer_type(value,scope)
+            actual=self._infer_type(value,scope)
+            # The column's declared type is checked too. Without this a float
+            # written into an int column was truncated silently, with a clean
+            # check, a clean build and exit 0 everywhere — the quiet wrong
+            # answer this language exists to prevent.
+            if col in fields and actual is not None and not is_compatible(fields[col],actual):
+                self._error("E010",
+                    f"Column '{col}' in '{stmt.target}' is "
+                    f"'{fields[col]}' but the value is '{actual}'",
+                    stmt.line,stmt.col,
+                    f"Give '{col}' a value of type '{fields[col]}', "
+                    f"or change '{col}' in 'database {stmt.target}' to '{actual}'")
         # Every column must be named. A column added to the schema and not
         # named here would otherwise be written as a zero or an empty string,
         # silently, in every insert in the program — which is exactly the
@@ -642,7 +653,10 @@ class TypeChecker:
                 return SType("model")
 
             if t is None:
-                self._error("E001",f"Undefined identifier '{expr.name}'",
+                # E011, not E001: E001 is a mutation mismatch, and the
+                # taxonomy's remediation for it ("change the right-side
+                # literal format") steers a repair model at the wrong thing.
+                self._error("E011",f"Undefined identifier '{expr.name}'",
                     expr.line,expr.col,f"Declare '{expr.name}' before use")
             return t
         if isinstance(expr,BinaryExpr): return self._infer_binary(expr,scope)
@@ -653,7 +667,15 @@ class TypeChecker:
         if isinstance(expr,PredictExpr): return self._infer_predict(expr,scope)
         if isinstance(expr,ListLiteral):
             if not expr.elements: return SType("list",is_list=True,element_type=T_VOID)
-            et=self._infer_type(expr.elements[0],scope)
+            # Every element is walked, not just the first. Walking only
+            # elements[0] meant a bad column inside a call in any later
+            # element passed the check and surfaced as a C compiler error
+            # naming generated code — `str_cat([label, f(row.typo)])` is the
+            # everyday shape of that mistake.
+            et=None
+            for i,el in enumerate(expr.elements):
+                t=self._infer_type(el,scope)
+                if i==0: et=t
             return SType("list",is_list=True,element_type=et)
         if isinstance(expr,MemberAccess):
             ot=self._infer_type(expr.obj,scope)
@@ -749,7 +771,10 @@ class TypeChecker:
                     and expr.callee not in self.schemas
                     and expr.callee not in self.models
                     and self.global_scope.lookup(expr.callee) is None):
-                self._error("E002", f"Undefined function '{expr.callee}'",
+                # E011, not E002: E002 is a return-contract breach, whose
+                # remediation tells a model to trace return blocks — nothing
+                # to do with a name that does not exist.
+                self._error("E011", f"Undefined function '{expr.callee}'",
                     expr.line, expr.col,
                     f"Declare '{expr.callee}' or import the module that defines it")
             return None
@@ -873,6 +898,22 @@ class TypeChecker:
                 self._error("E004",
                     f"Column '{cond.left.name}' does not exist in '{schema}'",
                     line,col,f"Valid columns: {list(fields.keys())}")
+            # A column compared against the wrong type can never match. The
+            # query still builds and still runs; it just quietly returns
+            # nothing, which is the hardest kind of bug to see.
+            if (scope is not None and isinstance(cond.left,Identifier)
+                    and cond.left.name in fields
+                    and cond.op in ("==","!=","<",">","<=",">=")):
+                want=fields[cond.left.name]
+                got=self._infer_type(cond.right,scope)
+                if got is not None and not is_compatible(want,got) \
+                        and not is_compatible(got,want):
+                    self._error("E010",
+                        f"Column '{cond.left.name}' in '{schema}' is '{want}' "
+                        f"but is compared with '{got}'",
+                        line,col,
+                        f"Compare '{cond.left.name}' with a '{want}' value — "
+                        f"this query can never match a row")
             self._validate_query_cond(cond.left,schema,line,col,scope)
             self._validate_query_cond(cond.right,schema,line,col,scope)
         elif isinstance(cond,Identifier) and scope is not None:

@@ -58,8 +58,32 @@ def compare(rel, want, got):
     return problems
 
 
-def main():
+def _is_stale():
+    """True when the binary is missing or older than any compiler source.
+
+    This used to be a bare `not os.path.isfile(CLI)`, so once the binary
+    existed the test compared every later change against a build from
+    whenever the file was first made. A gate that cannot see the change it
+    guards is worse than no gate, because it reports success.
+    """
     if not os.path.isfile(CLI):
+        return True
+    built = os.path.getmtime(CLI)
+    roots = [os.path.join(ROOT, "compiler"), os.path.join(ROOT, "std"),
+             os.path.join(ROOT, "bootstrap")]
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                if f.endswith((".sta", ".py", ".json")):
+                    if os.path.getmtime(os.path.join(dirpath, f)) > built:
+                        return True
+    if os.path.getmtime(os.path.join(ROOT, "ERROR_TAXONOMY.json")) > built:
+        return True
+    return False
+
+
+def main():
+    if _is_stale():
         print(f"  building {os.path.relpath(CLI, ROOT)}")
         os.makedirs(os.path.dirname(CLI), exist_ok=True)
         b = subprocess.run(

@@ -159,7 +159,7 @@ def main():
         r = run([STRATA, "test"], app)
         out = r.stdout + r.stderr
         ok("a test that will not build says why",
-           "E002" in out and "mystery_function" in out, out[-250:])
+           "E011" in out and "mystery_function" in out, out[-250:])
         ok("and says where", "line 4" in out, out[-250:])
         os.remove(broken)
 
