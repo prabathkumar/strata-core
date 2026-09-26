@@ -1067,7 +1067,7 @@ compile_run("a_body_is_what_follows_the_headers",
 # The UI tier collects input, not just renders it.
 compile_run("a_layout_renders_a_form",
     'import io from std;\nlayout F() { window "w" { form [action = "/x", method = "post"] { field "who" [placeholder = "name"]; button "Go" [type = "submit"]; } } }\nint main() { print(render F); return 0; }',
-    '<!doctype html><meta charset="utf-8"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
 
 print("\n── A query name that is also a variable ─────────────────────────")
@@ -1094,13 +1094,13 @@ print("\n── Views take their inputs ─────────────�
 # filter as an argument.
 compile_run("a_layout_takes_parameters",
     'import io from std;\nlayout D(str region) { window "w" { text region; } }\nint main() { print(render D("apac")); return 0; }',
-    '<!doctype html><meta charset="utf-8"><title>w</title><body><span>apac</span></body>')
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><span>apac</span></body>')
 
 # A row's own id has to reach the form that acts on it, which a literal
 # attribute cannot carry.
 compile_run("an_attribute_value_can_be_computed",
     'import io from std;\ndatabase T { int id; }\nlayout D() { window "w" { list[T] r = T <- [id > 0]; for O in r { field "id" [type = "hidden", value = str(O.id)]; } } }\nint main() { T <- [id = 7]; print(render D); return 0; }',
-    '<!doctype html><meta charset="utf-8"><title>w</title><body><input name="id" type="hidden" value="7"></body>')
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><input name="id" type="hidden" value="7"></body>')
 
 print("\n── Native blocks and shared buffers ─────────────────────────────")
 

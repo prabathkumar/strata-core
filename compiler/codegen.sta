@@ -3105,6 +3105,22 @@ str css_for(Gen &g, Node el) {
     for (int i = 0; i < n; i = i + 1) {
         Node pr = nv_get(&props, i);
         str raw = raw_literal(pr.c1);
+        // A `window` gives the phone a fixed canvas. A web page has no such
+        // thing: a fixed width clips the right-hand side on any narrower
+        // screen, and a fixed height cuts off long content. So the window's
+        // size becomes a cap the page stays inside.
+        int is_window = str_eq(el.s1, "window");
+        if (is_window == 1 && str_eq(pr.s1, "height") == 1) { continue; }
+        if (is_window == 1 && str_eq(pr.s1, "width") == 1) {
+            if (str_len(raw) > 0) {
+                if (first == 0) { sb_append(&sb, ";"); }
+                sb_append(&sb, "max-width:");
+                sb_append(&sb, raw);
+                sb_append(&sb, "px;width:100%;margin:0 auto");
+                first = 0;
+            }
+            continue;
+        }
         if (str_len(raw) > 0) {
             str css = css_for_prop(pr.s1, raw);
             if (str_len(css) > 0) {
@@ -3226,7 +3242,10 @@ def gen_layout(Gen &g, Node decl) {
     sb_append(&head, ") {");
     emit_raw(&g, sb_to_str(&head));
     g.indent = 1;
-    emit_fprintf(&g, "<!doctype html><meta charset=\\\"utf-8\\\">");
+    // Without the viewport meta a phone browser renders the page at a
+    // pretend 980px and then shrinks it, so the text arrives too small to
+    // read.
+    emit_fprintf(&g, "<!doctype html><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\">");
     NodeVec body = nv_at(decl.v1);
     int n = body.len;
     g.in_layout = 1;

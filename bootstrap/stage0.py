@@ -1008,6 +1008,18 @@ int main(int argc, char** argv) {
         # is what the phone renderer would never do.
         if el.tag == "spacer": parts.append("flex:1")
         for p in el.props:
+            # A `window` gives the phone a fixed canvas. A web page has no
+            # such thing: a fixed width clips the right-hand side on any
+            # narrower screen, and a fixed height cuts off long content. So
+            # the window's size becomes a cap the page stays inside.
+            if el.tag == "window" and p.name == "height":
+                continue
+            if el.tag == "window" and p.name == "width":
+                raw = p.value.value if isinstance(
+                    p.value, (StrLiteral, IntLiteral, FloatLiteral)) else None
+                if raw is not None:
+                    parts.append(f"max-width:{raw}px;width:100%;margin:0 auto")
+                continue
             spec = self.CSS_PROPS.get(p.name)
             if spec is None:
                 continue
@@ -1151,7 +1163,13 @@ int main(int argc, char** argv) {
         for p in params:
             self.var_types[p.name] = self._c_type(p.param_type)
         self.indent = 1
-        self.emit('fprintf(_out,"<!doctype html><meta charset=\\"utf-8\\">");')
+        # Without the viewport meta a phone browser renders the page at a
+        # pretend 980px and then shrinks it, so the text arrives too small
+        # to read.
+        head = ('<!doctype html><meta charset=\\"utf-8\\">'
+                '<meta name=\\"viewport\\" '
+                'content=\\"width=device-width,initial-scale=1\\">')
+        self.emit('fprintf(_out,"' + head + '");')
         self.in_layout = True
         for st in decl.body:
             self._gen_layout_node(st)
