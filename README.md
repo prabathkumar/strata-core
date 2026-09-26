@@ -94,6 +94,20 @@ them together.
 | **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
 | **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on the iOS Simulator** — Swift calls the compiler's own object through a bridging header, with no glue layer. Never run on a physical handset; the Android side has never been compiled. |
 
+#### The mobile tier, running
+
+The order list below is not a mock-up and not a web view. The rows come from
+the same `database` block the web pages read, the same compiler emitted the
+screen, and Swift calls the resulting object file directly. It is installed on
+the phone's home screen like any other app.
+
+| Installed | Running |
+|---|---|
+| <img src="docs/images/ios-orders-home.png" width="260" alt="The Orders app on the iOS Simulator home screen" /> | <img src="docs/images/ios-orders-list.png" width="420" alt="The Orders app showing rows read from the Strata database block" /> |
+
+Taken on the iPhone 16e Simulator, iOS 18.6. It has never run on a physical
+handset, and the Android shell has never been compiled.
+
 The point is not that one language can reach four places. It is that a rename
 in the database block fails the build in the query, the aggregate and the line
 of screen that rendered it — at once, before anything deploys. Four stacks
