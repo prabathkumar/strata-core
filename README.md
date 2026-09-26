@@ -971,8 +971,17 @@ python3 test_suite/repair_bench.py --backend local   # what your model adds
 
 It runs a corpus of broken programs through a backend and reports, per
 diagnostic, whether the compiler was satisfied afterwards — not whether the
-model said something plausible. On the machine this was written on, `rules`
-repairs three of the five without a model at all.
+model said something plausible.
+
+Measured on an Apple M5 Pro: `rules` repairs three of the five in a tenth of a
+second each, with no model at all. A 7B model running locally takes the fourth
+— a misspelt function name, where the fix needs a judgement the rules cannot
+make — in one to three seconds. Neither manages the fifth, a bare name in a
+query that is also a variable in scope.
+
+That is the shape to expect: the deterministic backend does most of it for
+nothing, a small local model earns its place on the rest, and some things
+still want a person.
 
 The source never leaves the machine, which for most enterprises decides
 whether an AI repair loop is allowed rather than merely what it costs. Try

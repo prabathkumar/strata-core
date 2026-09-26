@@ -443,9 +443,24 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
         open(target, "w").write(patched)
         print("    patch applied, recompiling")
 
-    if dry_run and originals:
+    # A repair that failed puts the files back exactly as it found them.
+    #
+    # Until this, restore() ran only for a dry run, so a loop that gave up
+    # left whatever it had written on the way. That is how a model with a
+    # 4,096-token context turns a type error into a syntax error and walks
+    # away: the benchmark's E008 case came back as E000, a file that no longer
+    # parses, worse than the one the developer started with.
+    #
+    # "I could not fix this" has to mean the file is untouched. Anything else
+    # makes running the tool a gamble, and a tool nobody dares run twice is
+    # not a tool.
+    if originals:
         restore()
-        print("[Strata Repair] dry run — originals restored.")
+        if dry_run:
+            print("[Strata Repair] dry run — originals restored.")
+        else:
+            print(f"[Strata Repair] put {len(originals)} file(s) back as they "
+                  f"were; a repair that did not finish leaves nothing behind.")
     print("[Strata Repair] unresolved.")
     return 1
 

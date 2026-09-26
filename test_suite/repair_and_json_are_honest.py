@@ -103,6 +103,50 @@ def main():
         print(f"  and exits non-zero:             "
               f"{'yes' if r.returncode != 0 else 'NO'}")
 
+        # A repair that fails must put the file back exactly as it was.
+        #
+        # A model with a short context can return something that does not
+        # parse -- the benchmark's E008 case came back from a 7B as E000, a
+        # syntax error, worse than what the developer started with. The loop
+        # used to leave that on disk, so running `strata repair` was a gamble.
+        import http.server
+        import threading
+
+        class Bad(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                body = json.dumps({"choices": [{"message": {
+                    "content": "list[X] r = X <- [a == ;;; not source"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Bad)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+
+        g = os.path.join(tmp, "garbled.sta")
+        open(g, "w").write(BAD_COLUMN)
+        was = open(g).read()
+        env = dict(os.environ, STRATA_REPAIR_URL=f"http://127.0.0.1:{port}")
+        r = subprocess.run([STRATA, "repair", g, "--backend", "local"],
+                           capture_output=True, text=True, cwd=tmp, env=env)
+        srv.shutdown()
+        now = open(g).read()
+        if now != was:
+            failures.append(
+                "a failed repair left the file changed; it must put back "
+                "exactly what it found")
+        if r.returncode == 0:
+            failures.append("a failed repair exited 0")
+        print(f"  a failed repair leaves nothing behind: "
+              f"{'yes' if now == was else 'NO'}")
+
     if failures:
         for f in failures:
             print(f"  {f}")
