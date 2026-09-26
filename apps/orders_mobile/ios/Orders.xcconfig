@@ -1,0 +1,7 @@
+// Configuration for linking the Strata host object file
+
+// Link the pre-compiled Strata object file
+OTHER_LDFLAGS = $(inherited) ../build/host.o
+
+// Ensure the bridging header is found
+SWIFT_OBJC_BRIDGING_HEADER = StrataBridge.h

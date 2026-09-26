@@ -88,7 +88,7 @@ final class ScreenView: UIView {
         guard let raw = host_hit(Int64(p.x / s), Int64(p.y / s)) else { return }
         let action = String(cString: raw)
         if !action.isEmpty {
-            _ = action.withCString { host_act(UnsafeMutablePointer(mutating: $0)) }
+            _ = action.withCString { host_act($0) }
             setNeedsDisplay()
         }
     }

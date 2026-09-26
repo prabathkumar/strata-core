@@ -17,14 +17,32 @@ functions and an NDK toolchain to compile them with.
 
 From the repository root:
 
-    bin/strata build apps/orders_mobile/src/host.sta -o apps/orders_mobile/build/host
+    STRATA_CC="clang -target arm64-apple-ios26.0-simulator \
+      -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path)" \
+      bin/strata build apps/orders_mobile/src/host.sta \
+      -o apps/orders_mobile/build/host
 
 `src/host.sta` has no `main`, so the compiler emits `build/host.o` — an object
 file rather than a program. That is the file the app links.
 
-For the Simulator on Apple silicon that object is already the right
-architecture. For a real handset it is not: it has to be rebuilt for
-`arm64-apple-ios`, which the driver does not target yet.
+STRATA_CC pins the C compiler and is handed to the shell as written, so it
+carries flags as well as a name. It is what retargets the object at the
+Simulator, which runs iOS on an arm64 Mac and will not link an object built
+for macOS. Building it without that line produces a macOS object and Xcode
+fails at the link with "building for iOS Simulator, but linking object built
+for macOS".
+
+Check what you actually got before opening Xcode:
+
+    file apps/orders_mobile/build/host.o
+
+It must say **Mach-O 64-bit arm64 object**. If it says ELF, the file was built
+on Linux — `build/` holds whatever ran last, and a folder shared between
+machines will hand Xcode an object it cannot read at all ("Unknown file type
+in .../host.o"). Rebuild it with the command above.
+
+For a real handset the target is `arm64-apple-ios` against the iPhoneOS SDK
+rather than the Simulator one. Nothing here has been built that way.
 
 ## The quick way
 

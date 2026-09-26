@@ -24,7 +24,7 @@ char* host_item(int64_t index);
 char* host_hit(int64_t x, int64_t y);
 
 /* Tell Strata a tap happened; it decides what changes. */
-int64_t host_act(char* action);
+int64_t host_act(const char* action);
 
 /* Called once before anything else, so a screen has rows to show. */
 int64_t host_start(void);

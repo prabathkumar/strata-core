@@ -103,7 +103,15 @@ second machine writes the same file.
   `"^1.2"` means nothing here.
 - **A query is a scan.** No index, no joins, no ordering, no `GROUP BY`.
   Aggregates read a list that already exists.
-- **The standard library is small.** `std/` is what there is.
+- **The standard library is small.** `std/` is what there is. There is no
+  float-to-int cast and no int-to-float conversion, which you will notice the
+  first afternoon you do arithmetic.
+- **`build/` holds whatever ran last.** Build outputs are platform-specific
+  and the compiler does not name them per platform, so a folder shared between
+  two machines — a Mac and a Linux VM, a network home directory — hands the
+  second one an object the first built. It shows up as "cannot execute binary
+  file", or as Xcode saying "Unknown file type". `file build/whatever.o` says
+  which it is; rebuilding fixes it.
 - **A float saved to a file loses a trailing `.0`.** A column holding `225.0`
   is written as `225` while `62.5` keeps its point. It reloads as the same
   number and the file's header still says the column is a float, so nothing
