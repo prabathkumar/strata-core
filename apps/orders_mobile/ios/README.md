@@ -41,6 +41,13 @@ on Linux — `build/` holds whatever ran last, and a folder shared between
 machines will hand Xcode an object it cannot read at all ("Unknown file type
 in .../host.o"). Rebuild it with the command above.
 
+Match the deployment target to the runtime you actually have. The Simulator
+this was first run on had iOS 17, so the object was built with
+`-target arm64-apple-ios17.0-simulator` and Xcode's iOS Deployment Target set
+to 17.0. Xcode raises that number when it offers to "update to recommended
+settings", and then refuses to launch on an older Simulator — the message names
+both versions, which is the one Apple error in this file that says what to do.
+
 For a real handset the target is `arm64-apple-ios` against the iPhoneOS SDK
 rather than the Simulator one. Nothing here has been built that way.
 
@@ -83,7 +90,11 @@ You should get the order list, scrolling, the new-order form, and a saved row
 coming back to the list — the same sequence `src/main.sta` writes out as BMPs
 on a desktop.
 
-## What this shell is not
+## What this shell is, and is not
+
+It runs. The orders app builds from this project and runs on an iPhone
+Simulator: the screens Strata draws appear, rows scroll, the form takes input
+and a saved order comes back to the list.
 
 It has run on the Simulator and nowhere else. A Simulator is a program on a
 Mac; it shares the Mac's memory, its architecture and its patience. The two

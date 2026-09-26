@@ -92,7 +92,7 @@ them together.
 | **Database** | `database` blocks; tab-separated files or PostgreSQL, with schema migration | Working. No index, no joins, and a table loads whole unless you stream it with `scan`/`append`/`rewrite`. |
 | **Backend** | `stream` handlers, an HTTP server in `std/http.sta`, sessions and password hashing in `std/auth.sta` | Working. Forked worker per connection; no async, no concurrency. |
 | **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
-| **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | Compiles and runs against the contract. **Never run on a physical handset.** |
+| **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on the iOS Simulator** — Swift calls the compiler's own object through a bridging header, with no glue layer. Never run on a physical handset; the Android side has never been compiled. |
 
 The point is not that one language can reach four places. It is that a rename
 in the database block fails the build in the query, the aggregate and the line
@@ -318,14 +318,16 @@ none of that, and none of it is something code can deliver — it arrives with
 time and users or it does not arrive. For almost any project you would start
 today, one of those is the right answer.
 
-**The ⚠️ marks mean what they say.** Strata serves requests in parallel by
+**The ⚠️ marks mean what they say.** Strata's mobile tier runs on the iOS
+Simulator and has never run on a physical handset. Strata serves requests in parallel by
 forking a process per connection, which runs on every core, inherits the
 loaded tables copy-on-write and shares counters through memory mapped before
 the first fork. What it does not have is threads or async: nothing shares
 mutable memory, so a write takes a file lock and a slow request holds a
 process. That is a real concurrency model with real limits, not an absence.
 Strata's mobile tier compiles against its
-contract and has **never run on a physical handset**. In Java, jOOQ generates
+contract, runs on the iOS Simulator, and has **never run on a physical
+handset**. In Java, jOOQ generates
 typed code from a real schema while JPQL strings are not checked; in C#, EF
 Core checks LINQ against your *model*, and the model against the database is a
 migration somebody ran — which is what the second row is about. Elixir's Ecto
