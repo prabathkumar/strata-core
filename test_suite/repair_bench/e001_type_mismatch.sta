@@ -1,0 +1,8 @@
+// E001: a str literal where an int was declared.
+import io from std;
+
+int main() {
+    int count = "seven";
+    print(str(count));
+    return 0;
+}

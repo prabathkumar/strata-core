@@ -1,0 +1,12 @@
+// E008: a bare name in a query that is also a variable in scope. The column
+// wins silently, so this matches every row -- which is why it is an error.
+import io from std;
+
+database Session { int id; str token; }
+
+int find(str token) {
+    list[Session] hits = Session <- [token == token];
+    return count(hits);
+}
+
+int main() { print(str(find("abc"))); return 0; }

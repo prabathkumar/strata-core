@@ -1,0 +1,10 @@
+// E002: a call to something nothing defines. The fix is a spelling one.
+import io  from std;
+import str from std;
+
+int doubled(int n) { return n * 2; }
+
+int main() {
+    print(str(doublled(21)));
+    return 0;
+}

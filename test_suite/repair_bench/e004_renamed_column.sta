@@ -1,0 +1,12 @@
+// E004: the column was renamed in the schema and one query still says the old
+// name. The closest valid name is the right answer.
+import io from std;
+
+database Invoice { int id; str customer; float net_total; }
+
+float owed() {
+    list[Invoice] all = Invoice <- [id > 0];
+    return sum(all.total);
+}
+
+int main() { print(str(owed())); return 0; }

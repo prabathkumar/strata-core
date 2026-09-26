@@ -1,0 +1,11 @@
+// E004: the query names a column the schema does not have.
+import io from std;
+
+database Account { int id; str holder; float balance; }
+
+int overdrawn() {
+    list[Account] red = Account <- [ballance < 0.0];
+    return count(red);
+}
+
+int main() { print(str(overdrawn())); return 0; }

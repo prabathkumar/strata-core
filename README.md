@@ -962,7 +962,17 @@ the patch if it does not build. Narrow job, checked answer.
 
 And `--backend rules` handles the common shapes with no model at all, which is
 the cheapest inference there is. Reach for a model when the rules cannot help,
-not before.
+not before — and you can measure where that line falls on your own hardware:
+
+```bash
+python3 test_suite/repair_bench.py                   # the free baseline
+python3 test_suite/repair_bench.py --backend local   # what your model adds
+```
+
+It runs a corpus of broken programs through a backend and reports, per
+diagnostic, whether the compiler was satisfied afterwards — not whether the
+model said something plausible. On the machine this was written on, `rules`
+repairs three of the five without a model at all.
 
 The source never leaves the machine, which for most enterprises decides
 whether an AI repair loop is allowed rather than merely what it costs. Try
