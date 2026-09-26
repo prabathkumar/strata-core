@@ -1,0 +1,18 @@
+// The data tier for the public demo. One declaration; every screen below is
+// checked against it, and renaming a column here fails the build in the page
+// that rendered it rather than in a browser.
+
+database Order {
+    int   id;
+    str   customer;
+    str   region;
+    float amount;
+    str   status;
+}
+
+database Region {
+    int   id;
+    str   name;
+    float booked;
+    int   open_orders;
+}

@@ -1,0 +1,71 @@
+// The screens. Every field below resolves to a column in src/schema.sta at
+// build time -- rename one there and this file fails to compile, which is the
+// whole argument this site exists to demonstrate.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import schema from app;
+
+layout OrdersBoard() {
+    window "Orders — live from the schema" [width = 980, height = 720] {
+
+        row [background = "#0b1020", padding_y = 18, padding_x = 26] {
+            text "ORDERS" [color = "#7dd3fc", weight = "bold", size = 18];
+            spacer;
+            text "rendered by the Strata compiler" [color = "#64748b", size = 13];
+        }
+
+        column [padding = 26, background = "#f8fafc"] {
+
+            text "Every row below came from a `database Order` block." [color = "#334155", size = 14];
+
+            // Checked against the schema: a typo here is E004 at build time.
+            list[Order] open_orders = Order <- [status == "OPEN"];
+
+            column [padding_y = 14] {
+                for Row in open_orders {
+                    row [padding = 12, background = "#ffffff"] {
+                        text Row.customer [color = "#0f172a", weight = "bold"];
+                        spacer;
+                        text Row.region [color = "#475569"];
+                        spacer;
+                        text str_fixed(Row.amount, 2) [color = "#047857", weight = "bold"];
+                    }
+                }
+            }
+
+            row [padding_y = 10] {
+                text "open orders:" [color = "#475569"];
+                text str(count(open_orders)) [color = "#0f172a", weight = "bold"];
+                spacer;
+                text "booked:" [color = "#475569"];
+                text str_fixed(sum(open_orders.amount), 2) [color = "#047857", weight = "bold"];
+            }
+        }
+    }
+}
+
+layout RegionsBoard() {
+    window "Regions" [width = 980, height = 620] {
+
+        row [background = "#0b1020", padding_y = 18, padding_x = 26] {
+            text "REGIONS" [color = "#7dd3fc", weight = "bold", size = 18];
+            spacer;
+            text "same schema, a second screen" [color = "#64748b", size = 13];
+        }
+
+        column [padding = 26, background = "#f8fafc"] {
+            list[Region] all = Region <- [id > 0];
+            for R in all {
+                row [padding = 12, background = "#ffffff"] {
+                    text R.name [color = "#0f172a", weight = "bold"];
+                    spacer;
+                    text str(R.open_orders) [color = "#475569"];
+                    spacer;
+                    text str_fixed(R.booked, 2) [color = "#047857", weight = "bold"];
+                }
+            }
+        }
+    }
+}

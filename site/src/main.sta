@@ -1,0 +1,34 @@
+// Builds the public demo: real rows, real queries, real screens, written out
+// as HTML files a static host can serve.
+//
+// Nothing here is a mock-up. The pages under public/ are produced by the
+// Strata compiler from the `layout` blocks in src/views.sta, checked against
+// the `database` blocks in src/schema.sta on every build.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import schema from app;
+import views  from app;
+
+int seed() {
+    Order <- [id = 1, customer = "Acme Bhd",      region = "apac", amount = 1250.50, status = "OPEN"];
+    Order <- [id = 2, customer = "Globex",        region = "emea", amount =  340.00, status = "OPEN"];
+    Order <- [id = 3, customer = "Initech",       region = "amer", amount =  980.75, status = "CLOSED"];
+    Order <- [id = 4, customer = "Kestrel Ltd",   region = "apac", amount = 4820.00, status = "OPEN"];
+    Order <- [id = 5, customer = "Umbrella Corp", region = "emea", amount =   75.25, status = "OPEN"];
+    Order <- [id = 6, customer = "Stark Ind",     region = "apac", amount = 9999.99, status = "OPEN"];
+
+    Region <- [id = 1, name = "APAC", booked = 16070.49, open_orders = 3];
+    Region <- [id = 2, name = "EMEA", booked =   415.25, open_orders = 2];
+    Region <- [id = 3, name = "AMER", booked =   980.75, open_orders = 0];
+    return 1;
+}
+
+int main() {
+    seed();
+    render OrdersBoard  to "public/orders.html";
+    render RegionsBoard to "public/regions.html";
+    print("rendered public/orders.html and public/regions.html");
+    return 0;
+}

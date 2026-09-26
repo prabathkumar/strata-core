@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata — the compiler is the code reviewer</title>
+<style>
+  :root { --ink:#0f172a; --mut:#475569; --line:#e2e8f0; --acc:#0369a1; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI",
+         Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:#fff; }
+  .wrap { max-width:760px; margin:0 auto; padding:56px 20px 80px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 8px; letter-spacing:-.02em; }
+  .sub { color:var(--mut); font-size:18px; margin:0 0 36px; }
+  h2 { font-size:20px; margin:40px 0 10px; letter-spacing:-.01em; }
+  p { margin:0 0 14px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background:#0b1020; color:#e2e8f0; padding:16px 18px; border-radius:8px;
+        overflow-x:auto; font-size:13.5px; line-height:1.5; }
+  .demo { display:flex; gap:12px; flex-wrap:wrap; margin:18px 0 6px; }
+  .demo a { display:block; padding:12px 18px; border:1px solid var(--line);
+            border-radius:8px; text-decoration:none; color:var(--acc);
+            font-weight:600; }
+  .demo a:hover { border-color:var(--acc); }
+  .note { border-left:3px solid var(--line); padding:2px 0 2px 16px;
+          color:var(--mut); font-size:15px; }
+  footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--line);
+           color:var(--mut); font-size:14px; }
+  a { color:var(--acc); }
+  @media (max-width:520px){ h1{font-size:27px} .wrap{padding:36px 16px 60px} }
+</style>
+<div class="wrap">
+
+  <h1>The compiler is the code reviewer.</h1>
+  <p class="sub">Strata checks your database, your business rules and your
+  screens as one thing. Rename a column and the build fails in the query, the
+  total and the line of screen that showed it — before anything ships.</p>
+
+  <h2>See it</h2>
+  <p>These two pages were produced by the Strata compiler from
+  <code>layout</code> blocks, using rows from a <code>database</code> block.
+  No template engine, no framework.</p>
+
+  <div class="demo">
+    <a href="orders.html">Orders board →</a>
+    <a href="regions.html">Regions board →</a>
+  </div>
+
+  <h2>Why that is unusual</h2>
+  <p>In a typical stack the compiler checks your code against your <em>model</em>,
+  and whether the model matches the <em>database</em> is a migration somebody
+  hopefully ran. Strata closes that gap: schema, rules and screens are one type
+  system, so the mismatch is a build error rather than a customer's problem.</p>
+
+<pre>database Order { int id; str customer; float amount; str status; }
+
+layout OrdersBoard() {
+    list[Order] open = Order &lt;- [status == "OPEN"];
+    for Row in open { text Row.customer; }   // rename `customer` → this fails
+}</pre>
+
+  <h2>Try it</h2>
+<pre>git clone https://github.com/prabathkumar/strata-core
+cd strata-core &amp;&amp; bash tools/install.sh
+strata new myapp &amp;&amp; cd myapp &amp;&amp; strata run</pre>
+
+  <h2>What it is not</h2>
+  <p class="note">Pre-release, weeks old, written by one person. No package
+  registry, no threads, no joins, and an ecosystem consisting of one
+  repository. For almost any project you would start today, C# or Java is the
+  right answer — the README says so in a comparison table that concedes every
+  row it should.</p>
+
+  <footer>
+    <p>This page is hand-written HTML. The two demo pages above are not — they
+    are compiler output, which is the part worth looking at.</p>
+    <p><a href="https://github.com/prabathkumar/strata-core">Source on GitHub</a>
+    · an independent project by Prabath Kumar</p>
+  </footer>
+</div>

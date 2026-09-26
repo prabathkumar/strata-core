@@ -1,0 +1,58 @@
+# The public demo, built by the compiler it demonstrates.
+#
+# The two pages under site/public/ are not checked in: they are produced on
+# every push by `strata build && ./build/site`, from the layout blocks in
+# site/src/views.sta and the rows in site/src/main.sta. A page that stopped
+# building would stop deploying, which is the only way a demo stays honest.
+name: Public demo site
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Render the site with Strata and publish it
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Build the toolchain
+      run: bash tools/install.sh
+
+    - name: Render the pages
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        cd site
+        mkdir -p public
+        strata build
+        ./build/site
+        test -s public/orders.html
+        test -s public/regions.html
+        test -s public/index.html
+
+    - uses: actions/configure-pages@v5
+    - uses: actions/upload-pages-artifact@v3
+      with:
+        path: site/public
+
+    - id: deploy
+      uses: actions/deploy-pages@v4
