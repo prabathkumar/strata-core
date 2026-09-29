@@ -68,6 +68,14 @@ PRIMITIVES={"int":T_INT,"float":T_FLOAT,"str":T_STR,"void":T_VOID,"bool":T_BOOL}
 def is_compatible(declared, actual):
     if declared == actual: return True
     if declared.name == "float" and actual.name == "int": return True
+    # `[]` has no element to infer a type from, so it arrives as list[void].
+    # An empty list is a legitimate value of any list type: refusing it made
+    # `str_cat([])` an error the moment calls across a module boundary began
+    # to be checked.
+    if (declared.is_list and actual.is_list
+            and actual.element_type is not None
+            and actual.element_type.name == "void"):
+        return True
     return False
 
 def _shadowed(scope, name, global_scope):

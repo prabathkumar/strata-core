@@ -171,6 +171,14 @@ test("e001_valid_int", 'int main() { int x = 42; return 0; }')
 test("e001_valid_str", 'int main() { str x = "hello"; return 0; }')
 test("e011_undefined_var", 'int main() { return x; }', "E011")
 
+# `[]` carries no element type, so it arrives as list[void]. It is a valid
+# value of any list type, and said otherwise the moment calls across a module
+# boundary started being checked: str_cat([]) became an error.
+test("an_empty_list_is_a_value_of_any_list_type",
+    'import io from std;\nimport str from std;\n'
+    'int main() { str a = str_cat([]); list[int] n = []; '
+    'print(a); return len(n); }')
+
 print("\n── E002: Return Type Mismatch ────────────────────────────────────")
 test("e002_int_returns_str", 'int add(int a, int b) { return "wrong"; }', "E002")
 test("e002_int_returns_nothing", 'int main() { return; }', "E002")

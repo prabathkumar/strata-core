@@ -98,6 +98,17 @@ int ty_compatible(int declared, int actual) {
     Ty d = ty_at(declared);
     Ty a = ty_at(actual);
     if (str_eq(d.name, "float") == 1) { if (str_eq(a.name, "int") == 1) { return 1; } }
+    // `[]` has no element to infer a type from, so it arrives as list[void].
+    // An empty list is a legitimate value of any list type — see
+    // typechecker.py.
+    if (d.is_list == 1) {
+        if (a.is_list == 1) {
+            if (a.elem != 0) {
+                Ty ae = ty_at(a.elem);
+                if (str_eq(ae.name, "void") == 1) { return 1; }
+            }
+        }
+    }
     return 0;
 }
 
