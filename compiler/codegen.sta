@@ -2959,6 +2959,14 @@ def emit_unit(Gen &g, Node unit, int is_root, int &emitted_decls, int &emitted_f
         }
     }
     for (int a = 0; a < dn; a = a + 1) { forward_declare(&g, nv_get(&pending_d, a)); }
+    // Function prototypes before any declaration is generated. A `layout`
+    // compiles to a render function, and a render function may call one of
+    // the unit's own functions: emitted after, the C compiler met the call
+    // first, guessed int() for it, and then reported conflicting types
+    // against the real definition — a clean strata check followed by an
+    // error about a signature the developer never wrote.
+    int fn2 = pending_f.len;
+    for (int c = 0; c < fn2; c = c + 1) { forward_fn(&g, nv_get(&pending_f, c)); }
     // Constants first, whatever order they were written in — see stage0.py.
     for (int b0 = 0; b0 < dn; b0 = b0 + 1) {
         Node cdecl = nv_get(&pending_d, b0);
@@ -2968,8 +2976,6 @@ def emit_unit(Gen &g, Node unit, int is_root, int &emitted_decls, int &emitted_f
         Node odecl = nv_get(&pending_d, b);
         if (odecl.kind != 77) { gen_decl(&g, odecl); }
     }
-    int fn2 = pending_f.len;
-    for (int c = 0; c < fn2; c = c + 1) { forward_fn(&g, nv_get(&pending_f, c)); }
     for (int d2 = 0; d2 < fn2; d2 = d2 + 1) { gen_function(&g, nv_get(&pending_f, d2)); }
 }
 
@@ -3038,7 +3044,7 @@ str attrs_for(Gen &g, Node el) {
             str raw = raw_literal(p.c1);
             if (str_len(raw) > 0) {
                 sb_append(&sb, " "); sb_append(&sb, p.s1);
-                sb_append(&sb, "=\\\""); sb_append(&sb, html_escape(raw));
+                sb_append(&sb, "=\\\""); sb_append(&sb, fmt_lit(raw));
                 sb_append(&sb, "\\\"");
             }
         }
@@ -3129,6 +3135,27 @@ str css_for(Gen &g, Node el) {
                 first = 0;
             }
         }
+    }
+    // Same reason as html_escape: this string is emitted inside a C format
+    // string, and width:100% would otherwise be read as a conversion.
+    return pct_escape(sb_to_str(&sb));
+}
+
+// Escaped for HTML, then for printf. Text that lands INSIDE a C format
+// string must have its per-cent doubled; text passed as a %s argument must
+// not, or the doubling reaches the page as two characters.
+str fmt_lit(str t) {
+    return pct_escape(html_escape(t));
+}
+
+// Doubles every % so a literal one survives printf.
+str pct_escape(str t) {
+    StringBuilder sb = sb_new();
+    int n = str_len(t);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = t[i];
+        sb_append(&sb, char_str(c));
+        if (c == 37) { sb_append(&sb, "%"); }
     }
     return sb_to_str(&sb);
 }
@@ -3541,7 +3568,7 @@ def gen_element(Gen &g, Node el) {
             if (lab.kind == 52) {
                 if (str_index_of(attrs, " name=") < 0) {
                     StringBuilder nm = sb_new();
-                    sb_append(&nm, " name=\\\""); sb_append(&nm, html_escape(lab.s1));
+                    sb_append(&nm, " name=\\\""); sb_append(&nm, fmt_lit(lab.s1));
                     sb_append(&nm, "\\\""); sb_append(&nm, attrs);
                     attrs = sb_to_str(&nm);
                 }
@@ -3556,7 +3583,7 @@ def gen_element(Gen &g, Node el) {
             if (lab.kind == 52) { win_title = lab.s1; }
         }
         StringBuilder t = sb_new();
-        sb_append(&t, "<title>"); sb_append(&t, html_escape(win_title)); sb_append(&t, "</title>");
+        sb_append(&t, "<title>"); sb_append(&t, fmt_lit(win_title)); sb_append(&t, "</title>");
         emit_fprintf(&g, sb_to_str(&t));
         StringBuilder b = sb_new();
         sb_append(&b, "<body"); sb_append(&b, attrs); sb_append(&b, style);

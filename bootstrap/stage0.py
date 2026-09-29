@@ -232,16 +232,13 @@ class CodeGen:
                 if getattr(d, "name", None) is not None:
                     emitted_decls.add(d.name)
                 self._forward_declare(d)
-            # Constants first, whatever order they were written in. A layout
-            # or report declared above a constant would otherwise not see it,
-            # and "it depends where you put it in the file" is not a rule
-            # anyone should have to learn.
-            for d in decls:
-                if isinstance(d, ConstDecl):
-                    self._gen_decl(d)
-            for d in decls:
-                if not isinstance(d, ConstDecl):
-                    self._gen_decl(d)
+            # Function prototypes before any declaration is generated. A
+            # `layout` compiles to a render function, and a render function
+            # may call one of the unit's own functions: emitted after, the C
+            # compiler met the call first, guessed `int()` for it, and then
+            # reported conflicting types against the real definition. The
+            # developer saw a clean `strata check` and then an error about a
+            # function signature they never wrote, in a file they never wrote.
             for fn in fns:
                 # Strata has no namespaces, so two modules defining the same
                 # function name collide. Dedup exists for the diamond case —
@@ -256,6 +253,17 @@ class CodeGen:
                 self.symbol_owner[fn.name] = mod_name
                 emitted_fns.add(fn.name)
                 self._forward_fn(fn)
+
+            # Constants first, whatever order they were written in. A layout
+            # or report declared above a constant would otherwise not see it,
+            # and "it depends where you put it in the file" is not a rule
+            # anyone should have to learn.
+            for d in decls:
+                if isinstance(d, ConstDecl):
+                    self._gen_decl(d)
+            for d in decls:
+                if not isinstance(d, ConstDecl):
+                    self._gen_decl(d)
             for fn in fns:
                 self._gen_function(fn)
 
@@ -1028,7 +1036,10 @@ int main(int argc, char** argv) {
             if raw is None:
                 continue
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
-        return ";".join(parts)
+        # Same reason as _html_escape: this string is emitted inside a C
+        # format string, and `width:100%` would otherwise be read as a
+        # conversion specifier.
+        return ";".join(parts).replace("%", "%%")
 
     def _gen_stream_registry(self):
         """Register every stream handler against its channel.
@@ -1358,7 +1369,7 @@ int main(int argc, char** argv) {
             raw = v.value if isinstance(v, (StrLiteral, IntLiteral, FloatLiteral)) else None
             if raw is None:
                 continue
-            out.append(f' {p.name}=\\"{self._html_escape(str(raw))}\\"')
+            out.append(f' {p.name}=\\"{self._fmt_lit(str(raw))}\\"')
         return "".join(out)
 
     def _computed_attrs(self, el):
@@ -1386,7 +1397,7 @@ int main(int argc, char** argv) {
         # name rather than text, because an input has no text content.
         if el.tag == "field" and isinstance(el.label, StrLiteral) \
            and " name=" not in attrs:
-            attrs = f' name=\\"{self._html_escape(el.label.value)}\\"' + attrs
+            attrs = f' name=\\"{self._fmt_lit(el.label.value)}\\"' + attrs
         computed = self._computed_attrs(el)
         if tag in self.VOID_TAGS:
             self.emit('fprintf(_out,"<' + tag + attrs + '");')
@@ -1395,7 +1406,7 @@ int main(int argc, char** argv) {
             return
         if el.tag == "window":
             title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
-            self.emit('fprintf(_out,"<title>' + self._html_escape(title) + '</title>");')
+            self.emit('fprintf(_out,"<title>' + self._fmt_lit(title) + '</title>");')
             self.emit('fprintf(_out,"<body' + attrs + style + '>");')
             for c in el.children:
                 self._gen_layout_node(c)
@@ -1633,7 +1644,18 @@ int main(int argc, char** argv) {
         self.emit("}")
 
     def _html_escape(self, t):
-        return t.replace("\\", "").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        return (t.replace("\\", "").replace('"', "&quot;")
+                 .replace("<", "&lt;").replace(">", "&gt;"))
+
+    def _fmt_lit(self, t):
+        """Escaped for HTML, then for printf.
+
+        Text that lands INSIDE a C format string has to have its per-cent
+        doubled, or printf reads what follows as a conversion specifier and
+        the behaviour is undefined. Text passed as a `%s` argument must not:
+        there the doubling would reach the page as two characters.
+        """
+        return self._html_escape(t).replace("%", "%%")
 
     def _gen_report(self, decl):
         """A report renders its datasource and its metrics as Markdown.

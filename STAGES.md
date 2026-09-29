@@ -239,12 +239,6 @@ as an oracle to compare against.
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
 
-14. Function calls are not type-checked. Arity, argument types and the return
-   type of a call inside a `layout` are all left to the C compiler, so
-   `str_concat("a")` passes `strata check` and then fails the build in
-   generated C. This is the last family of mistakes that reaches the C
-   compiler without a Strata diagnostic, and it is being closed next.
-
 ### Corrected rather than deleted
 
 Two blind pilots were run against a fresh public clone on 26 September: a

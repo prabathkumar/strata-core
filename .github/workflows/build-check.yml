@@ -65,6 +65,12 @@ jobs:
     - name: Verify Documentation Examples
       run: python3 test_suite/doc_examples.py
 
+    # A database block, a rule and a page that calls the rule: the README's
+    # own pitch, and it did not build until the prototypes were emitted
+    # first. Guarded here so it cannot come back.
+    - name: A Page Can Call A Rule
+      run: python3 test_suite/a_page_can_call_a_rule.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.
