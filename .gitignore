@@ -44,3 +44,6 @@ editor/vscode-strata/node_modules/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+
+# Scratch the sandbox cannot delete; never part of the project.
+.trash/
