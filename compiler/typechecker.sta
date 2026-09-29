@@ -1896,6 +1896,18 @@ str src_dir, int report_imports, int mods_p) {
     tc.strict_calls = strict;
     tc.imported = imported;
     if (report_imports == 1) { report_unresolved_imports(&tc, unit, root, src_dir); }
+    // Signatures from imported modules, so a call into std/ is checked for
+    // arity and argument types rather than left to the C compiler. Names
+    // alone were known before this. Registered BEFORE the file's own, because
+    // a later registration shadows an earlier one and a local definition of
+    // the same name must win.
+    if (mods_p != 0) {
+        NodeVec imods = nv_at(mods_p);
+        int nim = imods.len;
+        for (int im = 0; im < nim; im = im + 1) {
+            register_module_functions(&tc, nv_get(&imods, im));
+        }
+    }
     register_decls(&tc, unit);
     // Schemas and models an import brings in. Without this an application
     // cannot be more than one file: a `database` in schema.sta is invisible to

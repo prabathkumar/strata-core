@@ -24,7 +24,10 @@ database TestSuiteTelemetry {
 // goes through the same recorder the built-in `assert` statement uses, so a
 // failure here is counted, appears in the tally, and makes the exit status
 // non-zero.
-int assert_true(str criterion_label, int conditional_boolean_flag) {
+// The condition is a `bool`, and said `int` until calls across a module
+// boundary were type-checked. Every caller passes a comparison, so the
+// signature had simply never been read by anything that could disagree.
+int assert_true(str criterion_label, bool conditional_boolean_flag) {
     native "
     __strata_assert($conditional_boolean_flag != 0, $criterion_label, 0);
     return $conditional_boolean_flag != 0 ? 1 : 0;

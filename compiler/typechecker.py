@@ -170,6 +170,7 @@ class TypeChecker:
         self._register_imported_declarations()
         self._register_declarations()
         self._register_foreign()
+        self._register_imported_functions()
         self._register_functions()
         # Reports and layouts are checked after functions are registered:
         # either may be declared before the database it draws from, and a
@@ -287,6 +288,30 @@ class TypeChecker:
                     rt = self._resolve_type(fn.return_type)
                     pts = [self._resolve_type(p.param_type) for p in fn.params]
                     self.functions[fn.name] = (rt, pts)
+
+    def _register_imported_functions(self):
+        """Signatures from imported modules, so a call into std/ is checked.
+
+        Names alone were registered before this, which meant `str_concat("a")`
+        passed the check and failed in the C compiler instead: arity and
+        argument types were enforced only for functions declared in the file
+        being checked. Registered before the file's own, so a local
+        definition of the same name still wins.
+        """
+        for m in self.modules:
+            unit = m[1] if isinstance(m, tuple) else m
+            for fn in getattr(unit, "functions", []):
+                rt = T_VOID
+                if fn.kind == "function" and fn.return_type:
+                    rt = self._resolve_type(fn.return_type)
+                try:
+                    params = [self._resolve_type(p.param_type) for p in fn.params]
+                except Exception:
+                    # A parameter naming a type this file cannot resolve is
+                    # not a reason to refuse the whole module: leave the
+                    # signature out and the call is unchecked, as before.
+                    continue
+                self.functions[fn.name] = (rt, params)
 
     def _register_functions(self):
         for fn in self.ast.functions:
