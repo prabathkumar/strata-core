@@ -382,15 +382,19 @@ repair agent. The full taxonomy is `ERROR_TAXONOMY.json`.
 
 | Code | Classification | What triggers it |
 |---|---|---|
+| `E000` | Syntax Violation | Text the parser cannot read as Strata at all |
 | `E001` | Variable Mutation Mismatch | A value that does not match the declared type |
-| `E002` | Function Return Contract Breach | A call to an undefined function, the wrong number of arguments, or a `return` that does not match the signature |
+| `E002` | Function Return Contract Breach | A `return` that does not match the function's declared return type |
 | `E003` | Generic Collection Pollution | A list holding more than one type, or indexing something that is not a list |
 | `E004` | Database Schema Selector Violation | A column or table that does not exist, in a query, an insert, a delete, an aggregate or a report |
-| `E005` | Boundary Perimeter Contamination | An argument whose type does not match the declaration, including across `foreign` |
+| `E005` | Boundary Perimeter Contamination | A value crossing a `foreign` boundary whose type the declaration does not allow |
 | `E006` | Tensor Dimension Drift | A `predict` whose input shape does not match the model |
 | `E007` | Unresolved Module Import | An import with no local checkout. **Advisory** — it does not stop the build |
 | `E008` | Ambiguous Query Identifier | A bare name in a query condition that is both a column and a variable in scope |
 | `E009` | Incomplete Insert | An insert that does not name every column |
+| `E010` | Column Type Mismatch | A value written to, or compared against, a column of another type |
+| `E011` | Unresolved Symbol | A name used that is defined nowhere: no variable, no function, no import that provides it |
+| `E012` | Call Contract Breach | A call with the wrong number of arguments, or an argument whose type the signature does not allow |
 
 ## 8. What the language does not have
 

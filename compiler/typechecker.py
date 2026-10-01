@@ -828,8 +828,11 @@ class TypeChecker:
             # remediation tells a model to trace return blocks. The wrong
             # number of arguments is a call that does not keep the
             # function's contract, which is a different thing to fix.
+            # The hint was empty, which told a repair agent nothing it could
+            # act on. The signature is the one thing it needs.
+            sig = f"{expr.callee}({', '.join(str(p) for p in pts)})"
             self._error("E012",f"'{expr.callee}' expects {len(pts)} args, got {len(expr.args)}",
-                expr.line,expr.col,"")
+                expr.line,expr.col,f"It is declared as {sig}")
             return rt
         for i,(arg,pt) in enumerate(zip(expr.args,pts)):
             at=self._infer_type(arg,scope)

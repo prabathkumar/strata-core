@@ -156,6 +156,14 @@ run_build() {
 }
 
 cmd_build() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata build [file.sta] [-o out] [--json] [--target native|wasm|c]"
+                echo "  Checks and compiles. Inside a project, builds the entry point named"
+                echo "  in Strata.toml; with a file, builds that file."
+                echo "  --json prints every diagnostic as a JSON payload instead of text."
+            return 0 ;;
+    esac
     local file="$1"
 
     if [ -z "$file" ]; then
@@ -262,6 +270,13 @@ JSONEOF
 }
 
 cmd_check() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata check <file.sta>..."
+                echo "  Checks without building, and writes nothing."
+                echo "  Exits non-zero if anything is wrong, so it suits a pre-commit hook."
+            return 0 ;;
+    esac
     # Checks a file the way `strata build` checks it: imports resolved first.
     #
     # Without that, a file importing its own schema is checked with no idea
@@ -317,9 +332,23 @@ cmd_check() {
     "$bin" "$f"
 }
 
-cmd_lex() { "$PY3" "$ROOT/compiler/lexer.py" "$@"; }
+cmd_lex() {
+    case "${1:-}" in
+        -h|--help)
+            echo "Usage: strata lex <file.sta>"
+            echo "  Prints the token stream, for understanding what the lexer saw."
+            return 0 ;;
+    esac
+    "$PY3" "$ROOT/compiler/lexer.py" "$@"
+}
 
 cmd_ast() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata ast <file.sta>"
+                echo "  Prints the parse tree, for understanding what the parser saw."
+            return 0 ;;
+    esac
     local f="$1"
     "$PY3" << PYEOF
 import sys, json
@@ -333,6 +362,13 @@ PYEOF
 }
 
 cmd_run() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata run [file.sta] [args...]"
+                echo "  Builds, then runs. Inside a project, runs the entry point named in"
+                echo "  Strata.toml; anything after the file is passed to the program."
+            return 0 ;;
+    esac
     local f="$1"
     if [ -z "$f" ]; then
         local proj; proj="$(find_project)" || {
@@ -353,6 +389,12 @@ cmd_run() {
 
 
 cmd_new() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata new <name>"
+                echo "  Creates a project: schema, program, a test and Strata.toml."
+            return 0 ;;
+    esac
     local name="$1"
     if [ -z "$name" ]; then echo "Usage: strata new <project_name>"; exit 1; fi
     if [ -e "$name" ]; then echo "'$name' already exists" >&2; return 1; fi
@@ -564,6 +606,12 @@ cmd_doc() {
 }
 
 cmd_version() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata version"
+                echo "  Prints the compiler's version."
+            return 0 ;;
+    esac
     echo "Strata v0.4.0-alpha | self-hosting front end"
     echo "  Stage 0: Python bootstrap (bootstrap/stage0.py)"
     echo "  Stage 1: compiler/{lexer,parser,typechecker,codegen}.sta (Strata)"
@@ -573,7 +621,19 @@ cmd_version() {
 cmd_fmt() {
     local check=0 files=()
     for a in "$@"; do
-        if [ "$a" = "--check" ]; then check=1; else files+=("$a"); fi
+        case "$a" in
+            --check) check=1 ;;
+            -h|--help)
+                # Unhandled, --help was taken for a filename and the error the
+                # user saw was `cmp`'s manual.
+                echo "Usage: strata fmt <file.sta>... [--check]"
+                echo "  Rewrites each file in the one canonical layout."
+                echo "  --check writes nothing: it prints the files that are"
+                echo "  not already formatted and exits non-zero, which is"
+                echo "  what CI runs."
+                return 0 ;;
+            *) files+=("$a") ;;
+        esac
     done
     if [ "${#files[@]}" -eq 0 ]; then
         echo "usage: strata fmt <file.sta>... [--check]" >&2; return 2
@@ -635,6 +695,13 @@ cmd_fmt() {
 # formatter is. It is a Strata program; nothing about resolving dependencies
 # needs Python.
 cmd_deps() {
+    case "${1:-}" in
+        -h|--help)
+                echo "Usage: strata deps"
+                echo "  Lists what the project in this directory imports, and whether each"
+                echo "  import resolves to a checkout on this machine."
+            return 0 ;;
+    esac
     local cache="$ROOT/build"
     if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
         cache="${XDG_CACHE_HOME:-$HOME/.cache}/strata"
@@ -674,7 +741,7 @@ case "$CMD" in
     repair)  exec "$PY3" "$ROOT/ai_self_repair.py" "$@" ;;
     doc)     cmd_doc "$@" ;;
     fmt)     cmd_fmt   "$@" ;;
-    version) cmd_version ;;
+    version) cmd_version "$@" ;;
     ""|help) usage ;;
     --help|-h|help) usage; exit 0 ;;
     *) echo "Unknown: $CMD"; usage; exit 1 ;;

@@ -640,6 +640,16 @@ int main(int argc, char** argv) {
                       f" return 0;")
         self.emit_raw("            }")
         self.emit_raw("            if (_more < 0) { _eof = 1; break; }")
+        # A row that ends before its last column, anywhere but at the end
+        # of the file. The loader refused it, but blamed the NEXT row's
+        # first value: it rolled the next line into this row and reported
+        # "'B' is not a number" against a column that was never at fault.
+        self.emit_raw("            if (_more == 0 && _c < _ncol - 1) {")
+        self.emit_raw(f'                strata_load_refuse("{name}", path,'
+                      f' "a row stops before its last column");')
+        self.emit_raw(f"                free(r); fclose(f); {name}__count = 0;"
+                      f" return 0;")
+        self.emit_raw("            }")
         self.emit_raw("            switch (_map[_c]) {")
         for idx, fd in enumerate(fields):
             ct = self._c_type(fd.field_type)

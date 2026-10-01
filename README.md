@@ -1349,7 +1349,7 @@ judgement says.
 | Every error code means what the taxonomy says it means | `json_diag_diff.py` compares classification and remediation, not just the code |
 | Repair never guesses when it should refuse | `self_repair.py`; `E009` and an ambiguous column both refuse and exit non-zero |
 | A repair that fails leaves the files untouched | `self_repair.py` restores on every unresolved loop |
-| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 105 generated files identical |
+| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 105 generated files identical. **This is an agreement check, not a proof of correctness.** A mistake made the same way in both passes it cleanly: the truncated-row bug was in both, and this row stayed green while `load` dropped data |
 | The compiler builds itself, and the result builds itself | `fixpoint.py` |
 | It installs and runs on a machine that has never seen it | `clean_checkout.py`, `journey_install.py`, and a macOS job that is a genuinely clean machine |
 | Every example in the documentation compiles | `doc_examples.py` on every commit |

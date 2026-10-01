@@ -473,7 +473,23 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
                   file=sys.stderr)
             break
         if patched is None or patched == source:
-            print("    backend produced no change — stopping.")
+            # "backend produced no change" told the user nothing they could
+            # act on: which backend, which diagnostic, and what to do next
+            # were all missing. A repair that cannot help should say so in
+            # the terms of the thing it could not repair.
+            what = "returned the file unchanged" if patched == source \
+                else "had no repair for this"
+            print(f"    [{backend}] {what}: {d['code']} "
+                  f"{d.get('classification','')} at "
+                  f"{os.path.relpath(target, cwd)}:{d.get('line')}.")
+            if backend == "rules":
+                print("    The rule backend only fixes the mechanical shapes "
+                      "listed in ERROR_TAXONOMY.json.")
+                print("    Try --backend local or --backend claude, or fix "
+                      "this one by hand.")
+            else:
+                print("    Fix this one by hand, or run with --backend rules "
+                      "if it is a mechanical shape.")
             break
         open(target, "w").write(patched)
         print("    patch applied, recompiling")

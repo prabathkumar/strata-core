@@ -107,9 +107,13 @@ to a model on your own machine — see the README.
 A rename breaking a query is useful. A rename breaking the *screen* is the
 thing no shared-language stack does at build time.
 
+This one reads a file that ships with the compiler's source, so it needs a
+clone of the repository rather than the project you just made:
+
 ```bash
-cd ..
-strata check examples/cross_tier_contract.sta
+git clone https://github.com/prabathkumar/strata-core
+cd strata-core
+./bin/strata check examples/cross_tier_contract.sta
 ```
 
 That file declares a table, queries it, and renders the result — all in one
@@ -160,7 +164,8 @@ strata build
 ```
 
 ```
-[E009] Insert into 'Item' does not name every column
+E009 7:5 Insert into 'Item' omits column 'category'
+  Hint: Add 'category = <value>' to the insert — 'category' is 'str' — or remove 'category' from 'database Item'
 ```
 
 This one surprises people, and it is deliberate. An insert that skips a column

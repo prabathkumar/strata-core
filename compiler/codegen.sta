@@ -2278,6 +2278,19 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&lv2));
     emit_raw(&g, "            }");
     emit_raw(&g, "            if (_more < 0) { _eof = 1; break; }");
+    // A row that ends before its last column -- see stage0.py. It used to
+    // roll the next line in and blame that row's first value.
+    emit_raw(&g, "            if (_more == 0 && _c < _ncol - 1) {");
+    StringBuilder sv = sb_new();
+    sb_append(&sv, "                strata_load_refuse(\"");
+    sb_append(&sv, name);
+    sb_append(&sv, "\", path, \"a row stops before its last column\");");
+    emit_raw(&g, sb_to_str(&sv));
+    StringBuilder sv2 = sb_new();
+    sb_append(&sv2, "                free(r); fclose(f); ");
+    sb_append(&sv2, name); sb_append(&sv2, "__count = 0; return 0;");
+    emit_raw(&g, sb_to_str(&sv2));
+    emit_raw(&g, "            }");
     emit_raw(&g, "            switch (_map[_c]) {");
     for (int i = 0; i < n; i = i + 1) {
         Node fd = nv_get(&fs, i);

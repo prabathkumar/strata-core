@@ -16,6 +16,7 @@ seen it and asking them to build something. Neither was visible from inside.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -146,6 +147,24 @@ def main():
             failures.append("a failed repair exited 0")
         print(f"  a failed repair leaves nothing behind: "
               f"{'yes' if now == was else 'NO'}")
+
+    # Every subcommand answers --help with its own help. `strata fmt --help`
+    # took --help for a filename and printed the manual page of `cmp`, an
+    # internal of the formatter the user has no reason to have heard of.
+    print("\n── and every subcommand answers --help ─────────────────────────")
+    src = open(os.path.join(ROOT, "bin", "strata")).read()
+    block = src.split("case \"$CMD\" in", 1)[1].split("esac", 1)[0]
+    subs = [m for m in re.findall(r"^\s{4}([a-z]+)\)", block, re.M)]
+    for sub in subs:
+        r = subprocess.run([STRATA, sub, "--help"],
+                           capture_output=True, text=True)
+        out = (r.stdout + r.stderr)
+        good = r.returncode == 0 and out.lstrip().lower().startswith("usage:")
+        print(f"  strata {sub} --help: {'yes' if good else 'NO'}")
+        if not good:
+            failures.append(
+                f"strata {sub} --help exits {r.returncode} and says: "
+                f"{out.strip().splitlines()[0][:70] if out.strip() else '(nothing)'}")
 
     if failures:
         for f in failures:

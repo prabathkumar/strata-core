@@ -1096,8 +1096,24 @@ int infer_call(TC &tc, Node e, int scope_p) {
         sb_append(&sb, str(f.nparams));
         sb_append(&sb, " args, got ");
         sb_append(&sb, str(na));
+        // The hint was empty — see typechecker.py. It carries the
+        // signature now.
+        StringBuilder hb = sb_new();
+        sb_append(&hb, "It is declared as ");
+        sb_append(&hb, e.s1);
+        sb_append(&hb, "(");
+        int hp = f.params;
+        for (int i = 0; i < f.nparams; i = i + 1) {
+            if (i > 0) {
+                sb_append(&hb, ", ");
+            }
+            Sym hs = sym_at(hp);
+            sb_append(&hb, ty_str(hs.ty));
+            hp = hs.next;
+        }
+        sb_append(&hb, ")");
         // E012, not E002 — see typechecker.py.
-        emit_hint(&tc, "E012", sb_to_str(&sb), e.line, e.col, "");
+        emit_hint(&tc, "E012", sb_to_str(&sb), e.line, e.col, sb_to_str(&hb));
         return f.rt;
     }
 

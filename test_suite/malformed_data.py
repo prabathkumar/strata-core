@@ -58,6 +58,12 @@ CASES = [
     ("the last row stops in the middle, with a trailing newline missing",
      b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\n2\tB", "0",
      "stops before its last column"),
+    # A short row in the MIDDLE was refused, but the message blamed the next
+    # row's first value -- "'B' is not a number" against a column that was
+    # never at fault. Whoever had to fix the file was sent to the wrong line.
+    ("a row stops in the middle of the file",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\n2\tB\t2.0\n", "0",
+     "stops before its last column"),
     ("a complete last row with no trailing newline is fine",
      b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\n2\tB\t2.0", "2",
      None),
@@ -75,8 +81,11 @@ CASES = [
     ("a half-written number",
      b"#strata\tRow\tid:i\tname:s\tamount:f\n12x\tA\t1.0\n", "0",
      "'12x' is not a number"),
+    # A blank line is a row with no columns at all. It used to be reported
+    # as "is not a number", because the next line was rolled into it.
     ("a blank line in the middle",
-     GOOD.replace(b"\n2\t", b"\n\n2\t"), "0", "is not a number"),
+     GOOD.replace(b"\n2\t", b"\n\n2\t"), "0",
+     "stops before its last column"),
     # Tolerated on purpose, and each for a reason.
     ("windows line endings", GOOD.replace(b"\n", b"\r\n"), "2", None),
     ("no newline at the end", GOOD.rstrip(b"\n"), "2", None),

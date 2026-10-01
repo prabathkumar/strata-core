@@ -204,7 +204,11 @@ before = open(p).read()
 rc, out = run_repair(p, "--max-passes", "5")
 ok("an unrepairable file exits non-zero", rc != 0)
 ok("it says it stopped rather than claiming success",
-   "no change" in out and "clean after" not in out, out[-200:])
+   "had no repair for this" in out and "clean after" not in out, out[-200:])
+# "backend produced no change" named neither the backend, the diagnostic nor
+# a next step. Whoever reads this line is stuck, so it has to carry all three.
+ok("and names the diagnostic it could not repair",
+   "E001" in out and "by hand" in out, out[-300:])
 ok("it stops on the first pass rather than spinning",
    out.count("pass ") == 1, f"{out.count('pass ')} passes")
 ok("an unrepairable file is left untouched", open(p).read() == before)

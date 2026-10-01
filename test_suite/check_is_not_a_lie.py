@@ -233,6 +233,21 @@ def main():
                 ok(label, bool(codes) and not unknown,
                    f"codes={codes} not in taxonomy: {unknown}")
 
+        print("\n── and the specification lists every code ──────────────────────")
+        # Three codes were added without the spec's table being touched, and
+        # nothing noticed, because nothing compared the two. A developer
+        # reading section 7 would have been told E010 does not exist.
+        tax = json.load(
+            open(os.path.join(ROOT, "ERROR_TAXONOMY.json")))["taxonomy"]
+        spec = open(os.path.join(ROOT, "LANGUAGE_SPECIFICATION.md")).read()
+        documented = set(re.findall(r"^\| `(E\d\d\d)` \|", spec, re.M))
+        for code in sorted(tax):
+            ok(f"{code} is in the specification's table", code in documented,
+               "the taxonomy has it and section 7 does not")
+        strays = documented - set(tax)
+        ok("and the table invents no code the taxonomy lacks", not strays,
+           f"documented but not in the taxonomy: {sorted(strays)}")
+
         print("\n── and the CLI, over the whole tree ────────────────────────────")
         # Everything above drives bootstrap/stage0.py. A developer runs
         # `strata check` and `strata build`, which go through the SELF-HOSTED
