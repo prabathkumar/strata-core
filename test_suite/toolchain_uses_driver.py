@@ -67,7 +67,21 @@ def main():
         # A driver older than the compiler must be rebuilt, or editing the
         # compiler and running a build would use yesterday's driver.
         if os.path.isfile(DRIVER):
-            stale = time.time() - 3600
+            # Older than the OLDEST compiler source, not simply an hour ago.
+            # On a fresh CI checkout every file has roughly the same
+            # timestamp, so an hour was enough; on a working machine, where
+            # the driver was built today and the sources were last edited
+            # days ago, an hour still left the driver newer and nothing was
+            # rebuilt. The test then failed on the only machine a developer
+            # actually uses.
+            oldest = time.time()
+            for sub in ("compiler", "std"):
+                for dirpath, _dirs, files in os.walk(os.path.join(ROOT, sub)):
+                    for f in files:
+                        if f.endswith(".sta"):
+                            oldest = min(oldest,
+                                         os.path.getmtime(os.path.join(dirpath, f)))
+            stale = oldest - 60
             os.utime(DRIVER, (stale, stale))
             before = os.path.getmtime(DRIVER)
             r = build(os.path.join(tmp, "after_touch"))
