@@ -40,10 +40,22 @@ if [ ! -x ./gradlew ]; then
     # No wrapper checked in, so use whatever gradle the machine has.
     command -v gradle >/dev/null || {
         echo "gradle is not installed and there is no ./gradlew here." >&2
-        echo "Install Gradle, or open apps/orders_mobile/android in Android Studio once" >&2
-        echo "to have it write the wrapper." >&2
+        echo >&2
+        if [ "$(uname -s)" = "Darwin" ]; then
+            echo "  brew install gradle" >&2
+        else
+            echo "  sudo apt install gradle     (or use your package manager)" >&2
+        fi
+        echo >&2
+        echo "Opening apps/orders_mobile/android in Android Studio once also" >&2
+        echo "works: it writes the wrapper, and after that this script uses it." >&2
+        echo >&2
+        echo "The C is built and correct; only the build tool is missing." >&2
         exit 2
     }
+    # With gradle present, leave a wrapper behind so the next person -- and CI
+    # -- builds with a pinned version rather than whatever they happen to have.
+    [ -f gradle/wrapper/gradle-wrapper.properties ] || gradle wrapper --quiet || true
     gradle assembleRelease
 else
     ./gradlew assembleRelease
