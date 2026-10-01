@@ -67,25 +67,50 @@ def check_json(path):
 
 
 def builds(path, out):
+    """Compiled, not linked.
+
+    The invariant is about the C the compiler generates being valid C. A
+    missing symbol at link time is a different thing and not something a type
+    checker can know: `foreign` names a function in somebody else's library,
+    and a module that declares what another module defines is not a program
+    on its own. Compiling to an object tests the claim and nothing else.
+    """
     r = subprocess.run([sys.executable, "bootstrap/stage0.py", path, "-o", out],
                        cwd=ROOT, capture_output=True, text=True)
-    return r.returncode == 0, (r.stdout + r.stderr)
+    out_text = r.stdout + r.stderr
+    if r.returncode != 0 and ("undefined reference" in out_text
+                              or "ld returned" in out_text
+                              or "Undefined symbols" in out_text):
+        return True, out_text          # linked, not compiled: not this claim
+    return r.returncode == 0, out_text
 
 
 # Programs, not libraries: a module with no main() is not meant to link.
 def corpus():
+    """Every program in the tree, found rather than listed.
+
+    This used to be two directories and two named files -- 27 of the 130
+    `.sta` files here -- while the README said "every source in the
+    repository". An audit found the gap, and a hand-maintained list is
+    exactly the thing that goes stale, so the list is gone: anything with a
+    `main()` is a program and gets checked.
+    """
     out = []
-    for sub in ("examples", "test_suite/verify_cases"):
-        d = os.path.join(ROOT, sub)
-        if not os.path.isdir(d):
-            continue
-        for f in sorted(os.listdir(d)):
-            if f.endswith(".sta"):
-                out.append(os.path.join(sub, f))
-    for app in ("apps/orders/src/main.sta", "site/src/main.sta"):
-        if os.path.isfile(os.path.join(ROOT, app)):
-            out.append(app)
-    return out
+    skip = (".git", "build", ".strata", "node_modules", ".trash")
+    for dirpath, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in skip]
+        for f in sorted(files):
+            if not f.endswith(".sta"):
+                continue
+            full = os.path.join(dirpath, f)
+            try:
+                src = open(full, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            # A module with no entry point is not meant to link on its own.
+            if re.search(r"^\s*(int|void)\s+main\s*\(", src, re.M):
+                out.append(os.path.relpath(full, ROOT))
+    return sorted(out)
 
 
 # One good program, and the ordinary ways a person or a model gets it wrong.
@@ -160,7 +185,7 @@ def main():
             built, out = builds(rel, os.path.join(tmp, "out"))
             if not built:
                 clean_but_broken.append((rel, out[-400:]))
-        ok(f"no file passes the check and then fails the build "
+        ok(f"no file passes the check and then fails to compile "
            f"({len(corpus())} sources)",
            not clean_but_broken,
            "; ".join(f"{r}: {o[:200]}" for r, o in clean_but_broken))
@@ -182,8 +207,15 @@ def main():
             open(path, "w").write(src)
             is_clean, codes = check_json(path)
             if is_clean is None:
-                # A parse error is a Strata diagnostic too, just an earlier one.
-                ok(label, True)
+                # A parse error IS a Strata diagnostic, but it has to be one:
+                # counting "the checker produced nothing I could read" as a
+                # pass is how this test told itself what it wanted to hear.
+                r = subprocess.run(
+                    [sys.executable, "bootstrap/stage0.py", path],
+                    cwd=ROOT, capture_output=True, text=True)
+                out = r.stdout + r.stderr
+                ok(label, "PARSE ERROR" in out.upper() and r.returncode != 0,
+                   "no JSON and no parse error either: " + out[-200:])
                 continue
             if is_clean:
                 built, out = builds(path, os.path.join(tmp, "m"))
@@ -192,7 +224,36 @@ def main():
                    + ("also passed — the mistake was not caught at all"
                       if built else f"then failed in C: {out[-300:]}"))
             else:
-                ok(label, bool(codes) and all(c for c in codes), str(codes))
+                # A code, and one the taxonomy knows. "Not clean" was too weak
+                # a thing to assert about an error a repair agent has to act
+                # on.
+                known = set(json.load(
+                    open(os.path.join(ROOT, "ERROR_TAXONOMY.json")))["taxonomy"])
+                unknown = [c for c in codes if c not in known]
+                ok(label, bool(codes) and not unknown,
+                   f"codes={codes} not in taxonomy: {unknown}")
+
+        print("\n── and the CLI agrees with the bootstrap ───────────────────────")
+        # Everything above drives bootstrap/stage0.py. A developer runs
+        # `strata check` and `strata build`, which go through the self-hosted
+        # compiler: an audit found a program the two disagreed about, so the
+        # claim is only worth making about the commands people actually type.
+        strata = os.path.join(ROOT, "bin", "strata")
+        divergent = []
+        for label, old, new in MUTATIONS:
+            src = GOOD.replace(old, new, 1)
+            path = os.path.join(tmp, "cli.sta")
+            open(path, "w").write(src)
+            c = subprocess.run([strata, "check", path], cwd=tmp,
+                               capture_output=True, text=True)
+            if c.returncode == 0:
+                b = subprocess.run([strata, "build", path, "-o",
+                                    os.path.join(tmp, "cli.bin")],
+                                   cwd=tmp, capture_output=True, text=True)
+                if b.returncode != 0:
+                    divergent.append((label, (b.stdout + b.stderr)[-200:]))
+        ok("strata check and strata build agree on every mutation",
+           not divergent, "; ".join(f"{l}: {o}" for l, o in divergent))
 
     print("\n================================================================")
     print(f"  {passed}/{passed + failed} checks passed")

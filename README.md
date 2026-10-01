@@ -1339,13 +1339,13 @@ judgement says.
 
 | Condition | Proven by |
 |---|---|
-| One schema drives data, rules, web and phone, and one change fails all four together | `.github/workflows/site.yml` renames a column and asserts the count of failures per tier: three in the web page, three in the phone screen, two in the data |
-| What the checker accepts, the build accepts | `check_is_not_a_lie.py` — every source in the repository, plus nine mutations that must each be caught before the C compiler sees them |
-| A value of the wrong type is refused, never silently converted | `conformance.py` — `E010` on an insert and on a query comparison |
+| One schema drives data, rules, web and phone, and one change fails every tier that uses it | `.github/workflows/site.yml` renames a column and asserts the count of failures per tier: three in the web page, three in the phone screen, two in the data. Eight in all. The rules file does not use that column, so it does not fail — `journey_change` covers a rename that does reach the rules. |
+| What the checker accepts, the build compiles | `check_is_not_a_lie.py` — every program in the tree found by walking it (58), nine mutations each asserted to carry a code the taxonomy knows, and the same nine put through `strata check` and `strata build` so the claim covers the commands people type. Linking is not covered: a `foreign` name that does not exist in the library it comes from is found by the linker, and no type checker can know it. |
+| A value of the wrong type is refused | `conformance.py` — `E010` on an insert and on a query comparison, in four shapes. One deliberate exception, pinned by its own test: an int widens to a float, everywhere. A float is never accepted where an int is wanted. |
 | Calls are checked, including into another module | `conformance.py` — `E012` for arity and argument type |
 | A page can call a rule | `a_page_can_call_a_rule.py` |
 | Failures cannot pass for success | `unchecked_errors_are_loud.py`; a missing file on `load` is a recorded error |
-| Every diagnostic is machine-readable, in one shape, at every stage | `json_diag_diff.py` 21/21; `build --json` stays JSON on a C failure |
+| Every diagnostic is machine-readable, in one shape, at every stage | `json_diag_diff.py` 21/21 for the two checkers; `build_json_is_json.py` for the CLI — a clean build, a parse error, a type error and a C failure, plus a project with no file named |
 | Every error code means what the taxonomy says it means | `json_diag_diff.py` compares classification and remediation, not just the code |
 | Repair never guesses when it should refuse | `self_repair.py`; `E009` and an ambiguous column both refuse and exit non-zero |
 | A repair that fails leaves the files untouched | `self_repair.py` restores on every unresolved loop |
@@ -1363,6 +1363,29 @@ judgement says.
 | A developer who has never seen Strata gets through a first project without a stopper | A third blind pilot, with nothing fixed for them in advance. Two have been run; both found stoppers, both sets are fixed. The third is the test that counts. |
 | Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
 | A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
+
+### How this table got three rows wrong
+
+Written on 1 October and audited the same day by a reviewer whose only job
+was to check each row against the test it cited. Three were overstated, and
+the pattern is worth stating because it is the failure mode of any
+self-certifying document: **the claim was written first and the test cited
+afterwards.**
+
+- *A value of the wrong type is refused* cited `conformance.py`, which
+  contained no test for `E010` at all. `grep -rn E010 test_suite/` returned
+  nothing.
+- *`build --json` stays JSON on a C failure* cited `json_diag_diff.py`, which
+  compares two checkers and never runs `strata build`. The flag printed
+  nothing at all on every failing build.
+- *What the checker accepts, the build accepts* cited
+  `check_is_not_a_lie.py`, which walked 27 of the 130 `.sta` files, drove the
+  bootstrap rather than the CLI, counted a parse failure as a pass, and
+  asserted no error codes. A two-line program defeated it.
+
+Each of those tests now tests the sentence that cites it, and the rule the
+table states about itself — a line without a passing test is not ticked — is
+enforced by a reviewer who did not write the claims.
 
 ### Not required for Beta, and said plainly
 

@@ -18,7 +18,7 @@ happy path.
 | **Batch and command-line programs** | Read, transform, write, exit. The best-supported thing here, and the least likely to surprise you. |
 | **Services** | An HTTP server, sessions, password hashing, a forked worker per connection. Single-machine, single-writer. |
 | **Server-rendered web** | `layout` blocks compile to HTML. Buttons post to routes; nothing in a page calls back into Strata, because Strata emits no JavaScript. |
-| **Phone screens** | Five C functions a shell calls. Swift and Kotlin shells are in `apps/orders_mobile/`. Compiles and runs against the contract; **never run on a physical handset**. |
+| **Phone screens** | Five C functions a shell calls. Swift and Kotlin shells are in `apps/orders_mobile/`. **Runs on a physical iPhone and a physical Android handset** — one model each, through a device farm. Nothing has been through an App Store or Play Store review. |
 
 Data lives in tab-separated files or PostgreSQL. A table loads whole into
 memory unless you stream it with `scan`, `append` and `rewrite`, which work at
@@ -104,8 +104,12 @@ second machine writes the same file.
 - **A query is a scan.** No index, no joins, no ordering, no `GROUP BY`.
   Aggregates read a list that already exists.
 - **The standard library is small.** `std/` is what there is. There is no
-  float-to-int cast and no int-to-float conversion, which you will notice the
-  first afternoon you do arithmetic.
+  float-to-int cast, which you will notice the first afternoon you do
+  arithmetic. An int IS accepted where a float is wanted — in an insert, an
+  argument, a return, a comparison — and widens silently; a float is never
+  accepted where an int is wanted. This paragraph said the opposite until an
+  audit caught it, and a reader who believed it spent a while not suspecting
+  the compiler when a money total came back as a row count.
 - **`build/` holds whatever ran last.** Build outputs are platform-specific
   and the compiler does not name them per platform, so a folder shared between
   two machines — a Mac and a Linux VM, a network home directory — hands the
@@ -162,7 +166,7 @@ as a bug you did not have.
 
 A test file reaches your project's code by importing the module, the same way
 any other file does — `import rules from app;`. Without it the build fails
-with E002 naming the function it could not find, which means the file is not
+with E011 naming the function it could not find, which means the file is not
 in scope rather than that the function is missing.
 
 ```bash

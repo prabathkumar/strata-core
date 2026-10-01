@@ -755,7 +755,8 @@ str gen_expr(Gen &g, int p) {
         sb_append(&db, e.s1); sb_append(&db, "__rows[_kept++] = _row; } else { strata_retire(_row, ");
         sb_append(&db, e.s1); sb_append(&db, "__row_free); } } strata_int _gone = ");
         sb_append(&db, e.s1); sb_append(&db, "__count - _kept; ");
-        sb_append(&db, e.s1); sb_append(&db, "__count = _kept; _gone; })");
+        sb_append(&db, e.s1); sb_append(&db, "__count = _kept; ");
+        sb_append(&db, e.s1); sb_append(&db, "__stamp = 0; _gone; })");
         return sb_to_str(&db);
     }
 
@@ -1201,6 +1202,11 @@ def gen_stmt(Gen &g, Node st) {
         StringBuilder dc = sb_new();
         sb_append(&dc, st.s1); sb_append(&dc, "__count = _kept;");
         cg_emit(&g, sb_to_str(&dc));
+        // What is in memory is no longer what the file holds, so the
+        // load-skip must not treat it as though it were -- see stage0.py.
+        StringBuilder ds = sb_new();
+        sb_append(&ds, st.s1); sb_append(&ds, "__stamp = 0;");
+        cg_emit(&g, sb_to_str(&ds));
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
         return;
@@ -1444,6 +1450,9 @@ int is_scalar_col(Gen &g, Node fd) {
     if (str_eq(ct, "strata_int") == 1) { return 1; }
     if (str_eq(ct, "strata_float") == 1) { return 1; }
     if (str_eq(ct, "strata_str") == 1) { return 1; }
+    // strata_bool is an int64 underneath and writes like one -- see stage0.py
+    // for the silent column loss leaving it out caused.
+    if (str_eq(ct, "strata_bool") == 1) { return 1; }
     return 0;
 }
 
@@ -2619,6 +2628,22 @@ def gen_function(Gen &g, Node fn) {
             sb_append(&ex, "\n__attribute__((export_name(\"");
             sb_append(&ex, fn.s2); sb_append(&ex, "\")))");
             emit_raw(&g, sb_to_str(&ex));
+        }
+    }
+    // `TokenArray tokenise(str source, str filename);` — a declaration with
+    // no body. Emitted as a definition with empty braces, the C compiler
+    // reported "control reaches end of non-void function" about a function
+    // the developer never defined here. A non-void function with nothing in
+    // it is a prototype; a void one is a deliberate no-op and keeps its
+    // braces. See stage0.py.
+    NodeVec fbody = nv_at(fn.v2);
+    if (fbody.len == 0) {
+        if (str_eq(rt, "void") == 0) {
+            StringBuilder proto = sb_new();
+            sb_append(&proto, "\n"); sb_append(&proto, fn_signature(&g, fn));
+            sb_append(&proto, ";");
+            emit_raw(&g, sb_to_str(&proto));
+            return;
         }
     }
     StringBuilder head = sb_new();

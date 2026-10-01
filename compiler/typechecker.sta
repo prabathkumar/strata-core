@@ -1226,6 +1226,28 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
     int actual = infer(&tc, st.c2, scope_p);
 
     Node val = node_at(st.c2);
+    // The whole value is checked first, including when it is a list literal.
+    // Skipping that for a literal let `list[float] xs = [1];` through here
+    // while the oracle rejected it, so the two checkers disagreed and
+    // codegen then emitted an int array assigned to a double pointer: a
+    // clean `strata check` followed by a C error about generated code.
+    // typecheck_diff did not catch it because no file in its corpus had that
+    // shape.
+    if (val.kind == 47) {
+        if (actual != 0) {
+            if (ty_compatible(declared, actual) == 0) {
+                StringBuilder lb = sb_new();
+                sb_append(&lb, "Type mismatch: '");
+                sb_append(&lb, st.s1);
+                sb_append(&lb, "' declared as '");
+                sb_append(&lb, ty_str(declared));
+                sb_append(&lb, "' but assigned '");
+                sb_append(&lb, ty_str(actual));
+                sb_append(&lb, "'");
+                emit_hint(&tc, "E001", sb_to_str(&lb), st.line, st.col, hint_quoted("Change value to type '", ty_str(declared), "' or update declaration"));
+            }
+        }
+    }
     // A list literal is checked element by element so the diagnostic points at
     // the element that is wrong rather than at the whole collection.
     if (val.kind == 47) {

@@ -187,12 +187,30 @@ cmd_build() {
         if [ "$a" = "--json" ]; then want_json=1; else args+=("$a"); fi
     done
     if [ "$want_json" = "1" ]; then
-        local src="${args[0]}"
+        # `strata build --json` with no file is the form CI reaches for,
+        # because `strata build` with no file is the documented default. It
+        # used to fall through to a branch that needed one and exit 1 with
+        # nothing on either stream.
+        local src="${args[0]:-}"
+        if [ -z "$src" ]; then
+            local proj; proj="$(find_project)" || {
+                echo '{"ok":false,"stage":"project","error_count":1,"diagnostics":[{"code":"E901","message":"no Strata.toml here or above","hint":"run strata build <file.sta>, or run this inside a project"}]}'
+                return 1
+            }
+            local pmain; pmain="$(toml_value "$proj/Strata.toml" main)"
+            [ -z "$pmain" ] && pmain="src/main.sta"
+            src="$proj/$pmain"
+            args=("$src")
+        fi
         # The check comes first and reports in its own shape. A file the
         # checker rejects never reaches the C compiler, so there is nothing
         # further to say about it.
+        # `|| true`, because this script runs under `set -e` and stage0
+        # exits non-zero when it has diagnostics to report — which is the
+        # case this whole branch exists for. Without it the script died here
+        # and printed nothing at all on every failing build.
         local check_out
-        check_out="$("$PY3" "$ROOT/bootstrap/stage0.py" "$src" --json 2>/dev/null)"
+        check_out="$("$PY3" "$ROOT/bootstrap/stage0.py" "$src" --json 2>/dev/null || true)"
         if ! printf '%s' "$check_out" | grep -q '"ok": true'; then
             printf '%s\n' "$check_out"
             return 1

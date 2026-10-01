@@ -174,6 +174,30 @@ test("e011_undefined_var", 'int main() { return x; }', "E011")
 # `[]` carries no element type, so it arrives as list[void]. It is a valid
 # value of any list type, and said otherwise the moment calls across a module
 # boundary started being checked: str_cat([]) became an error.
+# E010, the column-type checks. The README cited this file for "a value of
+# the wrong type is refused" and `grep -rn E010 test_suite/` returned nothing:
+# the claim was ticked against a test that did not exist. These are that test.
+test("e010_float_into_an_int_column",
+    'database T { int id; int qty; }\nint main() { T <- [id = 1, qty = 9.87]; return 0; }',
+    "E010")
+test("e010_float_into_a_str_column",
+    'database T { int id; str name; }\nint main() { T <- [id = 1, name = 3.5]; return 0; }',
+    "E010")
+test("e010_str_column_compared_with_an_int",
+    'database T { int id; str name; }\nint main() { list[T] r = T <- [name == 42]; return len(r); }',
+    "E010")
+test("e010_int_column_compared_with_a_str",
+    'database T { int id; str name; }\nint main() { list[T] r = T <- [id == "x"]; return len(r); }',
+    "E010")
+# int widens to float, deliberately and everywhere. Pinned so the decision is
+# visible rather than discovered: an audit found the documents claiming the
+# opposite in two places.
+test("an_int_is_accepted_where_a_float_is_wanted",
+    'database T { int id; float amt; }\nint main() { T <- [id = 1, amt = 3]; return 0; }')
+test("but_a_float_is_never_accepted_where_an_int_is_wanted",
+    'database T { int id; int qty; }\nint main() { T <- [id = 1, qty = 3.5]; return 0; }',
+    "E010")
+
 test("an_empty_list_is_a_value_of_any_list_type",
     'import io from std;\nimport str from std;\n'
     'int main() { str a = str_cat([]); list[int] n = []; '

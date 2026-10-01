@@ -457,7 +457,12 @@ int main(int argc, char** argv) {
         # another. `database P { TokVec toks; ... }` in the parser is such a
         # table, and it is never saved — the invalid C was generated anyway,
         # because save and load are emitted for every table.
-        SCALARS = ("strata_int", "strata_float", "strata_str")
+        # `strata_bool` is an int64 underneath, so it writes and reads like
+        # one. Leaving it out meant a `bool` column was silently dropped from
+        # the header and from every row: the compiler accepted a schema it
+        # could not store, `save` wrote the other columns without a word, and
+        # a later `[flag == true]` found nothing in data that had true rows.
+        SCALARS = ("strata_int", "strata_float", "strata_str", "strata_bool")
         fields = [fd for fd in fields if self._c_type(fd.field_type) in SCALARS]
 
         def sqltype(fd):
@@ -1472,6 +1477,13 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
         self.emit(f"{src}__count = _kept;")
+        # What is in memory is no longer what the file holds, so the
+        # load-skip must not treat it as though it were. Without this,
+        # `save T to F; delete T <- [...]; load T from F` returned nothing:
+        # the file had not changed since the save, so the load decided it had
+        # nothing to do, and the program read an empty table with no error
+        # and exit 0. A silent wrong answer, in the commonest shape there is.
+        self.emit(f"{src}__stamp = 0;")
         self.indent -= 1
         self.emit("}")
 
@@ -1743,8 +1755,16 @@ int main(int argc, char** argv) {
             # Every top-level function is part of the module's interface; a
             # wasm module has no main() to start from.
             self.emit_raw(f'\n__attribute__((export_name("{fn.name}")))')
-        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{}}"
-                      if False else f"\n{rt} {cname(fn.name)}({params}) {{")
+        # `TokenArray tokenise(str source, str filename);` — a declaration
+        # with no body. It was emitted as a definition with an empty body, so
+        # the C compiler reported "control reaches end of non-void function"
+        # about a function the developer never defined here. A non-void
+        # function with nothing in it is a prototype; a void one is a
+        # deliberate no-op and still gets its braces.
+        if not fn.body and rt != "void":
+            self.emit_raw(f"\n{rt} {cname(fn.name)}({params});")
+            return
+        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{")
         self.indent = 1
         for stmt in fn.body:
             self._gen_stmt(stmt, param_names)
@@ -2258,7 +2278,7 @@ int main(int argc, char** argv) {
                     f"if (!({cond})) {{ {src}__rows[_kept++] = _row; }}"
                     f" else {{ strata_retire(_row, {src}__row_free); }} }} "
                     f"strata_int _gone = {src}__count - _kept; "
-                    f"{src}__count = _kept; _gone; }})")
+                    f"{src}__count = _kept; {src}__stamp = 0; _gone; }})")
         # An expression with no rule used to become the literal 0. A program
         # could compile, run, and quietly take the wrong branch -- which is
         # exactly what `if (save Order to url)` did before this function knew
