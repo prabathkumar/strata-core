@@ -1,0 +1,38 @@
+{
+  "buildFiles": [
+    "/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/src/main/jni/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/Users/prabathkumar/android-sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/.cxx/RelWithDebInfo/e5ks2x03/armeabi-v7a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/Users/prabathkumar/android-sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/.cxx/RelWithDebInfo/e5ks2x03/armeabi-v7a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "strata::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "armeabi-v7a",
+      "artifactName": "strata",
+      "output": "/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/build/intermediates/cxx/RelWithDebInfo/e5ks2x03/obj/armeabi-v7a/libstrata.so",
+      "runtimeFiles": []
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "/Users/prabathkumar/android-sdk/ndk/26.1.10909125/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang.lld",
+      "cppCompilerExecutable": "/Users/prabathkumar/android-sdk/ndk/26.1.10909125/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++.lld"
+    }
+  },
+  "cFileExtensions": [
+    "c"
+  ],
+  "cppFileExtensions": []
+}

@@ -2,4 +2,3 @@ build/
 .gradle/
 local.properties
 app/src/main/jni/host.c
-gradle/wrapper/gradle-wrapper.jar

@@ -1,0 +1,3 @@
+/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/.cxx/RelWithDebInfo/e5ks2x03/arm64-v8a/CMakeFiles/strata.dir
+/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/.cxx/RelWithDebInfo/e5ks2x03/arm64-v8a/CMakeFiles/edit_cache.dir
+/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/.cxx/RelWithDebInfo/e5ks2x03/arm64-v8a/CMakeFiles/rebuild_cache.dir

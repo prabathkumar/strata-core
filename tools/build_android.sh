@@ -12,6 +12,11 @@
 # copy of its output.
 set -euo pipefail
 
+# The Android plugin in app/build.gradle.kts decides this. 8.5.x wants
+# Gradle 8.7-ish; a newer Gradle is not an improvement here, it is a failure
+# three minutes into the build.
+GRADLE_PIN="8.9"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/apps/orders_mobile"
 JNI="$APP/android/app/src/main/jni"
@@ -53,10 +58,14 @@ if [ ! -x ./gradlew ]; then
         echo "The C is built and correct; only the build tool is missing." >&2
         exit 2
     }
-    # With gradle present, leave a wrapper behind so the next person -- and CI
-    # -- builds with a pinned version rather than whatever they happen to have.
-    [ -f gradle/wrapper/gradle-wrapper.properties ] || gradle wrapper --quiet || true
-    gradle assembleRelease
+    # A pinned wrapper, not whatever gradle the machine has. Homebrew ships
+    # Gradle 9, the Android plugin 8.5 supports Gradle 8.x, and the mismatch
+    # does not fail early: it builds the native libraries, packages them, and
+    # then dies at signing with an unsigned APK on disk and a message about
+    # deprecated features. Pinning the version is the whole fix.
+    echo "      writing a Gradle $GRADLE_PIN wrapper"
+    gradle wrapper --gradle-version "$GRADLE_PIN" --quiet
+    ./gradlew assembleRelease
 else
     ./gradlew assembleRelease
 fi
