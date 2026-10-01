@@ -1327,6 +1327,51 @@ current, including the sharp edges: `scratch_reset()` in the wrong place
 is a use-after-free that nothing catches, and a `foreign` block is only
 known to work on a platform something has actually built it on.
 
+## The bar for calling this Beta
+
+Alpha means the idea is demonstrated. Beta means a developer can be handed it
+without an apology. Those are different claims, so the second one is written
+down as conditions rather than a feeling, and every line names the test that
+proves it. A line without a passing test is not ticked, whatever anybody's
+judgement says.
+
+### Met
+
+| Condition | Proven by |
+|---|---|
+| One schema drives data, rules, web and phone, and one change fails all four together | `.github/workflows/site.yml` renames a column and asserts the count of failures per tier: three in the web page, three in the phone screen, two in the data |
+| What the checker accepts, the build accepts | `check_is_not_a_lie.py` — every source in the repository, plus nine mutations that must each be caught before the C compiler sees them |
+| A value of the wrong type is refused, never silently converted | `conformance.py` — `E010` on an insert and on a query comparison |
+| Calls are checked, including into another module | `conformance.py` — `E012` for arity and argument type |
+| A page can call a rule | `a_page_can_call_a_rule.py` |
+| Failures cannot pass for success | `unchecked_errors_are_loud.py`; a missing file on `load` is a recorded error |
+| Every diagnostic is machine-readable, in one shape, at every stage | `json_diag_diff.py` 21/21; `build --json` stays JSON on a C failure |
+| Every error code means what the taxonomy says it means | `json_diag_diff.py` compares classification and remediation, not just the code |
+| Repair never guesses when it should refuse | `self_repair.py`; `E009` and an ambiguous column both refuse and exit non-zero |
+| A repair that fails leaves the files untouched | `self_repair.py` restores on every unresolved loop |
+| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 105 generated files identical |
+| The compiler builds itself, and the result builds itself | `fixpoint.py` |
+| It installs and runs on a machine that has never seen it | `clean_checkout.py`, `journey_install.py`, and a macOS job that is a genuinely clean machine |
+| Every example in the documentation compiles | `doc_examples.py` on every commit |
+| The first hour works as written | `first_hour.py`, 27 checks |
+
+### Not met
+
+| Condition | What is missing |
+|---|---|
+| A developer who has never seen Strata gets through a first project without a stopper | A third blind pilot, with nothing fixed for them in advance. Two have been run; both found stoppers, both sets are fixed. The third is the test that counts. |
+| Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
+| A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
+| It runs on a phone somebody is holding | It runs on the iOS Simulator. No physical handset, and the Android shell has never been compiled. |
+
+### Not required for Beta, and said plainly
+
+Joins, indexes, an event model in the browser, a package registry, async, and
+a self-hosted `test` and `repair` are all absent and all documented. Beta does
+not mean complete. It means **what is here is true, and what is missing is
+written down** — which is the only promise worth making to somebody deciding
+whether to spend a week on a new language.
+
 ## 7. Roadmap
 
 Designed, specified, and **not yet built**. Listed here so the boundary between
