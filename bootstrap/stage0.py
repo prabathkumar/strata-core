@@ -541,7 +541,14 @@ int main(int argc, char** argv) {
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
         self._gen_pg_load(name, fields, select_sql, key)
-        self.emit_raw(f'    FILE* f = fopen(path, "r"); if (!f) return 0;')
+        # A missing file is a failed load, and used to be silent: the table
+        # was left empty, zero was returned, and the documented
+        # `if (had_error() == 1)` right below it saw nothing. A typo in a
+        # data path is the commonest way a load fails in real life, and it
+        # passed for success.
+        self.emit_raw(f'    FILE* f = fopen(path, "r");')
+        self.emit_raw(f'    if (!f) {{ strata_load_refuse("{name}", path, '
+                      f'strerror(errno)); return 0; }}')
         self.emit_raw("    char buf[4096];")
         self.emit_raw("    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];")
         self.emit_raw("    char _types[STRATA_MAX_COLS];")

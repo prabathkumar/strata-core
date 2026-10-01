@@ -19,7 +19,12 @@ database Sales {
 }
 
 int main() {
-    load Sales from "sales.tsv";
+    // A missing file is a failed load and says so, so the first run asks
+    // rather than reading nothing and carrying on. Silence here is how a
+    // typo in a data path becomes an empty report nobody questions.
+    if (file_exists("sales.tsv") == 1) {
+        load Sales from "sales.tsv";
+    }
 
     if (strata_len(Sales <- [id > 0]) == 0) {
         Sales <- [id = 1, region = "apac", amount = 120.50];

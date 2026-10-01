@@ -131,7 +131,8 @@ column writes an empty value into every row it creates — nothing breaks, and
 everything is quietly wrong.
 
 **There are no exceptions.** A failed load leaves the table empty and records
-an error. Check it, act, clear it:
+an error — including when the file simply is not there, which is the way a
+typo in a data path usually shows up. Check it, act, clear it:
 
 ```text
 load Ledger from "ledger.tsv";

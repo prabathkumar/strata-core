@@ -2141,7 +2141,16 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "        return 1;");
     emit_raw(&g, "    }");
     gen_pg_load(&g, name, fs, select_sql, key);
-    emit_raw(&g, "    FILE* f = fopen(path, \"r\"); if (!f) return 0;");
+    // A missing file is a failed load, and used to be silent: the table was
+    // left empty, zero was returned, and the documented had_error() check
+    // right below it saw nothing. A typo in a data path is the commonest way
+    // a load fails in real life, and it passed for success.
+    emit_raw(&g, "    FILE* f = fopen(path, \"r\");");
+    StringBuilder rf = sb_new();
+    sb_append(&rf, "    if (!f) { strata_load_refuse(\"");
+    sb_append(&rf, name);
+    sb_append(&rf, "\", path, strerror(errno)); return 0; }");
+    emit_raw(&g, sb_to_str(&rf));
     emit_raw(&g, "    char buf[4096];");
     emit_raw(&g, "    char _names[STRATA_MAX_COLS][STRATA_NAME_CAP];");
     emit_raw(&g, "    char _types[STRATA_MAX_COLS];");
