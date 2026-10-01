@@ -71,6 +71,13 @@ jobs:
     - name: A Page Can Call A Rule
       run: python3 test_suite/a_page_can_call_a_rule.py
 
+    # The invariant the whole toolchain rests on: if the build fails, the
+    # checker must have said so first. An editor, --json and the repair loop
+    # all read the checker's verdict, so a file it calls clean and the build
+    # then rejects lies to all three at once.
+    - name: strata check Is Not A Lie
+      run: python3 test_suite/check_is_not_a_lie.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.

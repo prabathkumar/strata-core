@@ -1867,6 +1867,14 @@ int main(int argc, char** argv) {
                 self._gen_stmt(a, param_names)
         elif isinstance(stmt, ExprStmt):
             self.emit(f"{self._gen_expr(stmt.expr, param_names)};")
+        elif isinstance(stmt, Element):
+            # Screen inside an `if` inside a layout. The block of an `if` is
+            # generated as statements, and a row or a text is not a
+            # statement, so the generator refused — after `strata check` had
+            # already called the file clean. Showing one thing when a list is
+            # empty and another when it is not is the first thing anybody
+            # writes on a dashboard.
+            self._gen_layout_node(stmt)
         else:
             # A statement the generator does not know was previously emitted
             # as nothing at all: `for R in rows { ... }` in a function body

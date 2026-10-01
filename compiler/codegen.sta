@@ -864,7 +864,17 @@ str subst_native(str code) {
 def gen_block(Gen &g, int vec_p) {
     NodeVec body = nv_at(vec_p);
     int n = body.len;
-    for (int i = 0; i < n; i = i + 1) { gen_stmt(&g, nv_get(&body, i)); }
+    for (int i = 0; i < n; i = i + 1) {
+        // One block, three destinations — the same fork `for` already makes.
+        // The body of an `if` inside a layout is screen, not statements, and
+        // sending it to gen_stmt refused to generate anything after the
+        // checker had already called the file clean. Showing one thing when
+        // a list is empty and another when it is not is the first thing
+        // anybody writes on a dashboard.
+        if (g.in_draw == 1) { gen_draw_node(&g, nv_get(&body, i)); }
+        else { if (g.in_layout == 1) { gen_layout_node(&g, nv_get(&body, i)); }
+            else { gen_stmt(&g, nv_get(&body, i)); } }
+    }
 }
 
 // A literal as SQL, or "" when the node is not a literal. Strings are escaped
