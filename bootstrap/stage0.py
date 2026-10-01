@@ -2749,6 +2749,40 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     if verbose: print(f"  CC: {' '.join(flags)}")
     r = subprocess.run(flags, capture_output=True, text=True)
     if r.returncode != 0:
+        # --json has to stay JSON even here. A caller piping the output into
+        # a parser got raw C compiler text and crashed, which is the worst
+        # possible shape for the one failure a machine most needs to read.
+        # The stage says plainly that this is the C compiler and not the
+        # checker, and the message is carried verbatim rather than guessed
+        # at: a diagnostic nobody can act on is still better than a lie
+        # about where it came from.
+        if json_diagnostics:
+            print(json.dumps({
+                "file": os.path.relpath(c_path),
+                "stage": "cc",
+                "ok": False,
+                "error_count": 1,
+                "advisory_count": 0,
+                "diagnostics": [{
+                    "code": "E900",
+                    "classification": "C Compiler Rejected Generated Code",
+                    "severity": "CRITICAL_HALT",
+                    "file": os.path.relpath(c_path),
+                    "line": 0,
+                    "column": 0,
+                    "message": "the C compiler rejected the generated code",
+                    "hint": "This is a compiler defect: the type check passed "
+                            "and the build did not. Please report it with the "
+                            "source that produced it.",
+                    "remediation_strategy":
+                        "Do not attempt a source repair from this. The "
+                        "diagnostic describes generated C, not the program as "
+                        "written, and its line numbers refer to a file the "
+                        "developer did not write.",
+                    "cc_output": r.stderr,
+                }],
+            }, indent=2))
+            sys.exit(1)
         print(f"[STRATA C ERROR]\n{r.stderr}", file=sys.stderr); sys.exit(1)
     print(f"  {'Object' if is_library and target != 'wasm' else 'Binary'}: {output_path}")
     if not json_diagnostics:

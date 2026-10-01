@@ -184,7 +184,7 @@ test("e002_int_returns_str", 'int add(int a, int b) { return "wrong"; }', "E002"
 test("e002_int_returns_nothing", 'int main() { return; }', "E002")
 test("e002_valid_return", 'int main() { return 0; }')
 test("e002_def_no_return_ok", 'def greet(str name) { print(name); }')
-test("e002_arg_count_mismatch", 'int add(int a, int b) { return 0; }\nint main() { int x = add(1); return 0; }', "E002")
+test("e012_arg_count_mismatch", 'int add(int a, int b) { return 0; }\nint main() { int x = add(1); return 0; }', "E012")
 
 print("\n── E003: Collection Pollution ────────────────────────────────────")
 test("e003_int_list_gets_str", 'int main() { list[int] nums = [1, 2, "three"]; return 0; }', "E003")
@@ -204,7 +204,7 @@ test("e004_unknown_database", 'int main() { list[Ghost] r = Ghost <- [id == 1]; 
 print("\n── E005: Boundary Contamination ──────────────────────────────────")
 test("e005_str_concat_with_int", 'int main() { str msg = "count: " + 42; return 0; }', "E005")
 test("e005_valid_str_concat", 'int main() { str a = "hello"; str b = "world"; str c = a + b; return 0; }')
-test("e005_arg_type_mismatch", 'int process(int x) { return x; }\nint main() { int r = process("bad"); return 0; }', "E005")
+test("e012_arg_type_mismatch", 'int process(int x) { return x; }\nint main() { int r = process("bad"); return 0; }', "E012")
 
 test("e005_unknown_callee_not_flagged",
      'int main() { str m = "id " + imported_helper(1); return 0; }')
@@ -338,9 +338,9 @@ compile_run("ffi_two_args",
     'import io from std;\nforeign "math.h" link "m" { float pow(float a, float b); }\nint main() { print(str(pow(2.0, 10.0))); return 0; }',
     "1024.0")
 test("ffi_arg_type_checked",
-    'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { float r = sqrt("nope"); return 0; }', "E005")
+    'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { float r = sqrt("nope"); return 0; }', "E012")
 test("ffi_arg_count_checked",
-    'foreign "math.h" link "m" { float pow(float a, float b); }\nint main() { float r = pow(2.0); return 0; }', "E002")
+    'foreign "math.h" link "m" { float pow(float a, float b); }\nint main() { float r = pow(2.0); return 0; }', "E012")
 test("ffi_return_type_flows",
     'foreign "math.h" link "m" { float sqrt(float x); }\nint main() { str s = sqrt(4.0); return 0; }', "E001")
 

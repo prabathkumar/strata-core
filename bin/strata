@@ -178,6 +178,65 @@ cmd_build() {
         return 0
     fi
 
+    # `--json` has to stay JSON all the way through, including the one
+    # failure a machine most needs to read. The README offered it on build
+    # and nothing implemented it: the flag was ignored and a caller piping
+    # the output into a parser got raw C compiler text.
+    local want_json=0 args=()
+    for a in "$@"; do
+        if [ "$a" = "--json" ]; then want_json=1; else args+=("$a"); fi
+    done
+    if [ "$want_json" = "1" ]; then
+        local src="${args[0]}"
+        # The check comes first and reports in its own shape. A file the
+        # checker rejects never reaches the C compiler, so there is nothing
+        # further to say about it.
+        local check_out
+        check_out="$("$PY3" "$ROOT/bootstrap/stage0.py" "$src" --json 2>/dev/null)"
+        if ! printf '%s' "$check_out" | grep -q '"ok": true'; then
+            printf '%s\n' "$check_out"
+            return 1
+        fi
+        # `|| rc=$?` and not a bare assignment: this script runs under
+        # `set -e`, which would end it at the failing build before the JSON
+        # could be written — which is exactly the case this exists for.
+        local build_out rc=0
+        build_out="$(run_build "${args[@]}" 2>&1)" || rc=$?
+        if [ "$rc" = "0" ]; then
+            printf '%s' "$check_out"
+            return 0
+        fi
+        STRATA_CC_OUTPUT="$build_out" STRATA_CC_FILE="$src" "$PY3" - <<'JSONEOF'
+import json, os, sys
+print(json.dumps({
+    "file": os.environ.get("STRATA_CC_FILE", ""),
+    "stage": "cc",
+    "ok": False,
+    "error_count": 1,
+    "advisory_count": 0,
+    "diagnostics": [{
+        "code": "E900",
+        "classification": "C Compiler Rejected Generated Code",
+        "severity": "CRITICAL_HALT",
+        "file": os.environ.get("STRATA_CC_FILE", ""),
+        "line": 0,
+        "column": 0,
+        "message": "the C compiler rejected the generated code",
+        "hint": "The type check passed and the build did not. Either a "
+                "foreign declaration does not match the library it names, "
+                "or this is a compiler defect worth reporting.",
+        "remediation_strategy":
+            "Do not attempt a source repair from this. The text below "
+            "describes generated C, and its line numbers refer to a file "
+            "the developer did not write. Check any `foreign` block and "
+            "`link` flag first; otherwise report it.",
+        "cc_output": os.environ.get("STRATA_CC_OUTPUT", ""),
+    }],
+}, indent=2))
+JSONEOF
+        return 1
+    fi
+
     # A single file, for a script or an example. The compiler does the type
     # checking: doing it again here, without resolving imports, printed
     # "TypeCheck OK" for files it then rejected.

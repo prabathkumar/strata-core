@@ -1096,7 +1096,8 @@ int infer_call(TC &tc, Node e, int scope_p) {
         sb_append(&sb, str(f.nparams));
         sb_append(&sb, " args, got ");
         sb_append(&sb, str(na));
-        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, "");
+        // E012, not E002 — see typechecker.py.
+        emit_hint(&tc, "E012", sb_to_str(&sb), e.line, e.col, "");
         return f.rt;
     }
 
@@ -1116,7 +1117,8 @@ int infer_call(TC &tc, Node e, int scope_p) {
                 sb_append(&sb, "', got '");
                 sb_append(&sb, ty_str(at));
                 sb_append(&sb, "'");
-                emit_hint(&tc, "E005", sb_to_str(&sb), e.line, e.col, hint_quoted("Cast argument to '", ty_str(ps.ty), "'"));
+                // E012 as well — see typechecker.py.
+                emit_hint(&tc, "E012", sb_to_str(&sb), e.line, e.col, hint_quoted("Cast argument to '", ty_str(ps.ty), "'"));
             }
         }
         cur = ps.next;

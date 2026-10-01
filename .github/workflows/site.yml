@@ -61,9 +61,22 @@ jobs:
         sed -i 's/float used_gb;/float data_used_gb;/' src/schema.sta
         out="$(strata build 2>&1 || true)"
         cp /tmp/schema.bak src/schema.sta
-        echo "$out" | grep -q "views.sta" || { echo "::error::the web page did not fail"; exit 1; }
-        echo "$out" | grep -q "phone.sta" || { echo "::error::the phone screen did not fail"; exit 1; }
-        echo "both tiers failed on one rename, as claimed"
+        # Counted, not grepped for a filename. Searching the output for
+        # "phone.sta" stayed green while the compiler was catching two of
+        # that file's three uses and calling it complete — a gate that
+        # cannot see the regression it exists to catch. These numbers are
+        # every use of the column in the demo, so a compiler that stops
+        # finding one of them fails here.
+        web="$(printf '%s\n' "$out" | grep -cE '^E004 src/views\.sta' || true)"
+        phone="$(printf '%s\n' "$out" | grep -cE '^E004 src/phone\.sta' || true)"
+        data="$(printf '%s\n' "$out" | grep -cE '^E00[0-9] [0-9]+:' || true)"
+        total="$(printf '%s\n' "$out" | grep -cE '^E00[0-9] ' || true)"
+        echo "web page: $web   phone screen: $phone   data: $data   total: $total"
+        [ "$web"   = "3" ] || { echo "::error::expected 3 failures in src/views.sta, got $web"; exit 1; }
+        [ "$phone" = "3" ] || { echo "::error::expected 3 failures in src/phone.sta, got $phone"; exit 1; }
+        [ "$data"  = "2" ] || { echo "::error::expected 2 failures in the data, got $data"; exit 1; }
+        [ "$total" = "8" ] || { echo "::error::expected 8 failures in all, got $total"; exit 1; }
+        echo "one rename, eight failures, across the data, the rules, the web page and the phone screen"
 
     - uses: actions/configure-pages@v5
     - uses: actions/upload-pages-artifact@v3

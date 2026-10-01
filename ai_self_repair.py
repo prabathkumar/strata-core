@@ -67,6 +67,15 @@ def _replace_line(source: str, n: int, new: str) -> str:
     return "\n".join(lines) + ("\n" if source.endswith("\n") else "")
 
 
+class Ambiguous(Exception):
+    """Two repairs fit equally well, so there is no repair — only a choice.
+
+    Raised rather than returned so it cannot be mistaken for "no rule
+    applied", which falls through to another backend and might be answered
+    with a guess by a model instead.
+    """
+
+
 def repair_rules(source: str, d: dict):
     """Deterministic repairs driven by the compiler's own diagnostic.
 
@@ -85,10 +94,29 @@ def repair_rules(source: str, d: dict):
         valid = re.findall(r"'([^']+)'", d.get("hint", ""))
         if m and valid:
             import difflib
-            best = difflib.get_close_matches(m.group(1), valid, n=1, cutoff=0.4)
-            if best:
-                return _replace_line(source, line_no,
-                                     re.sub(rf"\b{re.escape(m.group(1))}\b", best[0], line))
+            wrong = m.group(1)
+            # Two candidates that fit equally well are a decision, not a
+            # repair. Asked to fix `balance` where the table holds
+            # `balance_usd` and `balance_eur`, this used to pick the first,
+            # print "clean" and exit 0 — a coin flip on a currency column,
+            # presented as a successful fix. Same principle as E009 below:
+            # when only the author knows the answer, say so and stop.
+            scored = sorted(
+                ((difflib.SequenceMatcher(None, wrong, v).ratio(), v)
+                 for v in valid), reverse=True)
+            scored = [(r, v) for r, v in scored if r >= 0.4]
+            if not scored:
+                return None
+            tied = [v for r, v in scored if abs(r - scored[0][0]) < 1e-9]
+            if len(tied) > 1:
+                raise Ambiguous(
+                    f"'{wrong}' is exactly as close to "
+                    + " as to ".join(f"'{t}'" for t in tied)
+                    + ". Only you know which was meant, and choosing for you "
+                      "is how a program ends up reading the wrong column.")
+            return _replace_line(source, line_no,
+                                 re.sub(rf"\b{re.escape(wrong)}\b",
+                                        scored[0][1], line))
 
     # E001: a str literal assigned to an int/float declaration.
     if code == "E001" and "declared as" in d.get("message", ""):
@@ -436,7 +464,14 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
 
         source = open(target).read()
         originals.setdefault(target, source)
-        patched = backend_fn(source, d)
+        try:
+            patched = backend_fn(source, d)
+        except Ambiguous as why:
+            # Not "no rule applied" — a rule applied and found a choice only
+            # the author can make. Said and stopped, with the files put back.
+            print(f"    [{backend}] this is a decision, not a repair: {why}",
+                  file=sys.stderr)
+            break
         if patched is None or patched == source:
             print("    backend produced no change — stopping.")
             break

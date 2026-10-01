@@ -813,13 +813,21 @@ class TypeChecker:
             return None
         rt,pts=fn
         if len(expr.args)!=len(pts):
-            self._error("E002",f"'{expr.callee}' expects {len(pts)} args, got {len(expr.args)}",
+            # E012, not E002: E002 is a return-contract breach, and its
+            # remediation tells a model to trace return blocks. The wrong
+            # number of arguments is a call that does not keep the
+            # function's contract, which is a different thing to fix.
+            self._error("E012",f"'{expr.callee}' expects {len(pts)} args, got {len(expr.args)}",
                 expr.line,expr.col,"")
             return rt
         for i,(arg,pt) in enumerate(zip(expr.args,pts)):
             at=self._infer_type(arg,scope)
             if at and not is_compatible(pt,at):
-                self._error("E005",f"Arg {i+1} of '{expr.callee}': expected '{pt}', got '{at}'",
+                # E012 as well: E005 is contamination crossing the foreign
+                # boundary. An argument of the wrong type to an ordinary
+                # function is the same call-contract breach as the wrong
+                # number of them.
+                self._error("E012",f"Arg {i+1} of '{expr.callee}': expected '{pt}', got '{at}'",
                     expr.line,expr.col,f"Cast argument to '{pt}'")
         return rt
 
