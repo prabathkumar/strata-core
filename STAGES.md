@@ -204,25 +204,29 @@ as an oracle to compare against.
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-9. It has run on a handset. The iOS app was built against the iPhoneOS SDK
-   for `arm64-apple-ios` — a different object and a different SDK from the
-   Simulator one — and installed on a real iPhone through BrowserStack App
-   Live on 1 October. The order list came up: eight rows out of a `database`
-   block, formatted by a rule, laid out by a `layout`, drawn by C the
-   compiler wrote. `tools/build_ios_device.sh` builds the unsigned `.ipa` and
-   `tools/browserstack_upload.sh` puts it on a device; the first has to run on
-   a Mac, because nothing else has Xcode.
+9. It has run on handsets, on both operating systems. The iOS app was built
+   against the iPhoneOS SDK for `arm64-apple-ios` — a different object and a
+   different SDK from the Simulator one — and installed on a real iPhone
+   through BrowserStack App Live on 1 October. The Android APK was built by
+   the NDK for `arm64-v8a`, `armeabi-v7a` and `x86_64` and installed on a
+   Google Pixel 7 running Android 13 the same day. Both showed the order
+   list: eight rows out of a `database` block, formatted by a rule, laid out
+   by a `layout`, drawn by C the compiler wrote.
 
-   The device found what the Simulator hid: the status bar was printed
+   `tools/build_ios_device.sh` and `tools/build_android.sh` build them;
+   `tools/browserstack_upload.sh` puts either on a device. The first has to
+   run on a Mac, because nothing else has Xcode.
+
+   The devices found what the Simulator hid: the status bar was printed
    through the title, because the screen started at pixel zero and nothing
    knew about the notch. Both shells now shift everything down by the system
-   inset, and take the same offset off a tap — shifting the drawing without
-   shifting the hit test is how a button stops answering where it looks.
+   inset — a safe-area inset on iOS, a window inset on Android — and take the
+   same offset off a tap, because shifting the drawing without shifting the
+   hit test is how a button stops answering where it looks.
 
-   **Android has not run anywhere.** The APK builds: the NDK compiles the
-   generated C for `arm64-v8a`, `armeabi-v7a` and `x86_64`, all five JNI
-   symbols resolve, and `journey_mobile` checks that on every commit. Nothing
-   has installed it on an emulator or a phone.
+   What is still not proven: one handset model per platform, both through a
+   device farm rather than a phone in a pocket, and nothing has been through
+   an App Store or Play Store review.
 
 10. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their

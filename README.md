@@ -95,7 +95,7 @@ them together.
 | **Database** | `database` blocks; tab-separated files or PostgreSQL, with schema migration | Working. No index, no joins, and a table loads whole unless you stream it with `scan`/`append`/`rewrite`. |
 | **Backend** | `stream` handlers, an HTTP server in `std/http.sta`, sessions and password hashing in `std/auth.sta` | Working. Forked worker per connection; no async, no concurrency. |
 | **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
-| **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on a physical iPhone** — Swift calls the compiler's own object through a bridging header, with no glue layer. The Android APK builds for three processors and every bridge symbol resolves, but nothing has installed it on a phone yet. |
+| **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on physical iPhone and Android handsets.** Swift calls the compiler's own object through a bridging header; Kotlin reaches the same five functions through JNI. No glue layer, no cross-platform framework, no web view. |
 
 #### The web tier, running
 
@@ -1354,7 +1354,7 @@ judgement says.
 | It installs and runs on a machine that has never seen it | `clean_checkout.py`, `journey_install.py`, and a macOS job that is a genuinely clean machine |
 | Every example in the documentation compiles | `doc_examples.py` on every commit |
 | The first hour works as written | `first_hour.py`, 27 checks |
-| It runs on a physical iPhone | Built for `arm64-apple-ios` against the iPhoneOS SDK by `tools/build_ios_device.sh`, installed on a real device through BrowserStack, 1 October |
+| It runs on physical phones, both platforms | iPhone built for `arm64-apple-ios` against the iPhoneOS SDK; Android built by the NDK for three ABIs. Both installed on real devices through BrowserStack, 1 October — an iPhone and a Pixel 7 on Android 13 |
 
 ### Not met
 
@@ -1363,7 +1363,6 @@ judgement says.
 | A developer who has never seen Strata gets through a first project without a stopper | A third blind pilot, with nothing fixed for them in advance. Two have been run; both found stoppers, both sets are fixed. The third is the test that counts. |
 | Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
 | A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
-| Android runs on a phone | The APK builds and every JNI symbol resolves, checked on every commit. Nothing has installed it on an emulator or a handset. |
 
 ### Not required for Beta, and said plainly
 

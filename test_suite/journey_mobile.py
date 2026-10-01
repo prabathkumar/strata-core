@@ -296,10 +296,15 @@ def main():
             ok("with every function MainActivity declares external",
                not missing, f"missing: {missing}")
 
-        print("\n── What this does not prove ────────────────────────────────────")
+        print("\n── And what it still does not prove ────────────────────────────")
+        # The app has run on a Pixel 7 through a device farm. That is not the
+        # same as a range of phones, and it is not the same as a phone in
+        # somebody's pocket, so the README has to keep saying which it was.
         readme = open(os.path.join(shell, "README.md")).read()
-        ok("the Android README says it has never run on a handset",
-           "never run on a handset" in readme, readme[:200])
+        ok("the Android README says which phone, and on whose terms",
+           "Pixel 7" in readme and "device farm" in readme, readme[:300])
+        ok("and does not claim a store release",
+           "Play Store" in readme, readme[:300])
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -32,14 +32,19 @@ copy is the one that goes stale.
 
 ## What this is, and is not
 
-The bridge compiles and links. `strata_jni.c` and the compiler's own output
-build into an ARM64 shared library with all five entry points resolving, and
-that is checked by `journey_mobile`.
+It runs. The APK was installed on a Google Pixel 7 running Android 13 on
+1 October, through BrowserStack App Live, and showed the order list.
+`System.loadLibrary("strata")` found the native library, the JNI bridge
+resolved, and the screen Strata drew appeared on a phone.
 
-**It has never run on a handset, or on an emulator.** The APK has not been
-assembled here, because this machine has no Android SDK. Until somebody
-installs it and sees the order list, the honest claim is that it builds -- and
-`STAGES.md` says exactly that.
+Every commit checks the part that is Strata's responsibility, so it stays
+true: `journey_mobile` compiles the phone bridge to C, links it with the JNI
+shim into a shared library, and asserts that every function `MainActivity`
+declares `external` is in it. A missing one is an `UnsatisfiedLinkError` on
+the first tap, which is not a thing to learn from a user.
+
+What it is not: one phone model, on a device farm rather than in somebody's
+pocket, and nothing has been near the Play Store.
 
 ## Why the screen is drawn rather than built from widgets
 
