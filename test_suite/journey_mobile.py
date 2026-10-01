@@ -258,6 +258,18 @@ def main():
         ok("and a Gradle project to build it",
            os.path.isfile(os.path.join(shell, "settings.gradle.kts")))
 
+        # This file is hand-written source, but the repository ignores *.c
+        # because that is what the compiler emits. It was ignored, so it was
+        # never pushed, and CI compiled against a file only this machine had.
+        # Present on disk is not the question. Tracked is.
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch",
+             "apps/orders_mobile/android/app/src/main/jni/strata_jni.c"],
+            cwd=ROOT, capture_output=True, text=True)
+        ok("and the JNI shim is tracked by git, not just present here",
+           tracked.returncode == 0,
+           "it is ignored or untracked, so CI will not have it")
+
         # The Android SDK is not assumed. What IS checked, on any machine with
         # a C compiler, is the part that is Strata's responsibility: the
         # compiler's own output and the JNI shim build together into a shared

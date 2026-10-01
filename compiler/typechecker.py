@@ -624,6 +624,17 @@ class TypeChecker:
                     f"Write 'list[{src}] {stmt.name} = {src} <- [...];' and check "
                     f"count({stmt.name}) — a query that matches nothing is not an error, "
                     f"but a record that is not there cannot be read")
+            # And the row type has to be the one the query yields -- see
+            # typechecker.sta.
+            if (declared.is_list and src in self.schemas
+                    and declared.element_type is not None
+                    and declared.element_type.name != src):
+                self._error("E001",
+                    f"'{stmt.name}' is 'list[{declared.element_type}]', but the "
+                    f"query yields rows of '{src}'",
+                    stmt.line,stmt.col,
+                    f"Declare it as 'list[{src}]', or query the table whose "
+                    f"rows you want.")
             scope.define(stmt.name,declared); return
         actual=self._infer_type(stmt.value,scope)
         if actual and not is_compatible(declared,actual):

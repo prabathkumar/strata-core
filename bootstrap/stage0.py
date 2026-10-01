@@ -427,6 +427,19 @@ int main(int argc, char** argv) {
         # the time. `load` uses them to skip work it has already done.
         self.emit_raw(f"static char* {name}__from = NULL;")
         self.emit_raw(f"static int64_t {name}__stamp = 0;")
+        # Whether this table has been changed since it was last read from or
+        # written to that file. The load-skip used to ask only whether the
+        # FILE had changed, so any change made in memory — an insert, a
+        # delete, a row appended — left `load` believing it had nothing to
+        # do, and the program went on reading something other than what it
+        # had just named. Clearing the stamp in `delete` fixed one instance
+        # of that and left the rest; this is the condition itself.
+        self.emit_raw(f"static int {name}__dirty = 0;")
+        # Declared with the rest of the table's state rather than beside the
+        # append helpers, because `load` has to flush this handle and is
+        # emitted before them.
+        self.emit_raw(f"static FILE* {name}__append_file = NULL;")
+        self.emit_raw(f"static char* {name}__append_path = NULL;")
         # What the Postgres store held when this process last read or wrote
         # it, and scratch space for what it holds now. Declared for every
         # table and used only under STRATA_POSTGRES, because a type that is
@@ -525,6 +538,7 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    free({name}__from);")
         self.emit_raw(f"    {name}__from = strata_dup(path);")
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
+        self.emit_raw(f"    {name}__dirty = 0;")
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
@@ -532,6 +546,11 @@ int main(int argc, char** argv) {
                       f"strata_str _where) {{")
         self.emit_raw("    path = (strata_str)strata_env_path(path);")
         self.emit_raw('    if (!path || !*path) { return 0; }')
+        # Rows this process appended are still in the handle's buffer. Reading
+        # the file without flushing it first returned none of them, with no
+        # error: the writer could not see its own writes.
+        self.emit_raw(f"    if ({name}__append_file) "
+                      f"{{ fflush({name}__append_file); }}")
         # Already loaded, from the same file, and the file has not changed
         # since: there is nothing to do. A service that forks per request
         # inherits the parent's tables, so this turns the reload on every
@@ -541,7 +560,7 @@ int main(int argc, char** argv) {
         # A filtered load asks for a different set of rows, so the table it
         # already holds is not the answer even when the file has not changed.
         self.emit_raw(f"    if ((!_where || !*_where) && _stamp != 0 "
-                      f"&& _stamp == {name}__stamp")
+                      f"&& !{name}__dirty && _stamp == {name}__stamp")
         self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
@@ -609,9 +628,17 @@ int main(int argc, char** argv) {
         for fd in fields:
             if self._c_type(fd.field_type) == "strata_str":
                 self.emit_raw(f'        r->{fd.name} = "";')
-        self.emit_raw("        int _more = 0, _eof = 0;")
-        self.emit_raw("        for (int _c = 0; _c < _ncol; _c++) {")
+        self.emit_raw("        int _more = 0, _eof = 0, _c = 0;")
+        self.emit_raw("        for (_c = 0; _c < _ncol; _c++) {")
         self.emit_raw("            _more = strata_read_field(f, buf, 4096);")
+        # -3 is a value too long for the buffer: the file holds more than the
+        # program would read, which is a damaged read rather than a short one.
+        self.emit_raw("            if (_more == -3) {")
+        self.emit_raw(f'                strata_load_refuse("{name}", path,'
+                      f' "a value is longer than this reader can hold");')
+        self.emit_raw(f"                free(r); fclose(f); {name}__count = 0;"
+                      f" return 0;")
+        self.emit_raw("            }")
         self.emit_raw("            if (_more < 0) { _eof = 1; break; }")
         self.emit_raw("            switch (_map[_c]) {")
         for idx, fd in enumerate(fields):
@@ -640,6 +667,17 @@ int main(int argc, char** argv) {
                       "schema no longer has */")
         self.emit_raw("            }")
         self.emit_raw("        }")
+        # A row that stops in the middle is not the end of the file; it is a
+        # damaged row, and dropping it silently made every total afterwards
+        # quietly short. A killed `append` leaves exactly this shape. The
+        # last row has no next line to roll into, so it was the one case the
+        # loader's other refusals never saw.
+        self.emit_raw("        if (_eof && _c > 0) {")
+        self.emit_raw(f'            strata_load_refuse("{name}", path,'
+                      f' "a row stops before its last column");')
+        self.emit_raw(f"            free(r); fclose(f); {name}__count = 0;"
+                      f" return 0;")
+        self.emit_raw("        }")
         self.emit_raw("        if (_eof) { free(r); break; }")
         self._gen_table_push(name, "        ")
         self.emit_raw("    }")
@@ -647,6 +685,7 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    free({name}__from);")
         self.emit_raw(f"    {name}__from = strata_dup(path);")
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
+        self.emit_raw(f"    {name}__dirty = 0;")
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
@@ -665,8 +704,6 @@ int main(int argc, char** argv) {
         header = "\\t".join(
             f"{fd.name}:{'s' if self._c_type(fd.field_type) == 'strata_str' else ('f' if self._c_type(fd.field_type) == 'strata_float' else 'i')}"
             for fd in fields)
-        self.emit_raw(f"static FILE* {name}__append_file = NULL;")
-        self.emit_raw(f"static char* {name}__append_path = NULL;")
         self.emit_raw(f"static void {name}__append_close(void) {{")
         self.emit_raw(f"    if ({name}__append_file) {{ fclose({name}__append_file); "
                       f"{name}__append_file = NULL; }}")
@@ -1477,6 +1514,7 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
         self.emit(f"{src}__count = _kept;")
+        self.emit(f"{src}__dirty = 1;")
         # What is in memory is no longer what the file holds, so the
         # load-skip must not treat it as though it were. Without this,
         # `save T to F; delete T <- [...]; load T from F` returned nothing:
@@ -2015,6 +2053,7 @@ int main(int argc, char** argv) {
         self.emit(f"if (!strata_table_room((void***)&{t}__rows, &{t}__cap, "
                   f'{t}__count + 1)) strata_table_full("{t}");')
         self.emit(f"{t}__rows[{t}__count++] = _r;")
+        self.emit(f"{t}__dirty = 1;")
         self.indent -= 1
         self.emit("}")
 

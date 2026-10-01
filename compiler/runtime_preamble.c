@@ -553,6 +553,7 @@ static void strata_write_escaped(FILE* f, strata_str s) {
 
 /* Reads one escaped field up to a tab or newline. Returns 0 at end of line. */
 static int strata_read_field(FILE* f, char* buf, int cap) {
+    int over = 0;
     int n = 0, c;
     while ((c = fgetc(f)) != EOF && c != '\t' && c != '\n') {
         if (c == '\\') {
@@ -562,10 +563,16 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
             else if (e == '\\') c = '\\';
             else c = e;
         }
-        if (n < cap - 1) buf[n++] = (char)c;
+        if (n < cap - 1) { buf[n++] = (char)c; }
+        else { over = 1; }
     }
     buf[n] = '\0';
     if (c == EOF && n == 0) return -1;
+    /* A value longer than the buffer used to be cut off here and handed back
+     * as though it were whole: the file kept the whole string, the program
+     * read a prefix, and nothing said so. Reported instead, so the loader can
+     * refuse the file the way it refuses every other damaged value. */
+    if (over) return -3;
     return c == '\n' ? 0 : 1;
 }
 /* ── Schema headers ───────────────────────────────────────────────────────

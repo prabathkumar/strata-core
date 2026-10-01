@@ -233,27 +233,47 @@ def main():
                 ok(label, bool(codes) and not unknown,
                    f"codes={codes} not in taxonomy: {unknown}")
 
-        print("\n── and the CLI agrees with the bootstrap ───────────────────────")
+        print("\n── and the CLI, over the whole tree ────────────────────────────")
         # Everything above drives bootstrap/stage0.py. A developer runs
-        # `strata check` and `strata build`, which go through the self-hosted
-        # compiler: an audit found a program the two disagreed about, so the
-        # claim is only worth making about the commands people actually type.
+        # `strata check` and `strata build`, which go through the SELF-HOSTED
+        # compiler -- and the bug this test exists for was the two of them
+        # disagreeing, which means checking only the oracle cannot find it.
+        #
+        # The first attempt at this ran the nine mutations through the CLI and
+        # asserted they agreed. All nine fail `strata check`, so the build was
+        # never reached and the assertion could not fail: an audit measured it
+        # at 0 of 9. A test that cannot fail is worse than no test, because it
+        # is counted.
+        #
+        # So the corpus is used instead. These are programs that are MEANT to
+        # build, which is what makes the question real: if `strata check`
+        # passes one and `strata build` then refuses it, the two compilers
+        # disagree and a developer meets it as C.
         strata = os.path.join(ROOT, "bin", "strata")
+        reached = 0
         divergent = []
-        for label, old, new in MUTATIONS:
-            src = GOOD.replace(old, new, 1)
-            path = os.path.join(tmp, "cli.sta")
-            open(path, "w").write(src)
-            c = subprocess.run([strata, "check", path], cwd=tmp,
+        for rel in corpus():
+            c = subprocess.run([strata, "check", rel], cwd=ROOT,
                                capture_output=True, text=True)
-            if c.returncode == 0:
-                b = subprocess.run([strata, "build", path, "-o",
-                                    os.path.join(tmp, "cli.bin")],
-                                   cwd=tmp, capture_output=True, text=True)
-                if b.returncode != 0:
-                    divergent.append((label, (b.stdout + b.stderr)[-200:]))
-        ok("strata check and strata build agree on every mutation",
-           not divergent, "; ".join(f"{l}: {o}" for l, o in divergent))
+            if c.returncode != 0:
+                continue
+            reached += 1
+            b = subprocess.run(
+                [strata, "build", rel, "-o", os.path.join(tmp, "cli.bin")],
+                cwd=ROOT, capture_output=True, text=True)
+            out = b.stdout + b.stderr
+            if b.returncode != 0 and not ("undefined reference" in out
+                                          or "ld returned" in out
+                                          or "Undefined symbols" in out):
+                divergent.append((rel, out[-200:]))
+        # The count is asserted too: if a change ever makes `strata check`
+        # refuse everything, this must go red rather than quietly pass by
+        # examining nothing. That is the failure it just had.
+        ok(f"strata check and strata build agree ({reached} programs reached "
+           f"the build)",
+           reached > 20 and not divergent,
+           f"reached={reached}; "
+           + "; ".join(f"{r}: {o}" for r, o in divergent))
 
     print("\n================================================================")
     print(f"  {passed}/{passed + failed} checks passed")

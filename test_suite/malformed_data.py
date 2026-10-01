@@ -47,6 +47,20 @@ CASES = [
     ("none of the columns match",
      b"#strata\tRow\tzzz:i\tqqq:s\twww:f\n1\tA\t1.0\n", "0",
      "none of its columns are in this table"),
+    # The last row of a file is the one a killed `append` or a truncated copy
+    # leaves half-written, and it was the one shape the loader never saw: no
+    # next line to roll into, so the partial row was dropped and every total
+    # afterwards came out quietly short. Found by a blind pilot, not by this
+    # file, which is why it is in this file now.
+    ("the last row stops in the middle",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\n2\tB\n", "0",
+     "stops before its last column"),
+    ("the last row stops in the middle, with a trailing newline missing",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\n2\tB", "0",
+     "stops before its last column"),
+    ("a complete last row with no trailing newline is fine",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\n2\tB\t2.0", "2",
+     None),
     ("a column changed type",
      b"#strata\tRow\tid:s\tname:s\tamount:f\n1\tA\t1.0\n", "0", "changed type"),
     ("text where a whole number belongs",
@@ -68,8 +82,14 @@ CASES = [
     ("no newline at the end", GOOD.rstrip(b"\n"), "2", None),
     ("a dropped column is skipped",
      b"#strata\tRow\tid:i\tname:s\tamount:f\tlegacy:s\n1\tA\t1.0\tx\n", "1", None),
-    ("a very long value", b"#strata\tRow\tid:i\tname:s\tamount:f\n1\t"
-     + b"x" * 65536 + b"\t1.0\n", "1", None),
+    # A value longer than the reader's buffer used to be cut short and handed
+    # back as though it were whole: the file kept the string, the program got
+    # a prefix, and nothing said so. An audit found it hiding behind the
+    # stale-table bug -- the truncated value was never reloaded, so the test
+    # that would have caught it passed.
+    ("a value longer than the reader can hold",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\t" + b"x" * 65536
+     + b"\t1.0\n", "0", "longer than this reader can hold"),
 ]
 
 failures = []

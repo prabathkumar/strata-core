@@ -8,6 +8,9 @@ build/
 # Every runtime prelude, not just the native one. Naming a single file
 # here let the wasm prelude be silently excluded the moment it was added.
 !compiler/runtime_preamble*.c
+# The phone's JNI shim is hand-written source too. It was ignored by the
+# *.c line above, so CI compiled against a file that was never pushed.
+!apps/orders_mobile/android/app/src/main/jni/strata_jni.c
 
 # The lock file the service creates to serialise writes.
 apps/orders/data/.lock

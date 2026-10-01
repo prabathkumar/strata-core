@@ -83,6 +83,12 @@ jobs:
     - name: build --json Is JSON
       run: python3 test_suite/build_json_is_json.py
 
+    # A table is reloaded only when its file changed. That skip asked about
+    # the file and not the table, so three ways of changing the table left
+    # `load` returning rows the file did not hold.
+    - name: A Table Agrees With Its File
+      run: python3 test_suite/a_table_agrees_with_its_file.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.

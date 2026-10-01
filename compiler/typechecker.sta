@@ -1218,6 +1218,30 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             sb_append(&qh, ") — a query that matches nothing is not an error, but a record that is not there cannot be read");
             emit_hint(&tc, "E001", sb_to_str(&qb), st.line, st.col, sb_to_str(&qh));
         }
+        // And the row type has to be the one the query yields. A list of
+        // the wrong record, or of a scalar, type-checked and then generated
+        // an assignment between incompatible pointers: a clean `strata
+        // check` followed by a C error about generated code. The literal
+        // case of this was fixed and the query case left, one branch below
+        // it, which is how an audit found it.
+        if (dq.is_list == 1) {
+            if (qsch != 0) {
+                if (dq.elem != 0) {
+                    Ty de = ty_at(dq.elem);
+                    if (str_eq(de.name, qval.s1) == 0) {
+                        StringBuilder rb = sb_new();
+                        sb_append(&rb, "'");
+                        sb_append(&rb, st.s1);
+                        sb_append(&rb, "' is 'list[");
+                        sb_append(&rb, de.name);
+                        sb_append(&rb, "]', but the query yields rows of '");
+                        sb_append(&rb, qval.s1);
+                        sb_append(&rb, "'");
+                        emit_hint(&tc, "E001", sb_to_str(&rb), st.line, st.col, hint_two("Declare it as 'list[", qval.s1, "]', or query the table whose rows you want.", "", ""));
+                    }
+                }
+            }
+        }
         Scp sq = scp_at(scope_p);
         scp_define(&sq, st.s1, declared);
         return;
