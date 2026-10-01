@@ -1,1 +1,0 @@
-/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/src/main/jni/CMakeLists.txt

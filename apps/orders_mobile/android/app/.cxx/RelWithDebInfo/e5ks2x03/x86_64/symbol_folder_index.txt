@@ -1,1 +1,0 @@
-/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/build/intermediates/cxx/RelWithDebInfo/e5ks2x03/obj/x86_64
