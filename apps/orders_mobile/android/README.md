@@ -1,32 +1,54 @@
-# The Android shell
+# Orders, on Android
 
-Everything a phone needs that Strata does not provide: a window, a canvas, and
-finger taps. It is deliberately small — if this file grows, the architecture is
-wrong.
+The same five functions the iOS shell calls, reached through JNI because Java
+cannot call C directly the way Swift can. Everything that is not those five
+functions and the drawing of their answers is Strata.
 
-The shell does not know what an order is. It asks Strata for a list of things
-to draw, paints them, and tells Strata where the finger went. Adding a column,
-a screen or a rule changes no Kotlin.
+```
+android/
+  app/src/main/java/org/stratalang/orders/MainActivity.kt   the whole UI
+  app/src/main/jni/strata_jni.c                             the bridge
+  app/src/main/jni/CMakeLists.txt                           builds libstrata.so
+  app/src/main/jni/host.c                                   generated, not checked in
+```
 
 ## Building it
 
-```
-# 1. the Strata half, for the phone's processor
-STRATA_CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang \
-  strata build src/screen.sta -o app/src/main/jniLibs/arm64-v8a/libstrata.so
-
-# 2. the Android half
-./gradlew assembleDebug
+```bash
+bash tools/build_android.sh
 ```
 
-## Not yet run on a device
+Two steps. The Strata compiler turns `src/host.sta` into C; Gradle and the NDK
+turn that C plus the shim into `libstrata.so` for `arm64-v8a`, `armeabi-v7a`
+and `x86_64`, and wrap it in an APK.
 
-This is stated plainly rather than left to be discovered. The Strata half is
-proven: it compiles for ARM64 and produces byte-identical results to the x86
-build under emulation (`test_suite/journey_mobile.py`). The Kotlin below is
-written against the documented Android APIs and has **not** been built with the
-Android SDK or run on a handset, because neither is available where it was
-written. Treat it as a reviewed design, not a tested one.
+You need Android Studio with **NDK (Side by side)** and **CMake** ticked under
+SDK Tools. The script says so rather than letting Gradle fail with a message
+about a missing file.
 
-What is genuinely unknown until someone runs it: the JNI signatures, Gradle
-wiring, and how the display list should scale on a real screen density.
+`host.c` is generated and ignored by git, for the same reason the iOS object
+is: a generated file in the repository is a second copy of the truth, and the
+copy is the one that goes stale.
+
+## What this is, and is not
+
+The bridge compiles and links. `strata_jni.c` and the compiler's own output
+build into an ARM64 shared library with all five entry points resolving, and
+that is checked by `journey_mobile`.
+
+**It has never run on a handset, or on an emulator.** The APK has not been
+assembled here, because this machine has no Android SDK. Until somebody
+installs it and sees the order list, the honest claim is that it builds -- and
+`STAGES.md` says exactly that.
+
+## Why the screen is drawn rather than built from widgets
+
+`MainActivity` asks Strata for a list of things to draw and paints them. It
+knows nothing about orders, customers or amounts. Adding a column, a screen or
+a business rule changes this file not at all, which is the point: two phone
+platforms and a web tier that all follow one schema, instead of three places
+to forget the same change.
+
+The display list is in device-independent pixels against a 411-wide screen and
+scaled by one factor. One number, because a layout needing more than one is a
+layout that will not survive the next phone.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The two phone shells describe the same screen, and must not drift.
 
-apps/orders_mobile/android/MainActivity.kt and .../ios/ScreenView.swift are
+the Kotlin and Swift shells (android/app/src/main/java/.../MainActivity.kt
+and ios/ScreenView.swift) are
 independent files that read the same display list from the same five Strata
 functions. Nothing makes them agree except care, and care does not survive six
 months. A change made to one and not the other makes the same app look
@@ -18,7 +19,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "apps", "orders_mobile")
 HOST = os.path.join(APP, "src", "host.sta")
-KOTLIN = os.path.join(APP, "android", "MainActivity.kt")
+KOTLIN = os.path.join(APP, "android", "app", "src", "main", "java",
+                      "org", "stratalang", "orders", "MainActivity.kt")
 SWIFT = os.path.join(APP, "ios", "ScreenView.swift")
 HEADER = os.path.join(APP, "ios", "StrataBridge.h")
 

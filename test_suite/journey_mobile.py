@@ -84,6 +84,29 @@ def skip(name, why):
     SKIP += 1
 
 
+# Enough of JNI to compile the shim without the Android NDK installed. The
+# NDK's own header is the one that matters on a phone; this only has to agree
+# with it about the shapes the shim uses.
+FAKE_JNI_H = """
+#ifndef STRATA_FAKE_JNI_H
+#define STRATA_FAKE_JNI_H
+#include <stddef.h>
+typedef int jint;
+typedef unsigned char jboolean;
+typedef void* jobject;
+typedef void* jstring;
+#define JNIEXPORT
+#define JNICALL
+typedef struct JNINativeInterface {
+    jstring (*NewStringUTF)(struct JNINativeInterface**, const char*);
+    const char* (*GetStringUTFChars)(struct JNINativeInterface**, jstring, jboolean*);
+    void (*ReleaseStringUTFChars)(struct JNINativeInterface**, jstring, const char*);
+} JNINativeInterface;
+typedef JNINativeInterface* JNIEnv;
+#endif
+"""
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="strata-mobile-")
     try:
@@ -225,14 +248,58 @@ def main():
            any(px3(x, 137) != px4(x, 137) for x in range(24, 380)),
            "typing changed nothing on screen")
 
-        print("\n── What this does not prove ────────────────────────────────────")
+        print("\n── The Android bridge compiles and links ───────────────────────")
         shell = os.path.join(ROOT, "apps", "orders_mobile", "android")
-        ok("the Android shell is present to review",
-           os.path.exists(os.path.join(shell, "MainActivity.kt")))
+        jni = os.path.join(shell, "app", "src", "main", "jni")
+        ok("the Android shell is present",
+           os.path.isfile(os.path.join(
+               shell, "app", "src", "main", "java", "org", "stratalang",
+               "orders", "MainActivity.kt")))
+        ok("and a Gradle project to build it",
+           os.path.isfile(os.path.join(shell, "settings.gradle.kts")))
+
+        # The Android SDK is not assumed. What IS checked, on any machine with
+        # a C compiler, is the part that is Strata's responsibility: the
+        # compiler's own output and the JNI shim build together into a shared
+        # library in which every function MainActivity declares `external`
+        # actually exists. A missing symbol there is an UnsatisfiedLinkError on
+        # the first tap, found by whoever installs it rather than here.
+        host_c = os.path.join(tmp, "host.c")
+        r = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bootstrap", "stage0.py"),
+             "src/host.sta", "--emit-c"],
+            cwd=os.path.join(ROOT, "apps", "orders_mobile"),
+            capture_output=True, text=True)
+        open(host_c, "w").write(r.stdout)
+        ok("the phone bridge compiles to C", r.returncode == 0 and r.stdout,
+           r.stderr[-200:])
+
+        fake_jni = os.path.join(tmp, "jni.h")
+        open(fake_jni, "w").write(FAKE_JNI_H)
+        lib = os.path.join(tmp, "libstrata.so")
+        cc = os.environ.get("STRATA_CC", "cc").split()[0]
+        r = subprocess.run(
+            cc.split() + ["-shared", "-fPIC", "-O1", "-w", f"-I{tmp}",
+                          host_c, os.path.join(jni, "strata_jni.c"),
+                          "-o", lib, "-lm"],
+            capture_output=True, text=True)
+        ok("and links with the JNI shim into a shared library",
+           r.returncode == 0, r.stderr[-400:])
+
+        if r.returncode == 0 and shutil.which("nm"):
+            syms = subprocess.run(["nm", "-D", "--defined-only", lib],
+                                  capture_output=True, text=True).stdout
+            missing = [n for n in ("drawScreen", "itemAt", "hit", "act",
+                                   "start")
+                       if f"Java_org_stratalang_orders_MainActivity_{n}"
+                       not in syms]
+            ok("with every function MainActivity declares external",
+               not missing, f"missing: {missing}")
+
+        print("\n── What this does not prove ────────────────────────────────────")
         readme = open(os.path.join(shell, "README.md")).read()
-        ok("and says plainly that it has not run on a handset",
-           "not been built with the Android SDK" in readme
-           or "Not yet run on a device" in readme, readme[:200])
+        ok("the Android README says it has never run on a handset",
+           "never run on a handset" in readme, readme[:200])
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

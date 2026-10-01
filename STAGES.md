@@ -207,9 +207,19 @@ as an oracle to compare against.
 9. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
    real bridge — `src/host.sta` compiles to a linkable object and Swift calls
    its five C functions with no glue layer — but it has only ever been pointed
-   at the Simulator. `apps/orders_mobile/android/` is still reviewed design
-   rather than tested code: the machine here has no NDK, so the JNI wrappers
-   around those same five functions have never been compiled.
+   at the Simulator, which is a different SDK and a different object from the
+   one a phone runs. `tools/build_ios_device.sh` builds the unsigned `.ipa` a
+   handset needs; it has to run on the Mac, because nothing else has Xcode.
+
+   `apps/orders_mobile/android/` is now a Gradle project with a JNI bridge
+   rather than a single reviewed file. The part that is Strata's
+   responsibility is tested on every commit: `journey_mobile` compiles
+   `src/host.sta` to C, links it with the JNI shim into a shared library, and
+   checks that every function `MainActivity` declares `external` is really in
+   it — a missing one is an `UnsatisfiedLinkError` on first tap, and that is
+   not a thing to find out from a user. **The APK itself has never been
+   assembled and nothing has run on an emulator or a phone**, because the
+   machine here has no Android SDK.
 10. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their
    own copies and survive it. Measured: four million temporaries with resets
