@@ -230,7 +230,10 @@ as an oracle to compare against.
    git revision, named exactly; `strata deps` fetches the graph, including
    dependencies of dependencies, and refuses when two packages disagree about
    one name rather than choosing for you. Nothing publishes, nothing searches,
-   and "^1.2" means nothing here.
+   and "^1.2" means nothing here. `docs/ECOSYSTEM.md` is the design note for
+   closing this: an index file rather than a server, a shape for a library,
+   and packages that ship their own error codes into the taxonomy so the
+   repair loop knows how to fix their misuse. None of it is built.
 12. A layout has no event model. A button names a route it posts to; nothing
    in a rendered page calls a Strata function by itself, because Strata emits
    no JavaScript. Passing a handler's name to `action` is now E001 rather
