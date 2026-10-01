@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 
 /**
  * The whole of the Android side.
@@ -55,8 +56,25 @@ class MainActivity : Activity() {
         // is a layout that will not survive the next phone.
         private fun scale(): Float = width / 411f
 
+        // And then moved below the status bar. Android reports it through
+        // window insets; without this the clock is printed through the title,
+        // which is what a real iPhone showed the iOS shell doing.
+        private var topInset: Float = 0f
+
+        override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+            topInset = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.statusBars()).top.toFloat()
+            } else {
+                @Suppress("DEPRECATION")
+                insets.systemWindowInsetTop.toFloat()
+            }
+            invalidate()
+            return super.onApplyWindowInsets(insets)
+        }
+
         override fun onDraw(canvas: Canvas) {
             val s = scale()
+            canvas.translate(0f, topInset)
             canvas.drawColor(Color.parseColor("#F0F0F0"))
             val n = drawScreen()
             for (i in 0 until n) {
@@ -90,7 +108,11 @@ class MainActivity : Activity() {
         override fun onTouchEvent(e: MotionEvent): Boolean {
             if (e.action != MotionEvent.ACTION_UP) return true
             val s = scale()
-            val action = hit((e.x / s).toInt(), (e.y / s).toInt())
+            // The same offset, taken off again: a tap is reported in
+            // Strata's coordinates, not the screen's. Shifting the drawing
+            // without shifting the hit test is how a button stops answering
+            // where it looks.
+            val action = hit((e.x / s).toInt(), ((e.y - topInset) / s).toInt())
             if (action.isNotEmpty()) {
                 act(action)
                 invalidate()

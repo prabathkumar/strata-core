@@ -204,22 +204,26 @@ as an oracle to compare against.
    both the password guess and the trick of locking an operator out on
    purpose. What it does not stop is one source spreading attempts across many
    usernames — that needs a rate limit, which this is not.
-9. Nothing has run on a handset. `apps/orders_mobile/ios/` builds against a
-   real bridge — `src/host.sta` compiles to a linkable object and Swift calls
-   its five C functions with no glue layer — but it has only ever been pointed
-   at the Simulator, which is a different SDK and a different object from the
-   one a phone runs. `tools/build_ios_device.sh` builds the unsigned `.ipa` a
-   handset needs; it has to run on the Mac, because nothing else has Xcode.
+9. It has run on a handset. The iOS app was built against the iPhoneOS SDK
+   for `arm64-apple-ios` — a different object and a different SDK from the
+   Simulator one — and installed on a real iPhone through BrowserStack App
+   Live on 1 October. The order list came up: eight rows out of a `database`
+   block, formatted by a rule, laid out by a `layout`, drawn by C the
+   compiler wrote. `tools/build_ios_device.sh` builds the unsigned `.ipa` and
+   `tools/browserstack_upload.sh` puts it on a device; the first has to run on
+   a Mac, because nothing else has Xcode.
 
-   `apps/orders_mobile/android/` is now a Gradle project with a JNI bridge
-   rather than a single reviewed file. The part that is Strata's
-   responsibility is tested on every commit: `journey_mobile` compiles
-   `src/host.sta` to C, links it with the JNI shim into a shared library, and
-   checks that every function `MainActivity` declares `external` is really in
-   it — a missing one is an `UnsatisfiedLinkError` on first tap, and that is
-   not a thing to find out from a user. **The APK itself has never been
-   assembled and nothing has run on an emulator or a phone**, because the
-   machine here has no Android SDK.
+   The device found what the Simulator hid: the status bar was printed
+   through the title, because the screen started at pixel zero and nothing
+   knew about the notch. Both shells now shift everything down by the system
+   inset, and take the same offset off a tap — shifting the drawing without
+   shifting the hit test is how a button stops answering where it looks.
+
+   **Android has not run anywhere.** The APK builds: the NDK compiles the
+   generated C for `arm64-v8a`, `armeabi-v7a` and `x86_64`, all five JNI
+   symbols resolve, and `journey_mobile` checks that on every commit. Nothing
+   has installed it on an emulator or a phone.
+
 10. Memory is given back in one piece or not at all. Temporaries come from an
    arena and `scratch_reset()` throws the whole arena away; tables keep their
    own copies and survive it. Measured: four million temporaries with resets

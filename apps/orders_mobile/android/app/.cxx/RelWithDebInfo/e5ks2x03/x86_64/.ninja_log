@@ -2,3 +2,7 @@
 0	60	1790837553565677196	CMakeFiles/strata.dir/strata_jni.c.o	9e82485ba1bf6f27
 0	288	1790837553787481277	CMakeFiles/strata.dir/host.c.o	51e41b14de218723
 289	371	1790837553881746989	/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/build/intermediates/cxx/RelWithDebInfo/e5ks2x03/obj/x86_64/libstrata.so	3b464b9966eb6a1e
+1	315	1790839220373219776	CMakeFiles/strata.dir/host.c.o	51e41b14de218723
+315	381	1790839220448129644	/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/build/intermediates/cxx/RelWithDebInfo/e5ks2x03/obj/x86_64/libstrata.so	3b464b9966eb6a1e
+0	258	1790839543194532461	CMakeFiles/strata.dir/host.c.o	51e41b14de218723
+259	305	1790839543250385941	/Users/prabathkumar/strata-project/apps/orders_mobile/android/app/build/intermediates/cxx/RelWithDebInfo/e5ks2x03/obj/x86_64/libstrata.so	3b464b9966eb6a1e

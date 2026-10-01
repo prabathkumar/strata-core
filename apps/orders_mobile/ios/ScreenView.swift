@@ -20,6 +20,19 @@ final class ScreenView: UIView {
     // layout that will not survive the next phone.
     private var scale: CGFloat { bounds.width / 411.0 }
 
+    // And then moved below the clock. The Simulator screenshots showed the
+    // title with the time printed through it and that was read as a capture
+    // artefact; on a real iPhone it is the status bar, sitting on top of a
+    // screen that starts at pixel zero. Everything Strata draws is shifted
+    // down by whatever the system reserves, so the top of the title bar is
+    // the top of the usable screen rather than the top of the glass.
+    private var topInset: CGFloat { safeAreaInsets.top }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        setNeedsDisplay()
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = UIColor(white: 240.0 / 255.0, alpha: 1.0)  // #F0F0F0
@@ -32,6 +45,7 @@ final class ScreenView: UIView {
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let s = scale
+        ctx.translateBy(x: 0, y: topInset)
         let n = host_draw()
 
         for i in 0..<n {
@@ -84,8 +98,13 @@ final class ScreenView: UIView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let t = touches.first else { return }
         let s = scale
+        // The same offset, taken off again: a tap is reported in Strata's
+        // coordinates, not the screen's. Shifting the drawing without
+        // shifting the hit test is how a button stops answering where it
+        // looks, which is worse than a button that never worked.
         let p = t.location(in: self)
-        guard let raw = host_hit(Int64(p.x / s), Int64(p.y / s)) else { return }
+        guard let raw = host_hit(Int64(p.x / s),
+                                 Int64((p.y - topInset) / s)) else { return }
         let action = String(cString: raw)
         if !action.isEmpty {
             _ = action.withCString { host_act($0) }

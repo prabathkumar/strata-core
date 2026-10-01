@@ -59,15 +59,21 @@ if [ "$STATUS" != "200" ]; then
     exit 1
 fi
 
-cat "$BODY_FILE" | python3 - <<'PYEOF'
+echo "  HTTP $STATUS"
+
+# The body is passed by NAME, not on stdin. `cat f | python3 - <<EOF` hands
+# python the heredoc as its program AND as its stdin, so the program read
+# nothing and reported that the empty string was not JSON -- about a request
+# that had in fact succeeded.
+python3 - "$BODY_FILE" <<'PYEOF'
 import json
 import sys
 
-raw = sys.stdin.read()
+raw = open(sys.argv[1]).read()
 try:
     d = json.loads(raw)
 except json.JSONDecodeError:
-    sys.exit("BrowserStack did not answer with JSON:\n" + raw[:800])
+    sys.exit("BrowserStack did not answer with JSON:\n" + repr(raw[:800]))
 
 if "app_url" in d:
     print("  app_url:   " + d["app_url"])
