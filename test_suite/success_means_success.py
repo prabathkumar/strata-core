@@ -281,6 +281,29 @@ def main():
             rc, out = run(["run"], proj)
             ok("and runs, printing the field", "first" in out, out[-200:])
 
+        print("\n── every import a new project ships is load-bearing ────────────")
+        # The scaffold imported `str` and `mem`, which it never used, so a
+        # developer deleting one and seeing nothing happen concluded the whole
+        # import list was decorative. Deleting one that matters must fail.
+        work = os.path.join(tmp, "k")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("an eleventh project is created", proj is not None, err)
+        if proj:
+            m = os.path.join(proj, "src", "main.sta")
+            kept = open(m).read()
+            imports = [l for l in kept.splitlines()
+                       if l.startswith("import ")]
+            ok("it ships at least one import", imports, str(imports))
+            for line in imports:
+                open(m, "w").write(kept.replace(line + "\n", ""))
+                rc, out = run(["build"], proj)
+                ok(f"deleting '{line.strip()}' fails the build",
+                   rc != 0, out[-160:])
+                open(m, "w").write(kept)
+            rc, out = run(["build"], proj)
+            ok("and the project builds with all of them", rc == 0, out[-160:])
+
         print("\n── strata deps does not announce work it did not do ────────────")
         work = os.path.join(tmp, "j")
         os.makedirs(work)

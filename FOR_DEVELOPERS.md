@@ -104,11 +104,15 @@ second machine writes the same file.
   `str_*` names: the `strata_*` ones are an implementation detail and are not
   promised to stay. A blind pilot found both in use in our own scaffold and
   tutorial, with nothing saying which was meant; that has been corrected.
-- **An import from `std` is not enforced.** Deleting `import str from std;`
-  from a file that calls `str_concat` changes nothing: the standard library
-  is linked into every program, so the import list documents intent rather
-  than controlling it. An import of a module from `app` IS load-bearing. This
-  is a real inconsistency and it is in STAGES.md as one.
+- **Some names need no import, and it is not obvious which.** `str_concat`,
+  `str_len`, `str_eq`, `str_slice`, `str_index_of`, `str_to_int`,
+  `file_read`, `file_write`, `file_exists`, the `str()` / `int()` / `float()`
+  casts and the aggregates are PRELUDE: every program carries them and no
+  import brings them in. Everything else is a module and the import is
+  load-bearing -- delete `import io from std;` and `print` is `E011`. A pilot
+  deleted `import str from std;`, saw nothing change, and concluded the
+  import list was decorative. It is not; `str_concat` was simply never from
+  that module.
 - **No package registry.** A dependency is a path or a git revision, named
   exactly. `strata deps` fetches the graph, including dependencies of
   dependencies, and refuses when two packages disagree about a name.

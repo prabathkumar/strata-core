@@ -278,12 +278,16 @@ as an oracle to compare against.
    no `return` in it; that is E012. E005 is retired rather than deleted --
    nothing emits it, and the taxonomy entry stays so a diagnostic stored by
    an older build still resolves.
-16. An import from `std` is decorative. Deleting `import str from std;` from
-   a file that calls `str_concat` changes nothing, because the standard
-   library is linked into every program; an import from `app` is enforced
-   properly. So `strata doc` reports an import list that does not have to be
-   true, and a reader cannot tell which lines are load-bearing. Found by the
-   sixth pilot, who had to guess.
+16. Closed, and the gap was not what it looked like. A pilot found that
+   deleting `import str from std;` from a file calling `str_concat` changed
+   nothing and concluded imports were decorative. They are not: deleting
+   `import io from std;` fails the build on `print`. What is true is that
+   some names -- `str_concat`, `str_len`, `str_eq`, the `str()`/`int()`
+   casts -- are PRELUDE, carried by every program and needing no import at
+   all, and that `strata new` imported `str` and `mem` which it never
+   needed. A reader could not tell which lines mattered, because two of them
+   did not. The scaffold imports only what it uses, says so in a comment,
+   and FOR_DEVELOPERS names the prelude.
 17. A syntax error is reported where the parser noticed, which for an
    unclosed brace or paren is the end of the file rather than the line that
    is wrong. `int broken( {` on line 13 is reported at line 14, col 1, as

@@ -489,9 +489,12 @@ MD
     awk -v n="$name" '{gsub(/PROJECT_NAME/, n); print}' "$name/README.md" \
         > "$name/README.md.tmp" && mv "$name/README.md.tmp" "$name/README.md"
     cat > "$name/src/main.sta" << STA
+// Every import here is load-bearing: delete one and the build fails. \`io\`
+// gives you \`print\`; \`schema\` is this project's own table. \`str_concat\`
+// and \`str()\` need no import -- they are part of the prelude every program
+// carries. The scaffold used to import \`str\` and \`mem\` as well, which it
+// never needed, and a developer could not tell which lines mattered.
 import io     from std;
-import str    from std;
-import mem    from std;
 import schema from app;
 
 int main() {
