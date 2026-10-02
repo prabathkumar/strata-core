@@ -124,8 +124,9 @@ the phone's home screen like any other app.
 |---|---|
 | <img src="docs/images/ios-orders-home.png" width="260" alt="The Orders app on the iOS Simulator home screen" /> | <img src="docs/images/ios-orders-list.png" width="420" alt="The Orders app showing rows read from the Strata database block" /> |
 
-Taken on the iPhone 16e Simulator, iOS 18.6. It has never run on a physical
-handset, and the Android shell has never been compiled.
+Taken on the iPhone 16e Simulator, iOS 18.6. It has since run on physical
+handsets of both kinds -- an iPhone and a Pixel 7 on Android 13, through
+BrowserStack on 1 October -- with screenshots further down.
 
 The point is not that one language can reach four places. It is that a rename
 in the database block fails the build in the query, the aggregate and the line
@@ -356,16 +357,15 @@ none of that, and none of it is something code can deliver — it arrives with
 time and users or it does not arrive. For almost any project you would start
 today, one of those is the right answer.
 
-**The ⚠️ marks mean what they say.** Strata's mobile tier runs on the iOS
-Simulator and has never run on a physical handset. Strata serves requests in parallel by
+**The ⚠️ marks mean what they say.** Strata serves requests in parallel by
 forking a process per connection, which runs on every core, inherits the
 loaded tables copy-on-write and shares counters through memory mapped before
 the first fork. What it does not have is threads or async: nothing shares
 mutable memory, so a write takes a file lock and a slow request holds a
 process. That is a real concurrency model with real limits, not an absence.
 Strata's mobile tier compiles against its
-contract, runs on the iOS Simulator, and has **never run on a physical
-handset**. In Java, jOOQ generates
+contract and has run on physical handsets of both kinds, through a device
+farm rather than through a store. In Java, jOOQ generates
 typed code from a real schema while JPQL strings are not checked; in C#, EF
 Core checks LINQ against your *model*, and the model against the database is a
 migration somebody ran — which is what the second row is about. Elixir's Ecto
@@ -873,7 +873,7 @@ strata new myapp && cd myapp
 strata run                      # builds src/main.sta and runs it
 strata check src/main.sta       # types and contracts, no binary
 strata test                     # runs every verify block
-strata fmt src/*.sta --check    # canonical formatting, as CI enforces it
+strata fmt src/*.sta --check    # re-indents; --check is what CI runs
 ```
 
 ### A batch job

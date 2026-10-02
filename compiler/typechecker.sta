@@ -962,7 +962,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, e.s1);
             sb_append(&qsb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, hint_quoted("Declare 'database ", e.s1, "' first"));
+            emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, undeclared_table_hint(e.s1, "first"));
             return 0;
         }
         validate_query(&tc, e.c1, e.s1, e.line, e.col, scope_p);
@@ -1060,6 +1060,19 @@ int infer_binary(TC &tc, Node e, int scope_p) {
     }
     if (left != 0) { return left; }
     return right;
+}
+
+// A table the file cannot see is usually one it did not import -- see
+// typechecker.py. The old hint sent a newcomer to declare a second,
+// conflicting schema.
+str undeclared_table_hint(str name, str verb) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "Declare 'database ");
+    sb_append(&sb, name);
+    sb_append(&sb, "' ");
+    sb_append(&sb, verb);
+    sb_append(&sb, " -- or, if it is already declared in another module of this project, import that module: import schema from app;");
+    return sb_to_str(&sb);
 }
 
 int is_number_ty(str n) {
@@ -1397,7 +1410,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, qval.s1);
             sb_append(&qsb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, hint_quoted("Declare 'database ", qval.s1, "' first"));
+            emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, undeclared_table_hint(qval.s1, "first"));
         }
         if (qsch != 0) {
             validate_query(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
@@ -1649,7 +1662,7 @@ def check_stmt_insert(TC &tc, Node st, int scope_p) {
         sb_append(&sb, "Database '");
         sb_append(&sb, st.s1);
         sb_append(&sb, "' not declared");
-        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
+        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s1, "first"));
         return;
     }
     Schema s = schema_at(sch);
@@ -1843,7 +1856,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "Database '");
             sb_append(&sb, st.s1);
             sb_append(&sb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s1, "' first"));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s1, "first"));
             return;
         }
         validate_query(&tc, st.c1, st.s1, st.line, st.col, scope_p);
@@ -1856,7 +1869,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "Database '"); sb_append(&sb, st.s2);
             sb_append(&sb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Declare 'database ", st.s2, "' first"));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s2, "first"));
         }
         return;
     }
@@ -1882,7 +1895,7 @@ def check_scan(TC &tc, Node st, int scope_p) {
         sb_append(&sb, st.s1);
         sb_append(&sb, "' not declared");
         emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
-        hint_quoted("Declare 'database ", st.s1, "' before scanning it"));
+        undeclared_table_hint(st.s1, "before scanning it"));
         return;
     }
     Scp inner = scp_new(scope_p);
@@ -1917,7 +1930,7 @@ def check_report(TC &tc, Node decl) {
         sb_append(&sb, "Database '");
         sb_append(&sb, q.s1);
         sb_append(&sb, "' not declared");
-        emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, hint_quoted("Declare 'database ", q.s1, "' first"));
+        emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, undeclared_table_hint(q.s1, "first"));
         return;
     }
     validate_query(&tc, q.c1, q.s1, decl.line, decl.col, 0);

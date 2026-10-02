@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import difflib
 import os
 import re
 import shutil
@@ -107,10 +108,16 @@ def repair_rules(source: str, d: dict):
             scored = [(r, v) for r, v in scored if r >= 0.4]
             if not scored:
                 return None
-            tied = [v for r, v in scored if abs(r - scored[0][0]) < 1e-9]
+            # An EXACT tie was the only thing this refused, which was too
+            # narrow to be useful. A developer with `cost_net` and `cost_vat`
+            # who types `cost_xat` is one character from one and two from the
+            # other: not a tie, and still a coin flip on which total the
+            # program prints. Anything within this margin is a decision.
+            CLOSE = 0.15
+            tied = [v for r, v in scored if scored[0][0] - r <= CLOSE]
             if len(tied) > 1:
                 raise Ambiguous(
-                    f"'{wrong}' is exactly as close to "
+                    f"'{wrong}' is about as close to "
                     + " as to ".join(f"'{t}'" for t in tied)
                     + ". Only you know which was meant, and choosing for you "
                       "is how a program ends up reading the wrong column.")
@@ -431,17 +438,29 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
     """
     backend_fn = BACKENDS[backend]
     originals: dict[str, str] = {}          # path -> content before any repair
+    backed_up: dict[str, str] = {}          # path -> where the original was kept
     print(f"[Strata Repair] target: {path}   backend: {backend}   root: {cwd}")
 
     def restore():
         for f, text in originals.items():
             open(f, "w").write(text)
+        # A restored file is identical to the one kept beside it, so the
+        # backup is noise rather than a safety net.
+        for b in backed_up.values():
+            if os.path.exists(b):
+                os.remove(b)
+        backed_up.clear()
 
     for attempt in range(1, max_passes + 1):
         report = diagnose(path, cwd)
         if report.get("ok"):
             print(f"[Strata Repair] clean after {attempt - 1} repair(s)"
                   + (f" across {len(originals)} file(s)." if originals else "."))
+            if backed_up and not dry_run:
+                print("[Strata Repair] your files as they were, in case the "
+                      "repair is not what you meant:")
+                for b in sorted(backed_up.values()):
+                    print(f"    {os.path.relpath(b, cwd)}")
             if dry_run and originals:
                 restore()
                 print("[Strata Repair] dry run — originals restored.")
@@ -491,6 +510,23 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
                 print("    Fix this one by hand, or run with --backend rules "
                       "if it is a mechanical shape.")
             break
+        # A repair rewrites a developer's source. It used to do that with
+        # nothing shown and nothing kept: "clean after 1 repair" and the file
+        # was different, with no way back unless it had been committed. A
+        # blind pilot watched it change which column a total was read from
+        # and call that a success. What changed is printed, and the file it
+        # found is kept beside it.
+        backup = target + ".before-repair"
+        if target not in backed_up:
+            with open(backup, "w") as b:
+                b.write(originals[target])
+            backed_up[target] = backup
+        for dl in difflib.unified_diff(
+                source.splitlines(), patched.splitlines(),
+                fromfile=os.path.relpath(target, cwd) + " (before)",
+                tofile=os.path.relpath(target, cwd) + " (after)",
+                lineterm="", n=1):
+            print(f"      {dl}")
         open(target, "w").write(patched)
         print("    patch applied, recompiling")
 
@@ -517,7 +553,18 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Strata autonomous repair loop")
+    # prog, because the default is the script's filename: `strata repair
+    # --help` answered with "usage: ai_self_repair.py", leaking the Python
+    # implementation in the one tool whose section of the README is about not
+    # being Python. A developer cannot type that name and should not have to
+    # know it.
+    ap = argparse.ArgumentParser(
+        prog="strata repair",
+        description="Repair a file or a project from the compiler's own "
+                    "diagnostics. Rewrites your source in place, keeps what "
+                    "it found beside it as <file>.before-repair, and prints "
+                    "every change it makes.",
+        epilog="A repair that cannot finish puts every file back as it was.")
     ap.add_argument("file", nargs="?",
                     help="a .sta file; omit it when --project is given")
     ap.add_argument("--project", metavar="DIR",

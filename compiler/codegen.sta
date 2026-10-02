@@ -976,6 +976,27 @@ str sql_join(Gen &g, Node l, Node r, str word, str table) {
     return sb_to_str(&out);
 }
 
+// Drop one layer of parentheses when it wraps the whole expression -- see
+// stage0.py. Without this, `if ((a == b))` made clang warn on every build.
+str unwrap_once(str e) {
+    int n = str_len(e);
+    if (n < 2) { return e; }
+    if (e[0] != 40) { return e; }
+    if (e[n - 1] != 41) { return e; }
+    int depth = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (e[i] == 40) { depth = depth + 1; }
+        if (e[i] == 41) {
+            depth = depth - 1;
+            if (depth == 0) {
+                if (i != n - 1) { return e; }
+            }
+        }
+    }
+    if (depth != 0) { return e; }
+    return str_slice(e, 1, n - 1);
+}
+
 def gen_stmt(Gen &g, Node st) {
     int k = st.kind;
 
@@ -1012,7 +1033,7 @@ def gen_stmt(Gen &g, Node st) {
 
     if (k == 22) {                                    // if / else
         StringBuilder sb = sb_new();
-        sb_append(&sb, "if ("); sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, "if ("); sb_append(&sb, unwrap_once(gen_expr(&g, st.c1)));
         sb_append(&sb, ") {");
         cg_emit(&g, sb_to_str(&sb));
         g.indent = g.indent + 1;
@@ -1030,7 +1051,7 @@ def gen_stmt(Gen &g, Node st) {
 
     if (k == 29) {                                    // while
         StringBuilder sb = sb_new();
-        sb_append(&sb, "while ("); sb_append(&sb, gen_expr(&g, st.c1));
+        sb_append(&sb, "while ("); sb_append(&sb, unwrap_once(gen_expr(&g, st.c1)));
         sb_append(&sb, ") {");
         cg_emit(&g, sb_to_str(&sb));
         g.indent = g.indent + 1;
@@ -1178,7 +1199,7 @@ def gen_stmt(Gen &g, Node st) {
                 str cond = gen_expr(&g, st.c1);
                 g.query_row = prev;
                 StringBuilder ke = sb_new();
-                sb_append(&ke, "if ("); sb_append(&ke, cond); sb_append(&ke, ") { ");
+                sb_append(&ke, "if ("); sb_append(&ke, unwrap_once(cond)); sb_append(&ke, ") { ");
                 sb_append(&ke, st.s2); sb_append(&ke, "__rows[_kept++] = _row; }");
                 cg_emit(&g, sb_to_str(&ke));
                 cg_emit(&g, "else { free(_row); }");
@@ -1414,7 +1435,7 @@ def gen_var_decl(Gen &g, Node st) {
             sb_append(&r0, "__rows[_i];");
             cg_emit(&g, sb_to_str(&r0));
             StringBuilder t0 = sb_new();
-            sb_append(&t0, "if ("); sb_append(&t0, cond); sb_append(&t0, ") { ");
+            sb_append(&t0, "if ("); sb_append(&t0, unwrap_once(cond)); sb_append(&t0, ") { ");
             sb_append(&t0, cname(st.s1)); sb_append(&t0, " = _row; break; }");
             cg_emit(&g, sb_to_str(&t0));
             g.indent = g.indent - 1;
@@ -1442,7 +1463,7 @@ def gen_var_decl(Gen &g, Node st) {
         sb_append(&row, "__rows[_i];");
         cg_emit(&g, sb_to_str(&row));
         StringBuilder test = sb_new();
-        sb_append(&test, "if ("); sb_append(&test, cond); sb_append(&test, ") { ");
+        sb_append(&test, "if ("); sb_append(&test, unwrap_once(cond)); sb_append(&test, ") { ");
         sb_append(&test, cname(st.s1)); sb_append(&test, "[_n++] = _row; }");
         cg_emit(&g, sb_to_str(&test));
         g.indent = g.indent - 1;

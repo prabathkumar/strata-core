@@ -409,6 +409,18 @@ version = "0.1.0"
 main = "src/main.sta"
 output = "build/$name"
 TOML
+    # A project with no .gitignore means the first `git add .` commits the
+    # generated C sitting beside the source and the binary in build/. A blind
+    # pilot found 92 KB of generated C in src/ and nothing telling them to
+    # leave it out.
+    cat > "$name/.gitignore" << 'IGNORE'
+# What the compiler writes. The sources are src/*.sta; everything here is
+# produced from them and can be produced again.
+build/
+*.c
+# What `strata repair` keeps when it rewrites one of your files.
+*.before-repair
+IGNORE
     cat > "$name/src/schema.sta" << 'STA'
 // The data tier. Every other tier is checked against this declaration:
 // rename a column and the query, the aggregate and the page fail to build.
@@ -520,7 +532,13 @@ cmd_test() {
         if [ -n "$proj" ]; then
             dir="$proj"; base="$proj"
         else
-            dir="test_suite"
+            # This used to fall back to a directory called `test_suite`,
+            # which is this repository's own. Run anywhere else it printed
+            # `find`'s complaint, reported "0 passed, 0 failed" and exited 0 --
+            # so a CI job that changed to the wrong directory went green.
+            # `build` and `run` have always refused here; so does this.
+            echo "no Strata.toml here or above; run 'strata test <dir>'" >&2
+            return 1
         fi
     fi
     echo "[Strata Test] $dir"
@@ -565,6 +583,45 @@ cmd_test() {
     rm -rf "$tmp"
     echo "[Strata Test] $p passed, $f failed, $skipped file(s) with no verify blocks."
     [ "$f" -eq 0 ] || exit 1
+    # A project whose sources do not compile is not a passing project, whatever
+    # its tests say. This only ever built the files that HOLD verify blocks, so
+    # deleting or renaming the test file made a broken repository report
+    # "0 passed, 0 failed" and exit 0 -- green CI on a tree `strata build`
+    # refuses. Checked after the blocks have run, so a real failure is still
+    # the first thing reported.
+    if [ -n "$base" ]; then
+        local chk
+        if ! chk="$( cd "$base" && cmd_check_project_quietly )"; then
+            echo "  BUILD FAIL: the project does not compile"
+            printf '%s\n' "$chk" | sed 's/^/      /'
+            echo "[Strata Test] the tests say nothing about a tree that does" \
+                 "not build."
+            exit 1
+        fi
+        if [ "$p" -eq 0 ] && [ "$f" -eq 0 ]; then
+            echo "[Strata Test] no verify blocks were found, so nothing was" \
+                 "tested."
+            echo "              A test file holds 'verify \"name\" { ... }'." \
+                 "Exiting non-zero so an"
+            echo "              empty run is not mistaken for a passing one."
+            exit 1
+        fi
+    fi
+}
+
+# Whether the project in the current directory compiles, with the compiler's
+# own words on failure. Used by `strata test`, which must not call itself a
+# success on a tree that does not build.
+cmd_check_project_quietly() {
+    local entry
+    entry="$(toml_value "Strata.toml" main)" || entry=""
+    if [ -z "$entry" ]; then entry="src/main.sta"; fi
+    [ -f "$entry" ] || { echo "$entry, named in Strata.toml, is not there"; return 1; }
+    # --emit-c runs the whole front end and writes to stdout rather than to
+    # the tree, so this answers "does it compile" without leaving anything
+    # behind beside the developer's source.
+    "$PY3" "$ROOT/bootstrap/stage0.py" "$entry" --emit-c >/dev/null 2>&1 \
+        || "$PY3" "$ROOT/bootstrap/stage0.py" "$entry" --emit-c 2>&1 >/dev/null
 }
 
 cmd_doc() {

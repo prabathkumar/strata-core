@@ -172,7 +172,7 @@ in scope rather than that the function is missing.
 ```bash
 strata check file.sta --json    # the diagnostic, machine-readable
 strata repair file.sta          # rules-based fix, no model involved
-strata fmt src/*.sta --check    # canonical formatting, as CI enforces it
+strata fmt src/*.sta --check    # re-indents; --check is what CI runs
 strata test                     # run the verify blocks
 ```
 

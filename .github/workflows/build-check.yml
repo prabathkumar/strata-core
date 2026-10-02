@@ -95,6 +95,12 @@ jobs:
     - name: Writing Is Not Worse Than Reading
       run: python3 test_suite/writing_is_not_worse_than_reading.py
 
+    # `strata test` reported "0 passed, 0 failed" and exited 0 on a repository
+    # that does not compile, and `strata repair` rewrote a developer's source
+    # with nothing shown and nothing kept.
+    - name: Exit 0 Means It Worked
+      run: python3 test_suite/success_means_success.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.
@@ -370,6 +376,23 @@ jobs:
         done
         [ -d bin/unimplemented ] && note "bin/unimplemented/ was removed; a tool that prints success without working does not belong in the repository"
         [ -d client-ledger-service ] && note "client-ledger-service/ was removed; it was a stub with a fabricated Strata.toml"
+
+        # A claim that was true and is not any more. The README said both
+        # "Runs on physical iPhone and Android handsets" and "has never run on
+        # a physical handset", fifteen lines apart, for a day -- the second was
+        # left behind when the first became true. A blind pilot read both and
+        # said it cost them trust in the whole table, which is the right
+        # reaction. Every line here was true once; none of them is now.
+        for stale in "never run on a physical handset" \
+                     "the Android shell has never been compiled" \
+                     "no application has been built with it" \
+                     "there is no formatter" \
+                     "the compiler cannot compile itself"; do
+          if grep -rqF "$stale" README.md TUTORIAL.md FOR_DEVELOPERS.md \
+                        LANGUAGE_SPECIFICATION.md 2>/dev/null; then
+            note "a retired claim is back in the documentation: \"$stale\". It was true once and is not now; two statements that disagree is how a reader stops believing the rest."
+          fi
+        done
 
         # A gitlink with no .gitmodules gives a clone an empty directory.
         if git ls-files -s | grep -q '^160000'; then

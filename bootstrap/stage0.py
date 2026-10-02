@@ -142,6 +142,30 @@ class StrataCodegenError(Exception):
     """
 
 
+def unwrap_once(expr):
+    """Drop one layer of parentheses when it wraps the whole expression.
+
+    Every binary expression is generated parenthesised, and `if` and `while`
+    add a pair of their own, so a comparison came out as `if ((a == b))`.
+    clang warns on that -- "equality comparison with extraneous parentheses",
+    with six lines of carets -- on EVERY build of a program containing an
+    `if`. The compiler's own output should not make the C compiler complain,
+    and a developer should not learn on day one to ignore warnings.
+    """
+    if not (expr.startswith("(") and expr.endswith(")")):
+        return expr
+    depth = 0
+    for i, ch in enumerate(expr):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            # Closed before the end, so the outer pair is not one wrapper.
+            if depth == 0 and i != len(expr) - 1:
+                return expr
+    return expr[1:-1] if depth == 0 else expr
+
+
 class CodeGen:
     def __init__(self, ast, source_path, modules=None, target="native",
                  test_mode=False):
@@ -1987,7 +2011,9 @@ int main(int argc, char** argv) {
             else:
                 self.emit(f"{tgt} = {val};")
         elif isinstance(stmt, WhileStmt):
-            self.emit(f"while ({self._gen_expr(stmt.condition, param_names)}) {{")
+            self.emit("while ("
+                      + unwrap_once(self._gen_expr(stmt.condition, param_names))
+                      + ") {")
             self.indent += 1
             for st in stmt.body: self._gen_stmt(st, param_names)
             self.indent -= 1
@@ -2045,7 +2071,7 @@ int main(int argc, char** argv) {
                 self.query_row_type = t
                 cond = self._gen_expr(stmt.cond, param_names)
                 self.query_row_type = prev
-                self.emit(f"if ({cond}) {{ {t}__rows[_kept++] = _row; }}")
+                self.emit(f"if ({unwrap_once(cond)}) {{ {t}__rows[_kept++] = _row; }}")
                 self.emit("else { free(_row); }")
                 self.indent -= 1
                 self.emit("}")
@@ -2144,7 +2170,7 @@ int main(int argc, char** argv) {
                     self.emit(f"for (strata_int _i = 0; _i < {src}__count; _i++) {{")
                     self.indent += 1
                     self.emit(f"{src}* _row = {src}__rows[_i];")
-                    self.emit(f"if ({cond}) {{ {cname(name)} = _row; break; }}")
+                    self.emit(f"if ({unwrap_once(cond)}) {{ {cname(name)} = _row; break; }}")
                     self.indent -= 1
                     self.emit("}")
                     self.indent -= 1
@@ -2160,7 +2186,7 @@ int main(int argc, char** argv) {
                 self.emit(f"for (strata_int _i = 0; _i < {src}__count; _i++) {{")
                 self.indent += 1
                 self.emit(f"{src}* _row = {src}__rows[_i];")
-                self.emit(f"if ({cond}) {{ {cname(name)}[_n++] = _row; }}")
+                self.emit(f"if ({unwrap_once(cond)}) {{ {cname(name)}[_n++] = _row; }}")
                 self.indent -= 1
                 self.emit("}")
                 self.emit(f"strata_list_set_len({cname(name)}, _n);")
@@ -2235,7 +2261,7 @@ int main(int argc, char** argv) {
         self.emit("}")
 
     def _gen_if(self, stmt, param_names):
-        cond = self._gen_expr(stmt.condition, param_names)
+        cond = unwrap_once(self._gen_expr(stmt.condition, param_names))
         self.emit(f"if ({cond}) {{")
         self.indent += 1
         for s in stmt.then_block: self._gen_stmt(s, param_names)

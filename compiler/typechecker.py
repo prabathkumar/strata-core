@@ -181,6 +181,20 @@ def _has_break(body):
     return False
 
 
+def undeclared_table_hint(name, verb):
+    """A table the file cannot see is usually one it did not import.
+
+    The hint used to say only "Declare 'database X' first". That is the wrong
+    advice for the commonest newcomer mistake by a distance: the table IS
+    declared, in another module of the same project, and the file is missing
+    its import. Following the hint gives you a second, conflicting schema. A
+    blind pilot hit this on their first attempt.
+    """
+    return (f"Declare 'database {name}' {verb} -- or, if it is already "
+            f"declared in another module of this project, import that module: "
+            f"import schema from app;")
+
+
 class TypeChecker:
     def __init__(self, ast, filename="<stdin>", modules=None,
                  unresolved_imports=None, project_modules=None):
@@ -517,7 +531,7 @@ class TypeChecker:
         if stmt.table not in self.schemas:
             self._error("E004",f"Database '{stmt.table}' not declared",
                 stmt.line,stmt.col,
-                f"Declare 'database {stmt.table}' before scanning it")
+                undeclared_table_hint(stmt.table, 'before scanning it'))
             return
         inner=Scope(scope)
         inner.define(stmt.var,SType(stmt.table))
@@ -543,7 +557,7 @@ class TypeChecker:
         """`Table <- [col = expr, ...]` — validate target and every column."""
         if stmt.target not in self.schemas:
             self._error("E004",f"Database '{stmt.target}' not declared",
-                stmt.line,stmt.col,f"Declare 'database {stmt.target}' first")
+                stmt.line,stmt.col,undeclared_table_hint(stmt.target, 'first'))
             return
         fields=self.schemas[stmt.target]
         for col,value in stmt.assignments:
@@ -626,7 +640,7 @@ class TypeChecker:
         if q.source not in self.schemas:
             self._error("E004",f"Database '{q.source}' not declared",
                 decl.line,decl.col,
-                f"Declare 'database {q.source}' before reporting on it")
+                undeclared_table_hint(q.source, 'before reporting on it'))
             return
         self._validate_query_cond(q.condition,q.source,decl.line,decl.col)
         # Metrics are expressions evaluated where `rows` is the datasource
@@ -670,14 +684,14 @@ class TypeChecker:
         elif isinstance(stmt,DeleteStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",
-                    stmt.line,stmt.col,f"Declare 'database {stmt.table}' before deleting from it")
+                    stmt.line,stmt.col,undeclared_table_hint(stmt.table, 'before deleting from it'))
             else:
                 self._validate_query_cond(stmt.condition,stmt.table,
                                           stmt.line,stmt.col,scope)
         elif isinstance(stmt,TableIOStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",
-                    stmt.line,stmt.col,f"Declare 'database {stmt.table}' first")
+                    stmt.line,stmt.col,undeclared_table_hint(stmt.table, 'first'))
         elif isinstance(stmt,Element): self._check_element(stmt,scope)
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ScanStmt): self._check_scan(stmt,scope)
@@ -704,7 +718,7 @@ class TypeChecker:
             src=stmt.value.source
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",stmt.line,stmt.col,
-                    f"Declare 'database {src}' before querying")
+                    undeclared_table_hint(src, 'before querying'))
             else:
                 self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col,scope)
             # A query into a single record used to mean "the first row that
@@ -906,7 +920,7 @@ class TypeChecker:
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",
                     expr.line,expr.col,
-                    f"Declare 'database {src}' before querying it")
+                    undeclared_table_hint(src, 'before querying it'))
                 return None
             self._validate_query_cond(expr.condition,src,expr.line,expr.col,scope)
             return SType("list",is_list=True,element_type=SType(src))

@@ -80,7 +80,14 @@ def extract(path):
     with open(os.path.join(ROOT, path)) as f:
         text = f.read()
     out = []
-    for i, (_lang, body) in enumerate(re.findall(r"```(\w*)\n(.*?)```", text, re.S)):
+    for i, (lang, body) in enumerate(re.findall(r"```(\w*)\n(.*?)```", text, re.S)):
+        # A shell block is not Strata, whatever words it happens to contain.
+        # The content heuristic below read `# rules-based fix, no model
+        # involved` as a declaration the moment the line above it gained a
+        # semicolon, and then reported `src/*.sta` as an unterminated block
+        # comment. The fence already says what the block is.
+        if lang in ("bash", "sh", "shell", "console", "json", "yaml", "toml"):
+            continue
         if any(m in body for m in CODE_MARKERS) and ";" in body:
             # Identify a block by its content, not its position: inserting a
             # section above must not silently re-point an exemption at a

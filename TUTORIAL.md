@@ -186,11 +186,19 @@ list[Item] tools = Item <- [category == "tools"];
 print(strata_concat("tools: ", str(count(tools))));
 ```
 
+The scaffolded test inserts into `Item` too, so it needs the new column for
+the same reason `src/main.sta` did. Open `tests/items_test.sta` and add
+`category = "tools"` to both inserts — the compiler will name the lines if you
+forget. Then:
+
 ```bash
 strata run
 strata test      # runs the verify blocks
-strata fmt src/*.sta   # canonical formatting, as CI enforces it
+strata fmt src/*.sta   # re-indents to the one canonical layout
 ```
+
+`strata test` fails rather than passes if the project does not compile, or if
+it finds no verify blocks at all. An empty run is not a passing run.
 
 `str_concat` joins exactly two pieces, so for a line made of several use
 `str_cat`, and `str_join` when you want something between them:
