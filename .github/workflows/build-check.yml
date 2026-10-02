@@ -101,6 +101,11 @@ jobs:
     - name: Exit 0 Means It Worked
       run: python3 test_suite/success_means_success.py
 
+    # The README said it runs on physical handsets and, in the section a
+    # sceptic is told to read first, that nothing had. Two pilots read both.
+    - name: The Documents Agree With Each Other
+      run: python3 test_suite/documents_agree.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.

@@ -235,6 +235,7 @@ str writes_of(Node unit) {
 
 // One file, described.
 str describe_file(str path, str shown_as) {
+    parsing_file(path);
     Node unit = parse_source(file_read(path));
     StringBuilder out = sb_new();
     sb_append(&out, "\n## ");

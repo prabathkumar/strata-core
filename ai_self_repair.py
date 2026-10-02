@@ -588,7 +588,31 @@ def main():
             print(f"[Strata Repair] {toml} names main = \"{main_rel}\", "
                   f"which does not exist", file=sys.stderr)
             return 2
-        return repair(main_rel, a.backend, a.max_passes, a.dry_run, cwd=root)
+        # The entry point is where a project's diagnostics usually surface,
+        # but it is not the whole project. `--project` repaired only the file
+        # named by `main` and then announced "clean", exit 0, about a project
+        # whose TEST file did not build -- and the per-file form fixed the
+        # same mistake. A command that says a broken project is clean is
+        # worse than one that cannot help.
+        rc = repair(main_rel, a.backend, a.max_passes, a.dry_run, cwd=root)
+        if rc != 0:
+            return rc
+        # Every other .sta the project owns, so "clean" means the project.
+        others = []
+        for dirpath, dirnames, names in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if d not in ("build", ".git", "data")]
+            for n in sorted(names):
+                if not n.endswith(".sta"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, n), root)
+                if rel != main_rel:
+                    others.append(rel)
+        for rel in others:
+            rc = repair(rel, a.backend, a.max_passes, a.dry_run, cwd=root)
+            if rc != 0:
+                return rc
+        return 0
     if not a.file:
         print("[Strata Repair] give a file or --project DIR", file=sys.stderr)
         return 2

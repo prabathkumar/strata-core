@@ -3023,7 +3023,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
 
 def parse_file(path):
     toks = tokenise_file(path)
-    return Parser(toks).parse()
+    return Parser(toks, path).parse()
 
 def main():
     import argparse

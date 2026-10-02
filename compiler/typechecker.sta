@@ -381,44 +381,6 @@ str hint_two(str a, str v1, str b, str v2, str c) {
 // rest print them in declaration order; both orders are reproduced exactly,
 // because a differential test that ignores the difference is not comparing
 // the thing a repair agent reads.
-str sym_names_sorted_repr(int head) {
-    // Insertion sort over the names. A schema has a handful of columns, so
-    // the simplest correct thing is also the right one.
-    StringBuilder out = sb_new();
-    sb_append(&out, "[");
-    str placed = ",";
-    int total = 0;
-    int cur = head;
-    while (cur != 0) { Sym s = sym_at(cur); total = total + 1; cur = s.next; }
-    for (int n = 0; n < total; n = n + 1) {
-        str best = "";
-        int have = 0;
-        int c2 = head;
-        while (c2 != 0) {
-            Sym s2 = sym_at(c2);
-            if (name_in_list(placed, s2.name) == 0) {
-                if (have == 0) { best = s2.name; have = 1; }
-                if (have == 1) {
-                    if (str_before(s2.name, best) == 1) { best = s2.name; }
-                }
-            }
-            c2 = s2.next;
-        }
-        if (have == 1) {
-            if (n > 0) { sb_append(&out, ", "); }
-            sb_append(&out, "'");
-            sb_append(&out, best);
-            sb_append(&out, "'");
-            StringBuilder grown = sb_new();
-            sb_append(&grown, placed);
-            sb_append(&grown, best);
-            sb_append(&grown, ",");
-            placed = sb_to_str(&grown);
-        }
-    }
-    sb_append(&out, "]");
-    return sb_to_str(&out);
-}
 
 // Byte order, which is what sorting a list of column names means here.
 int str_before(str a, str b) {
@@ -1165,7 +1127,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
                     sb_append(&sb, "Column '"); sb_append(&sb, arg.s1);
                     sb_append(&sb, "' does not exist in '"); sb_append(&sb, rowname);
                     sb_append(&sb, "'");
-                    emit_hint(&tc, "E004", sb_to_str(&sb), e.line, e.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(sc.fields), ""));
+                    emit_hint(&tc, "E004", sb_to_str(&sb), e.line, e.col, hint_quoted("Valid columns: ", sym_names_repr(sc.fields), ""));
                     return ty_ptr(ty_new("float"));
                 }
                 Sym col = sym_at(fp);
@@ -1677,7 +1639,7 @@ def check_stmt_insert(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "' does not exist in '");
             sb_append(&sb, st.s1);
             sb_append(&sb, "'");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_sorted_repr(s.fields), ""));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, hint_quoted("Valid columns: ", sym_names_repr(s.fields), ""));
         }
         int at = infer(&tc, pair.c1, scope_p);
         // The column's declared type is checked too. Without this a float

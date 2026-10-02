@@ -70,6 +70,7 @@ int main() {
 
     str root = install_root();
     str tax = file_read(taxonomy_path(root));
+    parsing_file(path);
     Node unit = parse_source(file_read(path));
 
     diag_capture_begin();

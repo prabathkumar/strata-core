@@ -24,5 +24,13 @@ int main() {
     }
     int failed = resolve_deps(project, verbose);
     if (failed == 0) { print("[Strata] dependencies resolved."); }
+    // -2 is "there were none", which is not the same thing as having put
+    // some in place, and saying so avoids a success line about work that did
+    // not happen. A project declares dependencies in a [dependencies] block
+    // in Strata.toml; `strata new` writes none.
+    if (failed == -2) {
+        print("[Strata] no dependencies declared in Strata.toml, so there was nothing to resolve.");
+        return 0;
+    }
     return failed;
 }

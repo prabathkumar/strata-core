@@ -515,9 +515,16 @@ class CompilationUnit(Node):
 # ── Parse Error ───────────────────────────────────────────────────────────────
 
 class ParseError(Exception):
-    def __init__(self, msg, line, col):
-        self.line = line; self.col = col
-        super().__init__(f"[STRATA PARSE ERROR] {msg} at line {line}, col {col}")
+    # The file is part of the location -- see parser.sta. A parse error with
+    # a line and no name is useless in a build of several files.
+    def __init__(self, msg, line, col, file=""):
+        self.line = line; self.col = col; self.file = file
+        where = f"{file}:{line}:{col} " if file else ""
+        if file:
+            super().__init__(f"[STRATA PARSE ERROR] {where}{msg}")
+        else:
+            super().__init__(
+                f"[STRATA PARSE ERROR] {msg} at line {line}, col {col}")
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 
@@ -527,9 +534,11 @@ class Parser:
     # subscript and fail at the '='.
     _no_index = False
 
-    def __init__(self, tokens: List[Token]):
+    def __init__(self, tokens: List[Token], file: str = ""):
         self.tokens = [t for t in tokens if t.type != TT.EOF]
         self.tokens.append(Token(TT.EOF, "", 0, 0))
+        # Named in every diagnostic this parser raises -- see ParseError.
+        self.file = file
         self.pos = 0
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -565,7 +574,7 @@ class Parser:
                 functions.append(self._parse_function(kind="function"))
             else:
                 t = self._peek()
-                raise ParseError(f"Unexpected token '{t.value}'", t.line, t.col)
+                raise ParseError(f"Unexpected token '{t.value}'", t.line, t.col, self.file)
         return CompilationUnit(0, 0, imports, declarations, functions)
 
     def _parse_const(self) -> ConstDecl:
@@ -653,7 +662,7 @@ class Parser:
         """
         t = self._peek()
         if t.value != word:
-            raise ParseError(f"Expected '{word}', got '{t.value}'", t.line, t.col)
+            raise ParseError(f"Expected '{word}', got '{t.value}'", t.line, t.col, self.file)
         return self._advance()
 
     def _at_word(self, word):
@@ -681,7 +690,7 @@ class Parser:
                 if act not in ("relu", "sigmoid", "none"):
                     raise ParseError(
                         f"Unknown activation '{act}'; Strata has relu, sigmoid and none",
-                        h.line, h.col)
+                        h.line, h.col, self.file)
             self._consume(TT.SEMICOLON)
             hidden.append(HiddenLayer(h.line, h.col, width, act))
         self._consume_word('output'); self._consume(TT.COLON)
@@ -801,7 +810,7 @@ class Parser:
         var = self._consume(TT.IDENT).value
         kw = self._advance()            # contextual `in`
         if kw.value != "in":
-            raise ParseError(f"Expected 'in' in for-loop, got '{kw.value}'", kw.line, kw.col)
+            raise ParseError(f"Expected 'in' in for-loop, got '{kw.value}'", kw.line, kw.col, self.file)
         collection = self._parse_expr()
         # The node is the same either way; only the body differs, because a
         # layout body holds elements and a function body holds statements.
@@ -865,7 +874,7 @@ class Parser:
                 self._consume(TT.R_BRACE)
             else:
                 tok = self._peek()
-                raise ParseError(f"Unexpected token in report '{tok.value}'", tok.line, tok.col)
+                raise ParseError(f"Unexpected token in report '{tok.value}'", tok.line, tok.col, self.file)
         self._consume(TT.R_BRACE)
         return ReportDecl(t.line, t.col, name, title, datasource, metrics)
 
@@ -1408,9 +1417,26 @@ class Parser:
             self._advance()
             expr = self._parse_expr()
             self._consume(TT.R_PAREN)
+            # `.field` and `[i]` after a parenthesised expression. Without
+            # this, `print((all)[0].name)` parsed `(all)`, then `[0]` as a
+            # SECOND argument and `.name` as more, and the checker reported
+            # "'print' expects 1 args, got 4" -- a wrong diagnostic, pointing
+            # at a signature that was never the problem. A pilot bisected five
+            # variants before finding the parentheses were the cause.
+            while self._check(TT.DOT) or (
+                    self._check(TT.L_BRACKET) and not self._no_index):
+                if self._check(TT.DOT):
+                    self._advance()
+                    member = self._consume(TT.IDENT).value
+                    expr = MemberAccess(t.line, t.col, expr, member)
+                else:
+                    self._advance()
+                    idx = self._parse_expr()
+                    self._consume(TT.R_BRACKET)
+                    expr = IndexExpr(t.line, t.col, expr, idx)
             return expr
 
-        raise ParseError(f"Unexpected token '{t.value}' in expression", t.line, t.col)
+        raise ParseError(f"Unexpected token '{t.value}' in expression", t.line, t.col, self.file)
 
     def _parse_predict(self) -> PredictExpr:
         t = self._consume(TT.KW_PREDICT)
@@ -1443,7 +1469,7 @@ class Parser:
         if self._check(TT.IDENT):
             self._advance()
             return PrimitiveType(t.line, t.col, t.value)
-        raise ParseError(f"Expected type, got '{t.value}'", t.line, t.col)
+        raise ParseError(f"Expected type, got '{t.value}'", t.line, t.col, self.file)
 
     def _parse_list_type(self) -> ListType:
         t = self._consume(TT.KW_LIST)
@@ -1479,13 +1505,14 @@ class Parser:
         if self._is_primitive_type():
             return self._advance()
         t = self._peek()
-        raise ParseError(f"Expected primitive type, got '{t.value}'", t.line, t.col)
+        raise ParseError(f"Expected primitive type, got '{t.value}'", t.line, t.col, self.file)
 
     def _consume(self, tt: TT) -> Token:
         t = self._peek()
         if t.type != tt:
             raise ParseError(
-                f"Expected {tt.name}, got '{t.value}' ({t.type.name})", t.line, t.col)
+                f"Expected {tt.name}, got '{t.value}' ({t.type.name})", t.line, t.col,
+                self.file)
         return self._advance()
 
     def _advance(self) -> Token:
@@ -1516,7 +1543,7 @@ class Parser:
 
 def parse_file(path: str) -> CompilationUnit:
     tokens = tokenise_file(path)
-    return Parser(tokens).parse()
+    return Parser(tokens, path).parse()
 
 def parse_source(source: str, filename: str = "<stdin>") -> CompilationUnit:
     tokens = Lexer(source, filename).tokenise()

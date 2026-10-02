@@ -383,8 +383,13 @@ int resolve_deps(str project, int verbose) {
 
     if (failures > 0) { return 1; }
     if (str_len(resolved) == 0) {
+        // "dependencies resolved" on a project that declares none reads as
+        // though something was fetched. It was the one line a pilot could
+        // get out of this command, and it told them nothing about whether
+        // the command does anything at all. -2 says "nothing to do" to the
+        // caller, which prints that instead.
         if (verbose == 1) { print("  no dependencies declared"); }
-        return 0;
+        return -2;
     }
 
     StringBuilder lf = sb_new();

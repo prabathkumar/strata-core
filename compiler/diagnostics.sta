@@ -49,6 +49,7 @@ str diagnostics_json(str root, str source_path) {
     str tax = file_read(taxonomy_path(root));
 
     diag_capture_begin();
+    parsing_file(source_path);
     Node unit = parse_source(file_read(source_path));
     check_unit_project(root, dir_of(source_path), unit);
     str log = diag_capture_end();

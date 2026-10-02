@@ -28,6 +28,7 @@ import parser from compiler;
 // because the bootstrap produced that order and the two must agree
 // byte-for-byte.
 str collect_link_libs(str root, str source_path) {
+    parsing_file(source_path);
     Node unit = parse_source(file_read(source_path));
 
     NodeVec mods = nv_new();

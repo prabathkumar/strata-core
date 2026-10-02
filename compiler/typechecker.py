@@ -588,7 +588,7 @@ class TypeChecker:
                 self._error("E004",
                     f"Column '{col}' does not exist in '{stmt.target}'",
                     stmt.line,stmt.col,
-                    f"Valid columns: {sorted(fields)}")
+                    f"Valid columns: {list(fields.keys())}")
             actual=self._infer_type(value,scope)
             # The column's declared type is checked too. Without this a float
             # written into an int column was truncated silently, with a clean
@@ -1116,7 +1116,7 @@ class TypeChecker:
                     self._error("E004",
                         f"Column '{arg.member}' does not exist in '{row.name}'",
                         expr.line,expr.col,
-                        f"Valid columns: {sorted(cols)}")
+                        f"Valid columns: {list(cols)}")
                     return T_FLOAT
                 elem=cols[arg.member]
             else:
@@ -1232,12 +1232,12 @@ class TypeChecker:
                                        self.current_file))
 
 def typecheck_file(path):
-    toks=tokenise_file(path); ast=Parser(toks).parse()
+    toks=tokenise_file(path); ast=Parser(toks,path).parse()
     return TypeChecker(ast,filename=path).check()
 
 def typecheck_source(source,filename="<stdin>"):
     from compiler.lexer import Lexer
-    toks=Lexer(source,filename).tokenise(); ast=Parser(toks).parse()
+    toks=Lexer(source,filename).tokenise(); ast=Parser(toks,filename).parse()
     return TypeChecker(ast,filename=filename).check()
 
 def main():

@@ -716,6 +716,36 @@ cmd_fmt() {
 
     local rc=0
     for f in "${files[@]}"; do
+        # What this is pointed at, before it rewrites anything.
+        #
+        # The formatter re-indents by brace depth and knows nothing about the
+        # file it is given. Pointed at a Markdown file it stripped the
+        # four-space indents -- turning code blocks into prose -- said
+        # "formatted" and exited 0, with no backup. `strata fmt *` in a
+        # project root silently damaged every text file in it. Pointed at a
+        # directory it segfaulted and reported "formatter failed".
+        if [ -d "$f" ]; then
+            echo "$f is a directory; name the files, as in '$f/*.sta'" >&2
+            rc=1; continue
+        fi
+        if [ ! -e "$f" ]; then
+            echo "[STRATA ERROR] No such file: $f" >&2
+            rc=1; continue
+        fi
+        case "$f" in
+            *.sta) ;;
+            *)  echo "$f is not a Strata source file; strata fmt only" \
+                     "formats .sta" >&2
+                rc=1; continue ;;
+        esac
+        # And only a file the compiler can read. "formatted" on a file that
+        # does not parse is a false success, and `--check` passed it, so CI
+        # would not have caught an unparseable file either.
+        if ! "$PY3" "$ROOT/bootstrap/stage0.py" "$f" --ast >/dev/null 2>&1; then
+            echo "$f does not parse, so it is left alone; run 'strata check" \
+                 "$f' to see why" >&2
+            rc=1; continue
+        fi
         local tmp
         tmp="$(mktemp)"
         if ! "$bin" "$f" > "$tmp"; then

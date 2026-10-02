@@ -204,6 +204,93 @@ def main():
             ok("and does not blame the end of the file",
                "(EOF)" not in out, out[-200:])
 
+        print("\n── strata fmt only touches Strata source ───────────────────────")
+        # Pointed at a Markdown file, the formatter stripped its four-space
+        # indents -- turning code blocks into prose -- said "formatted" and
+        # exited 0, with no backup. `strata fmt *` in a project root damaged
+        # every text file in it. Pointed at a directory it segfaulted.
+        work = os.path.join(tmp, "g")
+        os.makedirs(work)
+        notes = os.path.join(work, "NOTES.md")
+        original = ("# Notes\n\nConfig:\n\n    {\n      \"retries\": 3\n"
+                    "    }\n\nDone.\n")
+        open(notes, "w").write(original)
+        rc, out = run(["fmt", "NOTES.md"], work)
+        ok("a file that is not .sta is refused", rc != 0, out[-160:])
+        ok("and is byte for byte what it was",
+           open(notes).read() == original)
+
+        proj, err = new_project(work)
+        ok("a seventh project is created", proj is not None, err)
+        if proj:
+            rc, out = run(["fmt", "src"], proj)
+            ok("a directory is refused, with what to type instead",
+               rc != 0 and "*.sta" in out, out[-160:])
+            rc, out = run(["fmt", "src/nope.sta"], proj)
+            ok("a file that is not there is reported as such",
+               rc != 0 and "No such file" in out, out[-160:])
+            bad = os.path.join(proj, "src", "bad.sta")
+            open(bad, "w").write('int f() {\n  print("x")\n')
+            before = open(bad).read()
+            rc, out = run(["fmt", "src/bad.sta"], proj)
+            ok("a file that does not parse is left alone",
+               rc != 0 and open(bad).read() == before, out[-160:])
+            rc, out = run(["fmt", "src/bad.sta", "--check"], proj)
+            ok("and --check does not pass it", rc != 0, out[-160:])
+            os.remove(bad)
+
+        print("\n── strata repair --project means the project ───────────────────")
+        # `--project` repaired only the file named by `main` and then said
+        # "clean", exit 0, about a project whose test file did not build.
+        work = os.path.join(tmp, "h")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("an eighth project is created", proj is not None, err)
+        if proj:
+            t = os.path.join(proj, "tests", "items_test.sta")
+            # Read first. `open(t, "w")` truncates before the argument is
+            # evaluated, so reading inside the write emptied the file.
+            broken_test = open(t).read().replace(
+                "Item <- [id > 0]", "Item <- [idd > 0]")
+            open(t, "w").write(broken_test)
+            rc, _ = run(["test"], proj)
+            ok("the project does not pass its tests to begin with", rc != 0)
+            rc, out = run(["repair", "--project", "."], proj)
+            ok("repair --project exits 0 only when it fixed it",
+               rc == 0, out[-200:])
+            rc, out = run(["test"], proj)
+            ok("and the project passes afterwards", rc == 0, out[-200:])
+
+        print("\n── a parenthesised expression can be indexed ───────────────────")
+        # `print((all)[0].name)` parsed `(all)` and then read `[0]` as a
+        # SECOND argument, so the checker reported "'print' expects 1 args,
+        # got 4" -- a wrong diagnostic about a signature that was never the
+        # problem.
+        work = os.path.join(tmp, "i")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("a ninth project is created", proj is not None, err)
+        if proj:
+            m = os.path.join(proj, "src", "main.sta")
+            body = open(m).read().replace(
+                'print(str_concat("items: ", str(count(all))));',
+                'print((all)[0].name);')
+            open(m, "w").write(body)
+            rc, out = run(["check", "src/main.sta"], proj)
+            ok("it type checks", rc == 0, out[-200:])
+            rc, out = run(["run"], proj)
+            ok("and runs, printing the field", "first" in out, out[-200:])
+
+        print("\n── strata deps does not announce work it did not do ────────────")
+        work = os.path.join(tmp, "j")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("a tenth project is created", proj is not None, err)
+        if proj:
+            rc, out = run(["deps", "."], proj)
+            ok("a project with no dependencies is told so",
+               rc == 0 and "nothing to resolve" in out, out[-200:])
+
         print("\n── strata repair --help is about strata, not about Python ──────")
         rc, out = run(["repair", "--help"], tmp)
         ok("it names the command a developer typed",

@@ -48,9 +48,11 @@ items: 1
 value: 9.99
 ```
 
-Four files. `src/schema.sta` is the data, `src/main.sta` is the program,
+Six files. `src/schema.sta` is the data, `src/main.sta` is the program,
 `tests/items_test.sta` holds a check, `Strata.toml` says which file is the
-entry point. Look at the schema:
+entry point, and there is a `README.md` and a `.gitignore` — the latter
+because the compiler writes its C beside your source and you do not want to
+commit it. Look at the schema:
 
 ```text
 database Item {
@@ -73,9 +75,17 @@ strata build
 ```
 
 ```
-E004 7:5 Column 'price' does not exist in 'Item'
+E004 src/main.sta:7:5 Column 'price' does not exist in 'Item'
+  Hint: Valid columns: ['id', 'name', 'unit_price']
+E009 src/main.sta:7:5 Insert into 'Item' omits column 'unit_price'
+  Hint: Add 'unit_price = <value>' to the insert — 'unit_price' is 'float' — or remove 'unit_price' from 'database Item'
+E004 src/main.sta:10:37 Column 'price' does not exist in 'Item'
   Hint: Valid columns: ['id', 'name', 'unit_price']
 ```
+
+Three diagnostics from one rename, which is the point: the insert, the query
+and the column each have to be told. Every one names the file, the line and
+the column.
 
 The build failed, not the program. Nobody deployed anything. Note what the
 error gives you: the column you asked for, the columns that exist, and the

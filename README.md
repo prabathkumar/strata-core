@@ -964,8 +964,9 @@ int main() {
 ```
 
 `apps/orders_mobile/ios/` carries a committed Xcode project; the Android shell
-in `apps/orders_mobile/android/` is the same contract through JNI. Neither has
-run on a handset — see the roadmap.
+in `apps/orders_mobile/android/` is the same contract through JNI. Both have
+run on a physical handset through a device farm — an iPhone and a Pixel 7 on
+Android 13, 1 October. Neither has been through a store review.
 
 ### When something is wrong
 
@@ -1315,7 +1316,8 @@ section to read before you decide anything.
 
 It is pre-release, weeks old, and written by one person. It has no ecosystem,
 nobody else knows it yet, and it is not something to put a production system
-on today. Nothing has run on a physical phone. There is no package registry.
+on today. It has run on physical phones, through a device farm rather than
+through a store. There is no package registry.
 `ast`, `lex`, `test` and `repair` still go through Python. The roadmap below
 is exhaustive about the rest rather than quiet about it.
 
@@ -1440,7 +1442,7 @@ what runs and what is planned is unambiguous.
 | Mobile: rules on the device | **Done and measured.** The rules compile for a phone's processor and, run under emulation, give byte-identical answers to the server build — `journey_mobile.py` checks the outputs match, not just that the ARM build exists. One definition of "an order over 1000 gets 5% off", running on the server, the website and the handset, so the app and the site cannot disagree. |
 | Mobile: screens drawn by Strata | **A two-screen app, on a desktop.** `std/ui.sta` describes a screen as an ordinary Strata table of things to draw — rectangles, text, touch regions — and paints it. Screens are **drawn, not borrowed**: asking each platform for its own widgets means two binding layers that share nothing and never match, and Apple's is not designed to be driven from C at all. One implementation, plus a shell per platform small enough to read in a sitting. |
 | Mobile: widgets | **Vertical flow layout, scrolling with clipping, text input, navigation.** A cursor-based flow so a screen is placed rather than hand-positioned; a list that scrolls, clamped at both ends and clipped to its window — a row scrolled out of sight stops answering taps, which is the half of scrolling that is invisible in a screenshot; input boxes with placeholder, caret and backspace; and a screen stack. State that must outlive a redraw — scroll position, what has been typed, which screen is showing — lives in tables, so `strata test` can set up a half-typed form scrolled halfway down and assert what it draws, with no phone, emulator or screenshot. `apps/orders_mobile` is a list and a new-order form against the same `Order` table the web service uses, and `journey_mobile.py` drives a whole session through it: scroll, open, type, backspace, save, and the new order in the list. |
-| Mobile: on a handset | **Not done.** `apps/orders_mobile/android/` holds the Android shell — 96 lines of Kotlin that open a canvas, paint the display list and forward taps. It is written against the documented APIs and has never been built with the Android SDK or run on a phone, because neither was available where it was written. Reviewed design, not tested code. iOS has no shell at all yet. |
+| Mobile: on a handset | **Done.** `apps/orders_mobile/android/` is a Gradle project the NDK builds for three ABIs, and `apps/orders_mobile/ios/` a committed Xcode project; both reach the same five C functions the compiler emits. Installed and run on real devices through BrowserStack on 1 October — an iPhone, and a Pixel 7 on Android 13. What is not done is a store release: no signing identity, no review, no distribution. |
 | One screen description, two surfaces | **Done.** A `layout` renders as HTML through `render X(...)` and draws as a phone screen through `X_draw(...)`, from the same source, with the same parameters, the same queries and the same schema check. Importing `ui from std` is what makes the drawn form appear, so a program that does not ask for it carries neither the code nor the dependency. A column flows down, a row places its children across, hidden fields are not drawn. The two are **not** pixel-identical and are not meant to be: a browser has a layout engine and a phone screen here does not. What is shared is the description. `test_suite/layout_drawn.sta` builds both from one `layout` and checks that the same query filtered the same row out of each. |
 | Mobile: still missing | Momentum scrolling and gestures; a real on-screen keyboard rather than characters handed in one at a time; images; anything that animates; accessibility; right-to-left and non-Latin text — the font is 8×8 ASCII. A row divides its width rather than measuring it, because a display list that is appended to cannot know how wide a child will be before placing it. `X_draw` is a generated name rather than a keyword; `draw X(...)` alongside `render X(...)` would be the tidier form. |
 | Hex literals | **Done.** `0x1F4E62` is one integer, written the way the thing it describes is written everywhere else. Before this every colour was a hand conversion to decimal, and the first one written here was wrong — the screen rendered green instead of teal, and a pixel check caught it rather than a person. The lexer keeps the source text and the value is worked out at parse time in one place per implementation, so the two compilers agree by construction rather than by two pieces of arithmetic matching. |

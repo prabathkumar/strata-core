@@ -25,6 +25,7 @@ int main() {
     if (str_eq(arg(5), "1") == 1) { test_mode = 1; }
 
     str libs = collect_link_libs(root, source);
+    parsing_file(source);
     Node unit = parse_source(file_read(source));
 
     int is_library = 0;

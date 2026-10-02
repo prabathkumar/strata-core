@@ -438,9 +438,36 @@ Token p_expect_word(P &p, str w) {
 // C from the wreckage -- so a misplaced `=` reached the user as a screenful of
 // C compiler errors instead of a line and a column. The oracle has always
 // raised here; this is the same message and the same stop.
+// The file being parsed, for the message. A parse error carried a line and a
+// column and no name, which is fine for one file and useless in a build of
+// several: a pilot had to guess which file "Expected R_BRACE at line 5" was
+// about. There are no module-level variables in the language, so this is one
+// static in the generated C, set by the entry point.
+str parse_file_name(int op, str name) {
+    native "
+    static char* _f = NULL;
+    if ($op == 1) { if (_f) free(_f); _f = strdup($name); return \"\"; }
+    return _f ? _f : \"\";
+    ";
+}
+
+def parsing_file(str name) { parse_file_name(1, name); }
+
 def parse_fail(str message, int line, int col) {
     StringBuilder sb = sb_new();
     sb_append(&sb, "[STRATA PARSE ERROR] ");
+    str where = parse_file_name(0, "");
+    if (str_len(where) > 0) {
+        sb_append(&sb, where);
+        sb_append(&sb, ":");
+        sb_append(&sb, str(line));
+        sb_append(&sb, ":");
+        sb_append(&sb, str(col));
+        sb_append(&sb, " ");
+        sb_append(&sb, message);
+        eprint(sb_to_str(&sb));
+        native "exit(1);";
+    }
     sb_append(&sb, message);
     sb_append(&sb, " at line ");
     sb_append(&sb, str(line));
@@ -1553,6 +1580,32 @@ Node parse_primary(P &p) {
         p_advance(&p);
         Node e = parse_expr(&p);
         p_expect(&p, 53);
+        // `.field` and `[i]` after a parenthesised expression -- see
+        // parser.py. Without this the brackets were read as further call
+        // arguments and the checker reported a wrong arity.
+        while (p_check(&p, 59) + p_check(&p, 54) > 0) {
+            if (p_check(&p, 54) == 1) { if (p.no_index == 1) { return e; } }
+            if (p_check(&p, 59) == 1) {
+                p_advance(&p);
+                Token member = p_expect(&p, 4);
+                Node m = node_new(48);
+                m.c1 = node_ptr(e);
+                m.s1 = member.value;
+                n_pos(m, t);
+                e = m;
+            }
+            if (p_check(&p, 54) == 1) {
+                if (p.no_index == 1) { return e; }
+                p_advance(&p);
+                Node idx = parse_expr(&p);
+                p_expect(&p, 55);
+                Node ix = node_new(49);
+                ix.c1 = node_ptr(e);
+                ix.c2 = node_ptr(idx);
+                n_pos(ix, t);
+                e = ix;
+            }
+        }
         return e;
     }
 
@@ -2063,7 +2116,10 @@ str &seen, int &unresolved) {
                     sb_append(&grown, path);
                     sb_append(&grown, ",");
                     seen = sb_to_str(&grown);
+                    str _outer = parse_file_name(0, "");
+                    parsing_file(path);
                     Node mod = parse_source(file_read(path));
+                    parsing_file(_outer);
                     // The unit carries the import name so the emitted module
                     // separator matches the oracle's, and — for a module of
                     // the project itself — its path, so a diagnostic from it
