@@ -1,0 +1,3 @@
+import io from std;
+layout Page(int n) { window "t" [width = 100] { text str(n) [color = "#fff"]; } }
+int main() { str h = render Page("oops"); print(h); return 0; }

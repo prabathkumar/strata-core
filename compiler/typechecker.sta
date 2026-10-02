@@ -777,7 +777,29 @@ int infer(TC &tc, int node_p, int scope_p) {
     if (k == 41) { return infer(&tc, e.c1, scope_p); }
     if (k == 42) { return infer_call(&tc, e, scope_p); }
     if (k == 43) { return infer(&tc, e.c1, scope_p); }
-    if (k == 44) { return ty_ptr(ty_new(e.s1)); }
+    if (k == 44) {                                   // value :: Record
+        // Recasting a NUMBER -- see typechecker.py. The generated C read a
+        // struct through an integer and the program segfaulted.
+        int csrc = infer(&tc, e.c1, scope_p);
+        if (csrc != 0) {
+            Ty cs = ty_at(csrc);
+            if (is_number_ty(cs.name) == 1) {
+                if (schema_find(tc.schemas, e.s1) != 0) {
+                    StringBuilder cm = sb_new();
+                    sb_append(&cm, "'::' needs a row or a record to recast, not an '");
+                    sb_append(&cm, ty_str(csrc));
+                    sb_append(&cm, "'");
+                    StringBuilder ch = sb_new();
+                    sb_append(&ch, "'"); sb_append(&ch, e.s1);
+                    sb_append(&ch, "' is read through a pointer; an '");
+                    sb_append(&ch, ty_str(csrc));
+                    sb_append(&ch, "' is a value, so there is nothing to point at");
+                    emit_hint(&tc, "E001", sb_to_str(&cm), e.line, e.col, sb_to_str(&ch));
+                }
+            }
+        }
+        return ty_ptr(ty_new(e.s1));
+    }
     if (k == 45) { return infer_predict(&tc, e, scope_p); }
 
     if (k == 47) {                                   // ListLiteral
@@ -854,6 +876,58 @@ int infer(TC &tc, int node_p, int scope_p) {
     if (k == 55) {                                   // render L  -> str
         NodeVec rargs = nv_at(e.v1);
         int nra = rargs.len;
+        // A render is a call, and its arguments were not checked at all --
+        // see typechecker.py.
+        StringBuilder dn = sb_new();
+        sb_append(&dn, e.s1);
+        sb_append(&dn, "_draw");
+        int dfp = fn_find(tc.fns, sb_to_str(&dn));
+        if (dfp != 0) {
+            Fn df = fn_at(dfp);
+            if (nra != df.nparams) {
+                StringBuilder ms = sb_new();
+                sb_append(&ms, "'"); sb_append(&ms, e.s1);
+                sb_append(&ms, "' expects "); sb_append(&ms, str(df.nparams));
+                sb_append(&ms, " args, got "); sb_append(&ms, str(nra));
+                StringBuilder hs = sb_new();
+                sb_append(&hs, "It is declared as "); sb_append(&hs, e.s1);
+                sb_append(&hs, "(");
+                int hp = df.params;
+                for (int i = 0; i < df.nparams; i = i + 1) {
+                    if (i > 0) { sb_append(&hs, ", "); }
+                    Sym hsy = sym_at(hp);
+                    sb_append(&hs, ty_str(hsy.ty));
+                    hp = hsy.next;
+                }
+                sb_append(&hs, ")");
+                emit_hint(&tc, "E012", sb_to_str(&ms), e.line, e.col, sb_to_str(&hs));
+                return ty_ptr(ty_new("str"));
+            }
+            int cur = df.params;
+            for (int i = 0; i < nra; i = i + 1) {
+                int at = infer(&tc, node_ptr(nv_get(&rargs, i)), scope_p);
+                Sym ps = sym_at(cur);
+                if (at != 0) {
+                    if (ty_compatible(ps.ty, at) == 0) {
+                        StringBuilder ab = sb_new();
+                        sb_append(&ab, "Arg "); sb_append(&ab, str(i + 1));
+                        sb_append(&ab, " of '"); sb_append(&ab, e.s1);
+                        sb_append(&ab, "': expected '"); sb_append(&ab, ty_str(ps.ty));
+                        sb_append(&ab, "', got '"); sb_append(&ab, ty_str(at));
+                        sb_append(&ab, "'");
+                        emit_hint(&tc, "E012", sb_to_str(&ab), e.line, e.col, hint_quoted("Cast argument to '", ty_str(ps.ty), "'"));
+                    }
+                }
+                cur = ps.next;
+            }
+            if (scp_lookup(tc.globals, e.s1) == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'"); sb_append(&sb, e.s1);
+                sb_append(&sb, "' is not a layout or report");
+                emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_two("Declare 'layout ", e.s1, "' or 'report ", e.s1, "'"));
+            }
+            return ty_ptr(ty_new("str"));
+        }
         for (int i = 0; i < nra; i = i + 1) {
             infer(&tc, node_ptr(nv_get(&rargs, i)), scope_p);
         }
@@ -2108,6 +2182,66 @@ str src_dir, int report_imports, int mods_p) {
     return tc.error_count;
 }
 
+// Whether every path through this block ends in a return -- see
+// typechecker.py. The last statement decides, deliberately: a rule a
+// developer can hold in their head is worth more here than a complete one,
+// because a false positive is a program refused for no visible reason.
+int always_returns(int bodyp) {
+    if (bodyp == 0) { return 0; }
+    NodeVec body = nv_at(bodyp);
+    int n = body.len;
+    if (n == 0) { return 0; }
+    Node last = nv_get(&body, n - 1);
+    if (last.kind == 21) { return 1; }
+    if (last.kind == 22) {
+        if (last.v2 == 0) { return 0; }
+        if (always_returns(last.v1) == 0) { return 0; }
+        return always_returns(last.v2);
+    }
+    if (last.kind == 29) {
+        Node cond = node_at(last.c1);
+        int forever = 0;
+        if (cond.kind == 50) { if (cond.i1 != 0) { forever = 1; } }
+        if (cond.kind == 53) { if (cond.i1 != 0) { forever = 1; } }
+        if (forever == 0) { return 0; }
+        if (has_break(last.v1) == 1) { return 0; }
+        return 1;
+    }
+    return 0;
+}
+
+int has_break(int bodyp) {
+    if (bodyp == 0) { return 0; }
+    NodeVec body = nv_at(bodyp);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node st = nv_get(&body, i);
+        if (st.kind == 31) { return 1; }
+        if (has_break(st.v1) == 1) { return 1; }
+        if (has_break(st.v2) == 1) { return 1; }
+    }
+    return 0;
+}
+
+// A body that drops into C returns from inside the C -- see typechecker.py.
+int has_native(int bodyp) {
+    if (bodyp == 0) { return 0; }
+    NodeVec body = nv_at(bodyp);
+    int n = body.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node st = nv_get(&body, i);
+        if (st.kind == 23) {
+            Node e = node_at(st.c1);
+            if (e.kind == 42) {
+                if (str_eq(e.s1, "native") == 1) { return 1; }
+            }
+        }
+        if (has_native(st.v1) == 1) { return 1; }
+        if (has_native(st.v2) == 1) { return 1; }
+    }
+    return 0;
+}
+
 def check_unit_functions(TC &tc, Node unit) {
     NodeVec fns = nv_at(unit.v3);
     int nf = fns.len;
@@ -2126,5 +2260,24 @@ def check_unit_functions(TC &tc, Node unit) {
         NodeVec body = nv_at(f.v2);
         int nb = body.len;
         for (int b = 0; b < nb; b = b + 1) { check_stmt(&tc, nv_get(&body, b), fp); }
+        // A function that can reach its end without returning -- see
+        // typechecker.py. The C compiler was doing this one.
+        if (f.c1 != 0) {
+            Ty crt = ty_at(tc.current_return);
+            if (str_eq(crt.name, "void") == 0) {
+                if (nb > 0) {
+                    if (has_native(f.v2) == 0) {
+                        if (always_returns(f.v2) == 0) {
+                            StringBuilder rs = sb_new();
+                            sb_append(&rs, "'"); sb_append(&rs, f.s2);
+                            sb_append(&rs, "' can reach its end without returning a '");
+                            sb_append(&rs, ty_str(tc.current_return));
+                            sb_append(&rs, "'");
+                            emit_hint(&tc, "E002", sb_to_str(&rs), f.line, f.col, "Add a return at the end, or an else branch that returns");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

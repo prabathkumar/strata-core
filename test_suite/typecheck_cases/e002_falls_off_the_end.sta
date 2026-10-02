@@ -1,0 +1,14 @@
+// A function that can reach its end without returning. The C compiler caught
+// this with -Wreturn-type, which meant the developer was shown an error about
+// generated code they never wrote -- and where -Werror is off, the caller read
+// whatever happened to be in the register. Found by the fifth pilot.
+import io from std;
+
+int f(int x) {
+    if (x > 0) { return 1; }
+}
+
+int main() {
+    print(str(f(3)));
+    return 0;
+}

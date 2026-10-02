@@ -181,7 +181,11 @@ as an oracle to compare against.
    unresolved while `strata build` compiles the same file without complaint.
    A checker that disagrees with the compiler is worse than no checker, so
    the flag uses the answer that is right until json_cli resolves imports the
-   way the compiler does.
+   way the compiler does. The fifth pilot turned up a second reason to
+   keep that routing: `json_cli` cannot report a PARSE error as JSON at all.
+   It prints the parse error as text and no payload, because a parse failure
+   in the self-hosted parser ends the process rather than being caught, and
+   there is no way yet for a Strata program to recover from one.
 5. The Claude repair backend is not gated in CI, because CI has no Claude
    credentials. It runs where the CLI does.
 6. `scan` reads, `append` writes and `rewrite` changes a FILE-backed table one
@@ -259,15 +263,15 @@ as an oracle to compare against.
 13. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
-14. The C compiler still does some of the type checker's work. Five shapes
-   pass `strata check` and then fail in `cc`, against generated code the
-   developer never wrote: `list[list[int]]`, a function that can fall off its
-   end without returning, the arguments to `render Page(...)`, a
-   by-reference parameter passed without `&`, and `::` onto a plain number,
-   which does not fail at all -- it segfaults. These are loud rather than
-   silent, which is why they are listed here rather than fixed first, but an
-   error about C a developer did not write is still an error they cannot act
-   on. Found by the fifth pilot, 1 October.
+14. One shape is left where the C compiler does the type checker's work: a
+   by-reference parameter passed without `&`, and its mirror, `&` passed to
+   a parameter that is not by reference. Both are refused by `cc` with an
+   error about a pointer conversion in generated code the developer never
+   wrote. The other four the fifth pilot found are closed:
+   `list[list[int]]` is a parse error in both compilers, a function that can
+   reach its end without returning is E002, the arguments to
+   `render Page(...)` are E012 like any other call, and `::` onto a number
+   is E001 rather than a segfault.
 15. Two error codes do not mean what the taxonomy says. `E005` is
    "Boundary Perimeter Contamination", a value crossing a `foreign`
    boundary, and it is what both compilers emit for `"a" + 1` -- where there

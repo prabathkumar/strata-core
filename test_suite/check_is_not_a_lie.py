@@ -183,6 +183,15 @@ MUTATIONS = [
      'print(str_cat(["count: ", str(len(all))]));',
      'float rate = 2.5;\n    int scaled = len(all) + rate;\n'
      '    print(str_cat(["count: ", str(scaled)]));'),
+    # A list of lists: the self-hosted parser recursed and accepted a type its
+    # own code generator cannot emit. It is not in typecheck_cases/ because
+    # the self-hosted --json emitter cannot report a PARSE error as JSON at
+    # all -- see STAGES.md gap 4 -- so the case lives here, where both
+    # compilers are driven through the CLI.
+    ("a list of lists",
+     'list[Ticket] all = Ticket <- [id > 0];',
+     'list[list[int]] grid = [[1, 2], [3, 4]];\n'
+     '    list[Ticket] all = Ticket <- [id > 0];'),
     # Arithmetic the code generator cannot emit. Both checkers passed it and
     # the C compiler reported it against generated code nobody wrote.
     ("a remainder taken on decimals",

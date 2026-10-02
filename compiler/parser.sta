@@ -488,6 +488,12 @@ Node parse_type(P &p) {
     if (t.kind == 14) {                       // list[T]
         Token open = p_advance(&p);
         p_expect(&p, 54);
+        // A list of lists. This recursed, so the self-hosted parser accepted
+        // a type the code generator cannot emit: `list[list[int]]` passed
+        // `strata check` and came back as three errors from the C compiler
+        // about `strata_int **`. The bootstrap refuses it here, so the two
+        // compilers disagreed as well.
+        if (p_kind(&p, 0) == 14) { p_expect(&p, 4); }
         Node inner = parse_type(&p);
         p_expect(&p, 55);
         Node n = node_new(12);

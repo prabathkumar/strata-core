@@ -128,6 +128,59 @@ CAST_AND_AGGREGATE = frozenset((
 ))
 
 
+def always_returns(body):
+    """Whether every path through this block ends in a return.
+
+    Deliberately simple, and deliberately the same rule in both
+    implementations: the last statement decides. A `return` returns; an
+    `if` returns when it has an else and both sides return; a `while (1)`
+    with no `break` returns, because it never ends. Anything else does not.
+    A rule a developer can hold in their head is worth more here than one
+    that is complete, because a false positive is a program the compiler
+    refuses for no reason the developer can see.
+    """
+    if not body:
+        return False
+    last = body[-1]
+    if isinstance(last, ReturnStmt):
+        return True
+    if isinstance(last, IfStmt):
+        else_body = getattr(last, "else_body", None)
+        return bool(else_body) and always_returns(last.then_body) \
+            and always_returns(else_body)
+    if isinstance(last, WhileStmt):
+        cond = last.condition
+        forever = (isinstance(cond, IntLiteral) and cond.value != 0) or \
+                  (isinstance(cond, BoolLiteral) and cond.value)
+        return forever and not _has_break(last.body)
+    return False
+
+
+def has_native(body):
+    """A body that drops into C returns from inside the C, where this cannot
+    see it. An empty body is a prototype and is handled by the caller."""
+    for st in body or []:
+        if isinstance(st, ExprStmt) and isinstance(st.expr, CallExpr) \
+                and st.expr.callee == "native":
+            return True
+        for attr in ("then_body", "else_body", "body"):
+            inner = getattr(st, attr, None)
+            if isinstance(inner, list) and has_native(inner):
+                return True
+    return False
+
+
+def _has_break(body):
+    for st in body or []:
+        if isinstance(st, BreakStmt):
+            return True
+        for attr in ("then_body", "else_body", "body"):
+            inner = getattr(st, attr, None)
+            if isinstance(inner, list) and _has_break(inner):
+                return True
+    return False
+
+
 class TypeChecker:
     def __init__(self, ast, filename="<stdin>", modules=None,
                  unresolved_imports=None, project_modules=None):
@@ -370,6 +423,22 @@ class TypeChecker:
             if fn.kind=="function" and fn.return_type:
                 self.current_return_type=self._resolve_type(fn.return_type)
             self._check_body(fn.body,scope)
+            # A function that can reach its end without returning. The C
+            # compiler caught this with -Wreturn-type, which meant the
+            # developer was shown an error about generated code they never
+            # wrote; and in the places -Werror is not on, the caller read
+            # whatever happened to be in the register.
+            if (fn.kind == "function" and fn.return_type
+                    and self.current_return_type != T_VOID
+                    and fn.body
+                    and not has_native(fn.body)
+                    and not always_returns(fn.body)):
+                self._error(
+                    "E002",
+                    f"'{fn.name}' can reach its end without returning a "
+                    f"'{self.current_return_type}'",
+                    fn.line, getattr(fn, "col", 1),
+                    "Add a return at the end, or an else branch that returns")
 
     def _check_project_modules(self):
         """Check the bodies of the project's own modules, not its dependencies.
@@ -723,7 +792,22 @@ class TypeChecker:
         if isinstance(expr,UnaryExpr): return self._infer_type(expr.operand,scope)
         if isinstance(expr,CallExpr): return self._infer_call(expr,scope)
         if isinstance(expr,BorrowExpr): return self._infer_type(expr.target,scope)
-        if isinstance(expr,CastExpr): return SType(expr.target_type)
+        if isinstance(expr,CastExpr):
+            # `x :: P` is a pointer recast, documented as such. Recasting a
+            # NUMBER is not a reinterpretation of anything: the generated C
+            # reads a struct through an integer and the program segfaults on
+            # the first field. Nothing said so, in either implementation.
+            src = self._infer_type(expr.source, scope)
+            if (src is not None and src.name in ("int", "float", "bool")
+                    and expr.target_type in self.schemas):
+                self._error(
+                    "E001",
+                    f"'::' needs a row or a record to recast, not an "
+                    f"'{src}'",
+                    expr.line, expr.col,
+                    f"'{expr.target_type}' is read through a pointer; an "
+                    f"'{src}' is a value, so there is nothing to point at")
+            return SType(expr.target_type)
         if isinstance(expr,PredictExpr): return self._infer_predict(expr,scope)
         if isinstance(expr,ListLiteral):
             if not expr.elements: return SType("list",is_list=True,element_type=T_VOID)
@@ -770,7 +854,38 @@ class TypeChecker:
                     expr.line,expr.col,"Indexing applies to list[T] and str values")
             return None
         if isinstance(expr,RenderExpr):
-            for a in getattr(expr,"args",[]): self._infer_type(a,scope)
+            args = getattr(expr, "args", [])
+            # A render is a call. Its arguments were not checked at all, so
+            # `render Page()` on a layout that takes one, or `render
+            # Page("x")` where it takes an int, passed both checkers and died
+            # in the C compiler against a generated function. An ordinary call
+            # with the same mistake gets E012; so does this one now.
+            fn = self.functions.get(expr.target + "_draw")
+            if fn is not None:
+                _, pts = fn
+                if len(args) != len(pts):
+                    sig = f"{expr.target}({', '.join(str(p) for p in pts)})"
+                    self._error(
+                        "E012",
+                        f"'{expr.target}' expects {len(pts)} args, "
+                        f"got {len(args)}",
+                        expr.line, expr.col, f"It is declared as {sig}")
+                else:
+                    for i, (a, pt) in enumerate(zip(args, pts)):
+                        at = self._infer_type(a, scope)
+                        if at and not is_compatible(pt, at):
+                            self._error(
+                                "E012",
+                                f"Arg {i+1} of '{expr.target}': expected "
+                                f"'{pt}', got '{at}'",
+                                expr.line, expr.col,
+                                f"Cast argument to '{pt}'")
+                    if self.global_scope.lookup(expr.target) is None:
+                        self._error("E002",f"'{expr.target}' is not a layout or report",
+                            expr.line,expr.col,
+                            f"Declare 'layout {expr.target}' or 'report {expr.target}'")
+                    return T_STR
+            for a in args: self._infer_type(a,scope)
             if self.global_scope.lookup(expr.target) is None:
                 self._error("E002",f"'{expr.target}' is not a layout or report",
                     expr.line,expr.col,

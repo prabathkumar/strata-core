@@ -1,0 +1,3 @@
+import io from std;
+protocol P { int a; str b; }
+int main() { int x = 7; P p = x :: P; print(str(p.a)); return 0; }

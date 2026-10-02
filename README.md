@@ -502,6 +502,8 @@ that was never declared.
 ```text
 import io from std;
 protocol NetworkPacketHeader { int packet_id; str target_routing_node; int data_payload_bytes; }
+protocol RawBuffer { int length; }
+RawBuffer current_raw_buffer() { native "return (RawBuffer*)strata_scratch(sizeof(RawBuffer));"; }
 def handle(str socket) {
     NetworkPacketHeader header = current_raw_buffer() :: NetworkPacketHeader;
     if (header.data_payload_bytes > 32768) { print("oversized packet dropped"); }
