@@ -263,23 +263,21 @@ as an oracle to compare against.
 13. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
-14. One shape is left where the C compiler does the type checker's work: a
-   by-reference parameter passed without `&`, and its mirror, `&` passed to
-   a parameter that is not by reference. Both are refused by `cc` with an
-   error about a pointer conversion in generated code the developer never
-   wrote. The other four the fifth pilot found are closed:
-   `list[list[int]]` is a parse error in both compilers, a function that can
-   reach its end without returning is E002, the arguments to
-   `render Page(...)` are E012 like any other call, and `::` onto a number
-   is E001 rather than a segfault.
-15. Two error codes do not mean what the taxonomy says. `E005` is
-   "Boundary Perimeter Contamination", a value crossing a `foreign`
-   boundary, and it is what both compilers emit for `"a" + 1` -- where there
-   is no foreign boundary, and whose remediation would send a repair agent
-   somewhere nonsensical. `E002` is a return-contract breach and is what
-   both emit for `sum(a, b)`, which has no `return` in it; that is `E012`.
-   Changing a code changes what a repair agent does, so these move together
-   with the taxonomy and its tests, not on their own.
+14. Closed. Every shape the fifth pilot found where the C compiler was doing
+   the type checker's work now has a Strata diagnostic: `list[list[int]]` is
+   a parse error in both compilers, a function that can reach its end
+   without returning is E002, the arguments to `render Page(...)` are E012
+   like any other call, `::` onto a number is E001 rather than a segfault,
+   and a by-reference parameter passed by value -- or `&` passed to one that
+   is not by reference -- is E012.
+15. Closed. E005 said "Boundary Perimeter Contamination" and was what both
+   compilers emitted for `"a" + 1`, where there is no foreign boundary and
+   whose remediation would have sent a repair agent somewhere nonsensical.
+   That is E001 now, like the rest of arithmetic. E002 said a return
+   contract was broken and was what both emitted for `sum(a, b)`, which has
+   no `return` in it; that is E012. E005 is retired rather than deleted --
+   nothing emits it, and the taxonomy entry stays so a diagnostic stored by
+   an older build still resolves.
 16. `int` widens to `float` without being asked, although section 1 of the
    specification says there is no implicit conversion between them. The
    consequence worth knowing: `float avg = a / 2` with an `int a` does whole

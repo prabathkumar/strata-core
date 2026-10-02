@@ -34,10 +34,10 @@
       "ai_remediation_strategy": "Audit database table block schemas, match column property name spellings inside query bracket filters."
     },
     "E005": {
-      "classification": "Boundary Perimeter Contamination",
+      "classification": "Boundary Perimeter Contamination (retired)",
       "severity": "CRITICAL_HALT",
-      "diagnostic": "Dynamic data types leaked across the FFI bridge threshold without explicit type casing.",
-      "ai_remediation_strategy": "Wrap unmanaged dynamic module operations directly inside rigid Strata type cast constructor blocks."
+      "diagnostic": "Retired. An argument whose type a declaration does not allow is E012, including across a foreign boundary: the mistake is the same one and the fix is the same one, so it had two codes for no reason a repair agent could use. Nothing emits E005. The entry is kept so a stored diagnostic from an older build still resolves.",
+      "ai_remediation_strategy": "Read E012 instead: correct the argument to the declared type."
     },
     "E006": {
       "classification": "Tensor Dimension Drift",

@@ -696,8 +696,9 @@ int main() {
 ```
 
 Pass a `str` where the library expects a `float` and the build stops with
-`E005` — Boundary Perimeter Contamination — rather than producing undefined
-behaviour at runtime.
+`E012` — Call Contract Breach — rather than producing undefined behaviour at
+runtime. An argument of the wrong type is the same mistake and the same fix
+whether the callee is a Strata function or a C one, so it is one code.
 
 ### Machine-readable diagnostics
 
@@ -765,9 +766,14 @@ error.
 | `E002` | Function Return Contract Breach | a return path breaks the signature |
 | `E003` | Generic Collection Pollution | mixed types enter a homogeneous list |
 | `E004` | Database Schema Selector Violation | a query or insert names a column that does not exist |
-| `E005` | Boundary Perimeter Contamination | untyped data crosses a type boundary |
+| `E005` | Boundary Perimeter Contamination | **retired** — an argument of the wrong type is `E012`, across a `foreign` boundary as anywhere else |
 | `E006` | Tensor Dimension Drift | a tensor does not match its declared shape |
 | `E007` | Unresolved Module Import | an import names a module with no local checkout |
+| `E008` | Ambiguous Query Identifier | a bare name in a query condition is both a column and a variable |
+| `E009` | Incomplete Insert | an insert does not name every column |
+| `E010` | Column Type Mismatch | a value written to, or compared against, a column of another type |
+| `E011` | Unresolved Symbol | a name used that is defined nowhere |
+| `E012` | Call Contract Breach | the wrong number of arguments, an argument of a type the signature does not allow, or `&` where the parameter is not by reference |
 
 `E001`–`E006` are `CRITICAL_HALT`: they stop the build. `E007` is `ADVISORY` —
 it is reported and the build continues, because a dependency provided at link

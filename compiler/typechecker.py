@@ -201,6 +201,12 @@ class TypeChecker:
         # (name, line, col) already reported as an ambiguous query identifier.
         self._reported_ambiguous=set()
         self.functions={}; self.current_return_type=None
+        # Which parameters are by reference, by function name. The signature
+        # map keeps only types, and `&` is part of the contract: passing a
+        # value where a reference belongs was left to the C compiler, which
+        # reported it as a pointer conversion in code the developer never
+        # wrote.
+        self.fn_borrows={}
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
         # Which file the diagnostics being produced right now belong to.
@@ -373,6 +379,8 @@ class TypeChecker:
                     # signature out and the call is unchecked, as before.
                     continue
                 self.functions[fn.name] = (rt, params)
+                self.fn_borrows[fn.name] = [bool(getattr(p, "borrow", False))
+                                            for p in fn.params]
 
     def _register_functions(self):
         # A name defined twice in one file. The self-hosted compiler kept the
@@ -396,6 +404,8 @@ class TypeChecker:
             if fn.kind=="function" and fn.return_type: rt=self._resolve_type(fn.return_type)
             params=[self._resolve_type(p.param_type) for p in fn.params]
             self.functions[fn.name]=(rt,params)
+            self.fn_borrows[fn.name]=[bool(getattr(p,"borrow",False))
+                                      for p in fn.params]
             self.global_scope.define(fn.name,rt)
         self._register_layout_draws()
 
@@ -912,7 +922,12 @@ class TypeChecker:
             # Reporting that as contamination makes E005 fire on every
             # multi-module program, including this project's own stdlib.
             if right is not None and right!=T_STR:
-                self._error("E005",f"Cannot concat str with '{right}' — wrap in str()",
+                # E001, not E005: E005 is contamination crossing a `foreign`
+                # boundary, and its remediation tells a repair agent to wrap
+                # the call in cast blocks. There is no foreign boundary in
+                # `"a" + 1`; it is an operand the operator cannot take, which
+                # is what the rest of arithmetic reports as E001.
+                self._error("E001",f"Cannot concat str with '{right}' — wrap in str()",
                     expr.line,expr.col,"Use str() to convert first")
             return T_STR
         if expr.op in ("+","-","*","/","%"):
@@ -988,8 +1003,26 @@ class TypeChecker:
             self._error("E012",f"'{expr.callee}' expects {len(pts)} args, got {len(expr.args)}",
                 expr.line,expr.col,f"It is declared as {sig}")
             return rt
+        borrows=self.fn_borrows.get(expr.callee) or [False]*len(pts)
         for i,(arg,pt) in enumerate(zip(expr.args,pts)):
             at=self._infer_type(arg,scope)
+            wants_ref = borrows[i] if i < len(borrows) else False
+            given_ref = isinstance(arg, BorrowExpr)
+            if wants_ref and not given_ref:
+                self._error(
+                    "E012",
+                    f"Arg {i+1} of '{expr.callee}' is by reference and was "
+                    f"passed by value",
+                    expr.line, expr.col,
+                    f"Pass it with '&': the parameter is declared "
+                    f"'{pt} &...'")
+            elif given_ref and not wants_ref:
+                self._error(
+                    "E012",
+                    f"Arg {i+1} of '{expr.callee}' was passed with '&' and "
+                    f"the parameter is not by reference",
+                    expr.line, expr.col,
+                    f"Drop the '&': the parameter is declared '{pt}'")
             if at and not is_compatible(pt,at):
                 # E012 as well: E005 is contamination crossing the foreign
                 # boundary. An argument of the wrong type to an ordinary
@@ -1012,7 +1045,11 @@ class TypeChecker:
         """
         name=expr.callee
         if len(expr.args)!=1:
-            self._error("E002",f"'{name}' takes one argument, got {len(expr.args)}",
+            # E012, not E002: E002 is a return-contract breach and its
+            # remediation tells a model to trace return blocks. There is no
+            # `return` in `sum(a, b)` -- it is a call that does not keep a
+            # contract, which is exactly E012.
+            self._error("E012",f"'{name}' takes one argument, got {len(expr.args)}",
                 expr.line,expr.col,f"Write {name}(rows) or {name}(rows.column)")
             return T_INT if name=="count" else T_FLOAT
 

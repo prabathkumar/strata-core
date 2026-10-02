@@ -129,6 +129,21 @@ int sym_cons(str name, int ty, int next) {
 
 Sym sym_at(int p) { native "return (Sym*)(uintptr_t)$p;"; }
 
+// A by-reference parameter, carried in the name of the signature's symbol.
+// Those names are read positionally and never looked up, so this keeps `&`
+// in the contract without a second list to hold it -- see typechecker.py.
+str param_sym_name(Node prm) {
+    if (prm.i1 == 0) { return prm.s1; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "&");
+    sb_append(&sb, prm.s1);
+    return sb_to_str(&sb);
+}
+
+int sym_is_borrowed(Sym s) {
+    return str_starts_with(s.name, "&");
+}
+
 int sym_find(int head, str name) {
     int cur = head;
     while (cur != 0) {
@@ -632,7 +647,7 @@ def register_decls(TC &tc, Node unit) {
                 int fnp = fps.len;
                 for (int r = fnp - 1; r >= 0; r = r - 1) {
                     Node fprm = nv_get(&fps, r);
-                    fplist = sym_cons(fprm.s1, resolve_type(fprm.c1), fplist);
+                    fplist = sym_cons(param_sym_name(fprm), resolve_type(fprm.c1), fplist);
                 }
                 tc.fns = fn_cons(ff.s2, frt, fplist, fnp, tc.fns);
             }
@@ -669,7 +684,7 @@ def register_decls(TC &tc, Node unit) {
         // Built in reverse so the list reads in declaration order.
         for (int k = np - 1; k >= 0; k = k - 1) {
             Node prm = nv_get(&ps, k);
-            plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
+            plist = sym_cons(param_sym_name(prm), resolve_type(prm.c1), plist);
         }
         tc.fns = fn_cons(f.s2, rt, plist, np, tc.fns);
     }
@@ -694,7 +709,7 @@ def register_layout_draws(TC &tc, Node unit) {
             int np = ps.len;
             for (int k = np - 1; k >= 0; k = k - 1) {
                 Node prm = nv_get(&ps, k);
-                plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
+                plist = sym_cons(param_sym_name(prm), resolve_type(prm.c1), plist);
             }
             StringBuilder nm = sb_new();
             sb_append(&nm, dec.s1);
@@ -999,10 +1014,11 @@ int infer_binary(TC &tc, Node e, int scope_p) {
                     Ty r = ty_at(right);
                     if (str_eq(r.name, "str") == 0) {
                         StringBuilder sb = sb_new();
+                        // E001, not E005 -- see typechecker.py.
                         sb_append(&sb, "Cannot concat str with '");
                         sb_append(&sb, ty_str(right));
                         sb_append(&sb, "' — wrap in str()");
-                        emit_hint(&tc, "E005", sb_to_str(&sb), e.line, e.col, "Use str() to convert first");
+                        emit_hint(&tc, "E001", sb_to_str(&sb), e.line, e.col, "Use str() to convert first");
                     }
                 }
                 return ty_ptr(ty_new("str"));
@@ -1090,7 +1106,7 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
         StringBuilder sb = sb_new();
         sb_append(&sb, "'"); sb_append(&sb, e.s1);
         sb_append(&sb, "' takes one argument, got "); sb_append(&sb, str(na));
-        emit_hint(&tc, "E002", sb_to_str(&sb), e.line, e.col, hint_two("Write ", e.s1, "(rows) or ", e.s1, "(rows.column)"));
+        emit_hint(&tc, "E012", sb_to_str(&sb), e.line, e.col, hint_two("Write ", e.s1, "(rows) or ", e.s1, "(rows.column)"));
         if (is_count == 1) { return ty_ptr(ty_new("int")); }
         return ty_ptr(ty_new("float"));
     }
@@ -1272,6 +1288,33 @@ int infer_call(TC &tc, Node e, int scope_p) {
     for (int i = 0; i < na; i = i + 1) {
         int at = infer(&tc, node_ptr(nv_get(&args, i)), scope_p);
         Sym ps = sym_at(cur);
+        // `&` is part of the contract -- see typechecker.py.
+        Node argn = nv_get(&args, i);
+        int given_ref = 0;
+        if (argn.kind == 43) { given_ref = 1; }
+        int wants_ref = sym_is_borrowed(ps);
+        if (wants_ref == 1) {
+            if (given_ref == 0) {
+                StringBuilder bm = sb_new();
+                sb_append(&bm, "Arg "); sb_append(&bm, str(i + 1));
+                sb_append(&bm, " of '"); sb_append(&bm, e.s1);
+                sb_append(&bm, "' is by reference and was passed by value");
+                StringBuilder bh = sb_new();
+                sb_append(&bh, "Pass it with '&': the parameter is declared '");
+                sb_append(&bh, ty_str(ps.ty));
+                sb_append(&bh, " &...'");
+                emit_hint(&tc, "E012", sb_to_str(&bm), e.line, e.col, sb_to_str(&bh));
+            }
+        }
+        if (wants_ref == 0) {
+            if (given_ref == 1) {
+                StringBuilder vm = sb_new();
+                sb_append(&vm, "Arg "); sb_append(&vm, str(i + 1));
+                sb_append(&vm, " of '"); sb_append(&vm, e.s1);
+                sb_append(&vm, "' was passed with '&' and the parameter is not by reference");
+                emit_hint(&tc, "E012", sb_to_str(&vm), e.line, e.col, hint_quoted("Drop the '&': the parameter is declared '", ty_str(ps.ty), "'"));
+            }
+        }
         if (at != 0) {
             if (ty_compatible(ps.ty, at) == 0) {
                 StringBuilder sb = sb_new();
@@ -2098,7 +2141,7 @@ def register_module_functions(TC &tc, Node unit) {
         int np = ps.len;
         for (int k = np - 1; k >= 0; k = k - 1) {
             Node prm = nv_get(&ps, k);
-            plist = sym_cons(prm.s1, resolve_type(prm.c1), plist);
+            plist = sym_cons(param_sym_name(prm), resolve_type(prm.c1), plist);
         }
         tc.fns = fn_cons(f.s2, rt, plist, np, tc.fns);
     }

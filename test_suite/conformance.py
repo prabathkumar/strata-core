@@ -226,14 +226,18 @@ test("e004_valid_query",
 test("e004_unknown_database", 'int main() { list[Ghost] r = Ghost <- [id == 1]; return 0; }', "E004")
 
 print("\n── E005: Boundary Contamination ──────────────────────────────────")
-test("e005_str_concat_with_int", 'int main() { str msg = "count: " + 42; return 0; }', "E005")
+# Concatenating a str with a number is not a boundary crossing: it is an
+# operand `+` cannot take, which is E001 like the rest of arithmetic. E005 is
+# for a value crossing a `foreign` boundary, and its remediation says to wrap
+# the call in cast blocks -- advice a repair agent cannot act on here.
+test("e005_str_concat_with_int", 'int main() { str msg = "count: " + 42; return 0; }', "E001")
 test("e005_valid_str_concat", 'int main() { str a = "hello"; str b = "world"; str c = a + b; return 0; }')
 test("e012_arg_type_mismatch", 'int process(int x) { return x; }\nint main() { int r = process("bad"); return 0; }', "E012")
 
 test("e005_unknown_callee_not_flagged",
      'int main() { str m = "id " + imported_helper(1); return 0; }')
 test("e005_known_int_still_flagged",
-     'int main() { int n = 1; str m = "id " + n; return 0; }', "E005")
+     'int main() { int n = 1; str m = "id " + n; return 0; }', "E001")
 
 print("\n── E006: Tensor Dimension Drift ──────────────────────────────────")
 test("e006_undeclared_model", 'int main() { int x = predict GhostModel(x); return 0; }', "E006")
@@ -968,9 +972,9 @@ test("agg_over_a_non_list_is_E003",
     'import io from std;\nint main() { int n = 5; float t = sum(n); return 0; }',
     "E003")
 
-test("agg_with_two_arguments_is_E002",
+test("agg_with_two_arguments_is_E012",
     'import io from std;\nint main() { list[int] xs = [1]; float t = sum(xs, xs); return 0; }',
-    "E002")
+    "E012")
 
 test("count_of_a_non_list_is_E003",
     'import io from std;\nint main() { int n = 5; int c = count(n); return 0; }',
