@@ -162,6 +162,48 @@ def main():
                 ok("it covers the generated C", "*.c" in text, text)
                 ok("and the build directory", "build/" in text, text)
 
+        print("\n── one diagnostic shape, whichever tool prints it ──────────────")
+        # `strata check` printed "[E004] msg (line 10, col 40)", `strata
+        # build` printed "E004 10:40 msg", and a third form appeared when the
+        # file was known. Nothing could parse all three, and the editor
+        # extension could only ever read one of them.
+        work = os.path.join(tmp, "e")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("a fifth project is created", proj is not None, err)
+        if proj:
+            main_sta = os.path.join(proj, "src", "main.sta")
+            body = open(main_sta).read().replace("all.price", "all.pirce")
+            open(main_sta, "w").write(body)
+            shape = re.compile(
+                r"^\s*E\d{3} \S+\.sta:\d+:\d+ \S.*$", re.M)
+            _, chk = run(["check", "src/main.sta"], proj)
+            _, bld = run(["build"], proj)
+            ok("strata check prints CODE file:line:col message",
+               bool(shape.search(chk)), chk[-200:])
+            ok("strata build prints the same shape",
+               bool(shape.search(bld)), bld[-200:])
+            ok("and neither prints the old one",
+               "(line " not in chk and "(line " not in bld,
+               (chk + bld)[-200:])
+
+        print("\n── a syntax error points at the mistake, not the file's end ────")
+        work = os.path.join(tmp, "f")
+        os.makedirs(work)
+        proj, err = new_project(work)
+        ok("a sixth project is created", proj is not None, err)
+        if proj:
+            main_sta = os.path.join(proj, "src", "main.sta")
+            with open(main_sta, "a") as fh:
+                fh.write("int broken( {\n")
+            bad_line = len(open(main_sta).read().rstrip("\n").splitlines())
+            _, out = run(["check", "src/main.sta"], proj)
+            ok("it names the line the mistake is on",
+               f":{bad_line}:" in out or f"line {bad_line}" in out,
+               f"line {bad_line}: {out[-200:]}")
+            ok("and does not blame the end of the file",
+               "(EOF)" not in out, out[-200:])
+
         print("\n── strata repair --help is about strata, not about Python ──────")
         rc, out = run(["repair", "--help"], tmp)
         ok("it names the command a developer typed",

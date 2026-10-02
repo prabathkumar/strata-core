@@ -97,6 +97,18 @@ second machine writes the same file.
 
 ## What will annoy you
 
+- **Two names reach the same function, and only one is the API.** `std/`
+  gives you `str_concat`, `str_len`, `str_eq` and the rest. The runtime's own
+  C functions are called `strata_concat`, `strata_dup` and so on, and the
+  compiler lets you call them directly because its own sources do. Write the
+  `str_*` names: the `strata_*` ones are an implementation detail and are not
+  promised to stay. A blind pilot found both in use in our own scaffold and
+  tutorial, with nothing saying which was meant; that has been corrected.
+- **An import from `std` is not enforced.** Deleting `import str from std;`
+  from a file that calls `str_concat` changes nothing: the standard library
+  is linked into every program, so the import list documents intent rather
+  than controlling it. An import of a module from `app` IS load-bearing. This
+  is a real inconsistency and it is in STAGES.md as one.
 - **No package registry.** A dependency is a path or a git revision, named
   exactly. `strata deps` fetches the graph, including dependencies of
   dependencies, and refuses when two packages disagree about a name.

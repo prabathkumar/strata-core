@@ -210,8 +210,8 @@ def main():
             # E007 — a module with no local checkout — is advisory in the
             # compiler. An editor that paints it red teaches people to ignore
             # red.
-            adv = ("[Strata Check] advisory: [E007] 'lexer' from 'compiler' "
-                   "has no local checkout (line 8, col 1)\n"
+            adv = ("[Strata Check] advisory: E007 src/main.sta:8:1 'lexer' "
+                   "from 'compiler' has no local checkout\n"
                    "  Hint: Its symbols must be provided at link time\n")
             open(out_file, "w").write(adv)
             r = run([node, script, os.path.join(ext, "diagnostics.js"),

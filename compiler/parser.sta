@@ -519,6 +519,28 @@ Node parse_type(P &p) {
         return n;
     }
 
+    // A token that cannot begin a type. This used to take whatever was there
+    // -- so `int broken( {` consumed the brace as a type name, ran to the end
+    // of the file looking for the parameter's name, and reported "Expected
+    // IDENT, got '' (EOF)" against the line after the last one. The oracle
+    // said "Expected type, got '{'" at the brace. A diagnostic that points
+    // at the end of the file is a diagnostic that sends a developer to the
+    // wrong line.
+    int tk = p_kind(&p, 0);
+    int is_type = 0;
+    if (tk == 10) { is_type = 1; }                  // int
+    if (tk == 11) { is_type = 1; }                  // float
+    if (tk == 12) { is_type = 1; }                  // str
+    if (tk == 13) { is_type = 1; }                  // void
+    if (tk == 16) { is_type = 1; }                  // bool
+    if (tk == 4) { is_type = 1; }                   // a declared name
+    if (is_type == 0) {
+        StringBuilder tm = sb_new();
+        sb_append(&tm, "Expected type, got '");
+        sb_append(&tm, t.value);
+        sb_append(&tm, "'");
+        parse_fail(sb_to_str(&tm), t.line, t.col);
+    }
     Token prim = p_advance(&p);
     Node n = node_new(11);
     n.s1 = prim.value;

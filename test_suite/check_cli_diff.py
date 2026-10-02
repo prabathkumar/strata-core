@@ -42,11 +42,11 @@ ADVISORY_CODES = {"E007"}
 advisories = [e for e in errs if e.code in ADVISORY_CODES]
 hard = [e for e in errs if e.code not in ADVISORY_CODES]
 for e in advisories:
-    print(f"[Strata Check] advisory: {e}")
+    print(f"[Strata Check] advisory: {e.rendered(f)}")
 if hard:
     print(f"[Strata Check] {len(hard)} error(s) found:", file=sys.stderr)
     for e in hard:
-        print(f"  {e}", file=sys.stderr)
+        print(f"  {e.rendered(f)}", file=sys.stderr)
     sys.exit(1)
 print(f"  {len(ast.imports)} imports, {len(modules)} resolved module(s), "
       f"{len(ast.declarations)} decls, {len(ast.functions)} functions")

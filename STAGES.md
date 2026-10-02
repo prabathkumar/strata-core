@@ -278,7 +278,18 @@ as an oracle to compare against.
    no `return` in it; that is E012. E005 is retired rather than deleted --
    nothing emits it, and the taxonomy entry stays so a diagnostic stored by
    an older build still resolves.
-16. `int` widens to `float` without being asked, although section 1 of the
+16. An import from `std` is decorative. Deleting `import str from std;` from
+   a file that calls `str_concat` changes nothing, because the standard
+   library is linked into every program; an import from `app` is enforced
+   properly. So `strata doc` reports an import list that does not have to be
+   true, and a reader cannot tell which lines are load-bearing. Found by the
+   sixth pilot, who had to guess.
+17. A syntax error is reported where the parser noticed, which for an
+   unclosed brace or paren is the end of the file rather than the line that
+   is wrong. `int broken( {` on line 13 is reported at line 14, col 1, as
+   "Expected IDENT, got '' (EOF)". Every other diagnostic in the toolchain
+   points at the mistake; this one points at where the consequence surfaced.
+18. `int` widens to `float` without being asked, although section 1 of the
    specification says there is no implicit conversion between them. The
    consequence worth knowing: `float avg = a / 2` with an `int a` does whole
    number division FIRST and widens the result, so 7 gives 3.0 and nothing

@@ -57,7 +57,7 @@ int verbose) {
     // past -- would not build at all.
     diag_capture_begin();
     check_unit_project(root, dir_of(source), unit);
-    int halting = report_diagnostics(root, diag_capture_end());
+    int halting = report_diagnostics(root, diag_capture_end(), source);
     if (halting > 0) { return 1; }
 
     str c_source = generate_mode(root, source, target, test_mode);

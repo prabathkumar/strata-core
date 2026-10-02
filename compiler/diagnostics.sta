@@ -131,7 +131,7 @@ str diagnostics_json(str root, str source_path) {
 // fatal is exactly the bug this function exists to prevent, and it is one the
 // driver had: it halted on an advisory that the bootstrap reports and walks
 // past.
-int report_diagnostics(str root, str log) {
+int report_diagnostics(str root, str log, str path) {
     str tax = file_read(taxonomy_path(root));
     int halting = 0;
     int n = str_len(log);
@@ -151,7 +151,12 @@ int report_diagnostics(str root, str log) {
         StringBuilder line = sb_new();
         sb_append(&line, code);
         sb_append(&line, " ");
+        // The file is part of the location. A diagnostic against the file
+        // being built carried no name, so `strata build` printed `E004 10:40`
+        // while `strata check` printed the path -- two shapes for one
+        // mistake.
         str in_file = field_at(record, 1);
+        if (str_len(in_file) == 0) { in_file = path; }
         if (str_len(in_file) > 0) {
             sb_append(&line, in_file);
             sb_append(&line, ":");

@@ -497,8 +497,8 @@ import schema from app;
 int main() {
     Item <- [id = 1, name = "first", price = 9.99];
     list[Item] all = Item <- [id > 0];
-    print(strata_concat("items: ", str(count(all))));
-    print(strata_concat("value: ", str(sum(all.price))));
+    print(str_concat("items: ", str(count(all))));
+    print(str_concat("value: ", str(sum(all.price))));
     return 0;
 }
 STA

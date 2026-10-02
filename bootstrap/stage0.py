@@ -2872,11 +2872,11 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
                   if tax.get(e.code, {}).get("severity") == "ADVISORY"]
     halting = [e for e in errors if e not in advisories]
     for a in advisories:
-        print(f"[Strata Check] advisory: {a}", file=sys.stderr)
+        print(f"[Strata Check] advisory: {a.rendered(source_path)}", file=sys.stderr)
     if halting:
         print(f"[Strata Check] {len(halting)} error(s) found:", file=sys.stderr)
         for e in halting:
-            print(f"  {e}", file=sys.stderr)
+            print(f"  {e.rendered(source_path)}", file=sys.stderr)
         sys.exit(1)
 
     # Root-level unresolved imports are reported as E007 by the checker above.

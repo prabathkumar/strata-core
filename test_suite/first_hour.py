@@ -160,7 +160,10 @@ def main():
         out = r.stdout + r.stderr
         ok("a test that will not build says why",
            "E011" in out and "mystery_function" in out, out[-250:])
-        ok("and says where", "line 4" in out, out[-250:])
+        # One location shape across the toolchain now: CODE file:line:col.
+        # This used to look for "line 4", which was the `strata check`
+        # wording; `strata build` said "4:5" for the same diagnostic.
+        ok("and says where", ":4:" in out, out[-250:])
         os.remove(broken)
 
         r = run([STRATA, "test", "--help"], app)

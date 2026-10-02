@@ -26,26 +26,28 @@ str install_root() {
     return ".";
 }
 
-// One diagnostic as the toolchain has always printed it:
-//   [E001] message (line 3, col 12)
+// One diagnostic, in the one shape the whole toolchain uses:
+//   E001 src/main.sta:3:12 message
 //     Hint: ...
-str rendered(str record) {
+//
+// This used to print "[E001] message (line 3, col 12)" while `strata build`
+// printed "E001 3:12 message" for the same mistake. Nothing could parse both,
+// and file:line:col is what an editor already jumps to.
+str rendered(str record, str path) {
     StringBuilder sb = sb_new();
-    sb_append(&sb, "[");
     sb_append(&sb, field_at(record, 0));
-    sb_append(&sb, "] ");
-    sb_append(&sb, field_at(record, 4));
-    sb_append(&sb, " (");
+    sb_append(&sb, " ");
     str in_file = field_at(record, 1);
+    if (str_len(in_file) == 0) { in_file = path; }
     if (str_len(in_file) > 0) {
         sb_append(&sb, in_file);
         sb_append(&sb, ":");
     }
-    sb_append(&sb, "line ");
     sb_append(&sb, field_at(record, 2));
-    sb_append(&sb, ", col ");
+    sb_append(&sb, ":");
     sb_append(&sb, field_at(record, 3));
-    sb_append(&sb, ")");
+    sb_append(&sb, " ");
+    sb_append(&sb, field_at(record, 4));
     str hint = field_at(record, 5);
     if (str_len(hint) > 0) {
         sb_append(&sb, "\n  Hint: ");
@@ -91,11 +93,11 @@ int main() {
         if (str_len(record) == 0) { continue; }
 
         if (is_advisory(tax, field_at(record, 0)) == 1) {
-            print(str_concat("[Strata Check] advisory: ", rendered(record)));
+            print(str_concat("[Strata Check] advisory: ", rendered(record, path)));
         }
         if (is_advisory(tax, field_at(record, 0)) == 0) {
             sb_append(&hard, "  ");
-            sb_append(&hard, rendered(record));
+            sb_append(&hard, rendered(record, path));
             sb_append(&hard, "\n");
             halting = halting + 1;
         }

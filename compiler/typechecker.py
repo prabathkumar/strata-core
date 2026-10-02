@@ -30,9 +30,29 @@ class StrataError:
     # The file the diagnostic is in. An application is several files, and a
     # line number against the wrong one is worse than no line number.
     file: str = ""
+    def rendered(self, path=""):
+        """CODE file:line:col message -- one shape across the toolchain.
+
+        `path` is the file being compiled, used when the record carries no
+        file of its own. A diagnostic in an imported module names that module
+        instead.
+        """
+        where = self.file or path
+        where = f"{where}:" if where else ""
+        out = f"{self.code} {where}{self.line}:{self.col} {self.message}"
+        if self.hint:
+            out += f"\n  Hint: {self.hint}"
+        return out
+
     def __str__(self):
+        # One shape, everywhere: CODE file:line:col message. `strata check`
+        # printed "[E004] msg (line 10, col 40)" and `strata build` printed
+        # "E004 10:40 msg" for the same mistake, and a third form appeared
+        # when the file was known. Nothing could parse all three, and a
+        # developer reading two of them in one session has to learn both.
+        # file:line:col is what every editor already jumps to.
         where = f"{self.file}:" if self.file else ""
-        out = f"[{self.code}] {self.message} ({where}line {self.line}, col {self.col})"
+        out = f"{self.code} {where}{self.line}:{self.col} {self.message}"
         if self.hint: out += f"\n  Hint: {self.hint}"
         return out
 
@@ -224,6 +244,9 @@ class TypeChecker:
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
         # Which file the diagnostics being produced right now belong to.
+        # Empty means the file being compiled: the renderer fills in the path
+        # it was given, so a record never has to carry one spelling of a path
+        # that another part of the toolchain spells differently.
         self.current_file = ""
         # (path, unit) for each module of the project itself. Dependencies are
         # not here: they have their own suite.

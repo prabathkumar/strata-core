@@ -164,7 +164,7 @@ strata build
 ```
 
 ```
-E009 7:5 Insert into 'Item' omits column 'category'
+E009 src/main.sta:7:5 Insert into 'Item' omits column 'category'
   Hint: Add 'category = <value>' to the insert — 'category' is 'str' — or remove 'category' from 'database Item'
 ```
 
@@ -183,7 +183,7 @@ Then query it:
 
 ```text
 list[Item] tools = Item <- [category == "tools"];
-print(strata_concat("tools: ", str(count(tools))));
+print(str_concat("tools: ", str(count(tools))));
 ```
 
 The scaffolded test inserts into `Item` too, so it needs the new column for

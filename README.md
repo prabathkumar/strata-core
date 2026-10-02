@@ -23,7 +23,7 @@ before you look.
 
 ```
 $ strata build ledger.sta
-  [E004] Column 'sec_tier' does not exist in 'UserProfile' (line 5, col 5)
+  E004 src/main.sta:5:5 Column 'sec_tier' does not exist in 'UserProfile'
   Hint: Valid columns: ['user_id', 'security_tier']
 
 $ strata repair ledger.sta
@@ -587,7 +587,7 @@ int main() {
 Pass a tensor of the wrong shape and the build stops:
 
 ```
-[E006] Tensor shape mismatch for 'RiskScorer': expected [1,3], got [1,32]
+E006 src/main.sta:12:18 Tensor shape mismatch for 'RiskScorer': expected [1,3], got [1,32]
 ```
 
 **The runtime is one dense layer** — `output = input x W + b`, weights read
@@ -1234,7 +1234,7 @@ layout OperationsConsole() {
 Rename `service_name` to `svc_name` and:
 
 ```
-[E004] Field 'service_name' not in 'ServiceMetric' (line 6, col 30)
+E004 src/views.sta:6:30 Field 'service_name' not in 'ServiceMetric'
 Hint: Valid fields: ['id', 'svc_name', 'operational_status']
 ```
 
