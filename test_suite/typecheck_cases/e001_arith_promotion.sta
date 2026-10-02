@@ -1,0 +1,13 @@
+// Every arithmetic operator, both orders. Each line is a mistake; the two
+// checkers must report the same one.
+import io from std;
+
+int main() {
+    int   a = 7;
+    float b = 2.0;
+    int   p = a - b;
+    int   q = b * a;
+    int   r = a / b;
+    print(str(p + q + r));
+    return 0;
+}

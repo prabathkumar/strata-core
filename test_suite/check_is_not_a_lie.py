@@ -169,6 +169,26 @@ MUTATIONS = [
     ("an insert that forgets a column",
      'Ticket <- [id = 1, hours = 48, owner = "ana"];',
      'Ticket <- [id = 1, hours = 48];'),
+    # Neither checker objected to this. The self-hosted compiler kept the
+    # first definition and silently dropped the second -- it shipped a binary
+    # missing code that had been written -- and the bootstrap emitted both and
+    # let the C compiler refuse them. Found by a blind audit.
+    ("a function defined twice in one file",
+     'str priority_of(int hours) {',
+     'str priority_of(int hours) { return "FIRST"; }\n\nstr priority_of(int hours) {'),
+    # A whole number plus a decimal is a decimal. The self-hosted checker
+    # returned the left operand's type, so this built and truncated silently,
+    # while the reference rejected it.
+    ("a decimal assigned to a whole number through arithmetic",
+     'print(str_cat(["count: ", str(len(all))]));',
+     'float rate = 2.5;\n    int scaled = len(all) + rate;\n'
+     '    print(str_cat(["count: ", str(scaled)]));'),
+    # Arithmetic the code generator cannot emit. Both checkers passed it and
+    # the C compiler reported it against generated code nobody wrote.
+    ("a remainder taken on decimals",
+     'print(str_cat(["count: ", str(len(all))]));',
+     'float a = 5.0;\n    float b = 2.0;\n    float c = a % b;\n'
+     '    print(str_cat(["count: ", str(c)]));'),
 ]
 
 

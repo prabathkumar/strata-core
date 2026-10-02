@@ -1173,7 +1173,12 @@ Node parse_statement(P &p) {
         p_advance(&p);
         Token rep = p_expect(&p, 4);
         p_expect_word(&p, "to");
-        Token path = p_advance(&p);
+        // A path is a string literal. Accepting any token here took the
+        // IDENTIFIER'S NAME as the filename: `save T to path;` wrote a
+        // file called "path". The bootstrap refuses this, so the two
+        // compilers disagreed and a built binary wrote to the wrong
+        // place in silence.
+        Token path = p_expect(&p, 3);
         p_expect(&p, 56);
         Node n = node_new(25);
         n.s1 = rep.value;
@@ -1347,7 +1352,12 @@ Node parse_storage_op(P &p) {
             // file using `load` — recoverable, so the AST was right and the
             // syntax-tree differential never saw it.
             if (is_save == 0) { p_expect(&p, 22); }
-            Token path = p_advance(&p);
+            // A path is a string literal. Accepting any token here took the
+            // IDENTIFIER'S NAME as the filename: `save T to path;` wrote a
+            // file called "path". The bootstrap refuses this, so the two
+            // compilers disagreed and a built binary wrote to the wrong
+            // place in silence.
+            Token path = p_expect(&p, 3);
             Node n = node_new(75);
             n.c1 = -1;
             // An optional filter, written the way every other query in the

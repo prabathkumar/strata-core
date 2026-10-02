@@ -516,7 +516,11 @@ int main(int argc, char** argv) {
         self.emit_raw("    path = (strata_str)strata_env_path(path);")
         self.emit_raw('    if (!path || !*path) { return 0; }')
         self._gen_pg_save(name, fields, cols_sql, upsert_sql, delete_sql, key, n)
-        self.emit_raw(f'    FILE* f = fopen(path, "w"); if (!f) return 0;')
+        self.emit_raw('    FILE* f = fopen(path, "w");')
+        self.emit_raw("    if (!f) {")
+        self.emit_raw(f'        strata_save_refuse("{name}", path, strerror(errno));')
+        self.emit_raw("        return 0;")
+        self.emit_raw("    }")
         self.emit_raw(f'    fprintf(f, "#strata\\t{name}\\t{header}\\n");')
         self.emit_raw(f"    for (strata_int i = 0; i < {name}__count; i++) {{")
         self.emit_raw(f"        {name}* r = {name}__rows[i];")
@@ -532,7 +536,12 @@ int main(int argc, char** argv) {
                 self.emit_raw(f'        fprintf(f, "%lld", (long long)r->{fd.name});')
         self.emit_raw('        fputc(0x0a, f);')
         self.emit_raw("    }")
-        self.emit_raw("    fclose(f);")
+        self.emit_raw("    int _werr = ferror(f);")
+        self.emit_raw("    if (fclose(f) != 0 || _werr) {")
+        self.emit_raw(f'        strata_save_refuse("{name}", path, "the file '
+                      f'could not be written in full");')
+        self.emit_raw("        return 0;")
+        self.emit_raw("    }")
         # A writer has the rows it just wrote; reloading them would be work
         # to arrive back where it started.
         self.emit_raw(f"    free({name}__from);")
@@ -731,6 +740,46 @@ int main(int argc, char** argv) {
         self.emit_raw("    int fresh = 1;")
         self.emit_raw('    FILE* probe = fopen(path, "r");')
         self.emit_raw("    if (probe) { if (fgetc(probe) != EOF) fresh = 0; fclose(probe); }")
+        # An append writes its columns in DECLARATION order; a reader honours
+        # the order in the file's header. Nothing compared the two, so
+        # appending to a file whose header had the same columns in another
+        # order wrote values under the wrong names -- a quantity read back as
+        # a price -- and appending to a file with fewer columns made one line
+        # read as two rows. Both silent, both exit 0.
+        self.emit_raw("    if (!fresh) {")
+        self.emit_raw('        FILE* h = fopen(path, "r");')
+        self.emit_raw("        if (h) {")
+        self.emit_raw("            char _hn[STRATA_MAX_COLS][STRATA_NAME_CAP];")
+        self.emit_raw("            char _ht[STRATA_MAX_COLS];")
+        self.emit_raw("            char _htab[STRATA_NAME_CAP];")
+        self.emit_raw("            int _hc = strata_read_header(h, _hn, _ht,"
+                      " STRATA_MAX_COLS, _htab);")
+        self.emit_raw("            fclose(h);")
+        self.emit_raw("            const char* _why = NULL;")
+        self.emit_raw("            if (_hc < 0) {")
+        self.emit_raw('                _why = "it has no schema header";')
+        self.emit_raw(f"            }} else if (_htab[0] && strcmp(_htab,"
+                      f' "{name}") != 0) {{')
+        self.emit_raw('                _why = "it was saved from another table";')
+        self.emit_raw(f"            }} else if (_hc != {len(fields)}) {{")
+        self.emit_raw('                _why = "it has a different number of '
+                      'columns than this table declares";')
+        self.emit_raw("            } else {")
+        for idx, fd in enumerate(fields):
+            tc = ('s' if self._c_type(fd.field_type) == 'strata_str'
+                  else ('f' if self._c_type(fd.field_type) == 'strata_float'
+                        else 'i'))
+            self.emit_raw(f'                if (!_why && (strcmp(_hn[{idx}], '
+                          f'"{fd.name}") != 0 || _ht[{idx}] != \'{tc}\')) '
+                          f'{{ _why = "its columns are not the ones this table '
+                          f'declares, in this order"; }}')
+        self.emit_raw("            }")
+        self.emit_raw("            if (_why) {")
+        self.emit_raw(f'                strata_save_refuse("{name}", path, _why);')
+        self.emit_raw("                return NULL;")
+        self.emit_raw("            }")
+        self.emit_raw("        }")
+        self.emit_raw("    }")
         self.emit_raw('    FILE* f = fopen(path, "a");')
         self.emit_raw("    if (!f) {")
         self.emit_raw(f'        fprintf(stderr, "[STRATA APPEND] {name}: cannot write '
@@ -804,6 +853,11 @@ int main(int argc, char** argv) {
 
         self.emit_raw(f"static FILE* {name}__scan_open(const char* path, "
                       "int* map, int* ncol) {")
+        # A scan after an append in the same program read a file the program
+        # had not finished writing, and undercounted in silence. `load`
+        # flushes; this did not, and the two disagreed about the same file.
+        self.emit_raw(f"    if ({name}__append_file) {{"
+                      f" fflush({name}__append_file); }}")
         self.emit_raw('    FILE* f = fopen(path, "r");')
         self.emit_raw("    if (!f) {")
         self.emit_raw(f'        strata_load_refuse("{name}", path, "there is no such file");')
@@ -856,10 +910,36 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    memset(out, 0, sizeof({name}));")
         for fd in strs:
             self.emit_raw(f'    out->{fd.name} = strata_dup("");')
+        # A file with no header at all yields ncol == 0, and a loop over no
+        # columns read nothing and reported a row anyway: `scan` over an
+        # empty file produced rows forever, and `rewrite` over one wrote
+        # until the disk filled.
+        self.emit_raw("    if (ncol <= 0) return 0;")
         self.emit_raw("    char buf[4096];")
         self.emit_raw("    for (int c = 0; c < ncol; c++) {")
         self.emit_raw("        int more = strata_read_field(f, buf, 4096);")
-        self.emit_raw("        if (more < 0) return 0;")
+        # -1 is a refusal, not an end. A reader that answered "no more rows"
+        # to a damaged file made `scan` undercount in silence and made
+        # `rewrite` RENAME the short file over the original: data destroyed,
+        # exit 0, nothing said.
+        self.emit_raw("        if (more == -3) {")
+        self.emit_raw(f'            strata_load_refuse("{name}", path,'
+                      f' "a value is longer than this reader can hold");')
+        self.emit_raw("            return -1;")
+        self.emit_raw("        }")
+        self.emit_raw("        if (more < 0) {")
+        self.emit_raw("            if (c > 0) {")
+        self.emit_raw(f'                strata_load_refuse("{name}", path,'
+                      f' "a row stops before its last column");')
+        self.emit_raw("                return -1;")
+        self.emit_raw("            }")
+        self.emit_raw("            return 0;")
+        self.emit_raw("        }")
+        self.emit_raw("        if (more == 0 && c < ncol - 1) {")
+        self.emit_raw(f'            strata_load_refuse("{name}", path,'
+                      f' "a row stops before its last column");')
+        self.emit_raw("            return -1;")
+        self.emit_raw("        }")
         self.emit_raw("        switch (map[c]) {")
         for idx, fd in enumerate(fields):
             ct = self._c_type(fd.field_type)
@@ -868,11 +948,11 @@ int main(int argc, char** argv) {
             elif ct == "strata_float":
                 conv = (f"{{ strata_float _v; if (!strata_parse_float(buf, &_v)) {{ "
                         f'strata_load_bad_value("{name}", path, "{fd.name}", buf, rowno); '
-                        f"return 0; }} out->{fd.name} = ({ct})_v; }}")
+                        f"return -1; }} out->{fd.name} = ({ct})_v; }}")
             else:
                 conv = (f"{{ strata_int _v; if (!strata_parse_int(buf, &_v)) {{ "
                         f'strata_load_bad_value("{name}", path, "{fd.name}", buf, rowno); '
-                        f"return 0; }} out->{fd.name} = ({ct})_v; }}")
+                        f"return -1; }} out->{fd.name} = ({ct})_v; }}")
             self.emit_raw(f"            case {idx}: {conv} break;")
         self.emit_raw("            default: break;")
         self.emit_raw("        }")
@@ -1572,11 +1652,14 @@ int main(int argc, char** argv) {
             f"{fd.name}:{'s' if self._c_type(fd.field_type) == 'strata_str' else ('f' if self._c_type(fd.field_type) == 'strata_float' else 'i')}"
             for fd in self.schema_fields.get(t, []))
         self.emit(f'fprintf(_ww{d}, "#strata\\t{t}\\t{header}\\n");')
+        if not hasattr(self, "scan_row_vars"):
+            self.scan_row_vars = {}
+        self.scan_row_vars[node.var] = t
         self.emit(f"{t} _wrow{d}; memset(&_wrow{d}, 0, sizeof({t}));")
         self.emit(f"{t}* {cname(node.var)} = &_wrow{d};")
-        self.emit(f"strata_int _wno{d} = 0; int _wdrop{d} = 0;")
-        self.emit(f"while ({t}__scan_next(_wf{d}, _wmap{d}, _wncol{d}, &_wrow{d}, "
-                  f"{path}, ++_wno{d})) {{")
+        self.emit(f"strata_int _wno{d} = 0; int _wdrop{d} = 0; int _wst{d} = 0;")
+        self.emit(f"while ((_wst{d} = {t}__scan_next(_wf{d}, _wmap{d}, _wncol{d},"
+                  f" &_wrow{d}, {path}, ++_wno{d})) > 0) {{")
         self.indent += 1
         self.emit(f"_wdrop{d} = 0;")
         for st in node.body:
@@ -1585,13 +1668,29 @@ int main(int argc, char** argv) {
         self.emit(f"if (!_wdrop{d}) {t}__write_row(_ww{d}, &_wrow{d});")
         self.indent -= 1
         self.emit("}")
+        self.scan_row_vars.pop(node.var, None)
         self.emit(f"{t}__scan_free(&_wrow{d});")
         self.emit(f"fclose(_ww{d}); fclose(_wf{d});")
+        # A refused read is not the end of the file: what was written is a
+        # PREFIX of the table. Renaming it over the original destroyed every
+        # row after the damaged one, silently, with exit 0. The original
+        # stands and the partial file is removed.
+        self.emit(f"if (_wst{d} < 0) {{")
+        self.indent += 1
+        self.emit(f"remove(_wtmp{d});")
+        self.emit('fprintf(stderr, "[STRATA REWRITE] ' + t +
+                  ': the file was refused part way through; \'%s\' is '
+                  'unchanged\\n", ' + path + ');')
+        self.indent -= 1
+        self.emit("} else {")
+        self.indent += 1
         # Only now does the new file become the table.
         self.emit(f"if (rename(_wtmp{d}, {path}) != 0) {{")
         self.indent += 1
         self.emit('fprintf(stderr, "[STRATA REWRITE] ' + t +
                   ': could not replace \'%s\'; the new rows are in \'%s\'\\n", ' + path + ', _wtmp' + str(d) + ');')
+        self.indent -= 1
+        self.emit("}")
         self.indent -= 1
         self.emit("}")
         self.indent -= 1
@@ -1638,6 +1737,24 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("}")
 
+    def _scan_row_table(self, target):
+        """The table of a `str` column of a scan/rewrite row, or None.
+
+        Only those rows: a row that came out of a query lives in the arena
+        and must not be freed here."""
+        if not isinstance(target, MemberAccess):
+            return None
+        obj = getattr(target, "obj", None)
+        name = getattr(obj, "name", None)
+        if name is None or name not in getattr(self, "scan_row_vars", {}):
+            return None
+        table = self.scan_row_vars[name]
+        for fd in self.schema_fields.get(table, []):
+            if fd.name == target.member:
+                return table if self._c_type(fd.field_type) == "strata_str" \
+                    else None
+        return None
+
     def _gen_scan(self, node, param_names=None):
         """`scan T from "p" as row { ... }`.
 
@@ -1658,16 +1775,20 @@ int main(int argc, char** argv) {
                   f"_smap, &_sncol);")
         self.emit("if (_sf) {")
         self.indent += 1
+        if not hasattr(self, "scan_row_vars"):
+            self.scan_row_vars = {}
+        self.scan_row_vars[node.var] = node.table
         self.emit(f"{node.table} _srow; memset(&_srow, 0, sizeof({node.table}));")
         self.emit(f"{node.table}* {cname(node.var)} = &_srow;")
         self.emit("strata_int _srowno = 0;")
         self.emit(f"while ({node.table}__scan_next(_sf, _smap, _sncol, &_srow, "
-                  f"{_c_string(node.path)}, ++_srowno)) {{")
+                  f"{_c_string(node.path)}, ++_srowno) > 0) {{")
         self.indent += 1
         for st in node.body:
             self._gen_stmt(st, param_names)
         self.indent -= 1
         self.emit("}")
+        self.scan_row_vars.pop(node.var, None)
         self.emit(f"{node.table}__scan_free(&_srow);")
         self.emit("fclose(_sf);")
         self.indent -= 1
@@ -1847,7 +1968,24 @@ int main(int argc, char** argv) {
         elif isinstance(stmt, AssignStmt):
             tgt = self._gen_expr(stmt.target, param_names)
             val = self._gen_expr(stmt.value, param_names)
-            self.emit(f"{tgt} = {val};")
+            # A str column of a scan or rewrite row owns its characters: the
+            # reader allocated them and frees them before the next row. A
+            # plain assignment stored a literal into that field and the next
+            # row freed it -- the example in the specification's own
+            # `rewrite` section aborted with "invalid pointer". The old value
+            # is released and the new one copied, so the row keeps owning
+            # exactly what it will free.
+            tbl = self._scan_row_table(stmt.target)
+            if tbl is not None:
+                self.emit("{")
+                self.indent += 1
+                self.emit(f"strata_str _as = (strata_str)({val});")
+                self.emit(f"free({tgt});")
+                self.emit(f"{tgt} = strata_dup(_as ? _as : \"\");")
+                self.indent -= 1
+                self.emit("}")
+            else:
+                self.emit(f"{tgt} = {val};")
         elif isinstance(stmt, WhileStmt):
             self.emit(f"while ({self._gen_expr(stmt.condition, param_names)}) {{")
             self.indent += 1

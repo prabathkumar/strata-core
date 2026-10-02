@@ -1,0 +1,14 @@
+// A whole number plus a decimal is a decimal, whichever side the decimal is
+// on. The self-hosted checker returned the LEFT operand's type with no
+// promotion, so this passed `strata check`, built, and printed 3 -- while the
+// Python reference rejected it. Reversing the operands got it right, which is
+// exactly why nothing in this corpus caught it until a blind audit did.
+import io from std;
+
+int main() {
+    int   x = 1;
+    float y = 2.5;
+    int   z = x + y;
+    print(str(z));
+    return 0;
+}

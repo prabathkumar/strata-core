@@ -58,6 +58,13 @@ database Gen {
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
+    // Bind list: variable -> table, for the row of a scan or a rewrite ONLY.
+    // Such a row owns its strings: the reader allocated them and frees them
+    // before the next row, so assigning to a str column has to release the
+    // old value and copy the new one. A row that came out of a query lives in
+    // the arena and must not be freed here, and the two are both `T*`, which
+    // is why they cannot be told apart by type.
+    int scan_rows;
     int func_returns; // Bind list: function -> C return type
     int records;      // Bind list: record type name -> "1"
     int schemas;      // Bind list: table -> ",col,col,"
@@ -1053,6 +1060,43 @@ def gen_stmt(Gen &g, Node st) {
     }
 
     if (k == 28) {                                    // assignment
+        // A str column of a scan or rewrite row owns its characters -- see
+        // stage0.py. A plain assignment stored a literal into a field the
+        // next row would free.
+        str owning = "";
+        Node tg = node_at(st.c1);
+        if (tg.kind == 48) {
+            Node ob = node_at(tg.c1);
+            if (ob.kind == 54) {
+                str tbl = bind_get(g.scan_rows, ob.s1);
+                if (str_len(tbl) > 0) {
+                    StringBuilder fk = sb_new();
+                    sb_append(&fk, tbl); sb_append(&fk, ".");
+                    sb_append(&fk, tg.s1);
+                    str fct = bind_get(g.field_types, sb_to_str(&fk));
+                    if (str_eq(fct, "strata_str") == 1) { owning = "1"; }
+                }
+            }
+        }
+        if (str_len(owning) > 0) {
+            str lhs = gen_expr(&g, st.c1);
+            cg_emit(&g, "{");
+            g.indent = g.indent + 1;
+            StringBuilder av = sb_new();
+            sb_append(&av, "strata_str _as = (strata_str)(");
+            sb_append(&av, gen_expr(&g, st.c2)); sb_append(&av, ");");
+            cg_emit(&g, sb_to_str(&av));
+            StringBuilder fr = sb_new();
+            sb_append(&fr, "free("); sb_append(&fr, lhs); sb_append(&fr, ");");
+            cg_emit(&g, sb_to_str(&fr));
+            StringBuilder du = sb_new();
+            sb_append(&du, lhs);
+            sb_append(&du, " = strata_dup(_as ? _as : \"\");");
+            cg_emit(&g, sb_to_str(&du));
+            g.indent = g.indent - 1;
+            cg_emit(&g, "}");
+            return;
+        }
         StringBuilder sb = sb_new();
         sb_append(&sb, gen_expr(&g, st.c1));
         sb_append(&sb, " = ");
@@ -1774,6 +1818,51 @@ def gen_table_append(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "    int fresh = 1;");
     emit_raw(&g, "    FILE* probe = fopen(path, \"r\");");
     emit_raw(&g, "    if (probe) { if (fgetc(probe) != EOF) fresh = 0; fclose(probe); }");
+    // An append wrote declaration order into a file whose header said another
+    // order -- see stage0.py.
+    emit_raw(&g, "    if (!fresh) {");
+    emit_raw(&g, "        FILE* h = fopen(path, \"r\");");
+    emit_raw(&g, "        if (h) {");
+    emit_raw(&g, "            char _hn[STRATA_MAX_COLS][STRATA_NAME_CAP];");
+    emit_raw(&g, "            char _ht[STRATA_MAX_COLS];");
+    emit_raw(&g, "            char _htab[STRATA_NAME_CAP];");
+    emit_raw(&g, "            int _hc = strata_read_header(h, _hn, _ht, STRATA_MAX_COLS, _htab);");
+    emit_raw(&g, "            fclose(h);");
+    emit_raw(&g, "            const char* _why = NULL;");
+    emit_raw(&g, "            if (_hc < 0) {");
+    emit_raw(&g, "                _why = \"it has no schema header\";");
+    StringBuilder h1 = sb_new();
+    sb_append(&h1, "            } else if (_htab[0] && strcmp(_htab, \"");
+    sb_append(&h1, name); sb_append(&h1, "\") != 0) {");
+    emit_raw(&g, sb_to_str(&h1));
+    emit_raw(&g, "                _why = \"it was saved from another table\";");
+    StringBuilder h2 = sb_new();
+    sb_append(&h2, "            } else if (_hc != "); sb_append(&h2, str(n));
+    sb_append(&h2, ") {");
+    emit_raw(&g, sb_to_str(&h2));
+    emit_raw(&g, "                _why = \"it has a different number of columns than this table declares\";");
+    emit_raw(&g, "            } else {");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        StringBuilder h3 = sb_new();
+        sb_append(&h3, "                if (!_why && (strcmp(_hn[");
+        sb_append(&h3, str(i)); sb_append(&h3, "], \"");
+        sb_append(&h3, fd.s1); sb_append(&h3, "\") != 0 || _ht[");
+        sb_append(&h3, str(i)); sb_append(&h3, "] != '");
+        sb_append(&h3, col_tchar(&g, fd));
+        sb_append(&h3, "')) { _why = \"its columns are not the ones this table declares, in this order\"; }");
+        emit_raw(&g, sb_to_str(&h3));
+    }
+    emit_raw(&g, "            }");
+    emit_raw(&g, "            if (_why) {");
+    StringBuilder h4 = sb_new();
+    sb_append(&h4, "                strata_save_refuse(\"");
+    sb_append(&h4, name); sb_append(&h4, "\", path, _why);");
+    emit_raw(&g, sb_to_str(&h4));
+    emit_raw(&g, "                return NULL;");
+    emit_raw(&g, "            }");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "    }");
     emit_raw(&g, "    FILE* f = fopen(path, \"a\");");
     emit_raw(&g, "    if (!f) {");
     StringBuilder o5 = sb_new();
@@ -1862,6 +1951,12 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
     sb_append(&o0, "static FILE* "); sb_append(&o0, name);
     sb_append(&o0, "__scan_open(const char* path, int* map, int* ncol) {");
     emit_raw(&g, sb_to_str(&o0));
+    // A scan after an append read an unflushed file -- see stage0.py.
+    StringBuilder of = sb_new();
+    sb_append(&of, "    if ("); sb_append(&of, name);
+    sb_append(&of, "__append_file) { fflush("); sb_append(&of, name);
+    sb_append(&of, "__append_file); }");
+    emit_raw(&g, sb_to_str(&of));
     emit_raw(&g, "    FILE* f = fopen(path, \"r\");");
     emit_raw(&g, "    if (!f) {");
     StringBuilder o1 = sb_new();
@@ -1953,10 +2048,39 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
             emit_raw(&g, sb_to_str(&zs));
         }
     }
+    // A file with no header yields ncol == 0 -- see stage0.py.
+    emit_raw(&g, "    if (ncol <= 0) return 0;");
     emit_raw(&g, "    char buf[4096];");
     emit_raw(&g, "    for (int c = 0; c < ncol; c++) {");
     emit_raw(&g, "        int more = strata_read_field(f, buf, 4096);");
-    emit_raw(&g, "        if (more < 0) return 0;");
+    // -1 is a refusal, not an end -- see stage0.py.
+    emit_raw(&g, "        if (more == -3) {");
+    StringBuilder n3 = sb_new();
+    sb_append(&n3, "            strata_load_refuse(\"");
+    sb_append(&n3, name);
+    sb_append(&n3, "\", path, \"a value is longer than this reader can hold\");");
+    emit_raw(&g, sb_to_str(&n3));
+    emit_raw(&g, "            return -1;");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "        if (more < 0) {");
+    emit_raw(&g, "            if (c > 0) {");
+    StringBuilder n4 = sb_new();
+    sb_append(&n4, "                strata_load_refuse(\"");
+    sb_append(&n4, name);
+    sb_append(&n4, "\", path, \"a row stops before its last column\");");
+    emit_raw(&g, sb_to_str(&n4));
+    emit_raw(&g, "                return -1;");
+    emit_raw(&g, "            }");
+    emit_raw(&g, "            return 0;");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "        if (more == 0 && c < ncol - 1) {");
+    StringBuilder n5 = sb_new();
+    sb_append(&n5, "            strata_load_refuse(\"");
+    sb_append(&n5, name);
+    sb_append(&n5, "\", path, \"a row stops before its last column\");");
+    emit_raw(&g, sb_to_str(&n5));
+    emit_raw(&g, "            return -1;");
+    emit_raw(&g, "        }");
     emit_raw(&g, "        switch (map[c]) {");
     for (int i = 0; i < n; i = i + 1) {
         Node fd = nv_get(&fs, i);
@@ -1975,7 +2099,7 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
             sb_append(&cs, name);
             sb_append(&cs, "\", path, \"");
             sb_append(&cs, fd.s1);
-            sb_append(&cs, "\", buf, rowno); return 0; } out->");
+            sb_append(&cs, "\", buf, rowno); return -1; } out->");
             sb_append(&cs, fd.s1);
             sb_append(&cs, " = (");
             sb_append(&cs, ct);
@@ -2071,7 +2195,14 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "    path = (strata_str)strata_env_path(path);");
     emit_raw(&g, "    if (!path || !*path) { return 0; }");
     gen_pg_save(&g, name, fs, cols_sql, upsert_sql, delete_sql, key);
-    emit_raw(&g, "    FILE* f = fopen(path, \"w\"); if (!f) return 0;");
+    emit_raw(&g, "    FILE* f = fopen(path, \"w\");");
+    emit_raw(&g, "    if (!f) {");
+    StringBuilder sr = sb_new();
+    sb_append(&sr, "        strata_save_refuse(\""); sb_append(&sr, name);
+    sb_append(&sr, "\", path, strerror(errno));");
+    emit_raw(&g, sb_to_str(&sr));
+    emit_raw(&g, "        return 0;");
+    emit_raw(&g, "    }");
 
     StringBuilder hd = sb_new();
     sb_append(&hd, "    fprintf(f, \"#strata\\t"); sb_append(&hd, name);
@@ -2112,7 +2243,14 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     }
     emit_raw(&g, "        fputc(0x0a, f);");
     emit_raw(&g, "    }");
-    emit_raw(&g, "    fclose(f);");
+    emit_raw(&g, "    int _werr = ferror(f);");
+    emit_raw(&g, "    if (fclose(f) != 0 || _werr) {");
+    StringBuilder sw = sb_new();
+    sb_append(&sw, "        strata_save_refuse(\""); sb_append(&sw, name);
+    sb_append(&sw, "\", path, \"the file could not be written in full\");");
+    emit_raw(&g, sb_to_str(&sw));
+    emit_raw(&g, "        return 0;");
+    emit_raw(&g, "    }");
     StringBuilder ft = sb_new();
     sb_append(&ft, "    free("); sb_append(&ft, name); sb_append(&ft, "__from);");
     emit_raw(&g, sb_to_str(&ft));
@@ -3776,6 +3914,7 @@ def gen_rewrite(Gen &g, Node node) {
     StringBuilder pt = sb_new();
     sb_append(&pt, t); sb_append(&pt, "*");
     g.var_types = bind_cons(node.s2, sb_to_str(&pt), g.var_types);
+    g.scan_rows = bind_cons(node.s2, node.s1, g.scan_rows);
 
     StringBuilder ps = sb_new();
     sb_append(&ps, "\""); sb_append(&ps, c_escape(node.s3)); sb_append(&ps, "\"");
@@ -3852,14 +3991,16 @@ def gen_rewrite(Gen &g, Node node) {
     cg_emit(&g, sb_to_str(&b1));
     StringBuilder b2 = sb_new();
     sb_append(&b2, "strata_int _wno"); sb_append(&b2, d);
-    sb_append(&b2, " = 0; int _wdrop"); sb_append(&b2, d); sb_append(&b2, " = 0;");
+    sb_append(&b2, " = 0; int _wdrop"); sb_append(&b2, d);
+    sb_append(&b2, " = 0; int _wst"); sb_append(&b2, d); sb_append(&b2, " = 0;");
     cg_emit(&g, sb_to_str(&b2));
     StringBuilder b3 = sb_new();
-    sb_append(&b3, "while ("); sb_append(&b3, t); sb_append(&b3, "__scan_next(_wf");
+    sb_append(&b3, "while ((_wst"); sb_append(&b3, d); sb_append(&b3, " = ");
+    sb_append(&b3, t); sb_append(&b3, "__scan_next(_wf");
     sb_append(&b3, d); sb_append(&b3, ", _wmap"); sb_append(&b3, d);
     sb_append(&b3, ", _wncol"); sb_append(&b3, d); sb_append(&b3, ", &_wrow");
     sb_append(&b3, d); sb_append(&b3, ", "); sb_append(&b3, path);
-    sb_append(&b3, ", ++_wno"); sb_append(&b3, d); sb_append(&b3, ")) {");
+    sb_append(&b3, ", ++_wno"); sb_append(&b3, d); sb_append(&b3, ")) > 0) {");
     cg_emit(&g, sb_to_str(&b3));
     g.indent = g.indent + 1;
     StringBuilder b4 = sb_new();
@@ -3886,6 +4027,22 @@ def gen_rewrite(Gen &g, Node node) {
     sb_append(&c1, "fclose(_ww"); sb_append(&c1, d); sb_append(&c1, "); fclose(_wf");
     sb_append(&c1, d); sb_append(&c1, ");");
     cg_emit(&g, sb_to_str(&c1));
+    // A refused read is a PREFIX of the table, not the whole of it.
+    StringBuilder r0 = sb_new();
+    sb_append(&r0, "if (_wst"); sb_append(&r0, d); sb_append(&r0, " < 0) {");
+    cg_emit(&g, sb_to_str(&r0));
+    g.indent = g.indent + 1;
+    StringBuilder r1 = sb_new();
+    sb_append(&r1, "remove(_wtmp"); sb_append(&r1, d); sb_append(&r1, ");");
+    cg_emit(&g, sb_to_str(&r1));
+    StringBuilder r2 = sb_new();
+    sb_append(&r2, "fprintf(stderr, \"[STRATA REWRITE] "); sb_append(&r2, t);
+    sb_append(&r2, ": the file was refused part way through; '%s' is unchanged\\n\", ");
+    sb_append(&r2, path); sb_append(&r2, ");");
+    cg_emit(&g, sb_to_str(&r2));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "} else {");
+    g.indent = g.indent + 1;
     // Only now does the new file become the table.
     StringBuilder c2 = sb_new();
     sb_append(&c2, "if (rename(_wtmp"); sb_append(&c2, d); sb_append(&c2, ", ");
@@ -3898,6 +4055,8 @@ def gen_rewrite(Gen &g, Node node) {
     sb_append(&c3, path); sb_append(&c3, ", _wtmp"); sb_append(&c3, d);
     sb_append(&c3, ");");
     cg_emit(&g, sb_to_str(&c3));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
     g.indent = g.indent - 1;
@@ -3988,6 +4147,7 @@ def gen_scan(Gen &g, Node node) {
     sb_append(&pt, node.s1);
     sb_append(&pt, "*");
     g.var_types = bind_cons(node.s2, sb_to_str(&pt), g.var_types);
+    g.scan_rows = bind_cons(node.s2, node.s1, g.scan_rows);
 
     StringBuilder ps = sb_new();
     sb_append(&ps, "\"");
@@ -4017,7 +4177,7 @@ def gen_scan(Gen &g, Node node) {
     StringBuilder wh = sb_new();
     sb_append(&wh, "while ("); sb_append(&wh, node.s1);
     sb_append(&wh, "__scan_next(_sf, _smap, _sncol, &_srow, ");
-    sb_append(&wh, path); sb_append(&wh, ", ++_srowno)) {");
+    sb_append(&wh, path); sb_append(&wh, ", ++_srowno) > 0) {");
     cg_emit(&g, sb_to_str(&wh));
     g.indent = g.indent + 1;
     NodeVec body = nv_at(node.v1);

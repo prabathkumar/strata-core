@@ -322,6 +322,22 @@ class TypeChecker:
                 self.functions[fn.name] = (rt, params)
 
     def _register_functions(self):
+        # A name defined twice in one file. The self-hosted compiler kept the
+        # first definition and silently dropped the second -- it shipped a
+        # binary missing code the developer had written -- while the bootstrap
+        # emitted both and the C compiler refused them. Neither said anything
+        # a developer could act on.
+        seen = {}
+        for fn in self.ast.functions:
+            if fn.name in seen:
+                self._error(
+                    "E011",
+                    f"'{fn.name}' is defined twice in this file",
+                    fn.line, getattr(fn, "col", 1),
+                    f"The first is at line {seen[fn.name]}. Rename one, or "
+                    f"delete the one that is no longer wanted")
+            else:
+                seen[fn.name] = fn.line
         for fn in self.ast.functions:
             rt=T_VOID
             if fn.kind=="function" and fn.return_type: rt=self._resolve_type(fn.return_type)
@@ -786,6 +802,29 @@ class TypeChecker:
             return T_STR
         if expr.op in ("+","-","*","/","%"):
             if left and right:
+                # The operand types the code generator can actually emit.
+                # Neither checker looked, so `float % float` and `int + str`
+                # passed cleanly and failed in the C compiler, against
+                # generated code the developer never wrote.
+                for side, t in (("left", left), ("right", right)):
+                    if t.name not in ("int", "float", "bool"):
+                        self._error(
+                            "E001",
+                            f"'{expr.op}' cannot be applied to '{t}'",
+                            expr.line, expr.col,
+                            "Arithmetic is for numbers; use str() or a "
+                            "library function instead")
+                        return left
+                if expr.op == "%" and (left.name == "float"
+                                       or right.name == "float"):
+                    self._error(
+                        "E001",
+                        "'%' is whole-number remainder; it cannot be applied "
+                        "to 'float'",
+                        expr.line, expr.col,
+                        "Convert with int(), or use a library function for "
+                        "a decimal remainder")
+                    return T_INT
                 return T_FLOAT if (left.name=="float" or right.name=="float") else T_INT
         return left
 

@@ -541,8 +541,29 @@ static double* strata_tensor_add(double* a, double* b, strata_int n) {
    There is no schema version, no migration and no locking. A file written by
    one schema and read by another will mis-parse; two writers will corrupt it.
    Suitable for a single process keeping state across restarts. */
+/* The reader holds one field in a 4096-byte buffer, so a longer value can be
+ * WRITTEN and never read back: a 5000-character string saved cleanly and then
+ * made the whole file unreadable. The limit is the reader's; refusing here is
+ * what makes it visible at the point a developer can do something about it,
+ * rather than on some later load. */
+#define STRATA_FIELD_CAP 4096
+/* Defined below, with the rest of the error machinery. */
+static void strata_error_set(const char* fmt, ...);
 static void strata_write_escaped(FILE* f, strata_str s) {
     if (!s) return;
+    size_t n = 0;
+    for (const char* q = s; *q; q++) {
+        n += (*q == '\\' || *q == '\t' || *q == '\n') ? 2 : 1;
+    }
+    if (n >= STRATA_FIELD_CAP) {
+        fprintf(stderr, "[STRATA WRITE] refusing to store a text value of %lu "
+                "characters: a stored column holds at most %d\n",
+                (unsigned long)n, STRATA_FIELD_CAP - 1);
+        strata_error_set("refused to store a text value of %lu characters; "
+                         "a stored column holds at most %d",
+                         (unsigned long)n, STRATA_FIELD_CAP - 1);
+        return;
+    }
     for (const char* p = s; *p; p++) {
         if (*p == '\\') fputs("\\\\", f);
         else if (*p == '\t') fputs("\\t", f);
@@ -722,6 +743,16 @@ static void strata_error_epilogue(void) {
 __attribute__((constructor))
 static void strata_install_error_epilogue(void) {
     atexit(strata_error_epilogue);
+}
+
+/* The write side's counterpart. `save` used to answer 0 on a failed fopen
+ * and the call site discarded it: a save into a directory that does not
+ * exist printed nothing, wrote nothing and exited 0. */
+static void strata_save_refuse(const char* table, const char* path,
+                               const char* why) {
+    fprintf(stderr, "[STRATA SAVE] %s: could not write '%s' — %s\n",
+            table, path, why);
+    strata_error_set("%s: could not write '%s' — %s", table, path, why);
 }
 
 static void strata_load_refuse(const char* table, const char* path,

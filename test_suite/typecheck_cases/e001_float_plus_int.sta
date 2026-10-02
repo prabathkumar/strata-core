@@ -1,0 +1,10 @@
+// The other operand order, so the pair is kept honest together.
+import io from std;
+
+int main() {
+    int   x = 1;
+    float y = 2.5;
+    int   z = y + x;
+    print(str(z));
+    return 0;
+}

@@ -641,6 +641,24 @@ def register_decls(TC &tc, Node unit) {
 
     NodeVec fns = nv_at(unit.v3);
     int nf = fns.len;
+    // A name defined twice in one file -- see typechecker.py. The generated C
+    // kept the first and dropped the second without a word.
+    for (int a = 0; a < nf; a = a + 1) {
+        Node fa = nv_get(&fns, a);
+        for (int b = 0; b < a; b = b + 1) {
+            Node fb = nv_get(&fns, b);
+            if (str_eq(fa.s2, fb.s2) == 1) {
+                StringBuilder ds = sb_new();
+                sb_append(&ds, "'"); sb_append(&ds, fa.s2);
+                sb_append(&ds, "' is defined twice in this file");
+                StringBuilder dh = sb_new();
+                sb_append(&dh, "The first is at line ");
+                sb_append(&dh, str(fb.line));
+                sb_append(&dh, ". Rename one, or delete the one that is no longer wanted");
+                emit_hint(&tc, "E011", sb_to_str(&ds), fa.line, fa.col, sb_to_str(&dh));
+            }
+        }
+    }
     for (int j = 0; j < nf; j = j + 1) {
         Node f = nv_get(&fns, j);
         int rt = ty_ptr(ty_new("void"));
@@ -917,8 +935,67 @@ int infer_binary(TC &tc, Node e, int scope_p) {
             }
         }
     }
+    // Arithmetic on a whole number and a decimal is a decimal. This returned
+    // the LEFT operand's type with no promotion and no operand checking, so
+    // `int z = x + y` with a decimal y passed `strata check`, built, and
+    // truncated the answer -- while the Python reference rejected the same
+    // program. Reversing the operands got it right, which is why nothing in
+    // the differential corpus caught it.
+    if (is_arith_op(e.s1) == 1) {
+        if (left != 0) {
+            if (right != 0) {
+                Ty la = ty_at(left);
+                Ty ra = ty_at(right);
+                // The operand types the code generator can emit -- see
+                // typechecker.py.
+                if (is_number_ty(la.name) == 0) {
+                    emit_arith_refusal(&tc, e, ty_str(left));
+                    return left;
+                }
+                if (is_number_ty(ra.name) == 0) {
+                    emit_arith_refusal(&tc, e, ty_str(right));
+                    return left;
+                }
+                if (str_eq(e.s1, "%") == 1) {
+                    if (str_eq(la.name, "float") + str_eq(ra.name, "float") > 0) {
+                        emit_hint(&tc, "E001", "'%' is whole-number remainder; it cannot be applied to 'float'", e.line, e.col, "Convert with int(), or use a library function for a decimal remainder");
+                        return ty_ptr(ty_new("int"));
+                    }
+                }
+                if (str_eq(la.name, "float") == 1) { return ty_ptr(ty_new("float")); }
+                if (str_eq(ra.name, "float") == 1) { return ty_ptr(ty_new("float")); }
+                return ty_ptr(ty_new("int"));
+            }
+        }
+    }
     if (left != 0) { return left; }
     return right;
+}
+
+int is_number_ty(str n) {
+    if (str_eq(n, "int")) { return 1; }
+    if (str_eq(n, "float")) { return 1; }
+    if (str_eq(n, "bool")) { return 1; }
+    return 0;
+}
+
+def emit_arith_refusal(TC &tc, Node e, str tname) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "'");
+    sb_append(&sb, e.s1);
+    sb_append(&sb, "' cannot be applied to '");
+    sb_append(&sb, tname);
+    sb_append(&sb, "'");
+    emit_hint(&tc, "E001", sb_to_str(&sb), e.line, e.col, "Arithmetic is for numbers; use str() or a library function instead");
+}
+
+int is_arith_op(str op) {
+    if (str_eq(op, "+")) { return 1; }
+    if (str_eq(op, "-")) { return 1; }
+    if (str_eq(op, "*")) { return 1; }
+    if (str_eq(op, "/")) { return 1; }
+    if (str_eq(op, "%")) { return 1; }
+    return 0;
 }
 
 // `count(rows)`, and `sum(xs)` / `sum(rows.column)` for the rest.
