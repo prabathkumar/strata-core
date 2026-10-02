@@ -653,6 +653,8 @@ int main(int argc, char** argv) {
                       f'columns are in this table");')
         self.emit_raw("        fclose(f); return 0;")
         self.emit_raw("    }")
+        self._gen_rename_guard(name, fields, "    ",
+                               "fclose(f); return 0;")
         self.emit_raw(f"    {name}__count = 0;")
         self.emit_raw("    while (1) {")
         self.emit_raw(f"        {name}* r = ({name}*)calloc(1, sizeof({name}));")
@@ -839,6 +841,55 @@ int main(int argc, char** argv) {
         self.emit_raw("    fputc(0x0a, f);")
         self.emit_raw("}")
 
+    def _gen_rename_guard(self, name, fields, indent, fail,
+                          ncol="_ncol", cmap="_map"):
+        """Refuse a file whose header looks like a column was renamed.
+
+        A dropped column is skipped and a new one is left at its zero value:
+        both are deliberate, and between them they hide the shape that matters.
+        Rename `price` to `unit_price` and the file still says `price`, so the
+        loader skips a column it does not know and zero-fills one the file
+        does not carry -- two rows read back, exit 0, no error flag, and a
+        money column reading 0.00 instead of 14.49. That is the silent wrong
+        answer this project exists to prevent, in the tier that holds the
+        data.
+
+        A pure addition and a pure drop are still allowed. It is the two
+        together -- a name the file has that the table does not, AND a name
+        the table has that the file does not -- that cannot be anything but a
+        mistake.
+        """
+        i = indent
+        self.emit_raw(f"{i}int _unknown = -1;")
+        self.emit_raw(f"{i}for (int _c = 0; _c < {ncol}; _c++) {{")
+        self.emit_raw(f"{i}    if ({cmap}[_c] < 0) {{ _unknown = _c; break; }}")
+        self.emit_raw(f"{i}}}")
+        self.emit_raw(f"{i}int _absent = -1;")
+        for idx, fd in enumerate(fields):
+            self.emit_raw(f"{i}if (_absent < 0) {{")
+            self.emit_raw(f"{i}    int _seen = 0;")
+            self.emit_raw(f"{i}    for (int _c = 0; _c < {ncol}; _c++) {{")
+            self.emit_raw(f"{i}        if ({cmap}[_c] == {idx}) {{ _seen = 1; }}")
+            self.emit_raw(f"{i}    }}")
+            self.emit_raw(f"{i}    if (!_seen) {{ _absent = {idx}; }}")
+            self.emit_raw(f"{i}}}")
+        self.emit_raw(f"{i}if (_unknown >= 0 && _absent >= 0) {{")
+        self.emit_raw(f"{i}    const char* _absent_name = \"\";")
+        for idx, fd in enumerate(fields):
+            self.emit_raw(f"{i}    if (_absent == {idx}) "
+                          f'{{ _absent_name = "{fd.name}"; }}')
+        self.emit_raw(f"{i}    char _why[256];")
+        self.emit_raw(f"{i}    snprintf(_why, sizeof(_why),")
+        self.emit_raw(f'{i}        "it carries \'%s\', which this table does not '
+                      f'declare, and does not carry \'%s\', which it does. If '
+                      f'\'%s\' was renamed to \'%s\', the stored file still says '
+                      f'the old name and every row would read as empty",')
+        self.emit_raw(f"{i}        _names[_unknown], _absent_name, "
+                      f"_names[_unknown], _absent_name);")
+        self.emit_raw(f'{i}    strata_load_refuse("{name}", path, _why);')
+        self.emit_raw(f"{i}    {fail}")
+        self.emit_raw(f"{i}}}")
+
     def _gen_table_scan(self, name, fields):
         """Reading a stored table one row at a time.
 
@@ -924,6 +975,12 @@ int main(int argc, char** argv) {
                       f'columns are in this table");')
         self.emit_raw("        fclose(f); return NULL;")
         self.emit_raw("    }")
+        # The same rename guard the loader applies -- see
+        # _gen_rename_guard. A scan that accepted a file the loader refuses
+        # would be a second, laxer way into the same data.
+        self._gen_rename_guard(name, fields, "    ",
+                               "fclose(f); return NULL;",
+                               ncol="n", cmap="map")
         self.emit_raw("    *ncol = n;")
         self.emit_raw("    return f;")
         self.emit_raw("}")

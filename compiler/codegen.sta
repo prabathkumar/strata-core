@@ -2044,6 +2044,7 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&o5));
     emit_raw(&g, "        fclose(f); return NULL;");
     emit_raw(&g, "    }");
+    gen_rename_guard(&g, name, fs, "n", "map", "fclose(f); return NULL;");
     emit_raw(&g, "    *ncol = n;");
     emit_raw(&g, "    return f;");
     emit_raw(&g, "}");
@@ -2402,6 +2403,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&u0));
     emit_raw(&g, "        fclose(f); return 0;");
     emit_raw(&g, "    }");
+    gen_rename_guard(&g, name, fs, "_ncol", "_map", "fclose(f); return 0;");
     StringBuilder z = sb_new();
     sb_append(&z, "    "); sb_append(&z, name); sb_append(&z, "__count = 0;");
     emit_raw(&g, sb_to_str(&z));
@@ -3928,6 +3930,68 @@ def gen_element(Gen &g, Node el) {
 // renamed over the original once the last row is read. That is what makes it
 // safe: a job that dies half way leaves the original file exactly as it was,
 // because a rename is atomic and a half-written temporary is never the table.
+// Refuse a file whose header looks like a column was renamed -- see
+// stage0.py _gen_rename_guard. A drop alone and an addition alone are
+// migrations; the two together are what a rename looks like from the file's
+// side, and reading it zero-fills every historical row of the renamed column.
+def gen_rename_guard(Gen &g, str name, NodeVec fs, str ncol, str cmap, str fail) {
+    int n = fs.len;
+    emit_raw(&g, "    int _unknown = -1;");
+    StringBuilder l1 = sb_new();
+    sb_append(&l1, "    for (int _c = 0; _c < "); sb_append(&l1, ncol);
+    sb_append(&l1, "; _c++) {");
+    emit_raw(&g, sb_to_str(&l1));
+    StringBuilder l2 = sb_new();
+    sb_append(&l2, "        if ("); sb_append(&l2, cmap);
+    sb_append(&l2, "[_c] < 0) { _unknown = _c; break; }");
+    emit_raw(&g, sb_to_str(&l2));
+    emit_raw(&g, "    }");
+    emit_raw(&g, "    int _absent = -1;");
+    for (int i = 0; i < n; i = i + 1) {
+        emit_raw(&g, "    if (_absent < 0) {");
+        emit_raw(&g, "        int _seen = 0;");
+        StringBuilder l3 = sb_new();
+        sb_append(&l3, "        for (int _c = 0; _c < "); sb_append(&l3, ncol);
+        sb_append(&l3, "; _c++) {");
+        emit_raw(&g, sb_to_str(&l3));
+        StringBuilder l4 = sb_new();
+        sb_append(&l4, "            if ("); sb_append(&l4, cmap);
+        sb_append(&l4, "[_c] == "); sb_append(&l4, str(i));
+        sb_append(&l4, ") { _seen = 1; }");
+        emit_raw(&g, sb_to_str(&l4));
+        emit_raw(&g, "        }");
+        StringBuilder l5 = sb_new();
+        sb_append(&l5, "        if (!_seen) { _absent = "); sb_append(&l5, str(i));
+        sb_append(&l5, "; }");
+        emit_raw(&g, sb_to_str(&l5));
+        emit_raw(&g, "    }");
+    }
+    emit_raw(&g, "    if (_unknown >= 0 && _absent >= 0) {");
+    emit_raw(&g, "        const char* _absent_name = \"\";");
+    for (int i = 0; i < n; i = i + 1) {
+        Node fd = nv_get(&fs, i);
+        StringBuilder l6 = sb_new();
+        sb_append(&l6, "        if (_absent == "); sb_append(&l6, str(i));
+        sb_append(&l6, ") { _absent_name = \""); sb_append(&l6, fd.s1);
+        sb_append(&l6, "\"; }");
+        emit_raw(&g, sb_to_str(&l6));
+    }
+    emit_raw(&g, "        char _why[256];");
+    emit_raw(&g, "        snprintf(_why, sizeof(_why),");
+    emit_raw(&g, "            \"it carries '%s', which this table does not declare, and does not carry '%s', which it does. If '%s' was renamed to '%s', the stored file still says the old name and every row would read as empty\",");
+    StringBuilder l7 = sb_new();
+    sb_append(&l7, "            "); sb_append(&l7, "_names[_unknown], _absent_name, _names[_unknown], _absent_name);");
+    emit_raw(&g, sb_to_str(&l7));
+    StringBuilder l8 = sb_new();
+    sb_append(&l8, "        strata_load_refuse(\""); sb_append(&l8, name);
+    sb_append(&l8, "\", path, _why);");
+    emit_raw(&g, sb_to_str(&l8));
+    StringBuilder l9 = sb_new();
+    sb_append(&l9, "        "); sb_append(&l9, fail);
+    emit_raw(&g, sb_to_str(&l9));
+    emit_raw(&g, "    }");
+}
+
 def gen_rewrite(Gen &g, Node node) {
     g.rewrite_depth = g.rewrite_depth + 1;
     str d = str(g.rewrite_depth);

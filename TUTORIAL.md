@@ -75,11 +75,11 @@ strata build
 ```
 
 ```
-E004 src/main.sta:7:5 Column 'price' does not exist in 'Item'
+E004 src/main.sta:10:5 Column 'price' does not exist in 'Item'
   Hint: Valid columns: ['id', 'name', 'unit_price']
-E009 src/main.sta:7:5 Insert into 'Item' omits column 'unit_price'
+E009 src/main.sta:10:5 Insert into 'Item' omits column 'unit_price'
   Hint: Add 'unit_price = <value>' to the insert — 'unit_price' is 'float' — or remove 'unit_price' from 'database Item'
-E004 src/main.sta:10:37 Column 'price' does not exist in 'Item'
+E004 src/main.sta:13:37 Column 'price' does not exist in 'Item'
   Hint: Valid columns: ['id', 'name', 'unit_price']
 ```
 
@@ -99,11 +99,18 @@ Put `price` back — or have the compiler put it back. Mistype a column in
 strata repair src/main.sta
 ```
 
-```
+```console
   pass 1: 1 diagnostic(s) at stage 'typecheck'
-    E004 Database Schema Selector Violation (src/main.sta:8): Column 'idd' does not exist in 'Item'
+    E004 Database Schema Selector Violation (src/main.sta:11): Column 'idd' does not exist in 'Item'
+      --- src/main.sta (before)
+      +++ src/main.sta (after)
+      @@ -10,3 +10,3 @@
+      -    list[Item] all = Item <- [idd > 0];
+      +    list[Item] all = Item <- [id > 0];
     patch applied, recompiling
 [Strata Repair] clean after 1 repair(s) across 1 file(s).
+[Strata Repair] your files as they were, in case the repair is not what you meant:
+    src/main.sta.before-repair
 ```
 
 That was `--backend rules`, the default: a deterministic fix taken from the
@@ -174,7 +181,7 @@ strata build
 ```
 
 ```
-E009 src/main.sta:7:5 Insert into 'Item' omits column 'category'
+E009 src/main.sta:10:5 Insert into 'Item' omits column 'category'
   Hint: Add 'category = <value>' to the insert — 'category' is 'str' — or remove 'category' from 'database Item'
 ```
 
@@ -211,7 +218,11 @@ strata fmt src/*.sta   # re-indents to the one canonical layout
 it finds no verify blocks at all. An empty run is not a passing run.
 
 `str_concat` joins exactly two pieces, so for a line made of several use
-`str_cat`, and `str_join` when you want something between them:
+`str_cat`, and `str_join` when you want something between them. Both live in
+`std/str.sta`, so add `import str from std;` at the top of the file first.
+`str_concat` needs no import because it is part of the prelude every program
+carries — and if you forget one, the compiler names the module:
+`Hint: Add 'import str from std;'`.
 
 ```text
 print(str_cat(["item ", str(i.id), " — ", i.name]));
@@ -253,9 +264,9 @@ though you just did.
 [FOR_DEVELOPERS.md](FOR_DEVELOPERS.md) is the list written for you: what
 you can build, what will bite you, and what is missing. [STAGES.md](STAGES.md)
 is the fuller version and it is kept current. The short
-version: no package registry, no concurrency, nothing has run on a physical
-phone, Postgres has no streaming, and the ecosystem is essentially this
-repository. For almost anything you would start today, C# or Java is the right
+version: no package registry, no concurrency beyond a process per request,
+no store release for either phone platform, Postgres has no streaming, and
+the ecosystem is essentially this repository. For almost anything you would start today, C# or Java is the right
 answer — see the comparison in the README, which concedes every row it should.
 
 What Strata has is one type system over the database, the rules and the

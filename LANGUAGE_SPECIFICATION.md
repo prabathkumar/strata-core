@@ -80,6 +80,16 @@ type, so a table saved under one version of a schema loads under another: a
 dropped column is skipped, a new one keeps its zero value, and a column whose
 type changed is refused rather than misread. Only scalar columns are written.
 
+One shape is refused: a file that carries a column this table does not
+declare **and** lacks one it does. A drop on its own is fine, and so is an
+addition on its own, but the two together are what a rename looks like from
+the file's side — rename `price` to `unit_price` and the stored file still
+says `price`, so the old column is skipped and the new one zero-filled, and
+every historical row reads as empty with no error. A money column coming
+back as 0.00 is exactly the confident wrong answer this language exists to
+prevent, so the load refuses and names both columns. To make the change
+deliberately, load under the old schema, set the new column, and save.
+
 ### `protocol`
 
 The same shape as `database`, for a record that is not a table — typically the

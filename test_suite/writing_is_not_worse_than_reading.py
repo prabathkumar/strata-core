@@ -36,6 +36,10 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STRATA = os.path.join(ROOT, "bin", "strata")
 
+RENAMED_COLUMN = 'import io from std;\ndatabase Item { int id; str name; float unit_price; }\nint main() {\n    load Item from "items.tsv";\n    list[Item] all = Item <- [id > 0];\n    print(str_concat("total: ", str(sum(all.unit_price))));\n    return 0;\n}\n'
+
+ADDED_COLUMN = 'import io from std;\ndatabase Item { int id; str name; float price; str note; }\nint main() {\n    load Item from "items.tsv";\n    list[Item] all = Item <- [id > 0];\n    print(str_concat("rows: ", str(count(all))));\n    return 0;\n}\n'
+
 PATH_IS_A_VARIABLE = 'import io from std;\ndatabase T { int id; }\nint main() {\n    str path = "out.tsv";\n    T <- [id = 1];\n    save T to path;\n    return 0;\n}\n'
 
 failures = []
@@ -253,6 +257,42 @@ int main() {
             ok("and the rows say what it set them to",
                body.count("CLOSED") == 2 and "CANCELLED" not in body,
                body.replace("\t", "|"))
+
+        print("\n\u2500\u2500 a renamed column is refused, not zero-filled \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        # The whole pitch is that a rename cannot slip through. It slipped
+        # through the data tier completely: rename `price` to `unit_price`,
+        # fix the six diagnostics the compiler gives you, and every
+        # historical row reads 0.00 for money -- rows loaded, exit 0,
+        # had_error() clean. A drop on its own and an addition on its own are
+        # still allowed; it is the two together, which is what a rename looks
+        # like from the file's side, that cannot be anything but a mistake.
+        work = os.path.join(tmp, "w9")
+        os.makedirs(work, exist_ok=True)
+        open(os.path.join(work, "items.tsv"), "w").write(
+            "#strata\tItem\tid:i\tname:s\tprice:f\n"
+            "1\twidget\t9.99\n2\tgadget\t4.5\n")
+        rn, err = build(tmp, "rn", RENAMED_COLUMN)
+        ok("the renamed-column program builds", rn is not None, err)
+        if rn:
+            rc, out, errout = run(rn, work)
+            ok("loading a file written before the rename does not exit 0",
+               rc not in (0, None), f"exit {rc}: {out.strip()!r}")
+            ok("and names both the old column and the new one",
+               "'price'" in errout and "'unit_price'" in errout,
+               errout[-220:])
+            # The program carries on -- there are no exceptions -- so it
+            # still prints a total over no rows. What must not happen is the
+            # run ending as a success with that number in it.
+            ok("and the run ends at exit 65, not as a success",
+               rc == 65, f"exit {rc}: {out.strip()!r}")
+
+        ad, err = build(tmp, "ad", ADDED_COLUMN)
+        ok("an added column on its own still builds", ad is not None, err)
+        if ad:
+            rc, out, errout = run(ad, work)
+            ok("and an added column on its own still loads",
+               rc == 0 and "rows: 2" in out,
+               f"exit {rc}: {out.strip()!r} {errout[-120:]}")
 
         print("\n\u2500\u2500 a path is a path, not the name of a variable \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
         # `save T to path;` where path is a variable: the self-hosted parser

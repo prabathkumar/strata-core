@@ -1037,6 +1037,34 @@ str undeclared_table_hint(str name, str verb) {
     return sb_to_str(&sb);
 }
 
+// Which std module declares a given function, so E011 can name it rather
+// than say "import the module that defines it" -- the one place in a whole
+// evaluation where a pilot got stuck. The oracle reads std/ and builds this;
+// there is no directory listing in the language, so here it is a table, and
+// test_suite/std_index_is_current.py rebuilds it from std/ and fails if the
+// two disagree.
+str STD_INDEX() {
+    return ",arg:cli,arg_count:cli,assert_true:testing,capture:os,char_from_code:str,clear_error:io,convert_int_to_str:core,dispatch_performance_audit:telemetry,drop_extension:os,dup_str:auth,env:os,eprint:io,eprint_raw:io,error_at:io,error_count:io,errors_held:io,extract_json_int:json,fail:io,file_exists:io,file_read:io,file_write:io,flag_value:cli,float_to_str:io,had_error:io,has_flag:cli,hash_password:auth,hex_digit:http,hex_nibble:json,http_accept:http,http_bad_request:http,http_body:http,http_close:http,http_cookie:http,http_exit:http,http_forbidden:http,http_fork:http,http_form_value:http,http_header:http,http_ignore_broken_pipes:http,http_listen:http,http_method:http,http_not_found:http,http_ok:http,http_path:http,http_peer_ip:http,http_query_string:http,http_read_request:http,http_reap_children:http,http_reap_finished:http,http_redirect:http,http_redirect_with:http,http_request_timeout:http,http_respond:http,http_respond_with:http,http_set_timeout:http,http_too_busy:http,int_to_str:io,is_database_url:postgres,is_directory:os,json_control:json,json_field:json,json_index_of_key:json,json_int:json,json_next:json,json_num:json,json_str:json,json_string_field:json,json_string_field_from:json,last_error:io,line_end:toml,lock_exclusive:http,lock_shared:http,log_failure:http,log_request:http,lower:http,make_dir:os,mem_alloc:mem,mem_free:mem,metric_header:metrics,metric_line:metrics,metric_one:metrics,metrics_add:metrics,metrics_get:metrics,metrics_now_seconds:metrics,metrics_open:metrics,metrics_raise:metrics,metrics_record:metrics,metrics_refused:metrics,metrics_render:metrics,metrics_set:metrics,metrics_start:metrics,metrics_uptime_seconds:metrics,new_session_token:auth,now_millis:http,now_seconds_utc:http,parent_dir:os,password_matches:auth,positional:cli,print:io,print_int:io,print_line:core,print_raw:io,random_hex:auth,read_line:io,record_telemetry_metric:telemetry,resolve_env_path:postgres,run:os,sb_append:str,sb_append_line:str,sb_length:str,sb_new:str,sb_to_str:str,scratch_reset:mem,scratch_used:mem,str_cat:str,str_concat:mem,str_eq:mem,str_fixed:str,str_index_of:mem,str_join:str,str_len:mem,str_slice:mem,str_starts_with:mem,str_to_float:io,str_to_int:io,subcommand:cli,toml_field:toml,toml_get:toml,toml_keys:toml,toml_section:toml,tool_exists:os,trim:toml,trim_spaces:http,ui_advance:ui,ui_backspace:ui,ui_begin:ui,ui_button:ui,ui_clip:ui,ui_clip_bot:ui,ui_clip_off:ui,ui_clip_top:ui,ui_flow:ui,ui_flow_gap:ui,ui_flow_w:ui,ui_flow_x:ui,ui_flow_y:ui,ui_focus:ui,ui_focused:ui,ui_get:ui,ui_get_text:ui,ui_go:ui,ui_hit:ui,ui_input:ui,ui_line:ui,ui_next_id:ui,ui_next_state_id:ui,ui_paint_bmp:ui,ui_panel:ui,ui_rect:ui,ui_screen_name:ui,ui_scroll_by:ui,ui_scroll_of:ui,ui_set:ui,ui_set_text:ui,ui_text:ui,ui_text_height:ui,ui_text_width:ui,ui_touch:ui,ui_type:ui,ui_value:ui,unlock:http,unquote:toml,url_decode:http,verify_model_dimensions:ml,verify_vector_alignment:simd_math,";
+}
+
+str std_module_providing(str fname) {
+    StringBuilder key = sb_new();
+    sb_append(&key, ",");
+    sb_append(&key, fname);
+    sb_append(&key, ":");
+    str idx = STD_INDEX();
+    int at = str_index_of(idx, sb_to_str(&key));
+    if (at < 0) { return ""; }
+    int start = at + str_len(sb_to_str(&key));
+    int end = start;
+    int n = str_len(idx);
+    while (end < n) {
+        if (idx[end] == 44) { break; }
+        end = end + 1;
+    }
+    return str_slice(idx, start, end);
+}
+
 int is_number_ty(str n) {
     if (str_eq(n, "int")) { return 1; }
     if (str_eq(n, "float")) { return 1; }
@@ -1221,7 +1249,17 @@ int infer_call(TC &tc, Node e, int scope_p) {
                         sb_append(&sb, e.s1);
                         sb_append(&sb, "'");
                         // E011, not E002: E002 is a return-contract breach.
-                        emit_hint(&tc, "E011", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' or import the module that defines it"));
+                        str _mod = std_module_providing(e.s1);
+                        if (str_len(_mod) > 0) {
+                            StringBuilder ih = sb_new();
+                            sb_append(&ih, "Add 'import ");
+                            sb_append(&ih, _mod);
+                            sb_append(&ih, " from std;'");
+                            emit_hint(&tc, "E011", sb_to_str(&sb), e.line, e.col, sb_to_str(&ih));
+                        }
+                        if (str_len(_mod) == 0) {
+                            emit_hint(&tc, "E011", sb_to_str(&sb), e.line, e.col, hint_quoted("Declare '", e.s1, "' or import the module that defines it"));
+                        }
                     }
                 }
             }

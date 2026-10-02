@@ -300,6 +300,18 @@ cmd_check() {
         esac
     done
     if [ -z "$f" ]; then echo "Usage: strata check <file.sta> [--json]"; exit 1; fi
+    # What it was pointed at. `strata check src` segfaulted -- the checker
+    # read a directory as a file -- and `strata lex`/`strata ast` printed a
+    # Python traceback. `strata build` and `strata fmt` already answer this
+    # properly, and a crash from the compiler is the worst of the four.
+    if [ -d "$f" ]; then
+        echo "[STRATA ERROR] Not a source file, a directory: $f" >&2
+        echo "               Name the files, as in '$f/*.sta'." >&2
+        exit 1
+    fi
+    if [ ! -e "$f" ]; then
+        echo "[STRATA ERROR] No such file: $f" >&2; exit 1
+    fi
 
     # --json was accepted and silently ignored: `strata check x.sta --json`
     # printed the same human text, while three documents promised a payload a
@@ -332,6 +344,23 @@ cmd_check() {
     "$bin" "$f"
 }
 
+# A path that is a directory or missing, answered the same way by every
+# command that takes one.
+guard_source_path() {
+    local f="$1" cmd="$2"
+    if [ -z "$f" ]; then return 0; fi
+    if [ -d "$f" ]; then
+        echo "[STRATA ERROR] Not a source file, a directory: $f" >&2
+        echo "               Name the files, as in '$f/*.sta'." >&2
+        return 1
+    fi
+    if [ ! -e "$f" ]; then
+        echo "[STRATA ERROR] No such file: $f" >&2
+        return 1
+    fi
+    return 0
+}
+
 cmd_lex() {
     case "${1:-}" in
         -h|--help)
@@ -339,6 +368,7 @@ cmd_lex() {
             echo "  Prints the token stream, for understanding what the lexer saw."
             return 0 ;;
     esac
+    guard_source_path "${1:-}" lex || return 1
     "$PY3" "$ROOT/compiler/lexer.py" "$@"
 }
 
@@ -350,6 +380,7 @@ cmd_ast() {
             return 0 ;;
     esac
     local f="$1"
+    guard_source_path "$f" ast || return 1
     "$PY3" << PYEOF
 import sys, json
 sys.path.insert(0, '$ROOT')
@@ -620,11 +651,18 @@ cmd_check_project_quietly() {
     entry="$(toml_value "Strata.toml" main)" || entry=""
     if [ -z "$entry" ]; then entry="src/main.sta"; fi
     [ -f "$entry" ] || { echo "$entry, named in Strata.toml, is not there"; return 1; }
-    # --emit-c runs the whole front end and writes to stdout rather than to
-    # the tree, so this answers "does it compile" without leaving anything
-    # behind beside the developer's source.
-    "$PY3" "$ROOT/bootstrap/stage0.py" "$entry" --emit-c >/dev/null 2>&1 \
-        || "$PY3" "$ROOT/bootstrap/stage0.py" "$entry" --emit-c 2>&1 >/dev/null
+    # `strata check`, which is the one thing in the toolchain whose whole job
+    # is to answer this, and which exits non-zero when it finds something
+    # halting.
+    #
+    # This used `stage0.py --emit-c` and read its exit status. --emit-c exits
+    # 0 on a TYPE error -- it prints the C and says nothing -- so the gate
+    # passed for E009, E010, E011 and an undeclared table, and `strata test`
+    # went green on a tree `strata build` rejects. A pilot found it the same
+    # week it was written, which is the point of pilots; it was added in the
+    # commit that fixed the same class of bug, which is the point of not
+    # trusting a gate you have not watched fail.
+    cmd_check "$entry" 2>&1
 }
 
 cmd_doc() {
@@ -727,14 +765,7 @@ cmd_fmt() {
         # "formatted" and exited 0, with no backup. `strata fmt *` in a
         # project root silently damaged every text file in it. Pointed at a
         # directory it segfaulted and reported "formatter failed".
-        if [ -d "$f" ]; then
-            echo "$f is a directory; name the files, as in '$f/*.sta'" >&2
-            rc=1; continue
-        fi
-        if [ ! -e "$f" ]; then
-            echo "[STRATA ERROR] No such file: $f" >&2
-            rc=1; continue
-        fi
+        if ! guard_source_path "$f" fmt; then rc=1; continue; fi
         case "$f" in
             *.sta) ;;
             *)  echo "$f is not a Strata source file; strata fmt only" \

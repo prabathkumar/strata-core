@@ -744,9 +744,18 @@ compile_run_in("migrate_round_trip",
     [_W, 'import io from std;\ndatabase T { int id; str name; float amt; }\nint main() { load T from "t.tsv"; print(str(strata_len(T <- [id > 0]))); return 0; }'],
     "saved\n2")
 
-compile_run_in("migrate_column_dropped_and_added",
-    [_W, 'import io from std;\ndatabase T { int id; str currency; }\nint main() { load T from "t.tsv"; list[T] r = T <- [id > 0]; T first = r[0]; print(strata_concat(str(first.id), strata_concat(" cur=[", strata_concat(first.currency, "]")))); return 0; }'],
-    "saved\n1 cur=[]")
+# A drop and an add in one step is what a RENAME looks like from the file's
+# side, and reading it zeroes every historical row of the renamed column in
+# silence. There used to be a case here asserting that the new column came
+# back empty, which is the same thing a pilot later found in the money column
+# of a real program. The refusal is asserted in
+# test_suite/writing_is_not_worse_than_reading.py, which reads stderr; this
+# file compares stdout.
+#
+# A drop on its own is still a migration the loader makes without complaint.
+compile_run_in("migrate_column_dropped_only",
+    [_W, 'import io from std;\ndatabase T { int id; str name; }\nint main() { load T from "t.tsv"; list[T] r = T <- [id > 0]; T first = r[0]; print(first.name); return 0; }'],
+    "saved\na")
 
 compile_run_in("migrate_columns_reordered_match_by_name",
     [_W, 'import io from std;\ndatabase T { float amt; str name; int id; }\nint main() { load T from "t.tsv"; list[T] r = T <- [id == 2]; T x = r[0]; print(strata_concat(x.name, strata_concat(" ", str(x.amt)))); return 0; }'],

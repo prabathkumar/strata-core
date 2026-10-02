@@ -106,6 +106,12 @@ jobs:
     - name: The Documents Agree With Each Other
       run: python3 test_suite/documents_agree.py
 
+    # E011 names the std module a missing function comes from. The oracle
+    # reads std/ for that; the self-hosted checker carries a table, which is
+    # a second copy of a fact.
+    - name: The Std Index Is Current
+      run: python3 test_suite/std_index_is_current.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.

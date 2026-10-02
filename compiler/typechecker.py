@@ -2,7 +2,7 @@
 # STRATA COMPILER — COMPONENT 3: TYPE CHECKER
 # Enforces E001-E006 at compile time
 from __future__ import annotations
-import sys, os, json
+import sys, os, json, re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
@@ -213,6 +213,35 @@ def undeclared_table_hint(name, verb):
     return (f"Declare 'database {name}' {verb} -- or, if it is already "
             f"declared in another module of this project, import that module: "
             f"import schema from app;")
+
+
+# Which std module declares a given function, read from std/ once and kept.
+# The answer is a fact about the source tree, so it is looked up rather than
+# listed: a list would go stale the first time std/ changed.
+_STD_INDEX = None
+
+
+def std_module_providing(fn_name):
+    global _STD_INDEX
+    if _STD_INDEX is None:
+        _STD_INDEX = {}
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        std = os.path.join(root, "std")
+        try:
+            names = sorted(n for n in os.listdir(std) if n.endswith(".sta"))
+        except OSError:
+            names = []
+        for n in names:
+            mod = n[:-4]
+            try:
+                text = open(os.path.join(std, n)).read()
+            except OSError:
+                continue
+            for m in re.finditer(
+                    r"^(?:def|[A-Za-z_][\w\[\]]*)\s+([a-z_]\w*)\s*\(",
+                    text, re.M):
+                _STD_INDEX.setdefault(m.group(1), mod)
+    return _STD_INDEX.get(fn_name)
 
 
 class TypeChecker:
@@ -1024,9 +1053,17 @@ class TypeChecker:
                 # E011, not E002: E002 is a return-contract breach, whose
                 # remediation tells a model to trace return blocks — nothing
                 # to do with a name that does not exist.
+                # Which module, when the compiler knows. "import the module
+                # that defines it" was the one place in a whole evaluation
+                # where a pilot got stuck: str_cat is in std/str.sta, the
+                # compiler can see that, and the developer had to grep for it.
+                where = std_module_providing(expr.callee)
+                hint = (f"Add 'import {where} from std;'"
+                        if where else
+                        f"Declare '{expr.callee}' or import the module that "
+                        f"defines it")
                 self._error("E011", f"Undefined function '{expr.callee}'",
-                    expr.line, expr.col,
-                    f"Declare '{expr.callee}' or import the module that defines it")
+                    expr.line, expr.col, hint)
             return None
         rt,pts=fn
         if len(expr.args)!=len(pts):
