@@ -51,3 +51,7 @@ DerivedData/
 # Scratch the sandbox cannot delete; never part of the project.
 .trash/
 *.log
+
+# Transfer artefacts, never part of the project.
+.strata.bundle
+*.patch
