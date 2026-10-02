@@ -259,6 +259,30 @@ as an oracle to compare against.
 13. `build`, `check`, `fmt` and `deps` are self-hosted, with
    `STRATA_BOOTSTRAP=1` as the way back for a build. `ast`, `lex`, `test` and
    `repair` still go through Python. The build is self-hosted; the toolchain around it is not.
+14. The C compiler still does some of the type checker's work. Five shapes
+   pass `strata check` and then fail in `cc`, against generated code the
+   developer never wrote: `list[list[int]]`, a function that can fall off its
+   end without returning, the arguments to `render Page(...)`, a
+   by-reference parameter passed without `&`, and `::` onto a plain number,
+   which does not fail at all -- it segfaults. These are loud rather than
+   silent, which is why they are listed here rather than fixed first, but an
+   error about C a developer did not write is still an error they cannot act
+   on. Found by the fifth pilot, 1 October.
+15. Two error codes do not mean what the taxonomy says. `E005` is
+   "Boundary Perimeter Contamination", a value crossing a `foreign`
+   boundary, and it is what both compilers emit for `"a" + 1` -- where there
+   is no foreign boundary, and whose remediation would send a repair agent
+   somewhere nonsensical. `E002` is a return-contract breach and is what
+   both emit for `sum(a, b)`, which has no `return` in it; that is `E012`.
+   Changing a code changes what a repair agent does, so these move together
+   with the taxonomy and its tests, not on their own.
+16. `int` widens to `float` without being asked, although section 1 of the
+   specification says there is no implicit conversion between them. The
+   consequence worth knowing: `float avg = a / 2` with an `int a` does whole
+   number division FIRST and widens the result, so 7 gives 3.0 and nothing
+   says so. Tightening this is the honest reading of the specification and
+   would reject code that compiles today, so it is a decision rather than a
+   fix.
 
 ### Corrected rather than deleted
 
