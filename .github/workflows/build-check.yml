@@ -112,6 +112,12 @@ jobs:
     - name: The Std Index Is Current
       run: python3 test_suite/std_index_is_current.py
 
+    # A table saved under one schema and read under another is the one place
+    # this language has lost data twice. Every shape of change, against all
+    # three readers.
+    - name: Every Schema Change Reads Or Is Refused
+      run: python3 test_suite/schema_change_matrix.py
+
     # The stdlib must parse with the compiler that ships alongside it.
     # Stage 1 of self-hosting: the Strata-written lexer must produce a
     # byte-identical token stream to the Python lexer across the whole corpus.
