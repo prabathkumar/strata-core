@@ -32,7 +32,7 @@ never counted as closed.
 
 | # | Stage | State | Proven by |
 |---|---|---|---|
-| 1 | Write — the language surface | closed | `conformance.py` 210/210, `doc_examples.py`, `stdlib_compiles.py` |
+| 1 | Write — the language surface | closed | `conformance.py` 217/217, `doc_examples.py`, `stdlib_compiles.py` |
 | 2 | Check — E000–E011, the cross-tier contract | closed | `typecheck_diff.py`, 133 files identical to the oracle; `json_diag_diff.py` 21/21; `first_hour.py` holds `strata check` to what `strata build` accepts |
 | 3 | Repair — diagnostics to a patch | closed | `self_repair.py` — 48 checks gated in CI on the deterministic backend, plus 4 on the Claude backend where the CLI is usable |
 | 4 | Format — one canonical form | closed | `strata fmt --check` in CI, `fmt.py` |
@@ -199,7 +199,7 @@ as an oracle to compare against.
    CI job was added and failed on its first run. `std/auth.sta` declared
    crypt(3) as `foreign "crypt.h" link "crypt"`; on a Mac that header does not
    exist and there is no libcrypt. It is now <unistd.h> on both, with
-   -D_GNU_SOURCE for glibc and no -lcrypt on Darwin — 210/210 on a Mac where
+   -D_GNU_SOURCE for glibc and no -lcrypt on Darwin — green on a Mac where
    two cases used to fail. What that episode leaves behind is the real entry:
    anything reached through a `foreign` block is only known to work on a
    platform something has actually built it on, and the only two are Linux and

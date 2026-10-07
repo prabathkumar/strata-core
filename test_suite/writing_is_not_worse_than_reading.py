@@ -36,6 +36,12 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STRATA = os.path.join(ROOT, "bin", "strata")
 
+SAVE_AFTER_FAILED_LOAD = 'import io from std;\ndatabase Note { int id; str body; }\nint main() {\n    load Note from "ledgre.tsv";\n    list[Note] all = Note <- [id > 0];\n    print(str_concat("loaded: ", str(count(all))));\n    Note <- [id = 3, body = "today"];\n    save Note to "ledger.tsv";\n    print("saved");\n    return 0;\n}\n'
+
+FIRST_RUN_CREATES = 'import io from std;\ndatabase Note { int id; str body; }\nint main() {\n    load Note from "fresh.tsv";\n    Note <- [id = 1, body = "first"];\n    save Note to "fresh.tsv";\n    print("created");\n    return 0;\n}\n'
+
+SAVE_OVER_ANOTHER_TABLE = 'import io from std;\ndatabase Note  { int id; str body; }\ndatabase Other { int k; str v; }\nint main() {\n    Note <- [id = 1, body = "important"];\n    save Note to "precious.tsv";\n    Other <- [k = 7, v = "junk"];\n    save Other to "precious.tsv";\n    print("done");\n    return 0;\n}\n'
+
 RENAMED_COLUMN = 'import io from std;\ndatabase Item { int id; str name; float unit_price; }\nint main() {\n    load Item from "items.tsv";\n    list[Item] all = Item <- [id > 0];\n    print(str_concat("total: ", str(sum(all.unit_price))));\n    return 0;\n}\n'
 
 ADDED_COLUMN = 'import io from std;\ndatabase Item { int id; str name; float price; str note; }\nint main() {\n    load Item from "items.tsv";\n    list[Item] all = Item <- [id > 0];\n    print(str_concat("rows: ", str(count(all))));\n    return 0;\n}\n'
@@ -257,6 +263,58 @@ int main() {
             ok("and the rows say what it set them to",
                body.count("CLOSED") == 2 and "CANCELLED" not in body,
                body.replace("\t", "|"))
+
+        print("\n\u2500\u2500 a save does not replace rows after a failure \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        # There are no exceptions, so a failed `load` leaves the table EMPTY
+        # and the program carries on -- and the next `save` wrote that empty
+        # table over the file. One mistyped load path turned a year of
+        # records into two lines of header, with the right exit code arriving
+        # after the write. Found by a pilot who called it the reason not to
+        # adopt this.
+        work = os.path.join(tmp, "wa")
+        os.makedirs(work, exist_ok=True)
+        stored = ("#strata\tNote\tid:i\tbody:s\n"
+                  "1\tyear of records\n2\tmore records\n")
+        open(os.path.join(work, "ledger.tsv"), "w").write(stored)
+        cl, err = build(tmp, "cl", SAVE_AFTER_FAILED_LOAD)
+        ok("the mistyped-path program builds", cl is not None, err)
+        if cl:
+            rc, out, errout = run(cl, work)
+            ok("the run does not end as a success", rc not in (0, None),
+               f"exit {rc}")
+            ok("and every stored row is still in the file",
+               open(os.path.join(work, "ledger.tsv")).read() == stored,
+               open(os.path.join(work, "ledger.tsv")).read())
+            ok("and it says why the write was refused",
+               "would replace" in errout, errout[-200:])
+
+        # A first run that loads a file which does not exist yet and then
+        # creates it destroys nothing, and is an ordinary way to start.
+        fr, err = build(tmp, "fr", FIRST_RUN_CREATES)
+        ok("the first-run program builds", fr is not None, err)
+        if fr:
+            rc, out, errout = run(fr, work)
+            ok("a first run still creates its file",
+               os.path.exists(os.path.join(work, "fresh.tsv")),
+               f"exit {rc}: {errout[-160:]}")
+            ok("with the row it added",
+               "first" in open(os.path.join(work, "fresh.tsv")).read())
+
+        print("\n\u2500\u2500 a save does not overwrite another table's file \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        # `load` refuses a file saved from another table, by name. `save` did
+        # not look, so one transposed filename replaced an unrelated table's
+        # file without a word.
+        work = os.path.join(tmp, "wb")
+        os.makedirs(work, exist_ok=True)
+        fo, err = build(tmp, "fo", SAVE_OVER_ANOTHER_TABLE)
+        ok("the two-table program builds", fo is not None, err)
+        if fo:
+            rc, out, errout = run(fo, work)
+            body = open(os.path.join(work, "precious.tsv")).read()
+            ok("the first table's file is still the first table's",
+               "Note" in body.splitlines()[0] and "important" in body, body)
+            ok("and the refusal names what it holds",
+               "not this table" in errout, errout[-200:])
 
         print("\n\u2500\u2500 a renamed column is refused, not zero-filled \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
         # The whole pitch is that a rename cannot slip through. It slipped

@@ -83,6 +83,13 @@ CASES = [
      "'12x' is not a number"),
     # A blank line is a row with no columns at all. It used to be reported
     # as "is not a number", because the next line was rolled into it.
+    # A row with MORE columns than the header declares. The reader took what
+    # it wanted and left the rest on the line, so the NEXT row started
+    # mid-line and came up short -- and the message said "a row stops before
+    # its last column", describing the opposite defect.
+    ("a row with an extra column",
+     b"#strata\tRow\tid:i\tname:s\tamount:f\n1\tA\t1.0\tEXTRA\n", "0",
+     "more columns than the header declares"),
     ("a blank line in the middle",
      GOOD.replace(b"\n2\t", b"\n\n2\t"), "0",
      "stops before its last column"),

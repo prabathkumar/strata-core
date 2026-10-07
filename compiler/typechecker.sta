@@ -505,13 +505,30 @@ def report_unresolved_imports(TC &tc, Node unit, str root, str src_dir) {
             if (str_len(dep_module_path(src_dir, imp.s2, imp.s1)) > 0) { found = 1; }
         }
         if (found == 0) {
-            StringBuilder sb = sb_new();
-            sb_append(&sb, "'");
-            sb_append(&sb, imp.s1);
-            sb_append(&sb, "' from '");
-            sb_append(&sb, imp.s2);
-            sb_append(&sb, "' has no local checkout");
-            emit_hint(&tc, "E007", sb_to_str(&sb), imp.line, imp.col, "Its symbols must be provided at link time, and nothing it declares is checked here — including calls into it");
+            // From `app` it is a typo, never a dependency somebody will
+            // supply later -- see typechecker.py. An unresolved import also
+            // disarms the undefined-call check, so one misspelt module name
+            // turned a whole file into unchecked code behind an advisory.
+            if (str_eq(imp.s2, "app") == 1) {
+                StringBuilder am = sb_new();
+                sb_append(&am, "'");
+                sb_append(&am, imp.s1);
+                sb_append(&am, "' from 'app' is not a module in this project");
+                StringBuilder ah = sb_new();
+                sb_append(&ah, "Expected src/");
+                sb_append(&ah, imp.s1);
+                sb_append(&ah, ".sta. Check the spelling, or remove the import — while it is unresolved, nothing in this file that calls into it is checked at all");
+                emit_hint(&tc, "E011", sb_to_str(&am), imp.line, imp.col, sb_to_str(&ah));
+            }
+            if (str_eq(imp.s2, "app") == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'");
+                sb_append(&sb, imp.s1);
+                sb_append(&sb, "' from '");
+                sb_append(&sb, imp.s2);
+                sb_append(&sb, "' has no local checkout");
+                emit_hint(&tc, "E007", sb_to_str(&sb), imp.line, imp.col, "Its symbols must be provided at link time, and nothing it declares is checked here — including calls into it");
+            }
         }
     }
 }

@@ -539,6 +539,45 @@ int main(int argc, char** argv) {
         self.emit_raw(f"static strata_int {name}__save(strata_str path) {{")
         self.emit_raw("    path = (strata_str)strata_env_path(path);")
         self.emit_raw('    if (!path || !*path) { return 0; }')
+        # A write while a failure is outstanding. There are no exceptions, so
+        # a failed `load` leaves the table EMPTY and the program carries on --
+        # and the next `save` wrote that empty table over the file. One
+        # mistyped path turned a year of records into two lines of header.
+        # The exit code was right and arrived after the write, which is no
+        # use to anybody. A program that meant to carry on says so with
+        # clear_error(); until it does, a save that would replace stored data
+        # is refused.
+        self.emit_raw("    {")
+        self.emit_raw('        FILE* _probe = fopen(path, "r");')
+        self.emit_raw("        if (_probe) {")
+        self.emit_raw("            char _pn[STRATA_MAX_COLS][STRATA_NAME_CAP];")
+        self.emit_raw("            char _pt[STRATA_MAX_COLS];")
+        self.emit_raw("            char _ptab[STRATA_NAME_CAP];")
+        self.emit_raw("            int _pc = strata_read_header(_probe, _pn, _pt, STRATA_MAX_COLS, _ptab);")
+        self.emit_raw("            fclose(_probe);")
+        self.emit_raw(f'            if (_pc >= 0 && _ptab[0] && strcmp(_ptab, "{name}") != 0) {{')
+        self.emit_raw("                char _why[192];")
+        self.emit_raw('                snprintf(_why, sizeof(_why), "it holds \'%s\', not this table. Writing would replace somebody else\'s rows", _ptab);')
+        self.emit_raw(f'                strata_save_refuse("{name}", path, _why);')
+        self.emit_raw("                return 0;")
+        self.emit_raw("            }")
+        # Replacing rows that are already there, while a failure is
+        # outstanding. There are no exceptions, so a failed `load` leaves the
+        # table EMPTY and the program carries on -- and the next `save` wrote
+        # that empty table over the file. One mistyped load path turned a
+        # year of records into two lines of header, with the right exit code
+        # arriving after the write.
+        #
+        # The test is "would this REPLACE something", not "did anything fail":
+        # a first run that loads a file which does not exist yet and then
+        # creates it destroys nothing, and that is an ordinary way to start.
+        self.emit_raw("            if (_pc > 0 && strata_had_error()) {")
+        self.emit_raw(f'                strata_save_refuse("{name}", path,')
+        self.emit_raw('                    "something failed earlier in this program and was not handled, so writing now would replace the rows already in this file with whatever is in memory. Handle it with had_error() and clear_error(), or let the program stop");')
+        self.emit_raw("                return 0;")
+        self.emit_raw("            }")
+        self.emit_raw("        }")
+        self.emit_raw("    }")
         self._gen_pg_save(name, fields, cols_sql, upsert_sql, delete_sql, key, n)
         self.emit_raw('    FILE* f = fopen(path, "w");')
         self.emit_raw("    if (!f) {")
@@ -682,6 +721,17 @@ int main(int argc, char** argv) {
         self.emit_raw("            if (_more == 0 && _c < _ncol - 1) {")
         self.emit_raw(f'                strata_load_refuse("{name}", path,'
                       f' "a row stops before its last column");')
+        self.emit_raw(f"                free(r); fclose(f); {name}__count = 0;"
+                      f" return 0;")
+        self.emit_raw("            }")
+        # A row with MORE columns than the header declares. The reader took
+        # what it wanted and left the rest on the line, so the NEXT row
+        # started mid-line and came up short -- and the message said "a row
+        # stops before its last column", describing the opposite defect and
+        # sending whoever read it to look for a truncated line.
+        self.emit_raw("            if (_more == 1 && _c == _ncol - 1) {")
+        self.emit_raw(f'                strata_load_refuse("{name}", path,'
+                      f' "a row has more columns than the header declares");')
         self.emit_raw(f"                free(r); fclose(f); {name}__count = 0;"
                       f" return 0;")
         self.emit_raw("            }")
@@ -1015,6 +1065,13 @@ int main(int argc, char** argv) {
         self.emit_raw("                return -1;")
         self.emit_raw("            }")
         self.emit_raw("            return 0;")
+        self.emit_raw("        }")
+        # A row with MORE columns than the header declares -- see the
+        # loader. The message used to describe the opposite defect.
+        self.emit_raw("        if (more == 1 && c == ncol - 1) {")
+        self.emit_raw(f'            strata_load_refuse("{name}", path,'
+                      f' "a row has more columns than the header declares");')
+        self.emit_raw("            return -1;")
         self.emit_raw("        }")
         self.emit_raw("        if (more == 0 && c < ncol - 1) {")
         self.emit_raw(f'            strata_load_refuse("{name}", path,'

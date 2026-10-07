@@ -594,6 +594,12 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
      * read a prefix, and nothing said so. Reported instead, so the loader can
      * refuse the file the way it refuses every other damaged value. */
     if (over) return -3;
+    /* A field terminated by end of file is the last one on its line, the
+     * same as one terminated by a newline. This returned 1 -- "more fields
+     * follow" -- for the last field of a file with no trailing newline, so
+     * the check for a row with TOO MANY columns fired on a perfectly good
+     * last row. */
+    if (c == EOF) return 0;
     return c == '\n' ? 0 : 1;
 }
 /* ── Schema headers ───────────────────────────────────────────────────────

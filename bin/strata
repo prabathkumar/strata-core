@@ -451,6 +451,9 @@ build/
 *.c
 # What `strata repair` keeps when it rewrites one of your files.
 *.before-repair
+# Tables your program saves. Data, not source -- and a row added while
+# testing is not a change anybody wants to review.
+data/
 IGNORE
     cat > "$name/src/schema.sta" << 'STA'
 // The data tier. Every other tier is checked against this declaration:
@@ -475,9 +478,11 @@ STA
 //
 //     import rules from app;      // then call anything rules.sta defines
 //
-// Without the import the build fails with E002 and names the function it
+// Without the import the build fails with E011 and names the function it
 // could not find, which is the compiler telling you the file is not in
-// scope rather than that the function does not exist.
+// scope rather than that the function does not exist. This said E002 for a
+// while, which is "Function Return Contract Breach" -- the wrong code to go
+// looking for, in the first file a new developer reads.
 
 import io     from std;
 import str    from std;

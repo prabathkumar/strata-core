@@ -335,8 +335,25 @@ class TypeChecker:
         It is an advisory, not an error. A dependency provided at link time is
         legitimate, and failing the build on one would make external modules
         unusable.
+
+        Except from `app`. That is the project's own directory, where a module
+        that is not there is a typo and never a dependency somebody will
+        supply later -- and because an unresolved import disarms the
+        undefined-call check, one mistyped module name turned the whole file
+        into unchecked code. A pilot typed `rulez` for `rules` and three
+        unchecked C calls compiled and ran clean, exit 0, with a one-line
+        advisory scrolled off the top. The checker is the product; a typo
+        must not switch it off.
         """
         for imp in self.unresolved_imports:
+            if imp.source == "app":
+                self._error("E011",
+                    f"'{imp.name}' from 'app' is not a module in this project",
+                    imp.line, imp.col,
+                    f"Expected src/{imp.name}.sta. Check the spelling, or "
+                    f"remove the import — while it is unresolved, nothing in "
+                    f"this file that calls into it is checked at all")
+                continue
             self._error("E007",
                 f"'{imp.name}' from '{imp.source}' has no local checkout",
                 imp.line, imp.col,

@@ -66,8 +66,8 @@ float overdrawn_total() {
 
 **The compiler proves things about itself.** Strata's own compiler is written
 in Strata, and every build checks three properties: the Strata compiler and a
-Python reference implementation produce byte-identical C across 97 cases; the
-compiler rebuilt from C it generated itself reproduces that C exactly; and 210
+Python reference implementation produce byte-identical C across 113 cases; the
+compiler rebuilt from C it generated itself reproduces that C exactly; and 217
 conformance tests run on every commit. That machinery is there because a
 language written by AI and reviewed by humans has to be checkable by machine.
 
