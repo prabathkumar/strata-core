@@ -16,6 +16,7 @@ to CI is a step this runs, with no second place to remember.
     python3 tools/ci_locally.py --from 12    # resume at step 12
     python3 tools/ci_locally.py --from 1 --until 20   # run a slice
     python3 tools/ci_locally.py --job first-run-on-a-mac
+    python3 tools/ci_locally.py --jobs       # every job in every workflow
 
 Steps needing root, or a tool this machine does not have, are reported as
 SKIP with the reason rather than quietly passing. A skip is not a pass: the
@@ -31,16 +32,38 @@ import time
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKFLOW = os.path.join(ROOT, ".github", "workflows", "build-check.yml")
+WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+
+
+def all_jobs():
+    """Every job in every workflow, as {job name: (workflow file, job)}.
+
+    This read one file, build-check.yml, and so had a blind spot the exact
+    size of every other workflow. The site workflow has a gate of its own --
+    one rename, eight failures, across the data, the rules, the web page and
+    the phone screen -- and it counted diagnostics by the shape they were
+    printed in. The day every diagnostic gained a filename, that gate went
+    red in CI for a change that had been green here, because here never ran
+    it. A runner that covers one workflow tells you about one workflow.
+    """
+    found = {}
+    for name in sorted(os.listdir(WORKFLOWS)):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        with open(os.path.join(WORKFLOWS, name)) as fh:
+            wf = yaml.safe_load(fh) or {}
+        for job, body in (wf.get("jobs") or {}).items():
+            found[job] = (name, body)
+    return found
 
 
 def steps_of(job_name):
-    with open(WORKFLOW) as fh:
-        wf = yaml.safe_load(fh)
-    jobs = wf.get("jobs", {})
+    jobs = all_jobs()
     if job_name not in jobs:
-        print(f"  no job '{job_name}' in build-check.yml. Jobs: {list(jobs)}")
+        print(f"  no job '{job_name}' in any workflow. Jobs: {list(jobs)}")
         sys.exit(2)
+    _file, job = jobs[job_name]
+    jobs = {job_name: job}
     out = []
     for step in jobs[job_name].get("steps", []):
         run = step.get("run")
@@ -71,12 +94,21 @@ def why_skip(cmd):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--job", default="validate-conformance")
+    ap.add_argument("--jobs", action="store_true",
+                    help="list every job in every workflow, run nothing")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--from", dest="start", type=int, default=1)
     ap.add_argument("--until", dest="until", type=int, default=0,
                     help="stop after this step; for running in slices")
     args = ap.parse_args()
 
+    if args.jobs:
+        print("\n── Every job CI runs ───────────────────────────────────────")
+        for job, (wf, body) in sorted(all_jobs().items()):
+            runs = sum(1 for st in (body.get("steps") or []) if st.get("run"))
+            print(f"  {job:<34} {wf:<22} {runs} step(s)")
+        print("\n  python3 tools/ci_locally.py --job <name>")
+        return 0
     steps = steps_of(args.job)
     if args.list:
         for i, (name, cmd, _env) in enumerate(steps, 1):

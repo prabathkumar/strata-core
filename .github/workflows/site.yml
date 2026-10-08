@@ -61,6 +61,12 @@ jobs:
         sed -i 's/float used_gb;/float data_used_gb;/' src/schema.sta
         out="$(strata build 2>&1 || true)"
         cp /tmp/schema.bak src/schema.sta
+        # Every pattern names the file it is counting. The data count used to
+        # match `^E00[0-9] [0-9]+:` -- a diagnostic with a line and no
+        # filename -- which stopped matching the day every diagnostic in the
+        # toolchain gained one, and this gate went red for a formatting
+        # change while the compiler was still finding all eight.
+        #
         # Counted, not grepped for a filename. Searching the output for
         # "phone.sta" stayed green while the compiler was catching two of
         # that file's three uses and calling it complete — a gate that
@@ -69,7 +75,7 @@ jobs:
         # finding one of them fails here.
         web="$(printf '%s\n' "$out" | grep -cE '^E004 src/views\.sta' || true)"
         phone="$(printf '%s\n' "$out" | grep -cE '^E004 src/phone\.sta' || true)"
-        data="$(printf '%s\n' "$out" | grep -cE '^E00[0-9] [0-9]+:' || true)"
+        data="$(printf '%s\n' "$out" | grep -cE '^E00[0-9] src/main\.sta:' || true)"
         total="$(printf '%s\n' "$out" | grep -cE '^E00[0-9] ' || true)"
         echo "web page: $web   phone screen: $phone   data: $data   total: $total"
         [ "$web"   = "3" ] || { echo "::error::expected 3 failures in src/views.sta, got $web"; exit 1; }
