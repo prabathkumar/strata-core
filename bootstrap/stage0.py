@@ -11,6 +11,7 @@ from compiler.parser import (
     Parser, ParseError, CompilationUnit,
     DatabaseDecl, ProtocolDecl, ModelDecl, ReportDecl,
     FunctionDecl, ImportDecl, FieldDecl, Param, InsertStmt, DeleteStmt, ConstDecl,
+    MigrateDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt,
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt, RenderStmt, VerifyBlock,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr, ScanStmt, AppendStmt, RewriteStmt, DropStmt,
@@ -209,6 +210,11 @@ class CodeGen:
         self.query_depth = 0
         # Database fields by table name, for report rendering.
         self.schema_fields = {}
+        # Declared renames, by table: the name a stored file may still carry,
+        # and the column it is now. The loader consults these when a file's
+        # header does not match the declaration, which is the only thing that
+        # can tell a rename apart from a column dropped and another added.
+        self.renames = {}
         self.rewrite_depth = 0
         # Libraries named by foreign blocks, passed to the linker.
         self.link_libs = []
@@ -238,6 +244,11 @@ class CodeGen:
                     self.schema_fields[d.name] = d.fields
                 elif isinstance(d, ModelDecl):
                     self.model_names.add(d.name)
+                elif isinstance(d, MigrateDecl):
+                    for st in d.steps:
+                        if st.op == "rename":
+                            self.renames.setdefault(d.table, []).append(
+                                (st.old, st.new))
 
         for mod_name, unit in units:
             is_root = unit is self.ast
@@ -580,6 +591,13 @@ int main(int argc, char** argv) {
         self.emit_raw("                int _known = 0;")
         for fd in fields:
             self.emit_raw(f'                if (strcmp(_pn[_pi], "{fd.name}") == 0) _known = 1;')
+        # A column the file still calls by its old name is not an unknown
+        # column: a migration says which column it is. Without this the guard
+        # that protects a dropped column's data also blocked the one write
+        # that completes a rename.
+        for old, new in self.renames.get(name, []):
+            if any(fd.name == new for fd in fields):
+                self.emit_raw(f'                if (strcmp(_pn[_pi], "{old}") == 0) _known = 1;')
         self.emit_raw("                if (!_known) {")
         self.emit_raw("                    char _why[256];")
         self.emit_raw('                    snprintf(_why, sizeof(_why), "it carries a column \'%s\' this table does not declare. Writing would delete that column and everything in it", _pn[_pi]);')
@@ -740,6 +758,8 @@ int main(int argc, char** argv) {
             self.emit_raw("            }")
             self.emit_raw(f"            _map[_c] = {idx};")
             self.emit_raw("        }")
+        self._gen_renames(name, fields, "        ", "_names[_c]",
+                          "_types[_c]", "_map[_c]", "fclose(f); return 0;")
         self.emit_raw("        if (_map[_c] >= 0) _matched++;")
         self.emit_raw("    }")
         # A column the file carries and this table does not is a DROPPED
@@ -1003,6 +1023,33 @@ int main(int argc, char** argv) {
         self.emit_raw(f"{i}    {fail}")
         self.emit_raw(f"{i}}}")
 
+    def _gen_renames(self, name, fields, indent, names, types, cmap, fail):
+        """A column the file still calls by its old name.
+
+        Emitted after the matching loop's ordinary comparisons, so a file that
+        already uses the new name is unaffected. This is the only thing that
+        can tell a rename apart from a column dropped and another added --
+        which is why the loader refuses that shape unless a migration says
+        which it was.
+        """
+        by_name = {fd.name: (i, fd) for i, fd in enumerate(fields)}
+        for old, new in self.renames.get(name, []):
+            if new not in by_name:
+                continue
+            idx, fd = by_name[new]
+            ct = self._c_type(fd.field_type)
+            tc = "s" if ct == "strata_str" else ("f" if ct == "strata_float" else "i")
+            self.emit_raw(f'{indent}if (strcmp({names}, "{old}") == 0) {{')
+            self.emit_raw(f"{indent}    if ({types} != '{tc}') {{")
+            self.emit_raw(f'{indent}        strata_load_refuse("{name}", path, '
+                          f'"column \'{old}\' is declared as renamed to '
+                          f'\'{new}\', and the stored column is not the type '
+                          f'\'{new}\' is");')
+            self.emit_raw(f"{indent}        {fail}")
+            self.emit_raw(f"{indent}    }}")
+            self.emit_raw(f"{indent}    {cmap} = {idx};")
+            self.emit_raw(f"{indent}}}")
+
     def _gen_table_scan(self, name, fields):
         """Reading a stored table one row at a time.
 
@@ -1087,6 +1134,8 @@ int main(int argc, char** argv) {
             self.emit_raw("            }")
             self.emit_raw(f"            map[c] = {idx};")
             self.emit_raw("        }")
+        self._gen_renames(name, fields, "        ", "_names[c]",
+                          "_types[c]", "map[c]", "fclose(f); return NULL;")
         self.emit_raw("        if (map[c] >= 0) matched++;")
         self.emit_raw(f"        else if (!{name}__scan_extra[0]) {{")
         self.emit_raw(f"            snprintf({name}__scan_extra, STRATA_NAME_CAP, "

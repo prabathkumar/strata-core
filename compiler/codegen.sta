@@ -55,6 +55,11 @@ database Gen {
     int query_depth;  // nesting of query expressions, for unique C names
     int rewrite_depth; // nesting of rewrites, for unique C names and the drop label
     int schema_decls; // Bind list: table -> its declaration node, for field types
+    // Bind list: table -> "old>new,old>new," -- the renames a migration
+    // declared. The loader consults these when a file's header does not match
+    // the declaration, which is the only thing that can tell a rename apart
+    // from a column dropped and another added.
+    int renames;
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
@@ -2078,6 +2083,8 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
         emit_raw(&g, sb_to_str(&m3));
         emit_raw(&g, "        }");
     }
+    gen_renames(&g, name, fs, "        ", "_names[c]", "_types[c]",
+    "map[c]", "fclose(f); return NULL;");
     emit_raw(&g, "        if (map[c] >= 0) matched++;");
     StringBuilder xe1 = sb_new();
     sb_append(&xe1, "        else if (!"); sb_append(&xe1, name);
@@ -2314,6 +2321,30 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         sb_append(&kn, "                if (strcmp(_pn[_pi], \"");
         sb_append(&kn, fdk.s1); sb_append(&kn, "\") == 0) _known = 1;");
         emit_raw(&g, sb_to_str(&kn));
+    }
+    // A column the file still calls by its old name is not unknown: a
+    // migration says which column it is -- see stage0.py.
+    str rpairs = renames_of(&g, name);
+    int rpn = str_len(rpairs);
+    int rstart = 0;
+    for (int ri = 0; ri < rpn; ri = ri + 1) {
+        if (rpairs[ri] != 44) { continue; }
+        str pair = str_slice(rpairs, rstart, ri);
+        rstart = ri + 1;
+        int arrow = str_index_of(pair, ">");
+        if (arrow < 0) { continue; }
+        str rold = str_slice(pair, 0, arrow);
+        str rnew = str_slice(pair, arrow + 1, str_len(pair));
+        int known = 0;
+        for (int f = 0; f < n; f = f + 1) {
+            Node fd2 = nv_get(&fs, f);
+            if (str_eq(fd2.s1, rnew) == 1) { known = 1; }
+        }
+        if (known == 0) { continue; }
+        StringBuilder rk = sb_new();
+        sb_append(&rk, "                if (strcmp(_pn[_pi], \"");
+        sb_append(&rk, rold); sb_append(&rk, "\") == 0) _known = 1;");
+        emit_raw(&g, sb_to_str(&rk));
     }
     emit_raw(&g, "                if (!_known) {");
     emit_raw(&g, "                    char _why[256];");
@@ -2558,6 +2589,8 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         emit_raw(&g, sb_to_str(&m3));
         emit_raw(&g, "        }");
     }
+    gen_renames(&g, name, fs, "        ", "_names[_c]", "_types[_c]",
+    "_map[_c]", "fclose(f); return 0;");
     emit_raw(&g, "        if (_map[_c] >= 0) _matched++;");
     emit_raw(&g, "    }");
     // A column the file carries and this table does not is a DROPPED column,
@@ -3311,6 +3344,92 @@ def note_records(Gen &g, Node unit) {
         if (d.kind == 3) { note_record(&g, d); }
         if (d.kind == 4) { note_record(&g, d); }
         if (d.kind == 5) { g.models = bind_cons(d.s1, "1", g.models); }
+        // Declared renames, accumulated as "old>new," per table -- the
+        // language has no map of lists, and a string the generator splits is
+        // honest about that rather than pretending otherwise.
+        if (d.kind == 83) {
+            StringBuilder acc = sb_new();
+            sb_append(&acc, bind_get(g.renames, d.s1));
+            NodeVec steps = nv_at(d.v1);
+            for (int sx = 0; sx < steps.len; sx = sx + 1) {
+                Node st = nv_get(&steps, sx);
+                sb_append(&acc, st.s2);
+                sb_append(&acc, ">");
+                sb_append(&acc, st.s3);
+                sb_append(&acc, ",");
+            }
+            g.renames = bind_cons(d.s1, sb_to_str(&acc), g.renames);
+        }
+    }
+}
+
+// The renames declared for one table, as "old>new," pairs.
+str renames_of(Gen &g, str table) {
+    if (bind_has(g.renames, table) == 0) { return ""; }
+    return bind_get(g.renames, table);
+}
+
+// A column the file still calls by its old name -- see stage0.py.
+//
+// Emitted after the matching loop's ordinary comparisons, so a file that
+// already uses the new name is unaffected.
+def gen_renames(Gen &g, str name, NodeVec fs, str indent, str names, str types,
+str cmap, str fail) {
+    str pairs = renames_of(&g, name);
+    int n = str_len(pairs);
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (pairs[i] != 44) { continue; }
+        str pair = str_slice(pairs, start, i);
+        start = i + 1;
+        int arrow = str_index_of(pair, ">");
+        if (arrow < 0) { continue; }
+        str old = str_slice(pair, 0, arrow);
+        str fresh = str_slice(pair, arrow + 1, str_len(pair));
+        int idx = 0 - 1;
+        str tc = "i";
+        for (int f = 0; f < fs.len; f = f + 1) {
+            Node fd = nv_get(&fs, f);
+            if (str_eq(fd.s1, fresh) == 1) { idx = f; tc = col_tchar(&g, fd); }
+        }
+        if (idx < 0) { continue; }
+        StringBuilder a1 = sb_new();
+        sb_append(&a1, indent); sb_append(&a1, "if (strcmp(");
+        sb_append(&a1, names); sb_append(&a1, ", \"");
+        sb_append(&a1, old); sb_append(&a1, "\") == 0) {");
+        emit_raw(&g, sb_to_str(&a1));
+        StringBuilder a2 = sb_new();
+        sb_append(&a2, indent); sb_append(&a2, "    if (");
+        sb_append(&a2, types); sb_append(&a2, " != '");
+        sb_append(&a2, tc); sb_append(&a2, "') {");
+        emit_raw(&g, sb_to_str(&a2));
+        StringBuilder a3 = sb_new();
+        sb_append(&a3, indent);
+        sb_append(&a3, "        strata_load_refuse(\"");
+        sb_append(&a3, name);
+        sb_append(&a3, "\", path, \"column '");
+        sb_append(&a3, old);
+        sb_append(&a3, "' is declared as renamed to '");
+        sb_append(&a3, fresh);
+        sb_append(&a3, "', and the stored column is not the type '");
+        sb_append(&a3, fresh);
+        sb_append(&a3, "' is\");");
+        emit_raw(&g, sb_to_str(&a3));
+        StringBuilder a4 = sb_new();
+        sb_append(&a4, indent); sb_append(&a4, "        ");
+        sb_append(&a4, fail);
+        emit_raw(&g, sb_to_str(&a4));
+        StringBuilder a5 = sb_new();
+        sb_append(&a5, indent); sb_append(&a5, "    }");
+        emit_raw(&g, sb_to_str(&a5));
+        StringBuilder a6 = sb_new();
+        sb_append(&a6, indent); sb_append(&a6, "    ");
+        sb_append(&a6, cmap); sb_append(&a6, " = ");
+        sb_append(&a6, str(idx)); sb_append(&a6, ";");
+        emit_raw(&g, sb_to_str(&a6));
+        StringBuilder a7 = sb_new();
+        sb_append(&a7, indent); sb_append(&a7, "}");
+        emit_raw(&g, sb_to_str(&a7));
     }
 }
 

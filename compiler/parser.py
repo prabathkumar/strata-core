@@ -134,6 +134,43 @@ class ConstDecl(Node):
                                "value":self.value.to_dict()}
 
 @dataclass
+class MigrateDecl(Node):
+    """`migrate Item { rename price to cost; }` beside the schema it belongs to.
+
+    A table that already has rows in it cannot be renamed into: the loader
+    refuses a file whose header says `price` when the schema says `cost`,
+    because every row would otherwise read as empty in a money column. The
+    refusal is right. What was missing was any way to say "yes, I meant that"
+    in a form the compiler can check.
+
+    Declared here rather than typed into a terminal, because a migration typed
+    once on one machine is not in the repository, was reviewed by nobody, and
+    cannot be checked. This one is checked against the schema it names, sits
+    in the same diff as the rename that caused it, and runs everywhere.
+
+    Deliberately not a transformation language: no expressions, no conditions,
+    nothing computed. A migration that can run arbitrary code is a program
+    that silently rewrites stored data, which is what this part of the
+    compiler exists to prevent.
+
+    `migrate` is contextual, like `const` and `save`, so the word stays usable
+    as an identifier everywhere else.
+    """
+    table: str
+    steps: List[Any]
+    def to_dict(self): return {"node":"MigrateDecl","table":self.table,
+                               "steps":[s.to_dict() for s in self.steps]}
+
+@dataclass
+class MigrateStep(Node):
+    """One line of a migration: `rename <old> to <new>;`."""
+    op: str
+    old: str
+    new: str
+    def to_dict(self): return {"node":"MigrateStep","op":self.op,
+                               "old":self.old,"new":self.new}
+
+@dataclass
 class DeleteStmt(Node):
     """`delete Table <- [cond];` — rows matching the condition are removed.
 
@@ -562,6 +599,9 @@ class Parser:
                 declarations.append(self._parse_layout())
             elif self._at_word("const") and self._peek_at(1).type != TT.L_PAREN:
                 declarations.append(self._parse_const())
+            elif (self._at_word("migrate")
+                  and self._peek_at(1).type == TT.IDENT):
+                declarations.append(self._parse_migrate())
             elif self._at_word("foreign"):
                 declarations.append(self._parse_foreign())
             elif self._check(TT.KW_VERIFY):
@@ -576,6 +616,26 @@ class Parser:
                 t = self._peek()
                 raise ParseError(f"Unexpected token '{t.value}'", t.line, t.col, self.file)
         return CompilationUnit(0, 0, imports, declarations, functions)
+
+    def _parse_migrate(self) -> MigrateDecl:
+        t = self._advance()                      # `migrate`
+        table = self._consume(TT.IDENT).value
+        self._consume(TT.L_BRACE)
+        steps = []
+        while not self._check(TT.R_BRACE) and not self._at_end():
+            st = self._peek()
+            op = self._consume(TT.IDENT).value
+            if op != "rename":
+                raise ParseError(
+                    f"'{op}' is not something a migration can do; "
+                    f"a migration renames a column", st.line, st.col, self.file)
+            old = self._consume(TT.IDENT).value
+            self._consume_word("to")
+            new = self._consume(TT.IDENT).value
+            self._consume(TT.SEMICOLON)
+            steps.append(MigrateStep(st.line, st.col, op, old, new))
+        self._consume(TT.R_BRACE)
+        return MigrateDecl(t.line, t.col, table, steps)
 
     def _parse_const(self) -> ConstDecl:
         t = self._advance()                      # `const`

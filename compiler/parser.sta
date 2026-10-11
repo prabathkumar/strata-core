@@ -193,6 +193,8 @@ str node_name(int k) {
     if (k == 75) { return "TableIOStmt"; }
     if (k == 76) { return "DeleteStmt"; }
     if (k == 77) { return "ConstDecl"; }
+    if (k == 82) { return "MigrateStep"; }
+    if (k == 83) { return "MigrateDecl"; }
     if (k == 78) { return "ScanStmt"; }
     if (k == 79) { return "AppendStmt"; }
     if (k == 80) { return "RewriteStmt"; }
@@ -351,6 +353,15 @@ str node_json(Node n) {
         jfield(&sb, "name", jstr(n.s1));
         jfield(&sb, "const_type", jchild(n.c1));
         jfield(&sb, "value", jchild(n.c2));
+    }
+    if (k == 82) {
+        jfield(&sb, "op", jstr(n.s1));
+        jfield(&sb, "old", jstr(n.s2));
+        jfield(&sb, "new", jstr(n.s3));
+    }
+    if (k == 83) {
+        jfield(&sb, "table", jstr(n.s1));
+        jfield(&sb, "steps", jlist(n.v1));
     }
     if (k == 74) {
         jfield(&sb, "header", jstr(n.s1));
@@ -623,6 +634,50 @@ Node parse_record(P &p, int kw, int node_kind) {
     Node n = node_new(node_kind);
     n.s1 = name.value;
     n.v1 = nv_ptr(fields);
+    n_pos(n, t);
+    return n;
+}
+
+// `migrate Item { rename price to cost; }` -- see parser.py.
+//
+// A table that already has rows cannot be renamed into: the loader refuses a
+// file whose header says `price` when the schema says `cost`, because every
+// row would read as empty. The refusal is right; this is how a developer says
+// "yes, I meant that" in a form the compiler can check.
+//
+// Deliberately not a transformation language. No expressions, no conditions,
+// nothing computed: a migration that can run arbitrary code is a program that
+// silently rewrites stored data.
+Node parse_migrate(P &p) {
+    Token t = p_advance(&p);                   // contextual `migrate`
+    Token table = p_expect(&p, 4);
+    p_expect(&p, 50);                          // {
+    NodeVec steps = nv_new();
+    while (p_check(&p, 51) == 0) {
+        if (p_at_end(&p) == 1) { break; }
+        Token op = p_expect(&p, 4);
+        if (str_eq(op.value, "rename") == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "'");
+            sb_append(&sb, op.value);
+            sb_append(&sb, "' is not something a migration can do; a migration renames a column");
+            parse_fail(sb_to_str(&sb), op.line, op.col);
+        }
+        Token old = p_expect(&p, 4);
+        p_expect_word(&p, "to");
+        Token fresh = p_expect(&p, 4);
+        p_expect(&p, 56);                      // ;
+        Node st = node_new(82);
+        st.s1 = "rename";
+        st.s2 = old.value;
+        st.s3 = fresh.value;
+        n_pos(st, op);
+        nv_push(&steps, st);
+    }
+    p_expect(&p, 51);                          // }
+    Node n = node_new(83);
+    n.s1 = table.value;
+    n.v1 = nv_ptr(steps);
     n_pos(n, t);
     return n;
 }
@@ -1710,15 +1765,21 @@ Node parse_unit(P &p) {
         int is_const = 0;
         if (p_at_word(&p, "const") == 1) { if (p_kind(&p, 1) != 52) { is_const = 1; } }
         if (is_const == 1) { nv_push(&decls, parse_const(&p)); }
+        // `migrate Item { rename price to cost; }` — contextual too, so the
+        // word stays usable as an identifier. A table name follows it.
+        int is_migrate = 0;
+        if (p_at_word(&p, "migrate") == 1) { if (p_kind(&p, 1) == 4) { is_migrate = 1; } }
+        if (is_migrate == 1) { nv_push(&decls, parse_migrate(&p)); }
         if (k == 23) { nv_push(&funcs, parse_function(&p, 1)); }
         if (k == 25) { nv_push(&funcs, parse_function(&p, 2)); }
-        if (is_foreign == 0) { if (is_const == 0) {
-                if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
-            } }
+        if (is_foreign == 0) { if (is_const == 0) { if (is_migrate == 0) {
+                    if (is_type_kind(k) == 1) { nv_push(&funcs, parse_function(&p, 0)); }
+                } } }
         if (is_foreign == 0) { if (is_const == 1) { }
             else { if (is_type_kind(k) == 0) {
                     if (k != 21) { if (k != 24) { if (k != 26) { if (k != 27) { if (k != 29) {
                                         if (k != 32) { if (k != 31) { if (k != 23) { if (k != 25) {
+                                                        if (is_migrate == 1) { continue; }
                                                         Token badtop = p_peek(&p, 0);
                                                         StringBuilder tsb = sb_new();
                                                         sb_append(&tsb, "Expected a declaration, got '");

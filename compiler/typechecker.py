@@ -17,6 +17,7 @@ from compiler.parser import (
     VarDecl, ReturnStmt, IfStmt, PrintStmt, ExprStmt,
     AssignStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, IndexExpr,
     AssertStmt, RenderStmt, VerifyBlock, InsertStmt, DeleteStmt, ConstDecl,
+    MigrateDecl,
     LayoutDecl, Element, Prop, ForInStmt, ForeignDecl, TableIOStmt, ScanStmt, AppendStmt, RewriteStmt, DropStmt,
     BinaryExpr, UnaryExpr, CallExpr, BorrowExpr, CastExpr,
     PredictExpr, QueryExpr, ListLiteral, MemberAccess, RenderExpr,
@@ -305,6 +306,7 @@ class TypeChecker:
         self._report_unresolved_imports()
         self._register_imported_declarations()
         self._register_declarations()
+        self._check_migrations()
         self._register_foreign()
         self._register_imported_functions()
         self._register_functions()
@@ -393,6 +395,53 @@ class TypeChecker:
                     self.constants.add(d.name)
                     self.global_scope.define(d.name,
                                              self._resolve_type(d.const_type))
+
+    def _check_migrations(self):
+        """A migration has to agree with the schema it names.
+
+        It is a claim about stored data: "a column the file calls `price` is
+        the column this table calls `cost`". If `cost` is not a column, or
+        `price` still is, the claim is false and the loader would act on it
+        anyway -- so it is refused here, where somebody can see why, rather
+        than at three in the morning on a file nobody has a copy of.
+        """
+        # Migrations declared in an imported module count too. A schema and
+        # the migration that explains it belong in the same file, and that
+        # file is usually not the one with main() in it.
+        units = [self.ast] + [m[1] if isinstance(m, tuple) else m
+                              for m in self.modules]
+        seen = []
+        for unit in units:
+            for d in getattr(unit, "declarations", []):
+                if isinstance(d, MigrateDecl):
+                    seen.append(d)
+        for d in seen:
+            cols = self.schemas.get(d.table)
+            if cols is None:
+                self._error(
+                    "E004", f"Database '{d.table}' not declared",
+                    d.line, getattr(d, "col", 1),
+                    "A migration names the table it changes; declare it, or "
+                    "import the module that does")
+                continue
+            names = list(cols)
+            for st in d.steps:
+                if st.new not in names:
+                    self._error(
+                        "E004",
+                        f"Column '{st.new}' does not exist in '{d.table}'",
+                        st.line, getattr(st, "col", 1),
+                        f"A rename says a stored column is now '{st.new}'. "
+                        f"Valid columns: {list(names)}")
+                if st.old in names:
+                    self._error(
+                        "E004",
+                        f"'{st.old}' is still a column of '{d.table}', so "
+                        f"nothing was renamed away from it",
+                        st.line, getattr(st, "col", 1),
+                        "A rename describes a column the stored file still "
+                        "carries and this table no longer declares. Remove "
+                        "the migration, or remove the column")
 
     def _register_declarations(self):
         for d in self.ast.declarations:

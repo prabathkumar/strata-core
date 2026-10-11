@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### A stored table can be changed
+
+Renaming a column used to be the end of the road for a table that already had
+rows in it. The loader refuses a file whose header says `price` when the
+schema says `cost` — correctly, because every row would otherwise read as
+empty in a money column — and there was nothing a developer could do about it:
+one program cannot declare two versions of the same table, so the only route
+was editing the stored file by hand. The eleventh pilot called this, not data
+loss, the thing that would stop their team adopting the language.
+
+A migration is how you say "yes, I meant that" in a form the compiler can
+check:
+
+```text
+migrate Item {
+    rename price to cost;
+}
+```
+
+A file still carrying the old name loads, and the next `save` writes the new
+shape, so one ordinary run migrates the file. `scan` and `rewrite` apply the
+same migration, because the laxest reader would otherwise be the real rule.
+
+It is declared in the source rather than typed into a terminal on purpose. A
+migration typed once on one machine is not in the repository, was reviewed by
+nobody, and cannot be checked. This one is checked against the schema it names
+— the new column must exist, the old one must not, the table must be declared
+— sits in the same diff as the rename that caused it, and runs everywhere.
+
+It also completes a refusal that already existed. A column dropped and another
+added, in one step, is refused precisely because from the file's side that is
+what a rename looks like. A declared rename is the only thing that can tell
+the compiler which of the two it was.
+
+Deliberately not a transformation language: no expressions, no conditions,
+nothing computed. A migration that can run arbitrary code is a program that
+silently rewrites stored data, which is what the loader's refusals exist to
+prevent. `retype`, `drop` and renaming a table are designed in
+`docs/CHANGING_A_STORED_TABLE.md` and not built.
+
+
 ### Two things about queries that were true and unwritten
 
 A query returns the stored rows, not copies. Writing through one changes the

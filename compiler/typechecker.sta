@@ -430,6 +430,49 @@ def emit(TC &tc, str code, str msg, int line, int col) {
 // differential test compares the two character by character. The hint rides
 // alongside, in the capture buffer, as a tab-separated record that only
 // --json reads.
+def check_migration(TC &tc, Node d) {
+    int sp = schema_find(tc.schemas, d.s1);
+    if (sp == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "Database '");
+        sb_append(&sb, d.s1);
+        sb_append(&sb, "' not declared");
+        emit_hint(&tc, "E004", sb_to_str(&sb), d.line, d.col,
+        "A migration names the table it changes; declare it, or import the module that does");
+        return;
+    }
+    Schema sc = schema_at(sp);
+    NodeVec steps = nv_at(d.v1);
+    int n = steps.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node st = nv_get(&steps, i);
+        if (sym_find(sc.fields, st.s3) == 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "Column '");
+            sb_append(&sb, st.s3);
+            sb_append(&sb, "' does not exist in '");
+            sb_append(&sb, d.s1);
+            sb_append(&sb, "'");
+            StringBuilder h = sb_new();
+            sb_append(&h, "A rename says a stored column is now '");
+            sb_append(&h, st.s3);
+            sb_append(&h, "'. ");
+            sb_append(&h, hint_quoted("Valid columns: ", sym_names_repr(sc.fields), ""));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, sb_to_str(&h));
+        }
+        if (sym_find(sc.fields, st.s2) != 0) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, "'");
+            sb_append(&sb, st.s2);
+            sb_append(&sb, "' is still a column of '");
+            sb_append(&sb, d.s1);
+            sb_append(&sb, "', so nothing was renamed away from it");
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
+            "A rename describes a column the stored file still carries and this table no longer declares. Remove the migration, or remove the column");
+        }
+    }
+}
+
 def emit_hint(TC &tc, str code, str msg, int line, int col, str hint) {
     StringBuilder sb = sb_new();
     sb_append(&sb, code);
@@ -573,6 +616,32 @@ def register_imported_decls(TC &tc, int mods_p) {
                 tc.constants = sb_to_str(&ics);
             }
         }
+    }
+}
+
+// Migrations, after every schema is registered.
+//
+// A migration has to agree with the schema it names -- see typechecker.py. It
+// is a claim about stored data, and a false claim would be acted on by the
+// loader at three in the morning on a file nobody has a copy of. Checked in
+// its own pass because a schema and the migration that explains it belong in
+// the same file, and that file is usually not the one with main() in it.
+def check_migrations(TC &tc, Node unit, int mods_p) {
+    if (mods_p != 0) {
+        NodeVec mods = nv_at(mods_p);
+        for (int m = 0; m < mods.len; m = m + 1) {
+            Node mu = nv_get(&mods, m);
+            NodeVec mdecls = nv_at(mu.v2);
+            for (int i = 0; i < mdecls.len; i = i + 1) {
+                Node d = nv_get(&mdecls, i);
+                if (d.kind == 83) { check_migration(&tc, d); }
+            }
+        }
+    }
+    NodeVec decls = nv_at(unit.v2);
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind == 83) { check_migration(&tc, d); }
     }
 }
 
@@ -2213,6 +2282,7 @@ str src_dir, int report_imports, int mods_p) {
     // the module that queries it, and every query reports E004 against a table
     // that is right there.
     if (mods_p != 0) { register_imported_decls(&tc, mods_p); }
+    check_migrations(&tc, unit, mods_p);
 
     // A constant's value is checked once the global scope is complete, so a
     // constant may be written in terms of one declared above it.

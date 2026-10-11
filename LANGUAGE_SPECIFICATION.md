@@ -371,6 +371,42 @@ Variable declaration and assignment, `if` / `else` / `else if`, `while`, C-style
 `verify` blocks, insert, `delete`, `save` / `load`, `render ... to`, and
 expression statements.
 
+### Changing a stored table
+
+A table that already has rows cannot simply be renamed into: the loader
+refuses a file whose header says `price` when the schema says `cost`, because
+every row would otherwise read as empty in a money column. A **migration** is
+how that is declared, next to the schema it belongs to:
+
+```text
+database Item {
+    int   id;
+    str   name;
+    float cost;
+}
+
+migrate Item {
+    rename price to cost;
+}
+```
+
+Reading a file that still carries the old column name now succeeds, and the
+next `save` writes the new shape — so one ordinary run migrates the file.
+`scan` and `rewrite` apply the same migration, because the laxest reader would
+otherwise be the real rule.
+
+A migration is checked against the schema it names: the new column must exist,
+the old one must not, and the table must be declared. It is a claim about
+stored data, and a false claim would be acted on.
+
+It is deliberately not a transformation language. There are no expressions, no
+conditions and nothing computed — a migration that could run arbitrary code
+would be a program that silently rewrites stored data, which is what the
+loader's refusals exist to prevent.
+
+`migrate` is contextual, like `const` and `save`, so the word stays usable as
+an identifier everywhere else.
+
 ### What a query gives back
 
 A query returns the **stored rows**, not copies of them. Writing through one
