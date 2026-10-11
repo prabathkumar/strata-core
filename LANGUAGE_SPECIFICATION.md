@@ -428,6 +428,30 @@ loader's refusals exist to prevent.
 `migrate` is contextual, like `const` and `save`, so the word stays usable as
 an identifier everywhere else.
 
+### Two programs writing the same table
+
+There is no lock held between reading a table and writing it, and there is
+deliberately not one: a lock across that span either blocks a batch job behind
+a person or deadlocks.
+
+What there is instead is a refusal. The file's identity is recorded when the
+table is read, and a `save` that finds a different one **refuses**, because
+the rows it would write never saw whatever arrived in between:
+
+```text
+[STRATA SAVE] Counter: could not write 'c.tsv' — it changed after this
+program read it, so another run has written to it. Saving now would replace
+that work with rows that never saw it. Read it again, and redo the change
+```
+
+The check and the rename happen together, under a lock file held for
+microseconds, so two runs cannot both decide the file is unchanged and both
+write. A save that succeeds is a save whose rows account for everything
+already in the file.
+
+This makes a lost update loud. It does not make the read and the write one
+transaction — a program that must not be refused should be the only writer.
+
 ### What a query gives back
 
 A query returns the **stored rows**, not copies of them. Writing through one

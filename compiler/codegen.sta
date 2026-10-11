@@ -2424,11 +2424,47 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "            }");
     emit_raw(&g, "        }");
     emit_raw(&g, "    }");
+    // Somebody else wrote to this file after this program read it -- see
+    // stage0.py. Two runs that each load, change a row and save do not
+    // conflict loudly: the second one's save replaces the first one's work
+    // and both exit 0.
+    StringBuilder mg1 = sb_new();
+    sb_append(&mg1, "    if ("); sb_append(&mg1, name);
+    sb_append(&mg1, "__from && strcmp("); sb_append(&mg1, name);
+    sb_append(&mg1, "__from, path) == 0 && "); sb_append(&mg1, name);
+    sb_append(&mg1, "__stamp != 0) {");
+    emit_raw(&g, sb_to_str(&mg1));
+    StringBuilder mg2 = sb_new();
+    sb_append(&mg2, "        if ("); sb_append(&mg2, name);
+    sb_append(&mg2, "__append_file) { fflush("); sb_append(&mg2, name);
+    sb_append(&mg2, "__append_file); "); sb_append(&mg2, name);
+    sb_append(&mg2, "__stamp = strata_file_stamp(path); }");
+    emit_raw(&g, sb_to_str(&mg2));
+    StringBuilder mg3 = sb_new();
+    sb_append(&mg3, "        if (strata_file_stamp(path) != "); sb_append(&mg3, name);
+    sb_append(&mg3, "__stamp) {");
+    emit_raw(&g, sb_to_str(&mg3));
+    StringBuilder mg4 = sb_new();
+    sb_append(&mg4, "            strata_save_refuse(\""); sb_append(&mg4, name);
+    sb_append(&mg4, "\", path,");
+    emit_raw(&g, sb_to_str(&mg4));
+    emit_raw(&g, "                \"it changed after this program read it, so another run has written to it. Saving now would replace that work with rows that never saw it. Read it again, and redo the change\");");
+    emit_raw(&g, "            return 0;");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "    }");
+    // What the commit below compares against.
+    emit_raw(&g, "    int64_t _expect = 0;");
+    StringBuilder mg5 = sb_new();
+    sb_append(&mg5, "    if ("); sb_append(&mg5, name);
+    sb_append(&mg5, "__from && strcmp("); sb_append(&mg5, name);
+    sb_append(&mg5, "__from, path) == 0) { _expect = "); sb_append(&mg5, name);
+    sb_append(&mg5, "__stamp; }");
+    emit_raw(&g, sb_to_str(&mg5));
     gen_pg_save(&g, name, fs, cols_sql, upsert_sql, delete_sql, key);
     // Written beside the file and renamed over it -- see stage0.py. Opening
     // the real file for writing emptied it first, so a crash halfway through
     // left a half-written table and no way back.
-    emit_raw(&g, "    char* _tmp = (char*)malloc(strlen(path) + 16);");
+    emit_raw(&g, "    char* _tmp = (char*)malloc(strlen(path) + 48);");
     emit_raw(&g, "    if (!_tmp) {");
     StringBuilder sm = sb_new();
     sb_append(&sm, "        strata_save_refuse(\""); sb_append(&sm, name);
@@ -2436,7 +2472,9 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&sm));
     emit_raw(&g, "        return 0;");
     emit_raw(&g, "    }");
-    emit_raw(&g, "    sprintf(_tmp, \"%s.strata-tmp\", path);");
+    // One name per process -- see stage0.py. Two runs shared one scratch
+    // name and kept renaming each other's half-written file away.
+    emit_raw(&g, "    sprintf(_tmp, \"%s.%ld.strata-tmp\", path, (long)getpid());");
     emit_raw(&g, "    strata_write_failed = 0;");
     emit_raw(&g, "    FILE* f = fopen(_tmp, \"w\");");
     emit_raw(&g, "    if (!f) {");
@@ -2508,11 +2546,22 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "        free(_tmp);");
     emit_raw(&g, "        return 0;");
     emit_raw(&g, "    }");
-    emit_raw(&g, "    if (rename(_tmp, path) != 0) {");
+    // Checking and renaming under one lock, so two runs cannot both pass
+    // the check and both write -- see stage0.py.
+    emit_raw(&g, "    int _put = strata_commit(path, _tmp, _expect);");
+    emit_raw(&g, "    if (_put != 1) {");
+    emit_raw(&g, "        if (_put == 0) {");
+    StringBuilder mg6 = sb_new();
+    sb_append(&mg6, "            strata_save_refuse(\""); sb_append(&mg6, name);
+    sb_append(&mg6, "\", path,");
+    emit_raw(&g, sb_to_str(&mg6));
+    emit_raw(&g, "                \"it changed after this program read it, so another run has written to it. Saving now would replace that work with rows that never saw it. Read it again, and redo the change\");");
+    emit_raw(&g, "        } else {");
     StringBuilder rn = sb_new();
-    sb_append(&rn, "        strata_save_refuse(\""); sb_append(&rn, name);
+    sb_append(&rn, "            strata_save_refuse(\""); sb_append(&rn, name);
     sb_append(&rn, "\", path, strerror(errno));");
     emit_raw(&g, sb_to_str(&rn));
+    emit_raw(&g, "        }");
     emit_raw(&g, "        remove(_tmp);");
     emit_raw(&g, "        free(_tmp);");
     emit_raw(&g, "        return 0;");

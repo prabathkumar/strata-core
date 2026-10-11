@@ -646,18 +646,50 @@ int main(int argc, char** argv) {
         self.emit_raw("            }")
         self.emit_raw("        }")
         self.emit_raw("    }")
+        # Somebody else wrote to this file after this program read it.
+        #
+        # Two runs that each load, change a row and save do not conflict
+        # loudly: the second one's save simply replaces the first one's work,
+        # and both exit 0. A cron job overlapping a manual run is an ordinary
+        # Monday, and the lost update is invisible.
+        #
+        # There is no lock here, and a lock is not the answer anyway: it
+        # either blocks a batch job behind a person or deadlocks. What this
+        # does is notice. The file's identity is recorded when the table is
+        # read, and a save that finds a different one refuses, because the
+        # rows it would write do not account for whatever arrived in between.
+        self.emit_raw(f"    if ({name}__from && strcmp({name}__from, path) == 0 "
+                      f"&& {name}__stamp != 0) {{")
+        # This process's own appends are not somebody else.
+        self.emit_raw(f"        if ({name}__append_file) {{"
+                      f" fflush({name}__append_file);"
+                      f" {name}__stamp = strata_file_stamp(path); }}")
+        self.emit_raw(f"        if (strata_file_stamp(path) != {name}__stamp) {{")
+        self.emit_raw(f'            strata_save_refuse("{name}", path,')
+        self.emit_raw('                "it changed after this program read it, so another run has written to it. Saving now would replace that work with rows that never saw it. Read it again, and redo the change");')
+        self.emit_raw("            return 0;")
+        self.emit_raw("        }")
+        self.emit_raw("    }")
+        # What the commit below compares against: the file this table was
+        # read from, or 0 when it was not read from this path at all.
+        self.emit_raw("    int64_t _expect = 0;")
+        self.emit_raw(f"    if ({name}__from && strcmp({name}__from, path) == 0) "
+                      f"{{ _expect = {name}__stamp; }}")
         self._gen_pg_save(name, fields, cols_sql, upsert_sql, delete_sql, key, n)
         # Written beside the file and renamed over it. `fopen(path, "w")`
         # emptied the real file first, so a crash, a kill or a full disk
         # halfway through left a half-written table and no way back to the
         # one that was there. `rewrite` had always done it this way; `save`,
         # which replaces far more at once, had not.
-        self.emit_raw("    char* _tmp = (char*)malloc(strlen(path) + 16);")
+        self.emit_raw("    char* _tmp = (char*)malloc(strlen(path) + 48);")
         self.emit_raw("    if (!_tmp) {")
         self.emit_raw(f'        strata_save_refuse("{name}", path, "out of memory");')
         self.emit_raw("        return 0;")
         self.emit_raw("    }")
-        self.emit_raw('    sprintf(_tmp, "%s.strata-tmp", path);')
+        # One name per process. Two runs of the same program shared one
+        # scratch name, so each kept renaming the other's half-written file
+        # out from under it -- which looked like the disk failing.
+        self.emit_raw('    sprintf(_tmp, "%s.%ld.strata-tmp", path, (long)getpid());')
         self.emit_raw("    strata_write_failed = 0;")
         self.emit_raw('    FILE* f = fopen(_tmp, "w");')
         self.emit_raw("    if (!f) {")
@@ -700,8 +732,16 @@ int main(int argc, char** argv) {
         self.emit_raw("        free(_tmp);")
         self.emit_raw("        return 0;")
         self.emit_raw("    }")
-        self.emit_raw("    if (rename(_tmp, path) != 0) {")
-        self.emit_raw(f'        strata_save_refuse("{name}", path, strerror(errno));')
+        # Checking and renaming under one lock, so two runs cannot both
+        # pass the check and both write.
+        self.emit_raw("    int _put = strata_commit(path, _tmp, _expect);")
+        self.emit_raw("    if (_put != 1) {")
+        self.emit_raw("        if (_put == 0) {")
+        self.emit_raw(f'            strata_save_refuse("{name}", path,')
+        self.emit_raw('                "it changed after this program read it, so another run has written to it. Saving now would replace that work with rows that never saw it. Read it again, and redo the change");')
+        self.emit_raw("        } else {")
+        self.emit_raw(f'            strata_save_refuse("{name}", path, strerror(errno));')
+        self.emit_raw("        }")
         self.emit_raw("        remove(_tmp);")
         self.emit_raw("        free(_tmp);")
         self.emit_raw("        return 0;")

@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 typedef int64_t   strata_int;
 typedef double    strata_float;
@@ -40,7 +41,12 @@ static int64_t strata_file_stamp(const char* path) {
 #else
     t += (int64_t)st.st_mtim.tv_nsec;
 #endif
-    return t ^ ((int64_t)st.st_size << 1);
+    /* The inode, because every save puts a NEW file in place with a rename
+     * -- and a modification time has one-second resolution on some
+     * filesystems, so two runs writing the same number of bytes within the
+     * same second were indistinguishable. That is exactly the case this
+     * stamp exists to catch. */
+    return t ^ ((int64_t)st.st_size << 1) ^ ((int64_t)st.st_ino << 17);
 }
 
 /* Output is line-buffered from the first instruction.
@@ -873,6 +879,48 @@ static void strata_error_epilogue(void) {
 __attribute__((constructor))
 static void strata_install_error_epilogue(void) {
     atexit(strata_error_epilogue);
+}
+
+/* Putting a finished file in place, without losing somebody else's work.
+ *
+ * Checking "has this file changed since I read it?" and then renaming over it
+ * are two steps, and two runs that both pass the check before either renames
+ * both write -- so the check caught most overlaps and not all of them. The
+ * two steps happen here under a lock file held for microseconds, so the
+ * answer cannot go stale between them.
+ *
+ * The lock is advisory and deliberately forgiving: if it cannot be taken
+ * within a couple of seconds the write goes ahead anyway. A lock file left
+ * behind by a process somebody killed must not wedge every run afterwards,
+ * and a missed conflict is a smaller harm than a program that can never
+ * write again.
+ *
+ * Returns 1 when the file is in place, 0 when somebody else wrote first, and
+ * -1 when the rename itself failed. */
+static int strata_commit(const char* path, const char* tmp, int64_t expected) {
+    size_t n = strlen(path) + 24;
+    char* lock = (char*)malloc(n);
+    if (!lock) return -1;
+    snprintf(lock, n, "%s.strata-lock", path);
+    int fd = -1;
+    for (int i = 0; i < 2000; i++) {
+        fd = open(lock, O_CREAT | O_EXCL | O_WRONLY, 0600);
+        if (fd >= 0) break;
+        if (errno != EEXIST) break;
+        usleep(1000);
+    }
+    int rc = 1;
+    if (expected != 0 && strata_file_stamp(path) != expected) {
+        rc = 0;
+    } else if (rename(tmp, path) != 0) {
+        rc = -1;
+    }
+    if (fd >= 0) {
+        close(fd);
+        remove(lock);
+    }
+    free(lock);
+    return rc;
 }
 
 /* The write side's counterpart. `save` used to answer 0 on a failed fopen

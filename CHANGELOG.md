@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Two runs can no longer lose an update in silence
+
+A cron job overlapping a manual run is an ordinary Monday. Both load, both
+change a row, both save — and the second save simply replaced the first one's
+work. Both exited 0, and nothing anywhere said a write had been thrown away.
+
+There is no lock held between the read and the write, and deliberately not:
+one across that span either blocks a batch job behind a person or deadlocks.
+Instead the file's identity is recorded when the table is read, and a save
+that finds a different one refuses, because the rows it would write never saw
+whatever arrived in between.
+
+The check and the rename are one step, under a lock file held for
+microseconds — otherwise two runs both pass the check before either renames,
+which is what happened when the check stood alone. Sixteen concurrent runs of
+a counter now end with the file holding exactly the number of saves that
+succeeded, and every other run says it was refused.
+
+Two smaller things fell out of it. The scratch file a save writes beside the
+table carried one name for every process, so two runs kept renaming each
+other's half-written file away; it carries the writing process's own name now.
+And the file identity was a modification time and a size, which on a
+filesystem with one-second timestamps cannot tell two same-size writes in the
+same second apart — exactly the case it exists to catch. It includes the
+inode, which a rename always changes.
+
+
 ### A migration can drop a column and widen one
 
 ```text

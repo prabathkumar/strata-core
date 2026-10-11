@@ -107,6 +107,11 @@ jobs:
     - name: A Renamed Column Can Be Migrated
       run: python3 test_suite/a_renamed_column_can_be_migrated.py
 
+    # A cron job overlapping a manual run is an ordinary Monday, and the
+    # second save used to replace the first one's work with both exiting 0.
+    - name: Two Runs Do Not Lose An Update
+      run: python3 test_suite/two_runs_do_not_lose_an_update.py
+
     # `load` was taught to refuse a damaged file. `scan`, `rewrite` and
     # `append` were not, and each had its own way of being quietly wrong --
     # including a rewrite that renamed a truncated read over the original.
