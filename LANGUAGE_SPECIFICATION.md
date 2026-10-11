@@ -366,10 +366,20 @@ and `max` keep the column's type; `avg` is always `float`.
 
 ## 6. Statements
 
-Variable declaration and assignment, `if` / `else`, `while`, C-style `for`,
+Variable declaration and assignment, `if` / `else` / `else if`, `while`, C-style `for`,
 `for Row in rows` over a list, `break`, `continue`, `return`, `assert`,
 `verify` blocks, insert, `delete`, `save` / `load`, `render ... to`, and
 expression statements.
+
+`else if` is one statement in the else branch rather than a construct of its
+own, so a chain of conditions nests. A ladder of business rules is written the
+way it reads:
+
+```text
+if      (amount > 10000) { return "board"; }
+else if (amount >  1000) { return "director"; }
+else                     { return "manager"; }
+```
 
 `assert` is checked **at run time**, not during compilation. A `verify` block
 is a test that `strata test` builds and runs:

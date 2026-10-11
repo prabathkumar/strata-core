@@ -62,15 +62,19 @@ str float_to_str(float value) {
     native "char _b[64]; snprintf(_b,64,\"%.6f\",$value); return strata_dup(_b);";
 }
 
+// Text to a number. A form field arrives as text, so a service that takes
+// input needs this.
+//
+// There is no value that means "not a number", so text that is not one reads
+// as 0 AND sets the error flag. A caller that cares asks had_error(); one
+// that does not gets a non-zero exit at the end rather than a wrong answer.
+// This used to answer 12 for "12abc" and 0 for "hello", silently.
 int str_to_int(str value) {
-    native "return (int64_t)atoll($value);";
+    native "return strata_str_to_int_checked($value);";
 }
 
-// Text to a number. A form field arrives as text, so a service that takes
-// input needs this; unparseable text is 0 rather than an error, which a
-// caller that cares must check for itself.
 float str_to_float(str value) {
-    native "return strtod($value, NULL);";
+    native "return strata_str_to_float_checked($value);";
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────

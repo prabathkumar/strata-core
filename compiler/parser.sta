@@ -1097,8 +1097,17 @@ Node parse_statement(P &p) {
         n_pos(n, t);
         if (p_check(&p, 18) == 1) {            // else
             p_advance(&p);
-            NodeVec else_block = parse_block(&p);
-            n.v2 = nv_ptr(else_block);
+            if (p_check(&p, 17) == 1) {        // else if
+                // One statement in the else branch, not a new node kind.
+                // A chain of them nests, which is what a reader assumes.
+                Node inner = parse_statement(&p);
+                NodeVec chain = nv_new();
+                nv_push(chain, inner);
+                n.v2 = nv_ptr(chain);
+            } else {
+                NodeVec else_block = parse_block(&p);
+                n.v2 = nv_ptr(else_block);
+            }
         }
         return n;
     }
@@ -1935,10 +1944,17 @@ Node parse_layout_if(P &p) {
     n_pos(n, t);
     if (p_check(&p, 18) == 1) {
         p_advance(&p);
-        p_expect(&p, 50);
-        NodeVec else_block = parse_layout_body(&p);
-        p_expect(&p, 51);
-        n.v2 = nv_ptr(else_block);
+        if (p_check(&p, 17) == 1) {            // else if
+            Node inner = parse_layout_if(&p);
+            NodeVec chain = nv_new();
+            nv_push(chain, inner);
+            n.v2 = nv_ptr(chain);
+        } else {
+            p_expect(&p, 50);
+            NodeVec else_block = parse_layout_body(&p);
+            p_expect(&p, 51);
+            n.v2 = nv_ptr(else_block);
+        }
     }
     return n;
 }

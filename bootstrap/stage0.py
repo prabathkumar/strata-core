@@ -571,6 +571,32 @@ int main(int argc, char** argv) {
         # The test is "would this REPLACE something", not "did anything fail":
         # a first run that loads a file which does not exist yet and then
         # creates it destroys nothing, and that is an ordinary way to start.
+        # A column the file carries and this table does not declare. Writing
+        # the table back would drop it, permanently and silently -- a field
+        # deleted from the schema, one save later, is a column of data gone
+        # from disk with nothing to put it back. Reading such a file is still
+        # allowed (the column is skipped); replacing it is not.
+        self.emit_raw("            for (int _pi = 0; _pi < _pc; _pi++) {")
+        self.emit_raw("                int _known = 0;")
+        for fd in fields:
+            self.emit_raw(f'                if (strcmp(_pn[_pi], "{fd.name}") == 0) _known = 1;')
+        self.emit_raw("                if (!_known) {")
+        self.emit_raw("                    char _why[256];")
+        self.emit_raw('                    snprintf(_why, sizeof(_why), "it carries a column \'%s\' this table does not declare. Writing would delete that column and everything in it", _pn[_pi]);')
+        self.emit_raw(f'                    strata_save_refuse("{name}", path, _why);')
+        self.emit_raw("                    return 0;")
+        self.emit_raw("                }")
+        self.emit_raw("            }")
+        # A table whose last read was refused. clear_error() is the documented
+        # way to carry on, and it used to clear the only guard here too, so
+        # the pattern the tutorial teaches ended in the file being replaced by
+        # an empty table. The mark belongs to the table and clear_error() does
+        # not reach it.
+        self.emit_raw(f'            if (_pc > 0 && strata_is_poisoned("{name}")) {{')
+        self.emit_raw(f'                strata_save_refuse("{name}", path,')
+        self.emit_raw('                    "the last read of this table was refused, so it does not hold what this file holds. Writing now would replace those rows. Fix the file, or read it successfully, before saving");')
+        self.emit_raw("                return 0;")
+        self.emit_raw("            }")
         self.emit_raw("            if (_pc > 0 && strata_had_error()) {")
         self.emit_raw(f'                strata_save_refuse("{name}", path,')
         self.emit_raw('                    "something failed earlier in this program and was not handled, so writing now would replace the rows already in this file with whatever is in memory. Handle it with had_error() and clear_error(), or let the program stop");')
@@ -579,9 +605,22 @@ int main(int argc, char** argv) {
         self.emit_raw("        }")
         self.emit_raw("    }")
         self._gen_pg_save(name, fields, cols_sql, upsert_sql, delete_sql, key, n)
-        self.emit_raw('    FILE* f = fopen(path, "w");')
+        # Written beside the file and renamed over it. `fopen(path, "w")`
+        # emptied the real file first, so a crash, a kill or a full disk
+        # halfway through left a half-written table and no way back to the
+        # one that was there. `rewrite` had always done it this way; `save`,
+        # which replaces far more at once, had not.
+        self.emit_raw("    char* _tmp = (char*)malloc(strlen(path) + 16);")
+        self.emit_raw("    if (!_tmp) {")
+        self.emit_raw(f'        strata_save_refuse("{name}", path, "out of memory");')
+        self.emit_raw("        return 0;")
+        self.emit_raw("    }")
+        self.emit_raw('    sprintf(_tmp, "%s.strata-tmp", path);')
+        self.emit_raw("    strata_write_failed = 0;")
+        self.emit_raw('    FILE* f = fopen(_tmp, "w");')
         self.emit_raw("    if (!f) {")
         self.emit_raw(f'        strata_save_refuse("{name}", path, strerror(errno));')
+        self.emit_raw("        free(_tmp);")
         self.emit_raw("        return 0;")
         self.emit_raw("    }")
         self.emit_raw(f'    fprintf(f, "#strata\\t{name}\\t{header}\\n");')
@@ -603,8 +642,29 @@ int main(int argc, char** argv) {
         self.emit_raw("    if (fclose(f) != 0 || _werr) {")
         self.emit_raw(f'        strata_save_refuse("{name}", path, "the file '
                       f'could not be written in full");')
+        self.emit_raw("        remove(_tmp);")
+        self.emit_raw("        free(_tmp);")
         self.emit_raw("        return 0;")
         self.emit_raw("    }")
+        # A value too long to store. The refusal was printed and the row was
+        # written anyway with that value empty, and `save` still answered 1.
+        # Nothing is put in place now, so the file on disk is the one that
+        # was there before.
+        self.emit_raw("    if (strata_write_failed) {")
+        self.emit_raw(f'        strata_save_refuse("{name}", path, "a value was '
+                      f'too long to store, so nothing was written and the file '
+                      f'is as it was");')
+        self.emit_raw("        remove(_tmp);")
+        self.emit_raw("        free(_tmp);")
+        self.emit_raw("        return 0;")
+        self.emit_raw("    }")
+        self.emit_raw("    if (rename(_tmp, path) != 0) {")
+        self.emit_raw(f'        strata_save_refuse("{name}", path, strerror(errno));')
+        self.emit_raw("        remove(_tmp);")
+        self.emit_raw("        free(_tmp);")
+        self.emit_raw("        return 0;")
+        self.emit_raw("    }")
+        self.emit_raw("    free(_tmp);")
         # A writer has the rows it just wrote; reloading them would be work
         # to arrive back where it started.
         self.emit_raw(f"    free({name}__from);")
@@ -781,6 +841,9 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    {name}__from = strata_dup(path);")
         self.emit_raw(f"    {name}__stamp = strata_file_stamp(path);")
         self.emit_raw(f"    {name}__dirty = 0;")
+        # The table holds the file again, so the mark a refused read left on
+        # it no longer says anything true.
+        self.emit_raw(f'    strata_unpoison("{name}");')
         self.emit_raw("    return 1;")
         self.emit_raw("}")
 
@@ -976,8 +1039,14 @@ int main(int argc, char** argv) {
         self.emit_raw("    free(p);")
         self.emit_raw("}")
 
+        # The name of the first column the file carries and this table does
+        # not. Reading one is fine -- it is skipped -- but a `rewrite` writes
+        # the file back from the schema, so the column and its data would be
+        # gone. The rewrite needs the name to say which one.
+        self.emit_raw(f"static char {name}__scan_extra[STRATA_NAME_CAP];")
         self.emit_raw(f"static FILE* {name}__scan_open(const char* path, "
                       "int* map, int* ncol) {")
+        self.emit_raw(f"    {name}__scan_extra[0] = 0;")
         # A scan after an append in the same program read a file the program
         # had not finished writing, and undercounted in silence. `load`
         # flushes; this did not, and the two disagreed about the same file.
@@ -1019,6 +1088,10 @@ int main(int argc, char** argv) {
             self.emit_raw(f"            map[c] = {idx};")
             self.emit_raw("        }")
         self.emit_raw("        if (map[c] >= 0) matched++;")
+        self.emit_raw(f"        else if (!{name}__scan_extra[0]) {{")
+        self.emit_raw(f"            snprintf({name}__scan_extra, STRATA_NAME_CAP, "
+                      f'"%s", _names[c]);')
+        self.emit_raw("        }")
         self.emit_raw("    }")
         self.emit_raw("    if (n > 0 && matched == 0) {")
         self.emit_raw(f'        strata_load_refuse("{name}", path, "none of its '
@@ -1697,13 +1770,17 @@ int main(int argc, char** argv) {
                 self.emit('fprintf(_out,"%s","' + self._html_escape(el.label.value) + '");')
             elif not isinstance(el.label, Identifier):
                 # A computed label — a field from a query row, for instance.
-                self.emit(f'fprintf(_out,"%s",{self._gen_expr(el.label, [])});')
+                # Escaped, because a stored value reaching the page as markup
+                # is how a customer name becomes somebody else's script.
+                self.emit(f'fprintf(_out,"%s",'
+                          f'strata_html_escape({self._gen_expr(el.label, [])}));')
             elif el.label.name in self.var_types:
                 # A bare identifier names the element — `canvas topology_view`
                 # — unless it resolves to a value in scope, which is the same
                 # rule the type checker applies. Without this a layout
                 # parameter renders as nothing at all.
-                self.emit(f'fprintf(_out,"%s",{self._gen_expr(el.label, [])});')
+                self.emit(f'fprintf(_out,"%s",'
+                          f'strata_html_escape({self._gen_expr(el.label, [])}));')
         for c in el.children:
             self._gen_layout_node(c)
         self.emit('fprintf(_out,"</' + tag + '>");')
@@ -1711,7 +1788,7 @@ int main(int argc, char** argv) {
     def _emit_computed_attrs(self, computed):
         for name, value in computed:
             self.emit(f'fprintf(_out," {name}=\\"%s\\"",'
-                      f'{self._gen_expr(value, [])});')
+                      f'strata_html_escape({self._gen_expr(value, [])}));')
 
     def _gen_delete(self, stmt, param_names):
         """`delete T <- [cond];` — the surviving rows are moved down and the
@@ -1773,7 +1850,21 @@ int main(int argc, char** argv) {
         self.indent += 1
         self.emit(f"int _wmap{d}[STRATA_MAX_COLS]; int _wncol{d} = 0;")
         self.emit(f"FILE* _wf{d} = {t}__scan_open({path}, _wmap{d}, &_wncol{d});")
-        self.emit(f"if (_wf{d}) {{")
+        self.emit(f"if (_wf{d} && {t}__scan_extra[0]) {{")
+        self.indent += 1
+        # A rewrite writes the file back from the schema. A column the file
+        # carries and the schema does not would simply not be written: delete
+        # a field, run one rewrite, and that column is gone from disk with
+        # nothing to put it back. Reading such a file still skips the column;
+        # replacing it is refused.
+        self.emit(f"char _wwhy{d}[256];")
+        self.emit(f'snprintf(_wwhy{d}, sizeof(_wwhy{d}), "it carries a column '
+                  f"'%s' this table does not declare. Rewriting would delete "
+                  f'that column and everything in it", {t}__scan_extra);')
+        self.emit(f'strata_save_refuse("{t}", {path}, _wwhy{d});')
+        self.emit(f"fclose(_wf{d});")
+        self.indent -= 1
+        self.emit(f"}} else if (_wf{d}) {{")
         self.indent += 1
         self.emit(f"char _wtmp{d}[4096];")
         self.emit(f'snprintf(_wtmp{d}, sizeof(_wtmp{d}), "%s.strata-rewrite", {path});')
@@ -2480,6 +2571,22 @@ int main(int argc, char** argv) {
             if expr.op in ("==", "!=") and "strata_str" in (lt, rt):
                 eq = f"(strcmp({l},{r}) == 0)"
                 return eq if expr.op == "==" else f"(!{eq})"
+            # Division by zero. An integer one is a processor trap: the
+            # program died with no message and nothing the developer wrote in
+            # the traceback. A float one gave inf, which travels through every
+            # later sum without failing. Both answer 0 and set the error flag.
+            # A divisor that is a literal other than zero cannot trap, so it
+            # stays plain division -- which also keeps a `const` initialiser
+            # a constant, as C requires.
+            nonzero_lit = (
+                isinstance(expr.right, (IntLiteral, FloatLiteral))
+                and expr.right.value != 0)
+            if expr.op == "/" and not nonzero_lit:
+                if lt == "strata_float" or rt == "strata_float":
+                    return f"strata_div_float({l},{r})"
+                return f"strata_div_int({l},{r})"
+            if expr.op == "%" and not nonzero_lit:
+                return f"strata_mod_int({l},{r})"
             return f"({l} {expr.op} {r})"
         if isinstance(expr, UnaryExpr):
             return f"({expr.op}{self._gen_expr(expr.operand, param_names)})"

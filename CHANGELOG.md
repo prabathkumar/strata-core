@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### A write cannot lose data
+
+A tenth blind pilot was asked to try to destroy stored data, and did, four
+ways. Each was reachable by following the documentation rather than by abusing
+it, which is the part that mattered.
+
+A load that is **refused** leaves the table empty. The tutorial then teaches
+`clear_error()` to carry on — and clearing the flag also cleared the only
+guard between that empty table and a `save` that replaced the file with it.
+A refused read now marks the table itself, and `clear_error()` does not reach
+the mark: a save that would replace existing rows is refused until the file is
+read successfully. A year of records no longer depends on remembering not to
+call a function the tutorial recommends.
+
+A **value too long to store** printed a refusal, wrote the row with that value
+empty, and answered "saved". The write fails now, and nothing is put in place.
+
+`save` opened the real file for writing, which **empties it first**, so a
+crash, a kill or a full disk halfway through left a half-written table and no
+way back to the one that was there. It writes beside the file and renames over
+it, the way `rewrite` always did.
+
+A column the file carries and the schema no longer declares was **dropped by
+the next save or rewrite**, permanently and in silence. Reading such a file
+still skips the column; replacing it is refused, and the refusal names the
+column.
+
+### Three wrong answers that are now failures
+
+Dividing by zero killed the process with a processor trap and no message —
+which looks like a compiler bug to whoever is watching. A float divided by
+zero was worse: `inf` spreads through every later sum without ever failing.
+Both answer 0 and set the error flag.
+
+`str_to_int` read 12 out of `"12abc"`, 0 out of `"hello"` and `""`, and
+INT_MAX out of a number too large to hold. A form field typed wrongly became a
+quantity, silently. It still answers 0, and now says so.
+
+A stored value went into a generated web page **exactly as it was stored**, so
+a customer name of `<script>...` became a script the next person to open that
+page ran. Text and computed attributes are escaped by the compiler, where an
+application cannot forget to do it.
+
+A blank number in a stored file read as 0, and `nan` and `inf` loaded happily.
+All three are refused: nothing this writer produces is ever empty for a number.
+
+### `else if`
+
+`else if` was a parse error. Business rules are a ladder of conditions, and
+the alternative was a staircase of nested braces that nobody writes by choice.
+It is one statement in the else branch, so a chain nests.
+
+The checker's own rule about functions that reach their end had the parser's
+field names spelled wrongly in the oracle, so it answered "no" for every
+`if`/`else` — E002 on a function that plainly returns. The two implementations
+agree again, and a chain with no final `else` is still E002.
+
+### Repair asks instead of guessing
+
+`strata repair` pointed a total at `price_old` when `price` was renamed to
+`cost`, because `price_old` is the closer name. A column whose name is yours
+with something added is usually the one that was left behind, not the one that
+replaced it; that is a decision now, not a repair. And a `--project` run that
+ends unresolved puts back every file it rewrote, instead of leaving the first
+two patched and saying nothing about them.
+
+
 ### The compiler drives its own build
 
 Strata now compiles a Strata program end to end without Python. `compiler/driver.sta`

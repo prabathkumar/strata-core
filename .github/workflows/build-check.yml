@@ -89,6 +89,12 @@ jobs:
     - name: A Table Agrees With Its File
       run: python3 test_suite/a_table_agrees_with_its_file.py
 
+    # The four ways a tenth blind pilot destroyed stored data, and the three
+    # ways it got a wrong answer instead of a failure. Each one was reachable
+    # by following the documentation rather than by abusing it.
+    - name: A Write Cannot Lose Data
+      run: python3 test_suite/a_write_cannot_lose_data.py
+
     # `load` was taught to refuse a damaged file. `scan`, `rewrite` and
     # `append` were not, and each had its own way of being quietly wrong --
     # including a rewrite that renamed a truncated read over the original.

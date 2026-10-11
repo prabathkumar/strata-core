@@ -96,6 +96,20 @@ str json_int(int value)   { return str(value); }
 // `import ... from hub` named a registry that never existed, and an
 // unresolvable import disarms the undefined-call rule, so the missing function
 // went unreported for as long as the fake import stood next to it.
+// The index just past the number that starts at `start`: a leading minus, then
+// digits. Anything else ends it.
+int json_num_end(str text, int start, int n) {
+    int i = start;
+    if (i < n) { if (text[i] == 45) { i = i + 1; } }
+    while (i < n) {
+        int c = text[i];
+        if (c < 48) { return i; }
+        if (c > 57) { return i; }
+        i = i + 1;
+    }
+    return n;
+}
+
 int extract_json_int(str text, str name) {
     StringBuilder key = sb_new();
     sb_append(&key, "\"");
@@ -108,8 +122,13 @@ int extract_json_int(str text, str name) {
     int i = at + str_len(sb_to_str(&key));
     while (i < n) {
         int c = text[i];
-        if (c == 45) { return str_to_int(str_slice(text, i, n)); }
-        if (c > 47) { if (c < 58) { return str_to_int(str_slice(text, i, n)); } }
+        // Where the number ends. This used to hand str_to_int everything
+        // from here to the end of the document and rely on it stopping at
+        // the first character that was not a digit. str_to_int reports text
+        // that is not wholly a number now, which is right for a form field
+        // and wrong here, so the end of the number is found before asking.
+        if (c == 45) { return str_to_int(str_slice(text, i, json_num_end(text, i, n))); }
+        if (c > 47) { if (c < 58) { return str_to_int(str_slice(text, i, json_num_end(text, i, n))); } }
         // Anything before the number — the colon, spaces — is skipped, but a
         // comma means this field had no number in it.
         if (c == 44) { return 0; }

@@ -1115,6 +1115,45 @@ compile_run("a_layout_renders_a_form",
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
 
+print("\n── A chain of conditions ────────────────────────────────────────")
+
+# `else if` was a parse error. Business rules are written as a ladder of
+# conditions -- over 90, over 70, over 50, otherwise -- and the alternative
+# was a staircase of nested braces, which is not what anybody writes. It is
+# one statement in the else branch, so a chain nests.
+compile_run("else_if_chains",
+    'import io from std;\n'
+    'int grade(int x) {\n'
+    '    if (x > 90) { return 1; }\n'
+    '    else if (x > 70) { return 2; }\n'
+    '    else if (x > 50) { return 3; }\n'
+    '    else { return 4; }\n'
+    '}\n'
+    'int main() {\n'
+    '    print(str(grade(95)));\n'
+    '    print(str(grade(75)));\n'
+    '    print(str(grade(55)));\n'
+    '    print(str(grade(10)));\n'
+    '    return 0;\n'
+    '}\n',
+    "1\n2\n3\n4")
+
+# And the checker follows the chain: every path returns, so this is not a
+# function that can reach its end. The two implementations spelled the
+# parser's field names differently, so the oracle answered "no" for every
+# if/else and raised E002 on code that plainly returns.
+test("an_if_else_that_returns_is_not_E002",
+    'int f(int x) { if (x > 1) { return x; } else { return 0; } }')
+
+test("a_chain_that_returns_everywhere_is_not_E002",
+    'int f(int x) { if (x > 1) { return x; } else if (x > 0) { return 1; } '
+    'else { return 0; } }')
+
+# A chain with no final else can still fall off the end, and must.
+test("a_chain_with_no_else_is_still_E002",
+    'int f(int x) { if (x > 1) { return x; } else if (x > 0) { return 1; } }',
+    "E002")
+
 print("\n── A query name that is also a variable ─────────────────────────")
 
 # Inside a query a bare name is always the COLUMN. If a variable of the same

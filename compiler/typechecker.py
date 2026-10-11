@@ -165,8 +165,11 @@ def always_returns(body):
     if isinstance(last, ReturnStmt):
         return True
     if isinstance(last, IfStmt):
-        else_body = getattr(last, "else_body", None)
-        return bool(else_body) and always_returns(last.then_body) \
+        # The field names matter: they are the parser's, and spelling them
+        # wrongly made this silently answer "no" for every if/else, which is
+        # an E002 on a function that plainly does return.
+        else_body = last.else_block
+        return bool(else_body) and always_returns(last.then_block) \
             and always_returns(else_body)
     if isinstance(last, WhileStmt):
         cond = last.condition
@@ -183,7 +186,7 @@ def has_native(body):
         if isinstance(st, ExprStmt) and isinstance(st.expr, CallExpr) \
                 and st.expr.callee == "native":
             return True
-        for attr in ("then_body", "else_body", "body"):
+        for attr in ("then_block", "else_block", "body"):
             inner = getattr(st, attr, None)
             if isinstance(inner, list) and has_native(inner):
                 return True
@@ -194,7 +197,7 @@ def _has_break(body):
     for st in body or []:
         if isinstance(st, BreakStmt):
             return True
-        for attr in ("then_body", "else_body", "body"):
+        for attr in ("then_block", "else_block", "body"):
             inner = getattr(st, attr, None)
             if isinstance(inner, list) and _has_break(inner):
                 return True

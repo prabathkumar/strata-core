@@ -832,9 +832,13 @@ class Parser:
         self._consume(TT.R_BRACE)
         else_block = None
         if self._check(TT.KW_ELSE):
-            self._advance(); self._consume(TT.L_BRACE)
-            else_block = self._parse_layout_body()
-            self._consume(TT.R_BRACE)
+            self._advance()
+            if self._check(TT.KW_IF):
+                else_block = [self._parse_layout_if()]
+            else:
+                self._consume(TT.L_BRACE)
+                else_block = self._parse_layout_body()
+                self._consume(TT.R_BRACE)
         return IfStmt(t.line, t.col, cond, then_block, else_block)
 
     def _parse_report(self) -> ReportDecl:
@@ -1118,9 +1122,15 @@ class Parser:
         else_block = None
         if self._check(TT.KW_ELSE):
             self._advance()
-            self._consume(TT.L_BRACE)
-            else_block = self._parse_body()
-            self._consume(TT.R_BRACE)
+            if self._check(TT.KW_IF):
+                # `else if` is one statement in the else branch, not a new
+                # kind of node. A chain of them nests, which is what a reader
+                # already assumes it means.
+                else_block = [self._parse_if()]
+            else:
+                self._consume(TT.L_BRACE)
+                else_block = self._parse_body()
+                self._consume(TT.R_BRACE)
         return IfStmt(t.line, t.col, cond, then_block, else_block)
 
     def _parse_var_decl(self, consume_semicolon=True) -> VarDecl:

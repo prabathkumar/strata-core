@@ -54,6 +54,19 @@ CASES = [
      "float id; str name; float amount;", False),
 ]
 
+# A reader that must refuse a case the others accept.
+#
+# A dropped column loads and scans correctly: the column is skipped and every
+# column the schema still declares reads what was stored. `rewrite` is a
+# WRITER, and it writes the file back from the schema -- so the dropped
+# column, and everything in it, would simply not be there afterwards. A pilot
+# deleted a field, ran one rewrite, and the data under the old column was
+# gone with nothing to put it back. Reading such a file is fine; replacing it
+# is refused.
+REFUSED_BY = {
+    ("a column dropped", "rewrite"),
+}
+
 READERS = {
     "load": '    load Row from "rows.tsv";\n'
             '    list[Row] all = Row <- [id > -1];\n'
@@ -105,6 +118,17 @@ def main():
                                      capture_output=True, text=True,
                                      timeout=300)
                 out = run.stdout + run.stderr
+                accept_here = accept and (label, reader) not in REFUSED_BY
+                if accept and not accept_here:
+                    ok(f"{reader} refuses to drop a stored column",
+                       run.returncode not in (0, None),
+                       f"exit {run.returncode}: {out[-200:]}")
+                    ok(f"{reader} says which column",
+                       "does not declare" in out, out[-200:])
+                    ok(f"{reader} left the file alone",
+                       open(os.path.join(proj, "rows.tsv")).read() == STORED,
+                       "the file changed")
+                    continue
                 if accept:
                     ok(f"{reader} reads it",
                        run.returncode == 0 and "n=" in run.stdout,

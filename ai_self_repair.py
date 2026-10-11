@@ -115,6 +115,19 @@ def repair_rules(source: str, d: dict):
             # program prints. Anything within this margin is a decision.
             CLOSE = 0.15
             tied = [v for r, v in scored if scored[0][0] - r <= CLOSE]
+            # A column whose name is this one with something added -- price
+            # and price_old, amount and amount_bak -- is usually the column
+            # somebody kept rather than the column somebody meant. It also
+            # scores high on name similarity, so it wins the comparison above
+            # on exactly the evidence that should not decide it. A blind pilot
+            # watched a total silently start reading price_old. Whoever
+            # renamed it knows which was meant; this does not.
+            if scored[0][1].startswith(wrong + "_"):
+                raise Ambiguous(
+                    f"'{wrong}' is gone and '{scored[0][1]}' is this name "
+                    f"with something added, which is usually the column that "
+                    f"was left behind rather than the one that replaced it. "
+                    f"Only you know which was meant.")
             if len(tied) > 1:
                 raise Ambiguous(
                     f"'{wrong}' is about as close to "
@@ -552,6 +565,42 @@ def repair(path: str, backend="rules", max_passes=5, dry_run=False,
     return 1
 
 
+def _project_backups(root):
+    """Which .before-repair files existed before this run, so the ones this
+    run creates can be told apart from a developer's own leftovers."""
+    seen = set()
+    for dirpath, dirnames, names in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ("build", ".git", "data")]
+        for n in names:
+            if n.endswith(".before-repair"):
+                seen.add(os.path.join(dirpath, n))
+    return seen
+
+
+def _undo_project(root, existing_before):
+    """Put back every file this run rewrote.
+
+    "Unresolved" has to mean the project is as it was. Without this, a run
+    that gave up on the third file left the first two rewritten and said
+    nothing about them, which is how a repair tool stops being one.
+    """
+    undone = []
+    for backup in sorted(_project_backups(root) - set(existing_before)):
+        target = backup[: -len(".before-repair")]
+        try:
+            with open(backup) as b:
+                original = b.read()
+            with open(target, "w") as t:
+                t.write(original)
+            os.remove(backup)
+            undone.append(os.path.relpath(target, root))
+        except OSError:
+            pass
+    if undone:
+        print(f"[Strata Repair] put {len(undone)} file(s) back as they were: "
+              + ", ".join(undone))
+
+
 def main():
     # prog, because the default is the script's filename: `strata repair
     # --help` answered with "usage: ai_self_repair.py", leaking the Python
@@ -608,9 +657,17 @@ def main():
                 rel = os.path.relpath(os.path.join(dirpath, n), root)
                 if rel != main_rel:
                     others.append(rel)
+        # Patches made to files that repaired cleanly, kept so they can be
+        # undone if the PROJECT does not end clean. A per-file repair puts
+        # its own file back when it fails, but it knows nothing about the
+        # files repaired before it: a project could end "unresolved" with
+        # several files already rewritten, which is the state a developer is
+        # least able to reason about.
+        patched_before = _project_backups(root)
         for rel in others:
             rc = repair(rel, a.backend, a.max_passes, a.dry_run, cwd=root)
             if rc != 0:
+                _undo_project(root, patched_before)
                 return rc
         return 0
     if not a.file:
