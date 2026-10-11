@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### A language server, which is the compiler
+
+`strata lsp` speaks the language server protocol over stdin and stdout, so any
+editor that reads it gets diagnostics as you type, hover with a declaration's
+signature, go-to-definition, and the document outline.
+
+It is not a second implementation of the rules. It links the compiler in — the
+same lexer, parser and type checker the build runs — because a language server
+that approximates its compiler is the first thing to drift out of step with
+it, and a developer who catches the editor lying once stops believing either.
+
+That promise was already being broken, quietly. The VS Code extension wrote
+the unsaved buffer to a scratch directory and checked it there, and imports
+resolve against the directory a file is in — so every file that imported its
+own project's schema was underlined in red while the build was green. A pilot
+reported it as the extension being broken, which it was. `strata lsp --analyse
+<buffer> --as <real path>` is the fix: the text comes from the scratch copy,
+everything else is decided by where the file really lives.
+
+A buffer being typed is a broken program most of the time, and a parse error
+in this compiler calls `exit()`. The analysis therefore runs in a forked
+child, so a half-typed line produces a marker on the right line rather than a
+dead editor. The symbols the child finds are kept in a table in the server, so
+hover, definition and the outline are queries rather than another parse — they
+answer instantly and cannot crash.
+
+Not there yet: completion, rename, and find-references across files. Each
+needs an index of the whole project rather than of one file, and an index that
+is wrong is worse than no index.
+
+
 ### A write cannot lose data
 
 A tenth blind pilot was asked to try to destroy stored data, and did, four

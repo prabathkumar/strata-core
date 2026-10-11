@@ -44,6 +44,7 @@ usage() {
     echo "  strata test  [dir]"
     echo "  strata repair <file.sta> | --project <dir>   [--backend rules|local|claude|llm]"
     echo "  strata fmt   <file.sta>... [--check]   canonical formatting"
+    echo "  strata lsp                            the language server, for an editor"
     echo "  strata doc   [dir]            an architecture document for a project"
     echo "  strata version"
 }
@@ -854,6 +855,54 @@ cmd_deps() {
     "$bin" "$@"
 }
 
+# strata lsp — the language server, spoken to by an editor over stdin and
+# stdout. There is nothing to print here: anything this writes that is not a
+# protocol message corrupts the stream, so the build output goes to stderr and
+# the binary is exec'd rather than called, so the editor talks to it directly.
+cmd_lsp() {
+    case "${1:-}" in
+        --help|-h)
+            cat <<'EOF'
+Usage: strata lsp [--analyse <file.sta> [--as <real path>]]
+
+The language server. An editor starts it and talks to it over stdin and
+stdout; a person rarely runs it by hand.
+
+  strata lsp                       speak the protocol on stdin and stdout
+  strata lsp --analyse <file.sta>  print what the server would tell an editor
+  strata lsp --analyse <buffer> --as <path>
+                                   check unsaved text as if it were at <path>,
+                                   which is what resolves its imports
+
+`--analyse` prints the diagnostics and symbols for one file, in the records
+the server uses internally, which is how to see why an editor is showing what
+it is showing.
+EOF
+            return 0
+            ;;
+    esac
+
+    local cache="$ROOT/build"
+    if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+        cache="${XDG_CACHE_HOME:-$HOME/.cache}/strata"
+    fi
+    local bin="$cache/strata-lsp"
+    local newest=0
+    if [ -x "$bin" ]; then
+        for src in "$ROOT"/compiler/*.sta; do
+            if [ "$src" -nt "$bin" ]; then newest=1; break; fi
+        done
+    else
+        newest=1
+    fi
+    if [ "$newest" = 1 ]; then
+        mkdir -p "$cache"
+        "$PY3" "$ROOT/bootstrap/stage0.py" "$ROOT/compiler/lsp.sta" \
+            -o "$bin" >&2 || { echo "could not build the language server" >&2; return 1; }
+    fi
+    STRATA_ROOT="${STRATA_ROOT:-$ROOT}" exec "$bin" "$@"
+}
+
 CMD="${1:-}"; shift 2>/dev/null || true
 case "$CMD" in
     build)   cmd_build "$@" ;;
@@ -867,6 +916,7 @@ case "$CMD" in
     repair)  exec "$PY3" "$ROOT/ai_self_repair.py" "$@" ;;
     doc)     cmd_doc "$@" ;;
     fmt)     cmd_fmt   "$@" ;;
+    lsp)     cmd_lsp   "$@" ;;
     version) cmd_version "$@" ;;
     ""|help) usage ;;
     --help|-h|help) usage; exit 0 ;;

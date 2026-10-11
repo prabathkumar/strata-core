@@ -1096,11 +1096,32 @@ patches the source and recompiles until it is clean. Every other language's
 Quick Fix is a rule somebody wrote into the editor by hand; this one is the
 compiler. It saves the document first, because repair works on the file on
 disk, and it is offered rather than automatic — a compiler that edits your
-code without being asked is not a feature. It is not a language server. `strata check` is fast and is the same
-check CI runs, so the extension runs the real compiler rather than
-reimplementing the rules — a second implementation would be the first thing to
-drift out of step with the first. If the editor and the build disagree, the
-extension is wrong.
+code without being asked is not a feature.
+
+There is a language server now: `strata lsp`, spoken over stdin and stdout,
+for any editor that reads the protocol. It is not a program that approximates
+the compiler — it links the compiler in, the same lexer, parser and type
+checker the build runs, so the editor and the build cannot hold different
+opinions about the same file. It offers diagnostics as you type, hover with a
+declaration's signature, go-to-definition, and the document outline.
+
+A buffer being typed is a broken program most of the time, and a parse error
+in this compiler calls `exit()`. The server therefore does the analysis in a
+forked child: the child parses and checks and prints what it found, the parent
+stays alive whatever happened to it, and a parse error still arrives as a
+marker on the right line.
+
+The promise this keeps was being broken by accident. The extension wrote the
+unsaved buffer to a scratch directory and checked it there — and imports
+resolve against the directory a file is in, so every file importing its own
+project's schema was underlined in red while the build was green. `strata lsp
+--analyse <buffer> --as <real path>` is the fix, and the extension uses it:
+the text comes from the scratch copy, everything else is decided by where the
+file really lives.
+
+What the server does not do yet: completion, rename, and find-references
+across files. Each needs an index of the whole project rather than of one
+file, and an index that is wrong is worse than no index.
 
 Inside a query, a bare name is a column rather than a variable, and the
 grammar colours it differently. That is the difference between reading

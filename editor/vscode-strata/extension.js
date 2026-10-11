@@ -1,11 +1,20 @@
 // Strata for VS Code: what the compiler already knows, shown where the code is.
 //
-// This is deliberately not a language server. Strata's `strata check` is fast,
-// exact, and the same check CI runs — so a second implementation of the rules
-// inside an editor plugin would be a second thing to keep in step with the
-// compiler, and the first one to drift. The extension runs the real compiler
-// and puts what it says on the right lines. If the editor disagrees with the
-// build, the extension is broken, not the build.
+// There is no second implementation of the rules in here. The extension runs
+// the real compiler — the same one CI runs — and puts what it says on the
+// right lines. If the editor disagrees with the build, the extension is
+// broken, not the build.
+//
+// It used to break that promise by accident. An unsaved buffer was written to
+// a scratch directory and checked there, and the compiler resolves
+// `import schema from app;` against the directory the file is in — so every
+// file that imported its own project's schema was reported broken in the
+// editor while the build was green. `strata lsp --analyse <buffer> --as
+// <real path>` is the fix: the text comes from the scratch copy, everything
+// else is decided by where the file really lives.
+//
+// `strata lsp` with no arguments is the full language server, which is what
+// an editor that speaks the protocol should start instead of this.
 
 const vscode = require("vscode");
 const { execFile } = require("child_process");
@@ -62,11 +71,14 @@ function check(doc, collection, output) {
         return;
     }
 
-    // Run in the real file's directory so `import x from app;` resolves against
-    // the project the file belongs to rather than against the scratch folder.
+    // The working directory is not what decides import resolution — `--as` is.
+    // This was the bug: a cwd was set, it looked like it should be enough, and
+    // it was not.
     const cwd = doc.fileName ? path.dirname(doc.fileName) : undefined;
+    const args = ["lsp", "--analyse", scratch];
+    if (doc.fileName) { args.push("--as", doc.fileName); }
 
-    execFile(toolchain(), ["check", scratch], { cwd, timeout: 20000 },
+    execFile(toolchain(), args, { cwd, timeout: 20000 },
         (err, stdout, stderr) => {
             cleanup();
             const text = `${stdout || ""}\n${stderr || ""}`;

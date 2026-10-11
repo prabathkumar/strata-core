@@ -95,6 +95,12 @@ jobs:
     - name: A Write Cannot Lose Data
       run: python3 test_suite/a_write_cannot_lose_data.py
 
+    # The language server, over a real pipe. The promise it exists to keep is
+    # that the editor and the build never disagree, and the way that promise
+    # was broken before was an unsaved buffer checked in a scratch directory.
+    - name: The Editor Sees What The Build Sees
+      run: python3 test_suite/the_editor_sees_what_the_build_sees.py
+
     # `load` was taught to refuse a damaged file. `scan`, `rewrite` and
     # `append` were not, and each had its own way of being quietly wrong --
     # including a rewrite that renamed a truncated read over the original.

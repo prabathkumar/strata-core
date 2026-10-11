@@ -1,0 +1,835 @@
+// STRATA COMPILER — compiler/lsp.sta
+//
+//   strata lsp
+//
+// A language server, speaking JSON-RPC over standard input and output, so an
+// editor can show what the compiler knows while the file is still being
+// typed.
+//
+// It is the compiler. Not a second parser that approximates it: the same
+// lexer, the same parser, the same type checker the build runs, linked in.
+// That matters more than it sounds. The VS Code extension used to copy the
+// buffer to a temporary directory and check it there, so every file that
+// imported another file in its own project was reported broken -- the editor
+// and the build disagreed about code that was fine. Resolving imports from
+// the file's REAL directory is the whole fix, and it is only possible because
+// the server is the compiler rather than something standing next to it.
+//
+// A buffer being typed is a broken program most of the time, and a parse
+// error in this compiler calls exit(). A server cannot exit on a half-typed
+// line, so the analysis runs in a forked child: the child parses, checks, and
+// prints what it found; the parent reads that and stays alive whatever
+// happened. A child that dies on a parse error still printed the parse error
+// first, so the editor gets a marker on the right line either way.
+//
+// The child prints records the parent reads back:
+//
+//   D<tab>code<tab>file<tab>line<tab>col<tab>message<tab>hint
+//   S<tab>name<tab>kind<tab>line<tab>col<tab>detail
+//
+// Diagnostics and symbols. The symbols are kept in a table here in the
+// server, so hover, go-to-definition and the outline are queries rather than
+// another parse -- which is why they answer instantly and cannot crash.
+//
+// What it does NOT do yet: completion, rename, find-references across files,
+// and signature help. Each needs an index of the whole project rather than of
+// one file, and an index that is wrong is worse than no index.
+
+import io          from std;
+import str         from std;
+import mem         from std;
+import os          from std;
+import json        from std;
+import cli         from std;
+import lexer       from compiler;
+import parser      from compiler;
+import taxonomy    from compiler;
+import diagnostics from compiler;
+import typechecker from compiler;
+
+// ── The documents the editor has open ────────────────────────────────────────
+//
+// Held in tables, never saved. A table is the right shape for this and it is
+// in the language already; a server that reached for something else to hold
+// its own state would be an argument against the language it serves.
+
+database LspDoc {
+    str uri;
+    str text;
+}
+
+database LspSym {
+    str uri;
+    str name;
+    str kind;
+    int line;
+    int col;
+    str detail;
+}
+
+// ── Reading and writing a JSON-RPC stream ────────────────────────────────────
+//
+// Content-Length, a blank line, then exactly that many bytes. Reading "a
+// line" is not enough: the body is not line-oriented and may contain
+// newlines inside a string.
+
+str read_exact(int n) {
+    native "
+    if ($n <= 0) return strata_dup(\"\");
+    char* _b = (char*)malloc((size_t)$n + 1);
+    if (!_b) return strata_dup(\"\");
+    size_t _got = 0;
+    while (_got < (size_t)$n) {
+        size_t _r = fread(_b + _got, 1, (size_t)$n - _got, stdin);
+        if (_r == 0) break;
+        _got += _r;
+    }
+    _b[_got] = '\\0';
+    return _b;
+    ";
+}
+
+def write_message(str body) {
+    native "
+    fprintf(stdout, \"Content-Length: %lu\\r\\n\\r\\n%s\",
+            (unsigned long)strlen($body), $body);
+    fflush(stdout);
+    ";
+}
+
+def log_line(str message) {
+    native "fprintf(stderr, \"[strata lsp] %s\\n\", $message); fflush(stderr);";
+}
+
+// ── JSON, only as much as this protocol needs ────────────────────────────────
+//
+// std/json reads a document whose shape is known and does not interpret
+// escapes. A document the editor sends is full of them -- every newline in
+// the file arrives as \n -- so the string reader here decodes as it goes and
+// respects a backslash when looking for the closing quote.
+
+int lsp_key_at(str text, str name, int at_or_after) {
+    StringBuilder k = sb_new();
+    sb_append(&k, "\"");
+    sb_append(&k, name);
+    sb_append(&k, "\"");
+    str key = sb_to_str(&k);
+    int n = str_len(text);
+    int klen = str_len(key);
+    int i = at_or_after;
+    while (i + klen <= n) {
+        if (str_eq(str_slice(text, i, i + klen), key) == 1) {
+            return i + klen;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+int lsp_hex(int c) {
+    if (c >= 48) { if (c <= 57) { return c - 48; } }
+    if (c >= 97) { if (c <= 102) { return c - 87; } }
+    if (c >= 65) { if (c <= 70) { return c - 55; } }
+    return 0;
+}
+
+// The string value of `name`, with its escapes decoded. "" when absent.
+str lsp_string(str text, str name, int at_or_after) {
+    int at = lsp_key_at(text, name, at_or_after);
+    if (at < 0) { return ""; }
+    int n = str_len(text);
+    int i = at;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) { i = i + 1; break; }
+        if (c == 44) { return ""; }
+        if (c == 125) { return ""; }
+        i = i + 1;
+    }
+    StringBuilder out = sb_new();
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) { return sb_to_str(&out); }
+        if (c == 92) {
+            i = i + 1;
+            if (i >= n) { return sb_to_str(&out); }
+            int e = text[i];
+            if (e == 110) { sb_append(&out, char_from_code(10)); }
+            else if (e == 116) { sb_append(&out, char_from_code(9)); }
+            else if (e == 114) { sb_append(&out, char_from_code(13)); }
+            else if (e == 98)  { sb_append(&out, char_from_code(8)); }
+            else if (e == 102) { sb_append(&out, char_from_code(12)); }
+            else if (e == 117) {
+                // \uXXXX. The editor sends one for a character outside ASCII
+                // and for a control character. Anything above 0x7F is written
+                // back as UTF-8 so the text the server checks is the text the
+                // developer typed.
+                int v = 0;
+                for (int h = 1; h <= 4; h = h + 1) {
+                    if (i + h < n) { v = v * 16 + lsp_hex(text[i + h]); }
+                }
+                i = i + 4;
+                if (v < 128) { sb_append(&out, char_from_code(v)); }
+                else if (v < 2048) {
+                    sb_append(&out, char_from_code(192 + v / 64));
+                    sb_append(&out, char_from_code(128 + v % 64));
+                } else {
+                    sb_append(&out, char_from_code(224 + v / 4096));
+                    sb_append(&out, char_from_code(128 + (v / 64) % 64));
+                    sb_append(&out, char_from_code(128 + v % 64));
+                }
+            }
+            else { sb_append(&out, char_from_code(e)); }
+            i = i + 1;
+            continue;
+        }
+        sb_append(&out, char_from_code(c));
+        i = i + 1;
+    }
+    return sb_to_str(&out);
+}
+
+// The number `name` holds, searching from `at_or_after`. Absent reads as -1,
+// which no position in this protocol can be.
+int lsp_int(str text, str name, int at_or_after) {
+    int at = lsp_key_at(text, name, at_or_after);
+    if (at < 0) { return 0 - 1; }
+    int n = str_len(text);
+    int i = at;
+    int neg = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 45) { neg = 1; i = i + 1; continue; }
+        if (c >= 48) { if (c <= 57) { break; } }
+        if (c == 44) { return 0 - 1; }
+        if (c == 125) { return 0 - 1; }
+        i = i + 1;
+    }
+    int v = 0;
+    int any = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c < 48) { break; }
+        if (c > 57) { break; }
+        v = v * 10 + (c - 48);
+        any = 1;
+        i = i + 1;
+    }
+    if (any == 0) { return 0 - 1; }
+    if (neg == 1) { return 0 - v; }
+    return v;
+}
+
+// file:///a/b%20c.sta -> /a/b c.sta
+str path_of_uri(str uri) {
+    str p = uri;
+    if (str_starts_with(p, "file://") == 1) {
+        p = str_slice(p, 7, str_len(p));
+    }
+    int n = str_len(p);
+    StringBuilder out = sb_new();
+    int i = 0;
+    while (i < n) {
+        int c = p[i];
+        if (c == 37) {
+            if (i + 2 < n) {
+                int v = lsp_hex(p[i + 1]) * 16 + lsp_hex(p[i + 2]);
+                sb_append(&out, char_from_code(v));
+                i = i + 3;
+                continue;
+            }
+        }
+        sb_append(&out, char_from_code(c));
+        i = i + 1;
+    }
+    return sb_to_str(&out);
+}
+
+// ── Running the compiler where a crash cannot reach the server ───────────────
+
+int lsp_fork() {
+    native "
+    extern int pipe(int[2]); extern int fork(void);
+    extern int dup2(int,int); extern int close(int);
+    int _p[2];
+    if (pipe(_p) != 0) return -1;
+    int _pid = fork();
+    if (_pid == 0) {
+        close(_p[0]);
+        dup2(_p[1], 1);
+        dup2(_p[1], 2);
+        close(_p[1]);
+        setvbuf(stdout, NULL, _IONBF, 0);
+        return 0;
+    }
+    close(_p[1]);
+    /* pipe() hands back the lowest free descriptors, which with the three
+     * standard ones open means 3 and 4 -- so the read end usually IS 3, and
+     * closing 3 first closed the very thing being moved. */
+    if (_p[0] != 3) {
+        close(3);
+        dup2(_p[0], 3);
+        close(_p[0]);
+    }
+    return _pid;
+    ";
+}
+
+def child_done() {
+    native "fflush(stdout); fflush(stderr); _exit(0);";
+}
+
+str collect_child(int pid) {
+    native "
+    extern ssize_t read(int, void*, size_t);
+    extern int close(int);
+    extern int waitpid(int, int*, int);
+    size_t _cap = 8192, _len = 0;
+    char* _b = (char*)malloc(_cap);
+    if (!_b) return strata_dup(\"\");
+    while (1) {
+        if (_len + 4096 > _cap) { _cap *= 2; _b = (char*)realloc(_b, _cap); }
+        ssize_t _r = read(3, _b + _len, 4096);
+        if (_r <= 0) break;
+        _len += (size_t)_r;
+    }
+    _b[_len] = '\\0';
+    close(3);
+    int _st = 0;
+    waitpid($pid, &_st, 0);
+    return _b;
+    ";
+}
+
+str install_root() {
+    str pinned = env("STRATA_ROOT");
+    if (str_len(pinned) > 0) { return pinned; }
+    return ".";
+}
+
+str type_text(int type_p) {
+    if (type_p == 0) { return "void"; }
+    Node t = node_at(type_p);
+    if (t.kind == 11) { return t.s1; }
+    if (t.kind == 12) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "list[");
+        sb_append(&sb, type_text(t.c1));
+        sb_append(&sb, "]");
+        return sb_to_str(&sb);
+    }
+    if (t.kind == 13) { return "tensor"; }
+    return "void";
+}
+
+def emit_sym(str name, str kind, int line, int col, str detail) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "S\t");
+    sb_append(&sb, name);
+    sb_append(&sb, "\t");
+    sb_append(&sb, kind);
+    sb_append(&sb, "\t");
+    sb_append(&sb, str(line));
+    sb_append(&sb, "\t");
+    sb_append(&sb, str(col));
+    sb_append(&sb, "\t");
+    sb_append(&sb, detail);
+    print(sb_to_str(&sb));
+}
+
+// Everything the editor can be told about one file, printed by the child.
+def analyse(str path, str text) {
+    str root = install_root();
+    parsing_file(path);
+    Node unit = parse_source(text);
+
+    diag_capture_begin();
+    check_unit_project(root, dir_of(path), unit);
+    str log = diag_capture_end();
+
+    int n = str_len(log);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (log[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str record = str_slice(log, start, i);
+        start = i + 1;
+        if (str_len(record) == 0) { continue; }
+        print(str_concat("D\t", record));
+    }
+
+    NodeVec decls = nv_at(unit.v2);
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind == 3) {
+            emit_sym(d.s1, "table", d.line, d.col, "database");
+            NodeVec fields = nv_at(d.v1);
+            for (int f = 0; f < fields.len; f = f + 1) {
+                Node fd = nv_get(&fields, f);
+                StringBuilder det = sb_new();
+                sb_append(&det, type_text(fd.c1));
+                sb_append(&det, " ");
+                sb_append(&det, d.s1);
+                sb_append(&det, ".");
+                sb_append(&det, fd.s1);
+                emit_sym(fd.s1, "column", fd.line, fd.col, sb_to_str(&det));
+            }
+        }
+        if (d.kind == 70) { emit_sym(d.s1, "layout", d.line, d.col, "layout"); }
+        if (d.kind == 6)  { emit_sym(d.s1, "report", d.line, d.col, "report"); }
+    }
+
+    NodeVec fns = nv_at(unit.v3);
+    for (int i = 0; i < fns.len; i = i + 1) {
+        Node fn = nv_get(&fns, i);
+        StringBuilder det = sb_new();
+        sb_append(&det, type_text(fn.c1));
+        sb_append(&det, " ");
+        sb_append(&det, fn.s2);
+        sb_append(&det, "(");
+        NodeVec params = nv_at(fn.v1);
+        for (int p = 0; p < params.len; p = p + 1) {
+            Node pm = nv_get(&params, p);
+            if (p > 0) { sb_append(&det, ", "); }
+            sb_append(&det, type_text(pm.c1));
+            sb_append(&det, " ");
+            sb_append(&det, pm.s1);
+        }
+        sb_append(&det, ")");
+        emit_sym(fn.s2, "function", fn.line, fn.col, sb_to_str(&det));
+    }
+}
+
+// ── Keeping what the child found ─────────────────────────────────────────────
+
+def forget(str u) {
+    delete LspSym <- [uri == u];
+}
+
+// Runs the compiler on one buffer and stores what it says. The diagnostics
+// come back as a JSON array ready to publish; the symbols go into the table.
+str refresh(str u, str text) {
+    str path = path_of_uri(u);
+    int pid = lsp_fork();
+    if (pid == 0) {
+        analyse(path, text);
+        child_done();
+    }
+    str out = collect_child(pid);
+    forget(u);
+
+    StringBuilder arr = sb_new();
+    sb_append(&arr, "[");
+    int first = 1;
+    int n = str_len(out);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (out[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str line = str_slice(out, start, i);
+        start = i + 1;
+        if (str_len(line) == 0) { continue; }
+
+        if (str_starts_with(line, "D\t") == 1) {
+            str rec = str_slice(line, 2, str_len(line));
+            if (first == 0) { sb_append(&arr, ","); }
+            first = 0;
+            sb_append(&arr, diagnostic_json(field_at(rec, 0), field_at(rec, 2),
+            field_at(rec, 3), field_at(rec, 4),
+            field_at(rec, 5)));
+            continue;
+        }
+        if (str_starts_with(line, "S\t") == 1) {
+            str rec = str_slice(line, 2, str_len(line));
+            LspSym <- [uri = u, name = field_at(rec, 0), kind = field_at(rec, 1),
+            line = str_to_int(field_at(rec, 2)),
+            col = str_to_int(field_at(rec, 3)),
+            detail = field_at(rec, 4)];
+            continue;
+        }
+        // A parse error killed the child before it could print a record. It
+        // printed the error first, in the one shape the whole toolchain uses,
+        // so the editor still gets a marker in the right place rather than
+        // nothing at all.
+        if (str_index_of(line, "[STRATA PARSE ERROR]") >= 0) {
+            if (first == 0) { sb_append(&arr, ","); }
+            first = 0;
+            sb_append(&arr, parse_error_json(line));
+        }
+    }
+    sb_append(&arr, "]");
+    return sb_to_str(&arr);
+}
+
+// `E004 path:12:5 message` -> a diagnostic at that position.
+str parse_error_json(str line) {
+    int at = str_index_of(line, "] ");
+    str rest = line;
+    if (at >= 0) { rest = str_slice(line, at + 2, str_len(line)); }
+    // path:line:col message -- the path may itself contain colons, so the
+    // line and column are read from the END of the location.
+    int sp = str_index_of(rest, " ");
+    str where = rest;
+    str message = "";
+    if (sp >= 0) {
+        where = str_slice(rest, 0, sp);
+        message = str_slice(rest, sp + 1, str_len(rest));
+    }
+    int c2 = last_colon(where, str_len(where));
+    int c1 = last_colon(where, c2);
+    int ln = 1;
+    int col = 1;
+    if (c1 > 0) {
+        ln = str_to_int(str_slice(where, c1 + 1, c2));
+        col = str_to_int(str_slice(where, c2 + 1, str_len(where)));
+    }
+    clear_error();
+    return diagnostic_json("E000", str(ln), str(col), message, "");
+}
+
+int last_colon(str s, int before) {
+    for (int i = before - 1; i >= 0; i = i - 1) {
+        if (s[i] == 58) { return i; }
+    }
+    return 0 - 1;
+}
+
+// The editor counts from zero; the compiler counts from one.
+str diagnostic_json(str code, str line, str col, str message, str hint) {
+    int ln = str_to_int(line) - 1;
+    int cl = str_to_int(col) - 1;
+    clear_error();
+    if (ln < 0) { ln = 0; }
+    if (cl < 0) { cl = 0; }
+    StringBuilder full = sb_new();
+    sb_append(&full, message);
+    if (str_len(hint) > 0) {
+        sb_append(&full, "\n");
+        sb_append(&full, hint);
+    }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"range\":{\"start\":{\"line\":");
+    sb_append(&sb, str(ln));
+    sb_append(&sb, ",\"character\":");
+    sb_append(&sb, str(cl));
+    sb_append(&sb, "},\"end\":{\"line\":");
+    sb_append(&sb, str(ln));
+    sb_append(&sb, ",\"character\":");
+    sb_append(&sb, str(cl + 1));
+    sb_append(&sb, "}},\"severity\":1,\"source\":\"strata\",\"code\":");
+    sb_append(&sb, json_str(code));
+    sb_append(&sb, ",\"message\":");
+    sb_append(&sb, json_str(sb_to_str(&full)));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+def publish(str u, str diagnostics) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"jsonrpc\":\"2.0\",\"method\":");
+    sb_append(&sb, json_str("textDocument/publishDiagnostics"));
+    sb_append(&sb, ",\"params\":{\"uri\":");
+    sb_append(&sb, json_str(u));
+    sb_append(&sb, ",\"diagnostics\":");
+    sb_append(&sb, diagnostics);
+    sb_append(&sb, "}}");
+    write_message(sb_to_str(&sb));
+}
+
+def respond(int id, str result) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"jsonrpc\":\"2.0\",\"id\":");
+    sb_append(&sb, str(id));
+    sb_append(&sb, ",\"result\":");
+    sb_append(&sb, result);
+    sb_append(&sb, "}");
+    write_message(sb_to_str(&sb));
+}
+
+// ── What the editor asks for ─────────────────────────────────────────────────
+
+// The LSP symbol kinds this server uses: 12 function, 23 struct, 8 field,
+// 5 class, 6 method.
+int lsp_kind(str kind) {
+    if (str_eq(kind, "function") == 1) { return 12; }
+    if (str_eq(kind, "table") == 1) { return 23; }
+    if (str_eq(kind, "column") == 1) { return 8; }
+    if (str_eq(kind, "layout") == 1) { return 5; }
+    return 6;
+}
+
+str symbols_of(str u) {
+    list[LspSym] all = LspSym <- [uri == u];
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int first = 1;
+    for S in all {
+        if (first == 0) { sb_append(&sb, ","); }
+        first = 0;
+        int ln = S.line - 1;
+        if (ln < 0) { ln = 0; }
+        int cl = S.col - 1;
+        if (cl < 0) { cl = 0; }
+        sb_append(&sb, "{\"name\":");
+        sb_append(&sb, json_str(S.name));
+        sb_append(&sb, ",\"detail\":");
+        sb_append(&sb, json_str(S.detail));
+        sb_append(&sb, ",\"kind\":");
+        sb_append(&sb, str(lsp_kind(S.kind)));
+        sb_append(&sb, ",\"range\":{\"start\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl));
+        sb_append(&sb, "},\"end\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl + str_len(S.name)));
+        sb_append(&sb, "}},\"selectionRange\":{\"start\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl));
+        sb_append(&sb, "},\"end\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl + str_len(S.name)));
+        sb_append(&sb, "}}}");
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
+// The word at a position in the buffer. Hover and go-to-definition both start
+// here: find what the cursor is on, then look it up in the table.
+str word_at(str text, int want_line, int want_col) {
+    int n = str_len(text);
+    int line = 0;
+    int col = 0;
+    int line_start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        if (line == want_line) {
+            // Walk out from the cursor to both ends of the word.
+            int a = line_start + want_col;
+            if (a > n) { a = n; }
+            int lo = a;
+            while (lo > line_start) {
+                if (is_word_byte(text[lo - 1]) == 0) { break; }
+                lo = lo - 1;
+            }
+            int hi = a;
+            while (hi < n) {
+                if (is_word_byte(text[hi]) == 0) { break; }
+                hi = hi + 1;
+            }
+            if (hi <= lo) { return ""; }
+            return str_slice(text, lo, hi);
+        }
+        if (i == n) { break; }
+        if (text[i] == 10) {
+            line = line + 1;
+            line_start = i + 1;
+        }
+    }
+    return "";
+}
+
+int is_word_byte(int c) {
+    if (c == 95) { return 1; }
+    if (c >= 48) { if (c <= 57) { return 1; } }
+    if (c >= 65) { if (c <= 90) { return 1; } }
+    if (c >= 97) { if (c <= 122) { return 1; } }
+    return 0;
+}
+
+str text_of(str u) {
+    list[LspDoc] found = LspDoc <- [uri == u];
+    for D in found { return D.text; }
+    return "";
+}
+
+str hover_at(str u, int line, int col) {
+    str word = word_at(text_of(u), line, col);
+    if (str_len(word) == 0) { return "null"; }
+    list[LspSym] hits = LspSym <- [name == word];
+    for S in hits {
+        StringBuilder md = sb_new();
+        sb_append(&md, "```strata\n");
+        sb_append(&md, S.detail);
+        sb_append(&md, "\n```");
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "{\"contents\":{\"kind\":\"markdown\",\"value\":");
+        sb_append(&sb, json_str(sb_to_str(&md)));
+        sb_append(&sb, "}}");
+        return sb_to_str(&sb);
+    }
+    return "null";
+}
+
+str definition_at(str u, int line, int col) {
+    str word = word_at(text_of(u), line, col);
+    if (str_len(word) == 0) { return "null"; }
+    list[LspSym] hits = LspSym <- [name == word];
+    for S in hits {
+        int ln = S.line - 1;
+        if (ln < 0) { ln = 0; }
+        int cl = S.col - 1;
+        if (cl < 0) { cl = 0; }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "{\"uri\":");
+        sb_append(&sb, json_str(S.uri));
+        sb_append(&sb, ",\"range\":{\"start\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl));
+        sb_append(&sb, "},\"end\":{\"line\":");
+        sb_append(&sb, str(ln));
+        sb_append(&sb, ",\"character\":");
+        sb_append(&sb, str(cl + str_len(S.name)));
+        sb_append(&sb, "}}}");
+        return sb_to_str(&sb);
+    }
+    return "null";
+}
+
+// Spaces off both ends. std/http has one, but importing a web server into a
+// language server to trim a header would be a strange thing to explain.
+str lsp_trim(str s) {
+    int n = str_len(s);
+    int a = 0;
+    while (a < n) {
+        if (s[a] != 32) { if (s[a] != 9) { if (s[a] != 13) { break; } } }
+        a = a + 1;
+    }
+    int b = n;
+    while (b > a) {
+        int c = s[b - 1];
+        if (c != 32) { if (c != 9) { if (c != 13) { break; } } }
+        b = b - 1;
+    }
+    return str_slice(s, a, b);
+}
+
+str capabilities() {
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"strata-lsp\",\"version\":\"0.1.0\"}}";
+}
+
+// ── The loop ─────────────────────────────────────────────────────────────────
+
+def handle(str body) {
+    str method = lsp_string(body, "method", 0);
+    int id = lsp_int(body, "id", 0);
+
+    if (str_eq(method, "initialize") == 1) {
+        respond(id, capabilities());
+        return;
+    }
+    if (str_eq(method, "shutdown") == 1) {
+        respond(id, "null");
+        return;
+    }
+
+    if (str_eq(method, "textDocument/didOpen") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        str text = lsp_string(body, "text", 0);
+        delete LspDoc <- [uri == u];
+        LspDoc <- [uri = u, text = text];
+        publish(u, refresh(u, text));
+        return;
+    }
+    if (str_eq(method, "textDocument/didChange") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        // Full sync: the whole buffer arrives as the last "text" in the
+        // message, after the uri and the version.
+        str text = lsp_string(body, "text", 0);
+        delete LspDoc <- [uri == u];
+        LspDoc <- [uri = u, text = text];
+        publish(u, refresh(u, text));
+        return;
+    }
+    if (str_eq(method, "textDocument/didSave") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        publish(u, refresh(u, text_of(u)));
+        return;
+    }
+    if (str_eq(method, "textDocument/didClose") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        delete LspDoc <- [uri == u];
+        forget(u);
+        publish(u, "[]");
+        return;
+    }
+
+    if (str_eq(method, "textDocument/documentSymbol") == 1) {
+        respond(id, symbols_of(lsp_string(body, "uri", 0)));
+        return;
+    }
+    if (str_eq(method, "textDocument/hover") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        int at = lsp_key_at(body, "position", 0);
+        respond(id, hover_at(u, lsp_int(body, "line", at),
+        lsp_int(body, "character", at)));
+        return;
+    }
+    if (str_eq(method, "textDocument/definition") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        int at = lsp_key_at(body, "position", 0);
+        respond(id, definition_at(u, lsp_int(body, "line", at),
+        lsp_int(body, "character", at)));
+        return;
+    }
+
+    // A request this server does not implement still needs an answer, or the
+    // editor waits for one that never comes. A notification does not.
+    if (id >= 0) { respond(id, "null"); }
+}
+
+int main() {
+    // `strata lsp --analyse <file>` prints exactly what the server's child
+    // prints, which is how the tests check the analysis without speaking the
+    // protocol, and how a developer sees why an editor is showing what it is.
+    if (str_eq(arg(1), "--analyse") == 1) {
+        str path = arg(2);
+        if (file_exists(path) == 0) {
+            eprint("Usage: strata lsp --analyse <file.sta> [--as <real path>]");
+            return 1;
+        }
+        // An editor checks a buffer that has not been saved, so the text is
+        // in a scratch file somewhere else. `--as` says where the file really
+        // lives, which is what the imports resolve against and what the
+        // diagnostics name. Without it the scratch directory decides, and
+        // every file that imports its own project's schema is reported broken
+        // in the editor while the build is green.
+        str shown = path;
+        if (str_eq(arg(3), "--as") == 1) {
+            if (str_len(arg(4)) > 0) { shown = arg(4); }
+        }
+        analyse(shown, file_read(path));
+        return 0;
+    }
+    while (1) {
+        int length = 0 - 1;
+        while (1) {
+            // read_line strips the newline and leaves the carriage return,
+            // so the blank line that ends the headers arrives as "\r" and
+            // looked like a header. Everything after it was then read as one
+            // more header, including the body.
+            str header = lsp_trim(read_line());
+            if (str_len(header) == 0) { break; }
+            if (str_starts_with(header, "Content-Length:") == 1) {
+                length = str_to_int(lsp_trim(str_slice(header, 15, str_len(header))));
+                clear_error();
+            }
+        }
+        if (length < 0) { return 0; }
+        str body = read_exact(length);
+        if (str_len(body) == 0) { return 0; }
+        if (str_index_of(body, "\"method\":\"exit\"") >= 0) { return 0; }
+        handle(body);
+    }
+    return 0;
+}
