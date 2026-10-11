@@ -1115,6 +1115,50 @@ compile_run("a_layout_renders_a_form",
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
 
+print("\n── What a query gives back ──────────────────────────────────────")
+
+# A query returns the STORED ROWS, not copies of them. Writing through one
+# changes the table -- which is the only way to update anything, since there
+# is no update statement, and was documented nowhere. A pilot found it by
+# accident and could not tell whether it was a feature or a bug.
+#
+# Pinned here so it cannot change quietly in either direction: a developer
+# relying on it must not lose it, and a developer who does not know about it
+# must be able to find it written down.
+compile_run("a_query_gives_back_the_stored_rows",
+    'import io from std;\n'
+    'database Acc { int id; float bal; }\n'
+    'int main() {\n'
+    '    Acc <- [id = 1, bal = 10.0];\n'
+    '    Acc <- [id = 2, bal = 20.0];\n'
+    '    list[Acc] big = Acc <- [bal > 5.0];\n'
+    '    for R in big { R.bal = 0.0; }\n'
+    '    list[Acc] again = Acc <- [id > 0];\n'
+    '    print(str(sum(again.bal)));\n'
+    '    return 0;\n'
+    '}\n',
+    "0.0")
+
+# The other side of the same fact: a list fetched before a delete still holds
+# the deleted row, and still counts it. The row is kept alive on purpose --
+# something may still be pointing at it -- and is freed at the next
+# scratch_reset. Code that holds a list across a delete is reading the table
+# as it was, not as it is.
+compile_run("a_list_held_across_a_delete_is_the_old_table",
+    'import io from std;\n'
+    'database Acc { int id; float bal; }\n'
+    'int main() {\n'
+    '    Acc <- [id = 1, bal = 10.0];\n'
+    '    Acc <- [id = 2, bal = 20.0];\n'
+    '    list[Acc] held = Acc <- [id > 0];\n'
+    '    delete Acc <- [id == 1];\n'
+    '    print(str(sum(held.bal)));\n'
+    '    list[Acc] fresh = Acc <- [id > 0];\n'
+    '    print(str(sum(fresh.bal)));\n'
+    '    return 0;\n'
+    '}\n',
+    "30.0\n20.0")
+
 print("\n── A chain of conditions ────────────────────────────────────────")
 
 # `else if` was a parse error. Business rules are written as a ladder of

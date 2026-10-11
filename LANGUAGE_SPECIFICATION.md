@@ -371,6 +371,31 @@ Variable declaration and assignment, `if` / `else` / `else if`, `while`, C-style
 `verify` blocks, insert, `delete`, `save` / `load`, `render ... to`, and
 expression statements.
 
+### What a query gives back
+
+A query returns the **stored rows**, not copies of them. Writing through one
+changes the table:
+
+```text
+database Acc { int id; float balance; }
+
+int clear_overdrafts() {
+    list[Acc] overdrawn = Acc <- [balance < 0.0];
+    for A in overdrawn { A.balance = 0.0; }    // the table is changed
+    return count(overdrawn);
+}
+```
+
+This is the only way to update a row — there is no `update` statement — and it
+is worth knowing before you meet it by accident. A loop variable in most
+languages is a copy, and here it is not.
+
+The same fact seen from the other side: a list fetched **before** a `delete`
+still holds the deleted rows and still counts them. The row is kept alive
+deliberately, because something may still be pointing at it, and is freed at
+the next `scratch_reset()`. A list held across a delete is the table as it
+was, not as it is — fetch it again if that matters.
+
 `else if` is one statement in the else branch rather than a construct of its
 own, so a chain of conditions nests. A ladder of business rules is written the
 way it reads:

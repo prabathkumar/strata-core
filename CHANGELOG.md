@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Two things about queries that were true and unwritten
+
+A query returns the stored rows, not copies. Writing through one changes the
+table, which is the only way to update a row — there is no `update` statement
+— and it was documented nowhere. A pilot found it by accident and could not
+tell whether it was a feature or a bug. A loop variable is a copy in most
+languages and is not one here, so this is exactly the kind of thing a
+developer should not have to discover.
+
+The same fact from the other side: a list fetched before a `delete` still
+holds the deleted rows and still counts them in a sum. The row is kept alive
+on purpose, because something may still be pointing at it, and is freed at the
+next `scratch_reset()`.
+
+Both are now in the specification and pinned by tests, so neither can change
+quietly in either direction.
+
+
 ### A language server, which is the compiler
 
 `strata lsp` speaks the language server protocol over stdin and stdout, so any
