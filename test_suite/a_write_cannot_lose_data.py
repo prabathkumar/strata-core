@@ -95,6 +95,29 @@ def main():
         ok("every stored row is still there",
            open(tsv).read() == bad, open(tsv).read())
 
+        # The same thing, refused for a different reason. A bad VALUE in a
+        # row went through its own refusal function, which was the one that
+        # did not mark the table -- so this exact sequence came back in the
+        # next round of testing.
+        badrow = ("#strata\tProduct\tid:i\tname:s\tprice:f\n"
+                  "1\talpha\t10.25\nXX\tbeta\t4.75\n")
+        res, out = run(proj, PRODUCT,
+                       'import io     from std;\n'
+                       'import schema from app;\n\n'
+                       'int main() {\n'
+                       '    load Product from "rows.tsv";\n'
+                       '    if (had_error() == 1) { clear_error(); }\n'
+                       '    Product <- [id = 9, name = "new", price = 1.0];\n'
+                       '    int s = save Product to "rows.tsv";\n'
+                       '    print(str_concat("save=", str(s)));\n'
+                       '    return 0;\n}\n',
+                       {"rows.tsv": badrow})
+        ok("a bad value in a row marks the table too",
+           "save=0" in res.stdout and
+           "last read of this table was refused" in out, out[-200:])
+        ok("and the good rows are still there",
+           open(tsv).read() == badrow, open(tsv).read())
+
         print("\n── a value too long to store ────────────────────────────")
         res, out = run(proj, PRODUCT,
                        'import io     from std;\n'

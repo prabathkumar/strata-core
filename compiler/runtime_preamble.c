@@ -985,6 +985,12 @@ static void strata_load_bad_value(const char* table, const char* path,
     strata_error_set("%s: refused to read '%s' — row %lld, column '%s': "
                      "'%s' is not a number",
                      table, path, (long long)row, column, value);
+    /* This is a refused read like any other, and the table is left holding
+     * less than the file does. It went through its own function rather than
+     * strata_load_refuse, so it was the one refusal that did not mark the
+     * table -- and an eleventh pilot walked straight back into the save that
+     * replaces the file with an empty table. */
+    strata_poison(table);
 }
 
 static strata_str strata_dup(const char* s) {
