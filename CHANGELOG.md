@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Completion, in the two places it can be more than a word list
+
+`strata lsp` answers `textDocument/completion`. After a dot and inside a query
+bracket it offers columns with their types — `Order <- [` offers that table's
+columns and nothing else, because the compiler knows which table the bracket
+belongs to. A variable does not say which table it holds, so `rows.` offers
+every column with the table named in each one's detail, and the editor narrows
+it as you keep typing.
+
+Everywhere else it offers what the file declares — tables, functions, layouts
+— and then the words the language reserves. It invents no snippets and never
+offers a name the checker would reject.
+
+That completes the language server as it was scoped: diagnostics, hover,
+go-to-definition, the outline, rename, and completion. Find-references and
+rename across files still need an index of the whole project.
+
+
 ### Two runs can no longer lose an update in silence
 
 A cron job overlapping a manual run is an ordinary Monday. Both load, both

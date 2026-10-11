@@ -1135,7 +1135,13 @@ the same word inside a comment or a string is left alone — and the editor's
 rename is the same operation as the build's, which is the whole reason the
 server is the compiler.
 
-What the server does not do yet: completion, and find-references or rename
+**Completion where the compiler knows something a word list cannot guess.**
+After a dot and inside a query bracket it offers the table's columns with
+their types — `Order <- [` offers exactly that table's columns, nothing else.
+Everywhere else it offers what the file declares and the words the language
+reserves, and never a name the checker would reject.
+
+What the server does not do yet: find-references, and rename
 across files. Each needs an index of the whole project rather than of one
 file, and an index that is wrong is worse than no index — it would rename the
 wrong thing in a file you do not have open.

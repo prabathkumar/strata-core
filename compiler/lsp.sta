@@ -889,8 +889,194 @@ str migrate_edit(str table, str old, str fresh, int after, int block) {
     return text_edit(after, 0, after, 0, sb_to_str(&sb));
 }
 
+// ── Completion ───────────────────────────────────────────────────────────────
+//
+// Two places in Strata where an editor can be genuinely useful rather than
+// merely eager, because in both the compiler knows something a word-list
+// cannot guess:
+//
+//   `rows.` and `Order <- [`   -- the columns of a table, with their types.
+//
+// Everywhere else it offers what is declared in the file and the words the
+// language reserves. It does not invent snippets, and it does not offer a
+// name the checker would reject.
+
+// The text of the line the cursor is on, up to the cursor.
+str line_before(str text, int want_line, int want_col) {
+    int n = str_len(text);
+    int line = 0;
+    int line_start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        if (line == want_line) {
+            int stop = line_start + want_col;
+            if (stop > n) { stop = n; }
+            int eol = line_start;
+            while (eol < stop) {
+                if (text[eol] == 10) { break; }
+                eol = eol + 1;
+            }
+            return str_slice(text, line_start, eol);
+        }
+        if (i == n) { break; }
+        if (text[i] == 10) {
+            line = line + 1;
+            line_start = i + 1;
+        }
+    }
+    return "";
+}
+
+// The identifier ending at `end`, or "".
+str word_ending_at(str s, int end) {
+    int lo = end;
+    while (lo > 0) {
+        if (is_word_byte(s[lo - 1]) == 0) { break; }
+        lo = lo - 1;
+    }
+    if (lo >= end) { return ""; }
+    return str_slice(s, lo, end);
+}
+
+// The name on the left of the `.` the cursor is typing after, or "". Handles
+// both `rows.` and `rows.na` -- in the second the editor asks with the cursor
+// after `na`.
+str owner_before_dot(str before) {
+    int i = str_len(before);
+    // Step back over what has been typed since the dot.
+    while (i > 0) {
+        if (is_word_byte(before[i - 1]) == 0) { break; }
+        i = i - 1;
+    }
+    if (i == 0) { return ""; }
+    if (before[i - 1] != 46) { return ""; }
+    return word_ending_at(before, i - 1);
+}
+
+// The table whose query bracket the cursor is inside: `Order <- [ ... `
+// with no closing bracket yet on this line.
+str table_of_open_query(str before) {
+    int n = str_len(before);
+    int open_at = 0 - 1;
+    for (int i = 0; i < n; i = i + 1) {
+        if (before[i] == 91) { open_at = i; }
+        if (before[i] == 93) { open_at = 0 - 1; }
+    }
+    if (open_at < 0) { return ""; }
+    // `<-` then a name, reading back from the bracket.
+    int i = open_at;
+    while (i > 0) {
+        int c = before[i - 1];
+        if (c != 32) { if (c != 9) { break; } }
+        i = i - 1;
+    }
+    if (i < 2) { return ""; }
+    if (before[i - 1] != 45) { return ""; }
+    if (before[i - 2] != 60) { return ""; }
+    i = i - 2;
+    while (i > 0) {
+        int c = before[i - 1];
+        if (c != 32) { if (c != 9) { break; } }
+        i = i - 1;
+    }
+    return word_ending_at(before, i);
+}
+
+str completion_item(str label, int kind, str detail) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"label\":");
+    sb_append(&sb, json_str(label));
+    sb_append(&sb, ",\"kind\":");
+    sb_append(&sb, str(kind));
+    sb_append(&sb, ",\"detail\":");
+    sb_append(&sb, json_str(detail));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// The table a column symbol belongs to. Its detail reads "float Item.cost".
+str table_of_column(str detail) {
+    int dot = str_index_of(detail, ".");
+    if (dot < 0) { return ""; }
+    str lead = str_slice(detail, 0, dot);
+    return word_ending_at(lead, str_len(lead));
+}
+
+str completion_at(str u, int line, int col) {
+    str text = text_of(u);
+    str before = line_before(text, line, col);
+
+    str owner = owner_before_dot(before);
+    str querying = "";
+    if (str_len(owner) == 0) { querying = table_of_open_query(before); }
+
+    list[LspSym] all = LspSym <- [uri == u];
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"isIncomplete\":false,\"items\":[");
+    int first = 1;
+
+    // After a dot, or inside a query bracket: columns only.
+    int columns_only = 0;
+    if (str_len(owner) > 0) { columns_only = 1; }
+    if (str_len(querying) > 0) { columns_only = 1; }
+
+    if (columns_only == 1) {
+        str want = owner;
+        if (str_len(want) == 0) { want = querying; }
+        for S in all {
+            if (str_eq(S.kind, "column") == 0) { continue; }
+            // A table named on the left narrows it to that table's columns.
+            // A variable does not say which table it holds, so every column
+            // is offered and the detail says where each one is from -- which
+            // the editor filters as the developer keeps typing.
+            str owning = table_of_column(S.detail);
+            if (str_eq(owning, want) == 0) {
+                if (is_a_table(all, want) == 1) { continue; }
+            }
+            if (first == 0) { sb_append(&sb, ","); }
+            first = 0;
+            sb_append(&sb, completion_item(S.name, 5, S.detail));
+        }
+        sb_append(&sb, "]}");
+        return sb_to_str(&sb);
+    }
+
+    for S in all {
+        int kind = 3;
+        if (str_eq(S.kind, "table") == 1) { kind = 22; }
+        if (str_eq(S.kind, "column") == 1) { continue; }
+        if (str_eq(S.kind, "layout") == 1) { kind = 7; }
+        if (first == 0) { sb_append(&sb, ","); }
+        first = 0;
+        sb_append(&sb, completion_item(S.name, kind, S.detail));
+    }
+    // The words the language reserves. Offered last so a name from the file
+    // sorts above them.
+    str words = "if,else,while,for,return,break,continue,import,from,database,protocol,layout,report,verify,assert,native,foreign,const,migrate,rename,drop,retype,save,load,delete,scan,append,rewrite,render,stream,int,float,str,bool,list,";
+    int wn = str_len(words);
+    int start = 0;
+    for (int i = 0; i < wn; i = i + 1) {
+        if (words[i] != 44) { continue; }
+        str w = str_slice(words, start, i);
+        start = i + 1;
+        if (first == 0) { sb_append(&sb, ","); }
+        first = 0;
+        sb_append(&sb, completion_item(w, 14, "keyword"));
+    }
+    sb_append(&sb, "]}");
+    return sb_to_str(&sb);
+}
+
+int is_a_table(list[LspSym] all, str name) {
+    for S in all {
+        if (str_eq(S.kind, "table") == 1) {
+            if (str_eq(S.name, name) == 1) { return 1; }
+        }
+    }
+    return 0;
+}
+
 str capabilities() {
-    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":true},\"serverInfo\":{\"name\":\"strata-lsp\",\"version\":\"0.2.0\"}}";
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\"]}},\"serverInfo\":{\"name\":\"strata-lsp\",\"version\":\"0.3.0\"}}";
 }
 
 // ── The loop ─────────────────────────────────────────────────────────────────
@@ -947,6 +1133,13 @@ def handle(str body) {
         str u = lsp_string(body, "uri", 0);
         int at = lsp_key_at(body, "position", 0);
         respond(id, hover_at(u, lsp_int(body, "line", at),
+        lsp_int(body, "character", at)));
+        return;
+    }
+    if (str_eq(method, "textDocument/completion") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        int at = lsp_key_at(body, "position", 0);
+        respond(id, completion_at(u, lsp_int(body, "line", at),
         lsp_int(body, "character", at)));
         return;
     }

@@ -189,6 +189,66 @@ def main():
         ok("the outline lists both functions",
            "discounted" in names and "main" in names, json.dumps(names))
 
+        print("\n── what the editor offers while you type ───────────────")
+        # Two places where the compiler knows something a word list cannot
+        # guess: after a dot, and inside a query bracket. Everywhere else it
+        # offers what the file declares and the words the language reserves,
+        # and it never offers a name the checker would reject.
+        comp = os.path.join(proj, "src", "two.sta")
+        cbody = ("database Thing {\n"
+                 "    int   id;\n"
+                 "    str   name;\n"
+                 "    float price;\n"
+                 "}\n"
+                 "\n"
+                 "database Other {\n"
+                 "    int   id;\n"
+                 "    str   company;\n"
+                 "}\n"
+                 "\n"
+                 "int total(list[Thing] rows) {\n"
+                 "    list[Thing] some = Thing <- [i];\n"
+                 "    return sum(rows.p);\n"
+                 "}\n")
+        open(comp, "w").write(cbody)
+        curi = "file://" + comp
+
+        def offered(line, char):
+            reps, _ = talk(proj, [
+                hello,
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": curi,
+                                             "languageId": "strata",
+                                             "version": 1, "text": cbody}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
+                 "params": {"textDocument": {"uri": curi},
+                            "position": {"line": line, "character": char}}},
+            ])
+            for d in reps:
+                if d.get("id") == 2 and isinstance(d.get("result"), dict):
+                    return [i["label"] for i in d["result"]["items"]]
+            return []
+
+        # Inside `Thing <- [`: that table's columns, and only those.
+        inside = offered(12, 33)
+        ok("a query bracket offers the table's columns",
+           set(inside) == {"id", "name", "price"}, str(inside)[:200])
+
+        # After `rows.`: a variable does not say which table it holds, so
+        # every column is offered and the detail says where each is from --
+        # which the editor narrows as the developer keeps typing.
+        after_dot = offered(13, 21)
+        ok("a dot offers columns rather than keywords",
+           after_dot and all(x in ("id", "name", "price", "company")
+                             for x in after_dot), str(after_dot)[:200])
+
+        # Anywhere else: what the file declares, then the reserved words.
+        general = offered(11, 0)
+        ok("elsewhere it offers what the file declares",
+           "Thing" in general and "total" in general, str(general)[:200])
+        ok("and the words the language reserves",
+           "migrate" in general and "rewrite" in general, str(general)[:200])
+
         print("\n── renaming a column from the editor ────────────────────")
         # The point of doing this in the compiler rather than in an editor
         # plugin: renaming a column in the editor has to be the same

@@ -106,7 +106,7 @@ def main():
             '    load Counter from "c.tsv";\n'
             '    list[Counter] all = Counter <- [id > 0];\n'
             '    for C in all { C.n = C.n + 100; }\n'
-            '    print("loaded");\n'
+            '    file_write("loaded", "y");\n'
             '    while (file_exists("go") == 0) { }\n'
             '    int s = save Counter to "c.tsv";\n'
             '    if (s == 0) { print("refused"); clear_error(); }\n'
@@ -123,14 +123,17 @@ def main():
         held = subprocess.Popen([slow_bin], cwd=tmp, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
         # Wait until it has read the file, so the write below is strictly
-        # after its read.
+        # after its read. Through a file rather than through its output: the
+        # C runtime buffers a pipe, so "it has printed" and "I can see it"
+        # are not the same moment, and a test that waits on the second one
+        # waits for the program to exit.
         waited = 0.0
-        while waited < 30.0:
-            line = held.stdout.readline()
-            if "loaded" in line:
-                break
-            waited += 0.05
-            time.sleep(0.05)
+        marker = os.path.join(tmp, "loaded")
+        while waited < 60.0 and not os.path.exists(marker):
+            waited += 0.02
+            time.sleep(0.02)
+        ok("the first run got as far as reading", os.path.exists(marker),
+           "it never signalled that it had read the file")
         subprocess.run([binary], cwd=tmp, capture_output=True, text=True,
                        timeout=300)
         open(os.path.join(tmp, "go"), "w").write("")
