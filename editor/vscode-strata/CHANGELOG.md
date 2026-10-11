@@ -1,5 +1,19 @@
 # Change log
 
+## 0.5.0
+
+- Diagnostics now come from `strata lsp --analyse`, which checks the unsaved
+  buffer **as if it were where the file really lives**. Before this, the
+  buffer was copied to a scratch directory and checked there, and imports
+  resolve against the directory a file is in — so every file that imported its
+  own project's schema was underlined in red while the build was green.
+- The toolchain now ships a full language server (`strata lsp`): hover,
+  go-to-definition, the document outline, and rename. An editor that speaks
+  the protocol can use it directly.
+- Rename a column and the `migrate` line that completes it is written for you.
+  Renaming the source is only half the job — the file on disk still carries
+  the old column name, and the loader will refuse it.
+
 ## 0.4.0
 
 First published version.

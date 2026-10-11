@@ -189,6 +189,59 @@ def main():
         ok("the outline lists both functions",
            "discounted" in names and "main" in names, json.dumps(names))
 
+        print("\n── renaming a column from the editor ────────────────────")
+        # The point of doing this in the compiler rather than in an editor
+        # plugin: renaming a column in the editor has to be the same
+        # operation as renaming it in the build. Renaming the source is only
+        # half of it -- the file on disk still says the old name, and the
+        # loader will refuse it -- so the rename writes the `migrate` line
+        # that completes it.
+        # A file of its own: overwriting the project's schema here would
+        # change what the checks after this one are looking at.
+        sch = os.path.join(proj, "src", "money.sta")
+        body = ("database Money {\n"
+                "    int   id;\n"
+                "    float price;\n"
+                "}\n"
+                "\n"
+                "// price is mentioned here in a comment\n"
+                "int total(list[Money] rows) {\n"
+                '    print("price list");\n'
+                "    return sum(rows.price);\n"
+                "}\n")
+        open(sch, "w").write(body)
+        suri = "file://" + sch
+        replies, raw = talk(proj, [
+            hello,
+            {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+             "params": {"textDocument": {"uri": suri, "languageId": "strata",
+                                         "version": 1, "text": body}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "textDocument/rename",
+             "params": {"textDocument": {"uri": suri},
+                        "position": {"line": 2, "character": 11},
+                        "newName": "cost"}},
+        ])
+        result = None
+        for d in replies:
+            if d.get("id") == 2:
+                result = d.get("result")
+        edits = []
+        if isinstance(result, dict):
+            edits = list(result.get("changes", {}).values())[0]
+        lines_at = [e["range"]["start"]["line"] for e in edits]
+        texts = [e["newText"] for e in edits]
+        ok("the declaration is renamed", 2 in lines_at, json.dumps(edits)[:300])
+        ok("so is the use in the aggregate", 8 in lines_at,
+           json.dumps(lines_at))
+        # A search-and-replace would hit both of these. The occurrences come
+        # from the lexer, so a comment and a string literal are left alone --
+        # which is how an editor's rename quietly changes a message.
+        ok("the comment is left alone", 5 not in lines_at, json.dumps(lines_at))
+        ok("and so is the string", 7 not in lines_at, json.dumps(lines_at))
+        ok("the migration that completes it is written",
+           any("rename price to cost;" in t for t in texts),
+           json.dumps(texts)[:300])
+
         print("\n── checking a buffer that is not where it lives ─────────")
         # What the editor extension does: the text is in a scratch file
         # somewhere else, and --as says where the file really is. Without it

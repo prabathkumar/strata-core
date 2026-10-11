@@ -50,12 +50,38 @@ is **saved first**, or repair would patch a stale copy and your unsaved buffer
 would overwrite the fix a moment later; and it is **offered, never automatic**
 — a compiler that edits your code without being asked is not a feature.
 
-## It is not a language server, on purpose
+## It runs the real compiler, not a copy of its rules
 
-The extension runs the real `strata check` rather than reimplementing the
-language rules in JavaScript. A second implementation of the rules would be
-the first thing to drift out of step with the first. **If the editor and the
-build disagree, the extension is wrong.**
+The extension never reimplements the language rules in JavaScript. A second
+implementation would be the first thing to drift out of step with the first.
+**If the editor and the build disagree, the extension is wrong.**
+
+It used to break that promise by accident. An unsaved buffer was written to a
+scratch directory and checked there — and imports resolve against the
+directory a file is in, so every file that imported its own project's schema
+was underlined in red while the build was green. The buffer is now checked
+*as if it were where the file really lives*.
+
+The toolchain also ships a full language server, `strata lsp`, with hover,
+go-to-definition, the outline and rename. Any editor that speaks the protocol
+can start it directly; this extension uses the same analysis.
+
+## Rename a column, and the migration is written for you
+
+Renaming a column in your source is only half the job: the file on disk still
+carries the old column name, and the loader will refuse to read it rather than
+hand your program a row of empty values.
+
+So renaming `price` to `cost` here also writes the line that completes it:
+
+```text
+migrate Item {
+    rename price to cost;
+}
+```
+
+Occurrences come from the compiler's lexer rather than from a search, so the
+same word inside a comment or a string is left alone.
 
 ## Requirements
 
@@ -86,8 +112,11 @@ If `strata` lives somewhere else, set **`strata.toolchainPath`**.
 
 ## Known limitations
 
-- Highlighting, diagnostics and repair. No go-to-definition, no completion,
-  no rename, no hover.
+- No completion yet. Hover, go-to-definition, the outline and rename are
+  there, through `strata lsp`.
+- Rename works within one file. A rename that reaches other files needs an
+  index of the whole project, and an index that is wrong would rename the
+  wrong thing in a file you do not have open.
 - Repair rewrites the file. It is driven by the compiler's own rules, and it
   recompiles to check itself, but read the diff before you commit it.
 - Unsaved edits are checked by writing a scratch copy and checking that, so a

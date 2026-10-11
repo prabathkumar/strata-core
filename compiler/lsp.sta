@@ -337,6 +337,71 @@ def emit_sym(str name, str kind, int line, int col, str detail) {
     print(sb_to_str(&sb));
 }
 
+// Where every occurrence of one identifier is, and what renaming it means.
+//
+// The occurrences come from the LEXER, not from searching the text: a search
+// renames the word inside a string literal and inside a comment, which is how
+// an editor's rename quietly changes a message or a URL. The lexer already
+// knows which bytes are an identifier.
+//
+// If the name is a column of a stored table, renaming it in the source is
+// only half the job -- the file on disk still says the old name, and the
+// loader will refuse it. The child says so, and the server turns that into
+// the `migrate` line that completes the rename. That is the whole point of
+// doing this in the compiler rather than in an editor plugin: the editor's
+// rename and the compiler's rename are the same operation.
+def rename_sites(str path, str text, str want) {
+    parsing_file(path);
+    TokVec toks = tokenise(text);
+    for (int i = 0; i < toks.len; i = i + 1) {
+        Token t = vec_get(&toks, i);
+        if (t.kind != 4) { continue; }
+        if (str_eq(t.value, want) == 0) { continue; }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "E\t");
+        sb_append(&sb, str(t.line));
+        sb_append(&sb, "\t");
+        sb_append(&sb, str(t.col));
+        sb_append(&sb, "\t");
+        sb_append(&sb, str(str_len(want)));
+        print(sb_to_str(&sb));
+    }
+
+    // Is it a column, and does its table already have a migration to add to?
+    Node unit = parse_source(text);
+    NodeVec decls = nv_at(unit.v2);
+    for (int i = 0; i < decls.len; i = i + 1) {
+        Node d = nv_get(&decls, i);
+        if (d.kind != 3) { continue; }
+        NodeVec fields = nv_at(d.v1);
+        int mine = 0;
+        int last_line = d.line;
+        for (int f = 0; f < fields.len; f = f + 1) {
+            Node fd = nv_get(&fields, f);
+            if (str_eq(fd.s1, want) == 1) { mine = 1; }
+            if (fd.line > last_line) { last_line = fd.line; }
+        }
+        if (mine == 0) { continue; }
+        // An existing migration for this table, so the new line joins it
+        // rather than starting a second block.
+        int at = 0;
+        for (int m = 0; m < decls.len; m = m + 1) {
+            Node md = nv_get(&decls, m);
+            if (md.kind != 83) { continue; }
+            if (str_eq(md.s1, d.s1) == 0) { continue; }
+            at = md.line;
+        }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "M\t");
+        sb_append(&sb, d.s1);
+        sb_append(&sb, "\t");
+        sb_append(&sb, str(last_line + 1));
+        sb_append(&sb, "\t");
+        sb_append(&sb, str(at));
+        print(sb_to_str(&sb));
+    }
+}
+
 // Everything the editor can be told about one file, printed by the child.
 def analyse(str path, str text) {
     str root = install_root();
@@ -714,8 +779,118 @@ str lsp_trim(str s) {
     return str_slice(s, a, b);
 }
 
+// `textDocument/rename`: every occurrence in this file, plus the migration
+// that completes it when the name is a stored column.
+//
+// One file, not the project. A rename that reaches other files needs an index
+// of the whole project, and an index that is wrong would rename the wrong
+// thing in a file nobody has open -- so this renames what it can see and says
+// nothing about what it cannot.
+str rename_at(str u, int line, int col, str fresh) {
+    str text = text_of(u);
+    str word = word_at(text, line, col);
+    if (str_len(word) == 0) { return "null"; }
+    if (str_eq(word, fresh) == 1) { return "null"; }
+
+    str path = path_of_uri(u);
+    int pid = lsp_fork();
+    if (pid == 0) {
+        rename_sites(path, text, word);
+        child_done();
+    }
+    str out = collect_child(pid);
+
+    StringBuilder edits = sb_new();
+    sb_append(&edits, "[");
+    int first = 1;
+    int n = str_len(out);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_nl = 0;
+        if (at_end == 0) { if (out[i] == 10) { is_nl = 1; } }
+        if (is_nl == 0) { if (at_end == 0) { continue; } }
+        str row = str_slice(out, start, i);
+        start = i + 1;
+        if (str_len(row) == 0) { continue; }
+
+        if (str_starts_with(row, "E\t") == 1) {
+            str rec = str_slice(row, 2, str_len(row));
+            int ln = str_to_int(field_at(rec, 0)) - 1;
+            int cl = str_to_int(field_at(rec, 1)) - 1;
+            int len = str_to_int(field_at(rec, 2));
+            clear_error();
+            if (ln < 0) { ln = 0; }
+            if (cl < 0) { cl = 0; }
+            if (first == 0) { sb_append(&edits, ","); }
+            first = 0;
+            sb_append(&edits, text_edit(ln, cl, ln, cl + len, fresh));
+            continue;
+        }
+        if (str_starts_with(row, "M\t") == 1) {
+            str rec = str_slice(row, 2, str_len(row));
+            str table = field_at(rec, 0);
+            int after = str_to_int(field_at(rec, 1));
+            int block = str_to_int(field_at(rec, 2));
+            clear_error();
+            if (first == 0) { sb_append(&edits, ","); }
+            first = 0;
+            sb_append(&edits, migrate_edit(table, word, fresh, after, block));
+        }
+    }
+    sb_append(&edits, "]");
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"changes\":{");
+    sb_append(&sb, json_str(u));
+    sb_append(&sb, ":");
+    sb_append(&sb, sb_to_str(&edits));
+    sb_append(&sb, "}}");
+    return sb_to_str(&sb);
+}
+
+str text_edit(int l1, int c1, int l2, int c2, str with) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"range\":{\"start\":{\"line\":");
+    sb_append(&sb, str(l1));
+    sb_append(&sb, ",\"character\":");
+    sb_append(&sb, str(c1));
+    sb_append(&sb, "},\"end\":{\"line\":");
+    sb_append(&sb, str(l2));
+    sb_append(&sb, ",\"character\":");
+    sb_append(&sb, str(c2));
+    sb_append(&sb, "}},\"newText\":");
+    sb_append(&sb, json_str(with));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// The line that tells the loader a stored file's old column is this one.
+// Added inside an existing `migrate` block for the table, or as a new block
+// after the table's declaration.
+str migrate_edit(str table, str old, str fresh, int after, int block) {
+    StringBuilder sb = sb_new();
+    if (block > 0) {
+        sb_append(&sb, "    rename ");
+        sb_append(&sb, old);
+        sb_append(&sb, " to ");
+        sb_append(&sb, fresh);
+        sb_append(&sb, ";\n");
+        return text_edit(block, 0, block, 0, sb_to_str(&sb));
+    }
+    sb_append(&sb, "\nmigrate ");
+    sb_append(&sb, table);
+    sb_append(&sb, " {\n    rename ");
+    sb_append(&sb, old);
+    sb_append(&sb, " to ");
+    sb_append(&sb, fresh);
+    sb_append(&sb, ";\n}\n");
+    return text_edit(after, 0, after, 0, sb_to_str(&sb));
+}
+
 str capabilities() {
-    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"strata-lsp\",\"version\":\"0.1.0\"}}";
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":true},\"serverInfo\":{\"name\":\"strata-lsp\",\"version\":\"0.2.0\"}}";
 }
 
 // ── The loop ─────────────────────────────────────────────────────────────────
@@ -773,6 +948,14 @@ def handle(str body) {
         int at = lsp_key_at(body, "position", 0);
         respond(id, hover_at(u, lsp_int(body, "line", at),
         lsp_int(body, "character", at)));
+        return;
+    }
+    if (str_eq(method, "textDocument/rename") == 1) {
+        str u = lsp_string(body, "uri", 0);
+        int at = lsp_key_at(body, "position", 0);
+        str fresh = lsp_string(body, "newName", 0);
+        respond(id, rename_at(u, lsp_int(body, "line", at),
+        lsp_int(body, "character", at), fresh));
         return;
     }
     if (str_eq(method, "textDocument/definition") == 1) {

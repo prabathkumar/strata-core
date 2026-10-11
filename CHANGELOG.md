@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Rename, from the editor, writes the migration
+
+`strata lsp` now answers `textDocument/rename`. Renaming a column in the
+editor renames it everywhere in the file **and writes the `migrate` line that
+completes it** — because renaming the source is only half the job: the file on
+disk still carries the old column name, and the loader will refuse it rather
+than hand the program a row of empty values.
+
+The occurrences come from the compiler's lexer, not from a search, so the same
+word inside a comment or a string literal is left alone. That is the usual way
+an editor's rename quietly changes a message or a URL.
+
+If the table already has a migration, the new line joins it, and a rename of a
+column that an older migration points at is updated too — so a file stored
+under any historical name still reads.
+
+One file, not the project: a rename across files needs an index of the whole
+project, and a wrong index renames the wrong thing in a file nobody has open.
+
+### Publishing, written down
+
+`editor/PUBLISHING.md` covers the Marketplace upload — the `.vsix` is built
+and the publisher account is the one step that has to be yours — and the few
+lines of configuration that give Neovim hover, go-to-definition, the outline
+and rename with no plugin at all. JetBrains is described honestly: possible,
+needs a small plugin and a second account.
+
+
 ### Two more ways to lose data, and arithmetic that changed its mind
 
 A twelfth pilot found the one file the loader refuses that a save was still

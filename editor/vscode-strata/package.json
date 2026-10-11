@@ -1,8 +1,8 @@
 {
   "name": "strata-lang",
   "displayName": "Strata Language (.sta)",
-  "description": "Syntax highlighting, live compiler diagnostics, and one-click repair for the Strata language (.sta).",
-  "version": "0.4.0",
+  "description": "Syntax highlighting, the compiler's own diagnostics as you type, rename that writes your schema migration, and one-click repair for the Strata language (.sta).",
+  "version": "0.5.0",
   "publisher": "prabathkumar",
   "license": "Apache-2.0",
   "icon": "icon.png",
@@ -24,7 +24,10 @@
     "compiler",
     "systems language",
     "database schema",
-    "auto-repair"
+    "auto-repair",
+    "language server",
+    "rename",
+    "migration"
   ],
   "repository": {
     "type": "git",

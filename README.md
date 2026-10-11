@@ -1119,9 +1119,29 @@ project's schema was underlined in red while the build was green. `strata lsp
 the text comes from the scratch copy, everything else is decided by where the
 file really lives.
 
-What the server does not do yet: completion, rename, and find-references
+**Rename writes your migration.** Renaming a column in the source is only
+half the job: the file on disk still carries the old name, and the loader will
+refuse it rather than hand the program a row of empty values. So a rename from
+the editor also writes the line that completes it:
+
+```text
+migrate Item {
+    rename price to cost;
+}
+```
+
+The occurrences come from the compiler's lexer rather than from a search, so
+the same word inside a comment or a string is left alone — and the editor's
+rename is the same operation as the build's, which is the whole reason the
+server is the compiler.
+
+What the server does not do yet: completion, and find-references or rename
 across files. Each needs an index of the whole project rather than of one
-file, and an index that is wrong is worse than no index.
+file, and an index that is wrong is worse than no index — it would rename the
+wrong thing in a file you do not have open.
+
+`editor/PUBLISHING.md` covers putting the extension on the Marketplace, and
+the few lines of configuration that give Neovim the same thing.
 
 Inside a query, a bare name is a column rather than a variable, and the
 grammar colours it differently. That is the difference between reading
