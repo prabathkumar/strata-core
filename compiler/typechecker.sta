@@ -631,11 +631,18 @@ def check_migrations(TC &tc, Node unit, int mods_p) {
         NodeVec mods = nv_at(mods_p);
         for (int m = 0; m < mods.len; m = m + 1) {
             Node mu = nv_get(&mods, m);
+            // The module's own path, so the diagnostic names the file the
+            // migration is actually in. Without this a migration in
+            // schema.sta was reported against main.sta, with the right line
+            // and the wrong file -- which sends a developer to a line that
+            // says something else entirely.
+            tc.current_file = mu.s2;
             NodeVec mdecls = nv_at(mu.v2);
             for (int i = 0; i < mdecls.len; i = i + 1) {
                 Node d = nv_get(&mdecls, i);
                 if (d.kind == 83) { check_migration(&tc, d); }
             }
+            tc.current_file = "";
         }
     }
     NodeVec decls = nv_at(unit.v2);

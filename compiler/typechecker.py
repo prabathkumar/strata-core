@@ -408,14 +408,20 @@ class TypeChecker:
         # Migrations declared in an imported module count too. A schema and
         # the migration that explains it belong in the same file, and that
         # file is usually not the one with main() in it.
-        units = [self.ast] + [m[1] if isinstance(m, tuple) else m
-                              for m in self.modules]
+        # Each with the file it is in, so the diagnostic names that file.
+        # Without this a migration in schema.sta was reported against
+        # main.sta, with the right line and the wrong file -- which sends a
+        # developer to a line that says something else entirely.
         seen = []
-        for unit in units:
+        for d in self.ast.declarations:
+            if isinstance(d, MigrateDecl):
+                seen.append(("", d))
+        for name, unit, _src in self.project_modules:
             for d in getattr(unit, "declarations", []):
                 if isinstance(d, MigrateDecl):
-                    seen.append(d)
-        for d in seen:
+                    seen.append((name, d))
+        for where, d in seen:
+            self.current_file = where
             cols = self.schemas.get(d.table)
             if cols is None:
                 self._error(
@@ -442,6 +448,7 @@ class TypeChecker:
                         "A rename describes a column the stored file still "
                         "carries and this table no longer declares. Remove "
                         "the migration, or remove the column")
+        self.current_file = ""
 
     def _register_declarations(self):
         for d in self.ast.declarations:

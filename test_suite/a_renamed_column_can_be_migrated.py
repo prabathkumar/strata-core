@@ -159,6 +159,11 @@ def main():
             ok(f"{label} is a build error",
                r.returncode != 0 and "E004" in out, out[-200:])
             ok(f"{label} says what is wrong", expect in out, out[-200:])
+            # And names the file the migration is actually in. It lives in
+            # schema.sta; it was being reported against main.sta, with the
+            # right line and the wrong file.
+            ok(f"{label} names the file it is in",
+               "src/schema.sta:" in out, out[-200:])
 
     print("=" * 64)
     if failures:
