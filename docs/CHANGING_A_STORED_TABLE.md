@@ -132,6 +132,19 @@ happen quietly.
    sense** — a rename whose new column has since been deleted? Refusing the
    build is consistent with everything else here and will annoy somebody.
 
+## What is built
+
+`rename`, `drop` and `retype` are built, checked against the schema, and
+tested across `load`, `scan` and `rewrite`. Renaming a table is not.
+
+Of the four open questions above, three now have answers in the code rather
+than in this note: statements apply in the order they are written; a migration
+applies on read, and the next save writes the new shape; and a migration that
+no longer makes sense does not compile. The first question — when a migration
+is spent — is still open, and a file that carries both the old and the new
+column name is refused precisely because nobody can tell from the file which
+of the two it is.
+
 ## The size of it
 
 Both compilers, as always: a keyword and a declaration in the parser, a check

@@ -656,21 +656,36 @@ Node parse_migrate(P &p) {
     while (p_check(&p, 51) == 0) {
         if (p_at_end(&p) == 1) { break; }
         Token op = p_expect(&p, 4);
-        if (str_eq(op.value, "rename") == 0) {
+        int known_op = 0;
+        if (str_eq(op.value, "rename") == 1) { known_op = 1; }
+        if (str_eq(op.value, "drop") == 1) { known_op = 1; }
+        if (str_eq(op.value, "retype") == 1) { known_op = 1; }
+        if (known_op == 0) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "'");
             sb_append(&sb, op.value);
-            sb_append(&sb, "' is not something a migration can do; a migration renames a column");
+            sb_append(&sb, "' is not something a migration can do; it can rename a column, drop one, or widen one's type");
             parse_fail(sb_to_str(&sb), op.line, op.col);
         }
         Token old = p_expect(&p, 4);
-        p_expect_word(&p, "to");
-        Token fresh = p_expect(&p, 4);
+        str target = "";
+        if (str_eq(op.value, "rename") == 1) {
+            p_expect_word(&p, "to");
+            Token fresh = p_expect(&p, 4);
+            target = fresh.value;
+        }
+        if (str_eq(op.value, "retype") == 1) {
+            // The target is a type, which is a keyword rather than an
+            // identifier, so it is taken as written and checked later.
+            p_expect_word(&p, "to");
+            Token ty = p_advance(&p);
+            target = ty.value;
+        }
         p_expect(&p, 56);                      // ;
         Node st = node_new(82);
-        st.s1 = "rename";
+        st.s1 = op.value;
         st.s2 = old.value;
-        st.s3 = fresh.value;
+        st.s3 = target;
         n_pos(st, op);
         nv_push(&steps, st);
     }

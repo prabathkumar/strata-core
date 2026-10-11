@@ -215,6 +215,12 @@ class CodeGen:
         # header does not match the declaration, which is the only thing that
         # can tell a rename apart from a column dropped and another added.
         self.renames = {}
+        # Columns a migration says were deliberately dropped, and columns it
+        # says were stored as whole numbers and are decimals now. Both are
+        # refusals the loader makes for good reasons, which a developer has
+        # declared they meant.
+        self.drops = {}
+        self.retypes = {}
         self.rewrite_depth = 0
         # Libraries named by foreign blocks, passed to the linker.
         self.link_libs = []
@@ -249,6 +255,10 @@ class CodeGen:
                         if st.op == "rename":
                             self.renames.setdefault(d.table, []).append(
                                 (st.old, st.new))
+                        elif st.op == "drop":
+                            self.drops.setdefault(d.table, []).append(st.old)
+                        elif st.op == "retype":
+                            self.retypes.setdefault(d.table, []).append(st.old)
 
         for mod_name, unit in units:
             is_root = unit is self.ast
@@ -598,6 +608,11 @@ int main(int argc, char** argv) {
         for old, new in self.renames.get(name, []):
             if any(fd.name == new for fd in fields):
                 self.emit_raw(f'                if (strcmp(_pn[_pi], "{old}") == 0) _known = 1;')
+        # A column this table dropped on purpose. The guard that stops a save
+        # deleting a column's data is right by default and wrong once
+        # somebody has said, in the source, that they meant it.
+        for gone in self.drops.get(name, []):
+            self.emit_raw(f'                if (strcmp(_pn[_pi], "{gone}") == 0) _known = 1;')
         self.emit_raw("                if (!_known) {")
         self.emit_raw("                    char _why[256];")
         self.emit_raw('                    snprintf(_why, sizeof(_why), "it carries a column \'%s\' this table does not declare. Writing would delete that column and everything in it", _pn[_pi]);')
@@ -760,9 +775,16 @@ int main(int argc, char** argv) {
         self.emit_raw("    int _matched = 0;")
         self.emit_raw("    for (int _c = 0; _c < _ncol; _c++) {")
         self.emit_raw("        _map[_c] = -1;")
+        widened = set(self.retypes.get(name, []))
         for idx, fd in enumerate(fields):
             self.emit_raw(f'        if (strcmp(_names[_c], "{fd.name}") == 0) {{')
-            self.emit_raw(f"            if (_types[_c] != '{tchar(fd)}') {{")
+            # A column a migration says was stored whole and is a decimal
+            # now. The reader parses the text, and "10" is as good a decimal
+            # as "10.0", so accepting the stored type is the whole of it.
+            cond = f"_types[_c] != '{tchar(fd)}'"
+            if fd.name in widened and tchar(fd) == "f":
+                cond = f"_types[_c] != 'f' && _types[_c] != 'i'"
+            self.emit_raw(f"            if ({cond}) {{")
             self.emit_raw(f'                strata_load_refuse("{name}", path, '
                           f'"column \'{fd.name}\' changed type since it was saved");')
             self.emit_raw("                fclose(f); return 0;")
@@ -1173,9 +1195,13 @@ int main(int argc, char** argv) {
         self.emit_raw("    int matched = 0;")
         self.emit_raw("    for (int c = 0; c < n; c++) {")
         self.emit_raw("        map[c] = -1;")
+        widened = set(self.retypes.get(name, []))
         for idx, fd in enumerate(fields):
             self.emit_raw(f'        if (strcmp(_names[c], "{fd.name}") == 0) {{')
-            self.emit_raw(f"            if (_types[c] != '{tchar(fd)}') {{")
+            cond = f"_types[c] != '{tchar(fd)}'"
+            if fd.name in widened and tchar(fd) == "f":
+                cond = f"_types[c] != 'f' && _types[c] != 'i'"
+            self.emit_raw(f"            if ({cond}) {{")
             self.emit_raw(f'                strata_load_refuse("{name}", path, '
                           f'"column \'{fd.name}\' changed type since it was saved");')
             self.emit_raw("                fclose(f); return NULL;")

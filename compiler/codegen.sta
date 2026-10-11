@@ -60,6 +60,12 @@ database Gen {
     // the declaration, which is the only thing that can tell a rename apart
     // from a column dropped and another added.
     int renames;
+    // Bind lists: table -> "col,col," -- columns a migration says were
+    // dropped on purpose, and columns it says were stored whole and are
+    // decimals now. Both are refusals the loader makes for good reasons,
+    // which a developer has declared they meant.
+    int drops;
+    int retypes;
     int indent;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
@@ -2072,9 +2078,22 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
         sb_append(&m0, "        if (strcmp(_names[c], \""); sb_append(&m0, fd.s1);
         sb_append(&m0, "\") == 0) {");
         emit_raw(&g, sb_to_str(&m0));
+        // A column a migration says was stored whole and is a decimal now
+        // -- see stage0.py. The reader parses the text, and "10" is as good
+        // a decimal as "10.0", so accepting the stored type is the whole of
+        // it.
+        int widenedc = 0;
+        if (str_eq(col_tchar(&g, fd), "f") == 1) {
+            if (names_has(retypes_of(&g, name), fd.s1) == 1) { widenedc = 1; }
+        }
         StringBuilder m1 = sb_new();
-        sb_append(&m1, "            if (_types[c] != '"); sb_append(&m1, col_tchar(&g, fd));
-        sb_append(&m1, "') {");
+        if (widenedc == 1) {
+            sb_append(&m1, "            if (_types[c] != 'f' && _types[c] != 'i') {");
+        } else {
+            sb_append(&m1, "            if (_types[c] != '");
+            sb_append(&m1, col_tchar(&g, fd));
+            sb_append(&m1, "') {");
+        }
         emit_raw(&g, sb_to_str(&m1));
         StringBuilder m2 = sb_new();
         sb_append(&m2, "                strata_load_refuse(\""); sb_append(&m2, name);
@@ -2326,6 +2345,21 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         sb_append(&kn, "                if (strcmp(_pn[_pi], \"");
         sb_append(&kn, fdk.s1); sb_append(&kn, "\") == 0) _known = 1;");
         emit_raw(&g, sb_to_str(&kn));
+    }
+    // A column this table dropped on purpose -- see stage0.py. The guard
+    // that stops a save deleting a column's data is right by default and
+    // wrong once somebody has said, in the source, that they meant it.
+    str dpairs = drops_of(&g, name);
+    int dpn = str_len(dpairs);
+    int dstart = 0;
+    for (int di = 0; di < dpn; di = di + 1) {
+        if (dpairs[di] != 44) { continue; }
+        str gone = str_slice(dpairs, dstart, di);
+        dstart = di + 1;
+        StringBuilder dk = sb_new();
+        sb_append(&dk, "                if (strcmp(_pn[_pi], \"");
+        sb_append(&dk, gone); sb_append(&dk, "\") == 0) _known = 1;");
+        emit_raw(&g, sb_to_str(&dk));
     }
     // A column the file still calls by its old name is not unknown: a
     // migration says which column it is -- see stage0.py.
@@ -2586,9 +2620,22 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
         sb_append(&m0, "        if (strcmp(_names[_c], \""); sb_append(&m0, fd.s1);
         sb_append(&m0, "\") == 0) {");
         emit_raw(&g, sb_to_str(&m0));
+        // A column a migration says was stored whole and is a decimal now
+        // -- see stage0.py. The reader parses the text, and "10" is as good
+        // a decimal as "10.0", so accepting the stored type is the whole of
+        // it.
+        int widened_c = 0;
+        if (str_eq(col_tchar(&g, fd), "f") == 1) {
+            if (names_has(retypes_of(&g, name), fd.s1) == 1) { widened_c = 1; }
+        }
         StringBuilder m1 = sb_new();
-        sb_append(&m1, "            if (_types[_c] != '"); sb_append(&m1, col_tchar(&g, fd));
-        sb_append(&m1, "') {");
+        if (widened_c == 1) {
+            sb_append(&m1, "            if (_types[_c] != 'f' && _types[_c] != 'i') {");
+        } else {
+            sb_append(&m1, "            if (_types[_c] != '");
+            sb_append(&m1, col_tchar(&g, fd));
+            sb_append(&m1, "') {");
+        }
         emit_raw(&g, sb_to_str(&m1));
         StringBuilder m2 = sb_new();
         sb_append(&m2, "                strata_load_refuse(\""); sb_append(&m2, name);
@@ -3363,15 +3410,31 @@ def note_records(Gen &g, Node unit) {
         if (d.kind == 83) {
             StringBuilder acc = sb_new();
             sb_append(&acc, bind_get(g.renames, d.s1));
+            StringBuilder dacc = sb_new();
+            sb_append(&dacc, bind_get(g.drops, d.s1));
+            StringBuilder racc = sb_new();
+            sb_append(&racc, bind_get(g.retypes, d.s1));
             NodeVec steps = nv_at(d.v1);
             for (int sx = 0; sx < steps.len; sx = sx + 1) {
                 Node st = nv_get(&steps, sx);
-                sb_append(&acc, st.s2);
-                sb_append(&acc, ">");
-                sb_append(&acc, st.s3);
-                sb_append(&acc, ",");
+                if (str_eq(st.s1, "rename") == 1) {
+                    sb_append(&acc, st.s2);
+                    sb_append(&acc, ">");
+                    sb_append(&acc, st.s3);
+                    sb_append(&acc, ",");
+                }
+                if (str_eq(st.s1, "drop") == 1) {
+                    sb_append(&dacc, st.s2);
+                    sb_append(&dacc, ",");
+                }
+                if (str_eq(st.s1, "retype") == 1) {
+                    sb_append(&racc, st.s2);
+                    sb_append(&racc, ",");
+                }
             }
             g.renames = bind_cons(d.s1, sb_to_str(&acc), g.renames);
+            g.drops = bind_cons(d.s1, sb_to_str(&dacc), g.drops);
+            g.retypes = bind_cons(d.s1, sb_to_str(&racc), g.retypes);
         }
     }
 }
@@ -3380,6 +3443,28 @@ def note_records(Gen &g, Node unit) {
 str renames_of(Gen &g, str table) {
     if (bind_has(g.renames, table) == 0) { return ""; }
     return bind_get(g.renames, table);
+}
+
+str drops_of(Gen &g, str table) {
+    if (bind_has(g.drops, table) == 0) { return ""; }
+    return bind_get(g.drops, table);
+}
+
+str retypes_of(Gen &g, str table) {
+    if (bind_has(g.retypes, table) == 0) { return ""; }
+    return bind_get(g.retypes, table);
+}
+
+// Whether `col` is one of the comma-terminated names in `list`.
+int names_has(str names, str col) {
+    int n = str_len(names);
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (names[i] != 44) { continue; }
+        if (str_eq(str_slice(names, start, i), col) == 1) { return 1; }
+        start = i + 1;
+    }
+    return 0;
 }
 
 // A file that carries the old name AND the new one -- see stage0.py.

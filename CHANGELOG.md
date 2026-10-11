@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### A migration can drop a column and widen one
+
+```text
+migrate Item {
+    rename price to cost;
+    drop note;
+    retype quantity to float;
+}
+```
+
+`drop` exists because deleting a field from a schema was otherwise a dead end.
+Reading the file skipped the column and the next save was refused — *"writing
+would delete that column and everything in it"* — which is the right refusal
+and offered no way forward. It is right by default and wrong once somebody has
+said, in the source, that they meant it.
+
+`retype` widens a whole number to a decimal, and only that direction. The
+loader refuses a column whose type changed, correctly, because the stored
+values are the other type; a stored `10` is as good a decimal as `10.0`, so
+widening loses nothing. Reading a decimal back as a whole number loses the
+part after the point, so it is not something a migration can declare.
+
+Both are checked like the rename: a dropped column must actually be gone from
+the table, a retyped one must be declared as the type it is widened to, and a
+migration that says otherwise does not compile.
+
+
 ### Rename, from the editor, writes the migration
 
 `strata lsp` now answers `textDocument/rename`. Renaming a column in the

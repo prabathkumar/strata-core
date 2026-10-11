@@ -395,9 +395,30 @@ next `save` writes the new shape — so one ordinary run migrates the file.
 `scan` and `rewrite` apply the same migration, because the laxest reader would
 otherwise be the real rule.
 
-A migration is checked against the schema it names: the new column must exist,
-the old one must not, and the table must be declared. It is a claim about
-stored data, and a false claim would be acted on.
+Three things a migration can say:
+
+```text
+migrate Item {
+    rename price to cost;      // the stored column has a new name
+    drop note;                 // this column is gone, and that is meant
+    retype quantity to float;  // stored whole, read as a decimal
+}
+```
+
+`drop` exists because deleting a field is otherwise a dead end: reading the
+file skips the column, and the next save is refused to protect the data it
+would delete. The refusal is right by default and wrong once somebody has
+said, in the source, that they meant it.
+
+`retype` only widens a whole number to a decimal. Reading a decimal back as a
+whole number loses the part after the point, and no declaration should be able
+to make that happen quietly.
+
+A migration is checked against the schema it names: a renamed column's new
+name must exist and its old name must not, a dropped column must be gone from
+the table, a retyped one must be declared as the type it is widened to, and
+the table itself must be declared. It is a claim about stored data, and a
+false claim would be acted on.
 
 It is deliberately not a transformation language. There are no expressions, no
 conditions and nothing computed — a migration that could run arbitrary code

@@ -446,6 +446,57 @@ def check_migration(TC &tc, Node d) {
     int n = steps.len;
     for (int i = 0; i < n; i = i + 1) {
         Node st = nv_get(&steps, i);
+        // A dropped column is one the schema no longer declares -- see
+        // typechecker.py.
+        if (str_eq(st.s1, "drop") == 1) {
+            if (sym_find(sc.fields, st.s2) != 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'");
+                sb_append(&sb, st.s2);
+                sb_append(&sb, "' is still a column of '");
+                sb_append(&sb, d.s1);
+                sb_append(&sb, "', so it has not been dropped");
+                emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
+                "A drop confirms that a column the stored file still carries is gone from this table. Remove the column first, or remove the migration");
+            }
+            continue;
+        }
+        // Only widening a whole number to a decimal -- see typechecker.py.
+        if (str_eq(st.s1, "retype") == 1) {
+            int fp = sym_find(sc.fields, st.s2);
+            if (fp == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "Column '");
+                sb_append(&sb, st.s2);
+                sb_append(&sb, "' does not exist in '");
+                sb_append(&sb, d.s1);
+                sb_append(&sb, "'");
+                StringBuilder h = sb_new();
+                sb_append(&h, "A retype widens a column this table declares. ");
+                sb_append(&h, hint_quoted("Valid columns: ", sym_names_repr(sc.fields), ""));
+                emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, sb_to_str(&h));
+                continue;
+            }
+            Sym fsym = sym_at(fp);
+            Ty fty = ty_at(fsym.ty);
+            int ok = 0;
+            if (str_eq(st.s3, "float") == 1) {
+                if (str_eq(fty.name, "float") == 1) { ok = 1; }
+            }
+            if (ok == 0) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, "'");
+                sb_append(&sb, st.s2);
+                sb_append(&sb, "' can only be widened to 'float', and '");
+                sb_append(&sb, d.s1);
+                sb_append(&sb, "' declares it as '");
+                sb_append(&sb, fty.name);
+                sb_append(&sb, "'");
+                emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
+                "A whole number stored in a file can be read as a decimal. The other direction loses the part after the point, so it is not something a migration can declare");
+            }
+            continue;
+        }
         if (sym_find(sc.fields, st.s3) == 0) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "Column '");

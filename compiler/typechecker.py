@@ -432,6 +432,44 @@ class TypeChecker:
                 continue
             names = list(cols)
             for st in d.steps:
+                if st.op == "drop":
+                    # A dropped column is one the schema no longer declares.
+                    # Saying it while the column is still there means the
+                    # migration and the schema disagree about what the table
+                    # is, and the loader would act on the migration.
+                    if st.old in names:
+                        self._error(
+                            "E004",
+                            f"'{st.old}' is still a column of '{d.table}', "
+                            f"so it has not been dropped",
+                            st.line, getattr(st, "col", 1),
+                            "A drop confirms that a column the stored file "
+                            "still carries is gone from this table. Remove "
+                            "the column first, or remove the migration")
+                    continue
+                if st.op == "retype":
+                    # Only widening a whole number to a decimal. Reading a
+                    # decimal back as a whole number loses the part after the
+                    # point, and no declaration should make that quiet.
+                    if st.old not in names:
+                        self._error(
+                            "E004",
+                            f"Column '{st.old}' does not exist in '{d.table}'",
+                            st.line, getattr(st, "col", 1),
+                            f"A retype widens a column this table declares. "
+                            f"Valid columns: {list(names)}")
+                    elif st.new != "float" or str(cols[st.old]) != "float":
+                        self._error(
+                            "E004",
+                            f"'{st.old}' can only be widened to 'float', and "
+                            f"'{d.table}' declares it as "
+                            f"'{cols[st.old]}'",
+                            st.line, getattr(st, "col", 1),
+                            "A whole number stored in a file can be read as a "
+                            "decimal. The other direction loses the part "
+                            "after the point, so it is not something a "
+                            "migration can declare")
+                    continue
                 if st.new not in names:
                     self._error(
                         "E004",

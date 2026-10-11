@@ -137,6 +137,63 @@ def main():
         ok("and the file is untouched", open(tsv).read() == STORED,
            open(tsv).read())
 
+        print("\n── dropping a column, on purpose ───────────────────────")
+        # Deleting a field from the schema is currently a dead end: reading
+        # the file skips the column, and the next save is refused to protect
+        # the data it would delete. That refusal is right by default and
+        # wrong once somebody has said, in the source, that they meant it.
+        with_note = ("#strata\tItem\tid:i\tname:s\tcost:f\tnote:s\n"
+                     "1\talpha\t10.25\tkeep\n")
+        dropped = ("database Item {\n"
+                   "    int   id;\n"
+                   "    str   name;\n"
+                   "    float cost;\n"
+                   "}\n"
+                   "\n"
+                   "migrate Item {\n"
+                   "    drop note;\n"
+                   "}\n")
+        res, out = run(proj, dropped, HEAD +
+                       'int main() {\n'
+                       '    load Item from "rows.tsv";\n'
+                       '    int s = save Item to "rows.tsv";\n'
+                       '    print(str_concat("save=", str(s)));\n'
+                       '    return 0;\n}\n', with_note)
+        ok("the save is allowed", "save=1" in res.stdout, out[-300:])
+        after = open(tsv).read()
+        ok("and the column is gone from the file", "note" not in after, after)
+        ok("the rows that remain are intact", "10.25" in after, after)
+
+        print("\n── widening a whole number to a decimal ────────────────")
+        # A column stored as a whole number, declared as a decimal now. The
+        # loader refuses a type change, correctly, because the stored values
+        # are the other type -- unless a migration says this one was widened,
+        # which loses nothing.
+        whole = ("#strata\tItem\tid:i\tname:s\tcost:i\n"
+                 "1\talpha\t10\n2\tbeta\t5\n")
+        widened = ("database Item {\n"
+                   "    int   id;\n"
+                   "    str   name;\n"
+                   "    float cost;\n"
+                   "}\n"
+                   "\n"
+                   "migrate Item {\n"
+                   "    retype cost to float;\n"
+                   "}\n")
+        res, out = run(proj, widened, HEAD +
+                       'int main() {\n'
+                       '    load Item from "rows.tsv";\n'
+                       '    list[Item] all = Item <- [id > 0];\n'
+                       '    print(str_concat("sum=", str(sum(all.cost))));\n'
+                       '    int s = save Item to "rows.tsv";\n'
+                       '    print(str_concat("save=", str(s)));\n'
+                       '    return 0;\n}\n', whole)
+        ok("the stored whole numbers read as decimals",
+           "sum=15.0" in res.stdout, out[-300:])
+        ok("and the file is written in the new shape",
+           "cost:f" in open(tsv).read().split("\n")[0],
+           open(tsv).read().split("\n")[0])
+
         print("\n── a file that carries both names ───────────────────────")
         # The migration says price became cost, and here they are side by
         # side: either the migration is stale -- nothing tells you to remove
@@ -168,6 +225,12 @@ def main():
             ("a table that is not declared",
              "migrate Nothing {\n    rename a to b;\n}\n",
              "not declared"),
+            ("a column dropped that is still there",
+             "migrate Item {\n    drop cost;\n}\n",
+             "has not been dropped"),
+            ("a narrowing retype",
+             "migrate Item {\n    retype id to float;\n}\n",
+             "can only be widened"),
         ):
             open(os.path.join(proj, "src", "schema.sta"), "w").write(
                 SCHEMA_WITHOUT + "\n" + body)

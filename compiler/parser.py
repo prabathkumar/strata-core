@@ -625,13 +625,21 @@ class Parser:
         while not self._check(TT.R_BRACE) and not self._at_end():
             st = self._peek()
             op = self._consume(TT.IDENT).value
-            if op != "rename":
+            if op not in ("rename", "drop", "retype"):
                 raise ParseError(
                     f"'{op}' is not something a migration can do; "
-                    f"a migration renames a column", st.line, st.col, self.file)
+                    f"it can rename a column, drop one, or widen one's type",
+                    st.line, st.col, self.file)
             old = self._consume(TT.IDENT).value
-            self._consume_word("to")
-            new = self._consume(TT.IDENT).value
+            new = ""
+            if op == "rename":
+                self._consume_word("to")
+                new = self._consume(TT.IDENT).value
+            elif op == "retype":
+                # The target is a type, which is a keyword rather than an
+                # identifier, so it is taken as written and checked later.
+                self._consume_word("to")
+                new = self._advance().value
             self._consume(TT.SEMICOLON)
             steps.append(MigrateStep(st.line, st.col, op, old, new))
         self._consume(TT.R_BRACE)
