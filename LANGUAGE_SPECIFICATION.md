@@ -428,6 +428,21 @@ loader's refusals exist to prevent.
 `migrate` is contextual, like `const` and `save`, so the word stays usable as
 an identifier everywhere else.
 
+### An aggregate over no rows
+
+`sum` and `count` of an empty list answer `0`: nothing adds up to zero, and
+there are none of them.
+
+`avg`, `min` and `max` have no answer — there is no average of nothing and no
+smallest of nothing. There is no value in the language that means "no answer",
+so each still returns `0` **and sets the error flag**. A program that cares
+asks `had_error()`; one that does not exits non-zero rather than printing a
+wrong number.
+
+This matters more than it looks. All three used to answer a plain `0`, which
+cannot be told apart from a real zero — a report for a month with no sales
+read as a month in which everything was free.
+
 ### Two programs writing the same table
 
 There is no lock held between reading a table and writing it, and there is

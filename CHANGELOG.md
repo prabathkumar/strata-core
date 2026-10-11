@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### An average of no rows is not zero
+
+`avg`, `min` and `max` over an empty list all answered `0`, which cannot be
+told apart from a real zero: a report for a month with no sales read as a
+month in which everything was free.
+
+None of the three has an answer over nothing — there is no average of nothing
+and no smallest of nothing. There is no value that means "no answer", so each
+still returns `0` and sets the error flag, the same bargain the rest of the
+runtime makes. `sum` and `count` are unchanged and stay silent, because
+nothing adds up to zero and there are none of them.
+
+
 ### Completion, in the two places it can be more than a word list
 
 `strata lsp` answers `textDocument/completion`. After a dot and inside a query

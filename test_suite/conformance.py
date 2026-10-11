@@ -1115,6 +1115,63 @@ compile_run("a_layout_renders_a_form",
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
 
+print("\n── An aggregate over no rows ────────────────────────────────────")
+
+# `sum` and `count` of nothing have answers: nothing adds up to zero, and
+# there are none of them. `avg`, `min` and `max` do not. All three used to
+# answer 0, and a 0 that means "no rows" cannot be told apart from a 0 that
+# means zero -- a report for an empty month read as a month in which
+# everything was free.
+compile_run("sum_and_count_of_nothing_are_answers",
+    'import io from std;\n'
+    'database Row { int id; float amount; }\n'
+    'int main() {\n'
+    '    list[Row] none = Row <- [id > 0];\n'
+    '    print(str(count(none)));\n'
+    '    print(str(sum(none.amount)));\n'
+    '    if (had_error() == 1) { print("reported"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "0\n0.0")
+
+compile_run("avg_of_nothing_says_so",
+    'import io from std;\n'
+    'database Row { int id; float amount; }\n'
+    'int main() {\n'
+    '    list[Row] none = Row <- [id > 0];\n'
+    '    print(str(avg(none.amount)));\n'
+    '    if (had_error() == 1) { print("reported"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "0.0\nreported")
+
+compile_run("min_of_nothing_says_so",
+    'import io from std;\n'
+    'database Row { int id; float amount; }\n'
+    'int main() {\n'
+    '    list[Row] none = Row <- [id > 0];\n'
+    '    print(str(min(none.amount)));\n'
+    '    if (had_error() == 1) { print("reported"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "0.0\nreported")
+
+# And an aggregate that has rows does not report anything, which is the half
+# of this that a careless fix breaks.
+compile_run("an_average_of_real_rows_is_quiet",
+    'import io from std;\n'
+    'database Row { int id; float amount; }\n'
+    'int main() {\n'
+    '    Row <- [id = 1, amount = 3.0];\n'
+    '    Row <- [id = 2, amount = 5.0];\n'
+    '    list[Row] all = Row <- [id > 0];\n'
+    '    print(str(avg(all.amount)));\n'
+    '    print(str(min(all.amount)));\n'
+    '    if (had_error() == 1) { print("WRONG"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "4.0\n3.0")
+
 print("\n── What a query gives back ──────────────────────────────────────")
 
 # A query returns the STORED ROWS, not copies of them. Writing through one

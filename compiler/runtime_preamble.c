@@ -522,7 +522,29 @@ static strata_str strata_render_end(FILE* out, char** buf) {
    row pointers and the number is at that byte offset inside each row. */
 static double strata_agg(void* list, int kind, char elem, long offset) {
     strata_int n = strata_len(list);
-    if (n <= 0 || !list) return 0.0;
+    /* No rows.
+     *
+     * `sum` and `count` have an answer: nothing adds up to zero, and there
+     * are none of them. `avg`, `min` and `max` do not -- there is no average
+     * of nothing and no smallest of nothing. All three answered 0 anyway,
+     * and a 0 that means "no rows" cannot be told apart from a 0 that means
+     * zero: a report for an empty month read as a month in which everything
+     * was free.
+     *
+     * There is no value that means "no answer", so the result is still 0 and
+     * the error flag is set -- a caller that cares asks had_error(), and one
+     * that does not gets a non-zero exit rather than a wrong number on a
+     * page. */
+    if (n <= 0 || !list) {
+        if (kind == STRATA_AGG_AVG) {
+            strata_error_set("avg of no rows: there is nothing to average");
+        } else if (kind == STRATA_AGG_MIN) {
+            strata_error_set("min of no rows: there is no smallest value");
+        } else if (kind == STRATA_AGG_MAX) {
+            strata_error_set("max of no rows: there is no largest value");
+        }
+        return 0.0;
+    }
     double acc = 0.0, best = 0.0;
     for (strata_int i = 0; i < n; i++) {
         const void* cell;
