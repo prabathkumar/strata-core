@@ -513,7 +513,10 @@ str gen_expr(Gen &g, int p) {
     Node e = node_at(p);
     int k = e.kind;
 
-    if (k == 50) { return str(e.i1); }
+    // LL, because a whole number here is 64 bits and a bare integer literal
+    // in C is 32 -- see stage0.py. The same sum gave a different answer
+    // depending on whether it was written in literals or in variables.
+    if (k == 50) { return str_concat(str(e.i1), "LL"); }
     if (k == 51) { return norm_float(e.s1); }
     if (k == 52) {
         StringBuilder sb = sb_new();
@@ -2058,6 +2061,8 @@ def gen_table_scan(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&o4));
     emit_raw(&g, "        fclose(f); return NULL;");
     emit_raw(&g, "    }");
+    gen_rename_both(&g, name, fs, "    ", "_names", "n",
+    "fclose(f); return NULL;");
     emit_raw(&g, "    int matched = 0;");
     emit_raw(&g, "    for (int c = 0; c < n; c++) {");
     emit_raw(&g, "        map[c] = -1;");
@@ -2358,8 +2363,14 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "            }");
     // A table whose last read was refused -- see stage0.py. clear_error()
     // does not reach this mark, because it belongs to the table.
+    // "Does this file hold anything?", not "does it hold columns this table
+    // knows?" -- see stage0.py. A file with no header at all still has rows
+    // in it, and the old test was false for exactly that file.
+    emit_raw(&g, "            int _holds = 0;");
+    emit_raw(&g, "            if (_pc > 0) _holds = 1;");
+    emit_raw(&g, "            if (_pc == -1) _holds = 1;   /* no header, but bytes */");
     StringBuilder pz = sb_new();
-    sb_append(&pz, "            if (_pc > 0 && strata_is_poisoned(\"");
+    sb_append(&pz, "            if (_holds && strata_is_poisoned(\"");
     sb_append(&pz, name); sb_append(&pz, "\")) {");
     emit_raw(&g, sb_to_str(&pz));
     StringBuilder pz2 = sb_new();
@@ -2369,7 +2380,7 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "                    \"the last read of this table was refused, so it does not hold what this file holds. Writing now would replace those rows. Fix the file, or read it successfully, before saving\");");
     emit_raw(&g, "                return 0;");
     emit_raw(&g, "            }");
-    emit_raw(&g, "            if (_pc > 0 && strata_had_error()) {");
+    emit_raw(&g, "            if (_holds && strata_had_error()) {");
     StringBuilder he = sb_new();
     sb_append(&he, "                strata_save_refuse(\""); sb_append(&he, name);
     sb_append(&he, "\", path,");
@@ -2564,6 +2575,8 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, sb_to_str(&t1));
     emit_raw(&g, "        fclose(f); return 0;");
     emit_raw(&g, "    }");
+    gen_rename_both(&g, name, fs, "    ", "_names", "_ncol",
+    "fclose(f); return 0;");
     emit_raw(&g, "    int _matched = 0;");
     emit_raw(&g, "    for (int _c = 0; _c < _ncol; _c++) {");
     emit_raw(&g, "        _map[_c] = -1;");
@@ -3367,6 +3380,79 @@ def note_records(Gen &g, Node unit) {
 str renames_of(Gen &g, str table) {
     if (bind_has(g.renames, table) == 0) { return ""; }
     return bind_get(g.renames, table);
+}
+
+// A file that carries the old name AND the new one -- see stage0.py.
+//
+// The migration says one became the other; here they are side by side. Either
+// the migration is stale, or this file came from somewhere else. Mapping the
+// old name onto the new column would silently drop whichever lost.
+def gen_rename_both(Gen &g, str name, NodeVec fs, str indent, str names,
+str ncol, str fail) {
+    str pairs = renames_of(&g, name);
+    int np = str_len(pairs);
+    int start = 0;
+    for (int i = 0; i < np; i = i + 1) {
+        if (pairs[i] != 44) { continue; }
+        str pair = str_slice(pairs, start, i);
+        start = i + 1;
+        int arrow = str_index_of(pair, ">");
+        if (arrow < 0) { continue; }
+        str old = str_slice(pair, 0, arrow);
+        str fresh = str_slice(pair, arrow + 1, str_len(pair));
+        int known = 0;
+        for (int f = 0; f < fs.len; f = f + 1) {
+            Node fd = nv_get(&fs, f);
+            if (str_eq(fd.s1, fresh) == 1) { known = 1; }
+        }
+        if (known == 0) { continue; }
+        StringBuilder b1 = sb_new();
+        sb_append(&b1, indent); sb_append(&b1, "{");
+        emit_raw(&g, sb_to_str(&b1));
+        StringBuilder b2 = sb_new();
+        sb_append(&b2, indent); sb_append(&b2, "    int _has_old = 0, _has_new = 0;");
+        emit_raw(&g, sb_to_str(&b2));
+        StringBuilder b3 = sb_new();
+        sb_append(&b3, indent); sb_append(&b3, "    for (int _r = 0; _r < ");
+        sb_append(&b3, ncol); sb_append(&b3, "; _r++) {");
+        emit_raw(&g, sb_to_str(&b3));
+        StringBuilder b4 = sb_new();
+        sb_append(&b4, indent); sb_append(&b4, "        if (strcmp(");
+        sb_append(&b4, names); sb_append(&b4, "[_r], \"");
+        sb_append(&b4, old); sb_append(&b4, "\") == 0) _has_old = 1;");
+        emit_raw(&g, sb_to_str(&b4));
+        StringBuilder b5 = sb_new();
+        sb_append(&b5, indent); sb_append(&b5, "        if (strcmp(");
+        sb_append(&b5, names); sb_append(&b5, "[_r], \"");
+        sb_append(&b5, fresh); sb_append(&b5, "\") == 0) _has_new = 1;");
+        emit_raw(&g, sb_to_str(&b5));
+        StringBuilder b6 = sb_new();
+        sb_append(&b6, indent); sb_append(&b6, "    }");
+        emit_raw(&g, sb_to_str(&b6));
+        StringBuilder b7 = sb_new();
+        sb_append(&b7, indent); sb_append(&b7, "    if (_has_old && _has_new) {");
+        emit_raw(&g, sb_to_str(&b7));
+        StringBuilder b8 = sb_new();
+        sb_append(&b8, indent);
+        sb_append(&b8, "        strata_load_refuse(\"");
+        sb_append(&b8, name);
+        sb_append(&b8, "\", path, \"it carries both '");
+        sb_append(&b8, old);
+        sb_append(&b8, "' and '");
+        sb_append(&b8, fresh);
+        sb_append(&b8, "', and a migration says the first became the second. Reading it would drop one of them. The migration is spent, or this file is not from this table\");");
+        emit_raw(&g, sb_to_str(&b8));
+        StringBuilder b9 = sb_new();
+        sb_append(&b9, indent); sb_append(&b9, "        ");
+        sb_append(&b9, fail);
+        emit_raw(&g, sb_to_str(&b9));
+        StringBuilder b10 = sb_new();
+        sb_append(&b10, indent); sb_append(&b10, "    }");
+        emit_raw(&g, sb_to_str(&b10));
+        StringBuilder b11 = sb_new();
+        sb_append(&b11, indent); sb_append(&b11, "}");
+        emit_raw(&g, sb_to_str(&b11));
+    }
 }
 
 // A column the file still calls by its old name -- see stage0.py.

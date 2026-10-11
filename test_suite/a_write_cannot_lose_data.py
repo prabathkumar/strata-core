@@ -118,6 +118,45 @@ def main():
         ok("and the good rows are still there",
            open(tsv).read() == badrow, open(tsv).read())
 
+        # A file with no header at all. The loader refuses it -- it cannot
+        # tell which column is which -- and the guard that stops a save
+        # replacing those rows asked "does this file hold columns this table
+        # knows?" rather than "does this file hold anything?". For exactly
+        # this file the answer to the first was no, so the one kind of file
+        # the loader refuses for being unreadable was the one kind a save was
+        # then allowed to destroy. A spreadsheet exported with a byte order
+        # mark lands here too.
+        headerless = "1\talpha\t10.25\n2\tbeta\t4.75\n"
+        res, out = run(proj, PRODUCT,
+                       'import io     from std;\n'
+                       'import schema from app;\n\n'
+                       'int main() {\n'
+                       '    load Product from "rows.tsv";\n'
+                       '    Product <- [id = 9, name = "new", price = 1.0];\n'
+                       '    int s = save Product to "rows.tsv";\n'
+                       '    print(str_concat("save=", str(s)));\n'
+                       '    clear_error();\n'
+                       '    return 0;\n}\n',
+                       {"rows.tsv": headerless})
+        ok("a file with no header is not replaced either",
+           "save=0" in res.stdout, res.stdout.strip())
+        ok("and its rows are still there",
+           open(tsv).read() == headerless, open(tsv).read())
+
+        print("\n── arithmetic that changes with where it is written ─────")
+        res, out = run(proj, PRODUCT,
+                       'import io from std;\n\n'
+                       'int main() {\n'
+                       '    print(str(2147483647 + 1));\n'
+                       '    int a = 100000;\n'
+                       '    print(str(100000 * 100000));\n'
+                       '    print(str(a * a));\n'
+                       '    return 0;\n}\n')
+        ok("a literal sum does not wrap at 32 bits",
+           "2147483648" in res.stdout, res.stdout.strip())
+        ok("literals and variables give the same answer",
+           res.stdout.count("10000000000") == 2, res.stdout.strip())
+
         print("\n── a value too long to store ────────────────────────────")
         res, out = run(proj, PRODUCT,
                        'import io     from std;\n'

@@ -610,12 +610,21 @@ int main(int argc, char** argv) {
         # the pattern the tutorial teaches ended in the file being replaced by
         # an empty table. The mark belongs to the table and clear_error() does
         # not reach it.
-        self.emit_raw(f'            if (_pc > 0 && strata_is_poisoned("{name}")) {{')
+        # "Does this file hold anything?", not "does it hold columns this
+        # table knows?". A file with no header at all still has rows in it,
+        # and `_pc > 0` was false for exactly that file -- so the one kind of
+        # file the loader refuses for being unreadable was the one kind a save
+        # was then allowed to replace. A spreadsheet exported with a byte
+        # order mark lands here too.
+        self.emit_raw("            int _holds = 0;")
+        self.emit_raw("            if (_pc > 0) _holds = 1;")
+        self.emit_raw("            if (_pc == -1) _holds = 1;   /* no header, but bytes */")
+        self.emit_raw(f'            if (_holds && strata_is_poisoned("{name}")) {{')
         self.emit_raw(f'                strata_save_refuse("{name}", path,')
         self.emit_raw('                    "the last read of this table was refused, so it does not hold what this file holds. Writing now would replace those rows. Fix the file, or read it successfully, before saving");')
         self.emit_raw("                return 0;")
         self.emit_raw("            }")
-        self.emit_raw("            if (_pc > 0 && strata_had_error()) {")
+        self.emit_raw("            if (_holds && strata_had_error()) {")
         self.emit_raw(f'                strata_save_refuse("{name}", path,')
         self.emit_raw('                    "something failed earlier in this program and was not handled, so writing now would replace the rows already in this file with whatever is in memory. Handle it with had_error() and clear_error(), or let the program stop");')
         self.emit_raw("                return 0;")
@@ -746,6 +755,8 @@ int main(int argc, char** argv) {
         self.emit_raw(f'        strata_load_refuse("{name}", path, _why);')
         self.emit_raw("        fclose(f); return 0;")
         self.emit_raw("    }")
+        self._gen_rename_both(name, fields, "    ", "_names", "_ncol",
+                              "fclose(f); return 0;")
         self.emit_raw("    int _matched = 0;")
         self.emit_raw("    for (int _c = 0; _c < _ncol; _c++) {")
         self.emit_raw("        _map[_c] = -1;")
@@ -1023,6 +1034,36 @@ int main(int argc, char** argv) {
         self.emit_raw(f"{i}    {fail}")
         self.emit_raw(f"{i}}}")
 
+    def _gen_rename_both(self, name, fields, indent, names, ncol, fail):
+        """A file that carries the old name AND the new one.
+
+        The migration says one became the other; here they are side by side.
+        Either the migration is stale -- it was left in the schema after the
+        files were migrated, which nothing tells you to clean up -- or this
+        file came from somewhere else. Mapping the old name onto the new
+        column would silently drop whichever lost, so nothing is mapped and
+        the developer is told which two columns are in question.
+        """
+        declared = {fd.name for fd in fields}
+        for old, new in self.renames.get(name, []):
+            if new not in declared:
+                continue
+            self.emit_raw(f"{indent}{{")
+            self.emit_raw(f"{indent}    int _has_old = 0, _has_new = 0;")
+            self.emit_raw(f"{indent}    for (int _r = 0; _r < {ncol}; _r++) {{")
+            self.emit_raw(f'{indent}        if (strcmp({names}[_r], "{old}") == 0) _has_old = 1;')
+            self.emit_raw(f'{indent}        if (strcmp({names}[_r], "{new}") == 0) _has_new = 1;')
+            self.emit_raw(f"{indent}    }}")
+            self.emit_raw(f"{indent}    if (_has_old && _has_new) {{")
+            self.emit_raw(f'{indent}        strata_load_refuse("{name}", path, '
+                          f'"it carries both \'{old}\' and \'{new}\', and a '
+                          f'migration says the first became the second. Reading '
+                          f'it would drop one of them. The migration is spent, '
+                          f'or this file is not from this table");')
+            self.emit_raw(f"{indent}        {fail}")
+            self.emit_raw(f"{indent}    }}")
+            self.emit_raw(f"{indent}}}")
+
     def _gen_renames(self, name, fields, indent, names, types, cmap, fail):
         """A column the file still calls by its old name.
 
@@ -1039,6 +1080,11 @@ int main(int argc, char** argv) {
             idx, fd = by_name[new]
             ct = self._c_type(fd.field_type)
             tc = "s" if ct == "strata_str" else ("f" if ct == "strata_float" else "i")
+            # The file carries BOTH names. The migration said one became
+            # the other, and here they are side by side -- so the migration
+            # is stale, or the file is from somewhere else. Mapping the old
+            # name onto the new column would quietly drop whichever lost, so
+            # neither is touched and the developer is told.
             self.emit_raw(f'{indent}if (strcmp({names}, "{old}") == 0) {{')
             self.emit_raw(f"{indent}    if ({types} != '{tc}') {{")
             self.emit_raw(f'{indent}        strata_load_refuse("{name}", path, '
@@ -1122,6 +1168,8 @@ int main(int argc, char** argv) {
         self.emit_raw(f'        strata_load_refuse("{name}", path, _why);')
         self.emit_raw("        fclose(f); return NULL;")
         self.emit_raw("    }")
+        self._gen_rename_both(name, fields, "    ", "_names", "n",
+                              "fclose(f); return NULL;")
         self.emit_raw("    int matched = 0;")
         self.emit_raw("    for (int c = 0; c < n; c++) {")
         self.emit_raw("        map[c] = -1;")
@@ -2590,7 +2638,12 @@ int main(int argc, char** argv) {
 
     def _gen_expr(self, expr, param_names=None):
         if param_names is None: param_names = []
-        if isinstance(expr, IntLiteral): return str(expr.value)
+        # LL, because a whole number in this language is 64 bits and a bare
+        # integer literal in C is 32. `2147483647 + 1` folded at compile time
+        # and wrapped to a negative number, while the same sum in variables
+        # was right -- the answer changed depending on where the numbers were
+        # written, which is the worst kind of wrong.
+        if isinstance(expr, IntLiteral): return f"{expr.value}LL"
         if isinstance(expr, FloatLiteral): return str(expr.value)
         if isinstance(expr, StrLiteral):
             return _c_string(expr.value)

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Two more ways to lose data, and arithmetic that changed its mind
+
+A twelfth pilot found the one file the loader refuses that a save was still
+allowed to replace. The guard asked "does this file hold columns this table
+knows?" when the question is "does this file hold anything?" — and for a file
+with **no header at all**, which the loader refuses because it cannot tell
+which column is which, the answer to the first was no. So the one kind of
+file the compiler calls unreadable was the one kind a save then destroyed. A
+spreadsheet exported with a byte order mark lands in exactly that case.
+
+And a file carrying **both** the old and the new column name, while a
+migration says one became the other: either the migration is stale, or the
+file came from somewhere else. Reading it dropped whichever lost, silently.
+Both names present is now a refusal that says so.
+
+Integer arithmetic gave a different answer depending on where the numbers
+were written. `2147483647 + 1` printed a negative number and `100000 *
+100000` printed 1410065408, while the same sums in variables were right: a
+whole number here is 64 bits and a bare integer literal in C is 32, so the C
+compiler folded them at the wrong width. Literals carry their width now.
+
+
 ### A stored table can be changed
 
 Renaming a column used to be the end of the road for a table that already had

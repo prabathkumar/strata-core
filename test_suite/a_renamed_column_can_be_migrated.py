@@ -137,6 +137,26 @@ def main():
         ok("and the file is untouched", open(tsv).read() == STORED,
            open(tsv).read())
 
+        print("\n── a file that carries both names ───────────────────────")
+        # The migration says price became cost, and here they are side by
+        # side: either the migration is stale -- nothing tells you to remove
+        # one once the files are migrated -- or this file is from somewhere
+        # else. Mapping one onto the other would silently drop whichever lost.
+        both = ("#strata\tItem\tid:i\tname:s\tprice:f\tcost:f\n"
+                "1\talpha\t10.25\t4.75\n")
+        res, out = run(proj, SCHEMA_WITH, HEAD +
+                       'int main() {\n'
+                       '    load Item from "rows.tsv";\n'
+                       '    int s = save Item to "rows.tsv";\n'
+                       '    print(str_concat("save=", str(s)));\n'
+                       '    clear_error();\n'
+                       '    return 0;\n}\n', both)
+        ok("the read is refused", "carries both" in out, out[-300:])
+        ok("the save is refused too", "save=0" in res.stdout,
+           res.stdout.strip())
+        ok("and neither column is lost", open(tsv).read() == both,
+           open(tsv).read())
+
         print("\n── a migration that is not true ─────────────────────────")
         for label, body, expect in (
             ("a column that does not exist",
