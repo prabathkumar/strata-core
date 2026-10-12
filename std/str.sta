@@ -93,6 +93,32 @@ str str_fixed(float value, int places) {
 // writing the same loop.
 
 // Several pieces, one after another, with nothing between them.
+// ── Text that is not only ASCII ──────────────────────────────────────────
+//
+// A `str` is bytes. `str_len` counts bytes and an index is a byte, which is
+// the honest thing for a systems language: it is what the file holds and what
+// the page is sent. It is also a trap in one specific place -- cutting.
+//
+// A name trimmed to a column width used to land in the middle of an accented
+// letter, and what came out was not text any more. `str_slice` refuses that
+// now. These two are what to reach for instead.
+
+// How many characters the text has, as against how many bytes.
+//
+//   str_len("héllo")   is 6
+//   str_chars("héllo") is 5
+int str_chars(str value) {
+    native "return strata_str_chars($value);";
+}
+
+// At most `max_bytes` bytes, ending where a character ends.
+//
+// For a column width, a label, a fixed-width record: the result is never
+// longer than asked and is always whole text.
+str str_truncate(str value, int max_bytes) {
+    native "return strata_str_truncate($value, $max_bytes);";
+}
+
 str str_cat(list[str] parts) {
     StringBuilder sb = sb_new();
     for p in parts {

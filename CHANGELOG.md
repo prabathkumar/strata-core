@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Cutting text can no longer break it
+
+A `str` is bytes, and an index is a byte. That stays: it is the honest thing
+for a systems language, it is what the stored file holds and what the page is
+sent, and changing it would make every index mean something different.
+
+The hazard was cutting. A name trimmed to a column width landed in the middle
+of an accented letter, and what came out was not text any more — it went into
+a file and onto a page as a broken byte nobody could explain. `str_slice`
+refuses to cut there now and says which two positions were asked for.
+
+Two functions in `std/str` are what to use instead: `str_chars` counts
+characters rather than bytes, and `str_truncate(value, max_bytes)` cuts where
+a character ends — never longer than asked, always whole text.
+
+Slicing plain ASCII is untouched, which is the half of this a careless guard
+breaks, so it is tested too.
+
+
 ### An average of no rows is not zero
 
 `avg`, `min` and `max` over an empty list all answered `0`, which cannot be

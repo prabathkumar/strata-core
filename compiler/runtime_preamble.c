@@ -374,12 +374,49 @@ static strata_float strata_div_float(strata_float a, strata_float b) {
 static strata_int str_to_int(strata_str s) {
     return strata_str_to_int_checked(s);
 }
+/* A byte in the middle of a character.
+ *
+ * Text here is bytes, which is the honest thing for a systems language and
+ * is what every index and length means. The hazard is cutting: a name
+ * trimmed to a column width landed in the middle of an accented letter, and
+ * what came out was not text any more -- it went into a file and onto a page
+ * as a broken byte nobody could explain. */
+static int strata_mid_character(strata_str s, strata_int at) {
+    if (at <= 0) return 0;
+    unsigned char c = (unsigned char)s[at];
+    return c >= 0x80 && c < 0xC0;
+}
 static strata_str str_slice(strata_str s, strata_int start, strata_int end) {
     strata_int len=(strata_int)strlen(s);
     if(start<0)start=0; if(end>len)end=len;
     strata_int sz=end-start; if(sz<=0)return "";
+    if (strata_mid_character(s, start) || strata_mid_character(s, end)) {
+        strata_error_set("str_slice(%lld, %lld) would cut a character in half; "
+                         "a length here counts bytes, and str_truncate cuts "
+                         "where a character ends",
+                         (long long)start, (long long)end);
+        return "";
+    }
     strata_str r=(strata_str)strata_scratch_alloc(sz+1);
     memcpy(r,s+start,sz); r[sz]='\0'; return r;
+}
+/* How many characters, as against how many bytes. */
+static strata_int strata_str_chars(strata_str s) {
+    strata_int n = 0;
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        if (*p < 0x80 || *p >= 0xC0) n++;
+    }
+    return n;
+}
+/* At most `cap` bytes, ending where a character ends. */
+static strata_str strata_str_truncate(strata_str s, strata_int cap) {
+    strata_int len = (strata_int)strlen(s);
+    if (cap < 0) cap = 0;
+    if (cap >= len) return s;
+    while (cap > 0 && strata_mid_character(s, cap)) cap--;
+    strata_str r = (strata_str)strata_scratch_alloc(cap + 1);
+    memcpy(r, s, cap); r[cap] = '\0';
+    return r;
 }
 static strata_int str_index_of(strata_str h, strata_str n) {
     char* p=strstr(h,n); return p?(strata_int)(p-h):-1;

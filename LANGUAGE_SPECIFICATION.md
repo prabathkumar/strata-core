@@ -428,6 +428,27 @@ loader's refusals exist to prevent.
 `migrate` is contextual, like `const` and `save`, so the word stays usable as
 an identifier everywhere else.
 
+### Text is bytes
+
+A `str` is bytes. `str_len` counts bytes, and an index is a byte. That is the
+honest thing for a systems language — it is what the stored file holds and
+what the page is sent — and it means `str_len("héllo")` is 6, not 5.
+
+It is a trap in exactly one place: **cutting**. A name trimmed to a column
+width can land in the middle of an accented letter, and what comes out is not
+text any more. So `str_slice` refuses to cut there, and sets the error flag
+rather than producing a broken byte that reaches a file or a page.
+
+Two functions in `std/str` are what to reach for:
+
+```text
+str_chars("héllo")          // 5 — characters, not bytes
+str_truncate(name, 20)      // at most 20 bytes, ending where a character does
+```
+
+`str_truncate` is the one for a column width, a label or a fixed-width record:
+never longer than asked, always whole text.
+
 ### An aggregate over no rows
 
 `sum` and `count` of an empty list answer `0`: nothing adds up to zero, and

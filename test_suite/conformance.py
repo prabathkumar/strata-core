@@ -1115,6 +1115,60 @@ compile_run("a_layout_renders_a_form",
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>w</title><body><form action="/x" method="post"><input name="who" placeholder="name"><button type="submit">Go</button></form></body>')
 
 
+print("\n── Text that is not only ASCII ──────────────────────────────────")
+
+# A `str` is bytes, and an index is a byte. That is the honest thing for a
+# systems language -- it is what the file holds and what the page is sent --
+# and it is a trap in exactly one place: cutting. A name trimmed to a column
+# width landed in the middle of an accented letter, and what came out was not
+# text any more.
+compile_run("a_length_counts_bytes_and_chars_counts_characters",
+    'import io  from std;\n'
+    'import str from std;\n'
+    'int main() {\n'
+    '    str name = "h\u00e9llo";\n'
+    '    print(str(str_len(name)));\n'
+    '    print(str(str_chars(name)));\n'
+    '    return 0;\n'
+    '}\n',
+    "6\n5")
+
+compile_run("cutting_a_character_in_half_is_refused",
+    'import io  from std;\n'
+    'import str from std;\n'
+    'int main() {\n'
+    '    str name = "h\u00e9llo";\n'
+    '    print(str_slice(name, 0, 2));\n'
+    '    if (had_error() == 1) { print("refused"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "\nrefused")
+
+# What to reach for instead: never longer than asked, always whole text.
+compile_run("truncate_cuts_where_a_character_ends",
+    'import io  from std;\n'
+    'import str from std;\n'
+    'int main() {\n'
+    '    str name = "h\u00e9llo";\n'
+    '    print(str_truncate(name, 2));\n'
+    '    print(str_truncate(name, 5));\n'
+    '    print(str_truncate(name, 99));\n'
+    '    if (had_error() == 1) { print("WRONG"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "h\nh\u00e9ll\nh\u00e9llo")
+
+# And plain ASCII slicing is untouched, which is the half a careless guard
+# breaks.
+compile_run("slicing_ascii_is_unaffected",
+    'import io from std;\n'
+    'int main() {\n'
+    '    print(str_slice("abcdef", 1, 4));\n'
+    '    if (had_error() == 1) { print("WRONG"); clear_error(); }\n'
+    '    return 0;\n'
+    '}\n',
+    "bcd")
+
 print("\n── An aggregate over no rows ────────────────────────────────────")
 
 # `sum` and `count` of nothing have answers: nothing adds up to zero, and
