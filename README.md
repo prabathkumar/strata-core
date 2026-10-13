@@ -7,8 +7,8 @@ any employer or client.*
 
 > **GitHub says this repository is Python. It is not.** GitHub detects
 > languages with Linguist, which has never heard of `.sta`, so it counts what
-> it recognises and ignores 15,830 lines across 117 Strata files — the
-> compiler, the standard library and the applications. The 14,410 lines of
+> it recognises and ignores 19,672 lines across 137 Strata files — the
+> compiler, the standard library and the applications. The 19,841 lines of
 > Python it does count are the reference implementation that the Strata
 > compiler is checked against on every commit, and the test suite that does
 > the checking. A grammar for `.sta` lives in `editor/strata-grammar/` as a
@@ -92,10 +92,11 @@ them together.
 
 | Tier | In Strata | Where it stands |
 |---|---|---|
-| **Database** | `database` blocks; tab-separated files or PostgreSQL, with schema migration | Working. No index, no joins, and a table loads whole unless you stream it with `scan`/`append`/`rewrite`. |
+| **Database** | `database` blocks; tab-separated files or PostgreSQL, with declared migrations | Working. A `migrate` block renames, drops and widens a column on data you already have. Two runs that would lose each other's work are refused rather than allowed. No index, no joins, and a table loads whole unless you stream it with `scan`/`append`/`rewrite`. |
 | **Backend** | `stream` handlers, an HTTP server in `std/http.sta`, sessions and password hashing in `std/auth.sta` | Working. Forked worker per connection; no async, no concurrency. |
 | **Web** | `layout` blocks compiling to HTML | Server-rendered. A button posts to a route; nothing in the page calls back into Strata, because Strata emits no JavaScript. |
 | **Mobile** | five C functions the phone shell calls; Swift and Kotlin shells in `apps/orders_mobile/` | **Runs on physical iPhone and Android handsets.** Swift calls the compiler's own object through a bridging header; Kotlin reaches the same five functions through JNI. No glue layer, no cross-platform framework, no web view. |
+| **The editor** | `strata lsp` — a language server that *is* the compiler, linked in rather than approximated | Diagnostics as you type, hover, go-to-definition, the outline, completion, and a rename that writes your schema migration for you. Any editor that speaks the protocol; a VS Code extension is in `editor/`. |
 
 #### The web tier, running
 
@@ -399,15 +400,15 @@ exceptions. What you build with Strata is yours.
 
 | | |
 |---|---|
-| Language | 11,700 lines of Strata in this repository — the compiler, the standard library, three applications and the examples |
-| Compiler | Self-hosting front end: lexer, parser, type checker and code generator written in Strata, 7,500 lines, **2.2% `native`**. Each is checked against an independent Python implementation on every commit — tokens, syntax trees, diagnostics and generated C compared byte for byte |
+| Language | 19,700 lines of Strata in this repository — the compiler, the standard library, three applications and the examples |
+| Compiler | Self-hosting front end: lexer, parser, type checker and code generator written in Strata, 13,300 lines, **1.9% `native`**. Each is checked against an independent Python implementation on every commit — tokens, syntax trees, diagnostics and generated C compared byte for byte |
 | Fixpoint | The front end rebuilt from C it generated itself reproduces that C exactly |
-| Standard library | 15 modules that compile, link and run |
+| Standard library | 17 modules that compile, link and run |
 | Applications | An orders web service, a financial ledger, and a phone app — all on one schema definition each |
 | Storage | Tab-separated files or PostgreSQL, chosen by changing a string; writes send only the rows that changed |
 | Surfaces | One `layout` renders as a web page and draws as a phone screen |
-| Tests | 23 suites — 185 conformance cases and 9 end-to-end journeys that install the toolchain, build a service, change it, deploy it in Docker, flood it, operate it, talk to a real PostgreSQL, and run the same rules on a phone's processor |
-| CI | 34 steps on every push, including a real PostgreSQL 16 and an ARM64 cross-compiler and emulator |
+| Tests | 56 suites — 231 conformance cases and 9 end-to-end journeys that install the toolchain, build a service, change it, deploy it in Docker, flood it, operate it, talk to a real PostgreSQL, and run the same rules on a phone's processor |
+| CI | 75 steps on every push, including a real PostgreSQL 16 and an ARM64 cross-compiler and emulator |
 
 The journeys are the unusual part. Each walks a whole path a person would
 take, end to end, and fails if any step of it does: 26 checks for using the
@@ -1308,21 +1309,25 @@ an agent reads the structured diagnostic, patches, and rebuilds — with the
 developer reviewing a diff rather than hunting a stack trace. Because the
 taxonomy travels with every error, the agent needs no prior knowledge of Strata.
 
-**Types that reach the screen.** The goal is a contract checked from the database
-index all the way onto the client: rename a column in a `database` block, and the
-build fails on the line of UI that rendered it. Not a runtime 500 — a build
-error, before anything ships. This is the reason Strata exists as a language
-rather than a library.
+**Types that reach the screen.** This one has arrived and is listed here only
+because it is the reason the language exists: rename a column in a `database`
+block and the build fails on the line of UI that rendered it, on the web page
+and on the phone screen. Not a runtime 500 — a build error, before anything
+ships. `site.yml` renames a column on every commit and counts the failures per
+tier. What is still direction is the rest of this section.
 
 **Migration as a mechanical act.** If contracts are explicit and compiler-checked,
 translating an existing Java or C# service becomes something a model performs and
 a compiler verifies, instead of a rewrite a team has to take on faith. The
 compiler is what makes the translation trustworthy.
 
-**Models as declarations.** `model` blocks already declare tensor shapes and the
-compiler already enforces them (`E006`). What does not exist is an inference
-runtime. The intent is that a shape mismatch is a build error rather than a
-production exception — the same argument as the database contract, applied to ML.
+**Models as declarations.** `model` blocks declare tensor shapes, the compiler
+enforces them (`E006`), and a forward pass runs — a stack of dense layers with
+weights loaded from a file, and a file with the wrong weight count refused
+rather than loaded in part. A shape mismatch is a build error rather than a
+production exception, which is the database contract applied to ML. What does
+not exist is training, autograd, convolution or attention, or any accelerator:
+this is inference, and deliberately small.
 
 ### Loops, assignment and indexing
 
@@ -1361,12 +1366,21 @@ non-integer, or indexing something that is not a list, is caught at build time.
 Everything above is what works. This is what does not, and it is the
 section to read before you decide anything.
 
-It is pre-release, weeks old, and written by one person. It has no ecosystem,
-nobody else knows it yet, and it is not something to put a production system
+It is pre-release and written by one person. It has no ecosystem, nobody else
+has built anything with it, and it is not something to put a production system
 on today. It has run on physical phones, through a device farm rather than
-through a store. There is no package registry.
-`ast`, `lex`, `test` and `repair` still go through Python. The roadmap below
-is exhaustive about the rest rather than quiet about it.
+through a store. There is no package registry, no dates or times, no HTTP
+client, no TLS and no decimal type — money is a float, which is wrong for
+money and is written down rather than hidden. `ast`, `lex`, `test` and
+`repair` still go through Python.
+
+Twelve blind pilots have been run: a fresh evaluator given a clean checkout,
+no history, and one question — could your team adopt this? Every round found
+something, most rounds found something that destroys data, and every finding
+is fixed with a test that names the round that found it. That is the honest
+summary: the language is getting harder to break, and it is still being
+broken. The roadmap below is exhaustive about the rest rather than quiet
+about it.
 
 What it is instead: a demonstration that the idea works, tested harder than
 most shipped software. Every code example in this file is compiled on every
@@ -1406,18 +1420,22 @@ judgement says.
 | Every error code means what the taxonomy says it means | `json_diag_diff.py` compares classification and remediation, not just the code |
 | Repair never guesses when it should refuse | `self_repair.py`; `E009` and an ambiguous column both refuse and exit non-zero |
 | A repair that fails leaves the files untouched | `self_repair.py` restores on every unresolved loop |
-| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 105 generated files identical. **This is an agreement check, not a proof of correctness.** A mistake made the same way in both passes it cleanly: the truncated-row bug was in both, and this row stayed green while `load` dropped data |
+| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 114 generated files identical. **This is an agreement check, not a proof of correctness.** A mistake made the same way in both passes it cleanly: the truncated-row bug was in both, and this row stayed green while `load` dropped data |
 | The compiler builds itself, and the result builds itself | `fixpoint.py` |
 | It installs and runs on a machine that has never seen it | `clean_checkout.py`, `journey_install.py`, and a macOS job that is a genuinely clean machine |
 | Every example in the documentation compiles | `doc_examples.py` on every commit |
 | The first hour works as written | `first_hour.py`, 27 checks |
+| A write never destroys what it did not mean to | `a_write_cannot_lose_data.py` — a refused read, a value too long to store, a crash mid-save, a column the schema dropped, and a file with no header: 21 checks, each one a way a pilot actually destroyed data |
+| Two runs cannot lose each other's work in silence | `two_runs_do_not_lose_an_update.py` — one program holds its read while another writes; the save that would discard it is refused. Sixteen concurrent runs end with the file holding exactly the number of saves that succeeded |
+| A stored table can be changed after it has data in it | `a_renamed_column_can_be_migrated.py` — 33 checks over `rename`, `drop` and `retype`, including every way a migration can be a false claim |
+| The editor and the build never disagree | `the_editor_sees_what_the_build_sees.py` — the language server is the compiler, and a half-typed buffer gets a marker rather than a dead editor |
 | It runs on physical phones, both platforms | iPhone built for `arm64-apple-ios` against the iPhoneOS SDK; Android built by the NDK for three ABIs. Both installed on real devices through BrowserStack, 1 October — an iPhone and a Pixel 7 on Android 13 |
 
 ### Not met
 
 | Condition | What is missing |
 |---|---|
-| A developer who has never seen Strata gets through a first project without a stopper | A third blind pilot, with nothing fixed for them in advance. Two have been run; both found stoppers, both sets are fixed. The third is the test that counts. |
+| A developer who has never seen Strata gets through a first project without a stopper | **Two consecutive pilot rounds with no data loss and no silently wrong answer.** Twelve rounds have been run and the counter is at zero: the twelfth found a file the loader refuses that a save could still destroy, and a stale migration that dropped a column. Both are fixed, with tests. One clean round is not the bar, because one clean round is luck. |
 | Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
 | A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
 
@@ -1460,7 +1478,7 @@ what runs and what is planned is unambiguous.
 | Area | Status |
 |------|--------|
 | Loops (`while`, `for`), assignment statements, array indexing | **Done.** Phase 1. Declaration without an initialiser (`int n;`) zeroes rather than leaving the stack's contents. |
-| Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 3,250 lines, 3% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
+| Self-hosting compiler (`compiler/*.sta`) | **Done for the front end.** Lexer, parser, type checker and code generator are written in Strata — 13,300 lines, 1.9% `native`. Each matches its Python counterpart exactly, and the fixpoint holds: the front end rebuilt from C it generated itself reproduces that C byte for byte. |
 | `layout` blocks and the UI tier | **Checked and rendering.** A field rendered in a `layout` resolves against the database schema at build time, and layouts compile to a function that writes HTML. Server-rendered; no client-side interactivity. |
 | WebAssembly target | **Working for computation.** `--target wasm` emits freestanding C that clang builds into a module exporting every top-level function. No libc: a bump allocator, no file I/O, and `print` goes through one imported host function. Not a UI story — WebAssembly has no direct DOM access, so any UI needs a JavaScript interop shim, as it does for every WASM framework. |
 | `verify` blocks | **Done.** `strata test` builds and runs them, reporting each failed assertion with its line and source. Nested `assert "label" { ... }` groups are supported. No fixtures, no setup/teardown, no parallelism. |
@@ -1485,7 +1503,7 @@ what runs and what is planned is unambiguous.
 | `E007` / `E008` | E007 is the first advisory: an import with no local checkout is reported without stopping the build. E008 catches a bare name inside a query that is also a variable in scope — the column wins silently, so `Session <- [token == token]` compares the column with itself and matches every row. |
 | Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. `apps/orders` adds a CSRF token on every form and every write, a five-strike account lockout that answers identically for a locked account whatever was typed, and a 64-connection cap. A lockout is counted against the **pair** of account and source. Against the account alone it hands anybody a way to lock an operator out of their own service — guess wrong five times at a username you do not own. Against the source alone, everyone behind one office connection or a load balancer looks like a single address, so one careless colleague locks out the building. `journey_operate` proves it from a genuinely different source (`127.0.0.2`): the guesser stays locked and the operator signs in. What the pair does not stop is one source spreading attempts across many usernames — that needs a rate limit, which this is not. Expired sessions and stale lockouts are swept on a clock by the accept loop, so an idle service still tidies up rather than growing forever. Still no password policy and no reset flow. |
 | Formatter (`strata fmt`) | **Canonical indentation.** Written in Strata. Re-indents by brace depth, strips trailing whitespace, collapses blank runs, ends the file with one newline. It rewrites only leading whitespace, so comments survive and the inside of a `native` block is byte-identical — the lexer discards comments, so anything reprinting from tokens would delete them. It does **not** re-wrap lines, normalise spacing around operators, or sort anything. Two properties are tested over every file in the repo: the syntax tree is unchanged, and formatting is idempotent. CI fails if any tracked source is not canonical. |
-| Standard library | **Fifteen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `cli`, `json`, `http`, `auth`, `metrics`, `postgres`, `ui`, `ml`, `simd_math`, `telemetry`, `testing`. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did; `ui` describes a phone screen as a table of things to draw. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
+| Standard library | **Seventeen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `cli`, `json`, `toml`, `os`, `http`, `auth`, `metrics`, `postgres`, `ui`, `ml`, `simd_math`, `telemetry`, `testing`. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did; `ui` describes a phone screen as a table of things to draw. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
 | Mobile: rules on the device | **Done and measured.** The rules compile for a phone's processor and, run under emulation, give byte-identical answers to the server build — `journey_mobile.py` checks the outputs match, not just that the ARM build exists. One definition of "an order over 1000 gets 5% off", running on the server, the website and the handset, so the app and the site cannot disagree. |
 | Mobile: screens drawn by Strata | **A two-screen app, on a desktop.** `std/ui.sta` describes a screen as an ordinary Strata table of things to draw — rectangles, text, touch regions — and paints it. Screens are **drawn, not borrowed**: asking each platform for its own widgets means two binding layers that share nothing and never match, and Apple's is not designed to be driven from C at all. One implementation, plus a shell per platform small enough to read in a sitting. |
 | Mobile: widgets | **Vertical flow layout, scrolling with clipping, text input, navigation.** A cursor-based flow so a screen is placed rather than hand-positioned; a list that scrolls, clamped at both ends and clipped to its window — a row scrolled out of sight stops answering taps, which is the half of scrolling that is invisible in a screenshot; input boxes with placeholder, caret and backspace; and a screen stack. State that must outlive a redraw — scroll position, what has been typed, which screen is showing — lives in tables, so `strata test` can set up a half-typed form scrolled halfway down and assert what it draws, with no phone, emulator or screenshot. `apps/orders_mobile` is a list and a new-order form against the same `Order` table the web service uses, and `journey_mobile.py` drives a whole session through it: scroll, open, type, backspace, save, and the new order in the list. |

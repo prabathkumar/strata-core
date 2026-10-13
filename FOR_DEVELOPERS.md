@@ -95,6 +95,46 @@ second machine writes the same file.
 
 ---
 
+### Changing a table that already has data
+
+Renaming a column in a `database` block fails the build everywhere that column
+is used — which is the point. What it does **not** do on its own is change the
+file on disk, and the loader will refuse to read a file whose header says
+`price` when the schema says `cost`, rather than hand you a row of empty
+values in a money column.
+
+Say what you meant, next to the schema:
+
+```text
+migrate Item {
+    rename price to cost;      // the stored column has a new name
+    drop note;                 // this column is gone, and that is meant
+    retype quantity to float;  // stored whole, read as a decimal
+}
+```
+
+The file reads, and the next `save` writes the new shape — one ordinary run
+migrates it. The migration is checked against the schema, so a claim that is
+not true does not compile. `retype` only widens a whole number to a decimal;
+the other direction loses the part after the point and is refused.
+
+Renaming a column from an editor writes that line for you.
+
+### Two programs writing the same table
+
+There is no lock between reading a table and writing it, on purpose — a lock
+across that span blocks a batch job behind a person, or deadlocks. Instead a
+`save` that finds the file changed since the table was read **refuses**:
+
+```text
+[STRATA SAVE] Counter: could not write 'c.tsv' — it changed after this program
+read it, so another run has written to it. Saving now would replace that work
+with rows that never saw it. Read it again, and redo the change
+```
+
+That makes a lost update loud. It does not make the read and the write one
+transaction: a program that must never be refused should be the only writer.
+
 ## What will annoy you
 
 - **Two names reach the same function, and only one is the API.** `std/`
@@ -137,9 +177,25 @@ second machine writes the same file.
   number and the file's header still says the column is a float, so nothing
   is lost — but anything downstream reading that column by eye or by regex
   will notice.
+- **Text is bytes.** `str_len("héllo")` is 6, not 5, and an index is a byte.
+  That is deliberate — it is what the stored file holds and what the page is
+  sent. It only bites when you CUT: `str_slice` refuses to cut a character in
+  half rather than hand you a broken byte. Use `str_chars` to count characters
+  and `str_truncate(value, max_bytes)` to trim to a column width.
+- **An aggregate over no rows reports.** `sum` and `count` of nothing answer 0
+  and 0 and say nothing, because those are the answers. `avg`, `min` and `max`
+  have no answer over nothing: they return 0 and set the error flag, so a
+  report for an empty month cannot read as a month in which everything was
+  free.
 - **No client-side interactivity**, because no JavaScript is emitted.
 - **`ast`, `lex`, `test` and `repair` still go through Python.** `build`,
-  `check`, `fmt` and `deps` are self-hosted.
+  `check`, `fmt`, `deps` and `lsp` are self-hosted.
+- **`strata check <file>` is stricter than `strata build`.** Checking one file
+  requires that file to import what it uses; the project build currently
+  accepts a file that relies on an import in a different file. The check is
+  right and the build is being tightened — see
+  [docs/WHAT_A_FILE_MAY_USE.md](docs/WHAT_A_FILE_MAY_USE.md). Until then, if
+  the editor underlines something the build accepts, add the import it names.
 
 ---
 
