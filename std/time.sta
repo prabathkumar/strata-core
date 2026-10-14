@@ -1,0 +1,289 @@
+// STRATA STANDARD LIBRARY — std/time.sta
+// Dates, times, and the arithmetic a business program does with them.
+//
+// Nobody writes a business program without this. An invoice has a date, a
+// shift has hours, a report covers a month, a session expires. Its absence was
+// the first wall anyone hit, and the honest fix is not to invent a calendar:
+// the one in C has been getting leap years, month lengths and time zones right
+// for forty years, and this borrows it through `foreign` rather than guessing.
+//
+// That is the point worth noticing. Strata has no ecosystem, and does not need
+// to grow one before it is useful, because the FFI the compiler already checks
+// reaches every C library there is. This file is what borrowing looks like.
+//
+// WHAT A TIME IS HERE
+//
+// A moment is an `int`: seconds since 1970-01-01 00:00:00 UTC, which is what
+// every operating system, database and protocol already means by a timestamp.
+// Arithmetic on moments is ordinary arithmetic -- a day later is `+ 86400` --
+// so there is no special type to learn and nothing to convert at a boundary.
+//
+// A calendar date is three ints, because that is what people type and what
+// forms submit. `date_of(y, m, d)` turns them into a moment and refuses a date
+// that does not exist.
+//
+// WHAT THIS IS NOT
+//
+// No time zone database: everything is UTC, or the one zone the machine is set
+// to, and nothing in between. A program that must report in Kuala Lumpur while
+// running in Frankfurt needs more than this. No durations as a type, no
+// recurrence rules, no parsing of arbitrary formats -- `date_parse` reads
+// exactly YYYY-MM-DD, because a parser that guesses between 03/04 and 04/03 is
+// how a system books a shipment three weeks late.
+
+import io  from std;
+import str from std;
+
+foreign "time.h" {
+    int    time(int ignored);
+    int    mktime(int tm_ptr);
+    int    timegm(int tm_ptr);
+    int    strftime(int out, int cap, str format, int tm_ptr);
+}
+
+// ── Now ──────────────────────────────────────────────────────────────────
+
+// Seconds since 1970-01-01 UTC. The one call that is not pure, kept separate
+// so a rule that takes a moment can be tested without waiting for one.
+int now() {
+    native "return (int64_t)time(NULL);";
+}
+
+// ── Building a moment from a date ────────────────────────────────────────
+
+// A date at midnight UTC, or -1 for a date that does not exist.
+//
+// Refusing is the whole value of this function. 2025-02-30 is not a date, and
+// C's mktime quietly answers 2025-03-02 for it -- so an invoice dated the
+// thirtieth of February would be filed in March and nobody would see why.
+int date_of(int year, int month, int day) {
+    native "
+    if ($month < 1 || $month > 12 || $day < 1 || $day > 31) return -1;
+    struct tm _t; memset(&_t, 0, sizeof(_t));
+    _t.tm_year = (int)$year - 1900;
+    _t.tm_mon  = (int)$month - 1;
+    _t.tm_mday = (int)$day;
+    _t.tm_hour = 12;            /* midday, so a zone shift cannot move the day */
+    time_t _s = timegm(&_t);
+    if (_s == (time_t)-1) return -1;
+    /* timegm normalises out of range values instead of refusing them, so the
+     * date is read back and compared with what was asked for. */
+    struct tm _b; gmtime_r(&_s, &_b);
+    if (_b.tm_year != (int)$year - 1900) return -1;
+    if (_b.tm_mon  != (int)$month - 1)   return -1;
+    if (_b.tm_mday != (int)$day)         return -1;
+    return (int64_t)(_s - 43200);   /* back to midnight */
+    ";
+}
+
+// A moment from a date and a wall clock time, UTC. -1 if either is impossible.
+int moment_of(int year, int month, int day, int hour, int minute, int second) {
+    if (hour < 0) { return 0 - 1; }
+    if (hour > 23) { return 0 - 1; }
+    if (minute < 0) { return 0 - 1; }
+    if (minute > 59) { return 0 - 1; }
+    if (second < 0) { return 0 - 1; }
+    if (second > 60) { return 0 - 1; }
+    int base = date_of(year, month, day);
+    if (base < 0) { return 0 - 1; }
+    return base + hour * 3600 + minute * 60 + second;
+}
+
+// ── Taking a moment apart ────────────────────────────────────────────────
+
+int year_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_year+1900;";
+}
+int month_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_mon+1;";
+}
+int day_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_mday;";
+}
+int hour_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_hour;";
+}
+int minute_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_min;";
+}
+int second_of(int moment) {
+    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_sec;";
+}
+
+// Monday is 1 and Sunday is 7, which is the ISO convention and the one a
+// working week is written in. C counts from Sunday as 0; that difference has
+// cost more than one report its Monday.
+int weekday_of(int moment) {
+    native "
+    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    int _w = _b.tm_wday; if (_w == 0) _w = 7;
+    return (int64_t)_w;
+    ";
+}
+
+// ── Writing a moment down ────────────────────────────────────────────────
+
+// YYYY-MM-DD. Sorts correctly as text, which is why a stored date should be
+// written this way and no other.
+str date_text(int moment) {
+    native "
+    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    char _o[16]; strftime(_o, sizeof(_o), \"%Y-%m-%d\", &_b);
+    return strata_dup(_o);
+    ";
+}
+
+// YYYY-MM-DD HH:MM:SS, UTC.
+str moment_text(int moment) {
+    native "
+    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    char _o[32]; strftime(_o, sizeof(_o), \"%Y-%m-%d %H:%M:%S\", &_b);
+    return strata_dup(_o);
+    ";
+}
+
+// ── Reading a date somebody typed ────────────────────────────────────────
+
+// Exactly YYYY-MM-DD, or -1.
+//
+// One format and no guessing. A parser that accepts 03/04/2025 has to decide
+// whether that is March or April, and whichever it picks it will be wrong for
+// half the world -- which is how a shipment gets booked three weeks late.
+int date_parse(str text) {
+    if (str_len(text) != 10) { return 0 - 1; }
+    if (text[4] != 45) { return 0 - 1; }
+    if (text[7] != 45) { return 0 - 1; }
+    int y = digits_of(text, 0, 4);
+    int m = digits_of(text, 5, 7);
+    int d = digits_of(text, 8, 10);
+    if (y < 0) { return 0 - 1; }
+    if (m < 0) { return 0 - 1; }
+    if (d < 0) { return 0 - 1; }
+    return date_of(y, m, d);
+}
+
+// The number the digits between `from` and `to` spell, or -1 if any of them
+// is not a digit. Written here rather than with str_to_int because that
+// reports an error for text it cannot read, and a date that does not parse is
+// an ordinary answer rather than a failure.
+int digits_of(str text, int from_at, int to_at) {
+    int v = 0;
+    for (int i = from_at; i < to_at; i = i + 1) {
+        int c = text[i];
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+    }
+    return v;
+}
+
+// ── Arithmetic a business program actually does ──────────────────────────
+
+int add_days(int moment, int days)       { return moment + days * 86400; }
+int add_hours(int moment, int hours)     { return moment + hours * 3600; }
+int add_minutes(int moment, int minutes) { return moment + minutes * 60; }
+
+// Whole days from the first moment to the second. Negative if the second is
+// earlier. Measured between the two DATES rather than the two moments, so
+// Monday 23:00 to Tuesday 01:00 is one day, not zero -- which is what anybody
+// asking "how many days overdue" means.
+int days_between(int from_moment, int to_moment) {
+    int a = start_of_day(from_moment);
+    int b = start_of_day(to_moment);
+    return (b - a) / 86400;
+}
+
+int start_of_day(int moment) {
+    native "
+    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    _b.tm_hour=0; _b.tm_min=0; _b.tm_sec=0;
+    return (int64_t)timegm(&_b);
+    ";
+}
+
+// The first moment of the month this moment falls in.
+int start_of_month(int moment) {
+    return date_of(year_of(moment), month_of(moment), 1);
+}
+
+// The first moment of the next month, which is what a monthly report wants as
+// its exclusive upper bound -- and the reason to have it here is that "add 30
+// days" is wrong eleven months a year.
+int start_of_next_month(int moment) {
+    int y = year_of(moment);
+    int m = month_of(moment) + 1;
+    if (m > 12) { m = 1; y = y + 1; }
+    return date_of(y, m, 1);
+}
+
+// How many days the month this moment falls in has. 28, 29, 30 or 31, worked
+// out from the calendar rather than from a table somebody has to maintain.
+int days_in_month(int moment) {
+    return (start_of_next_month(moment) - start_of_month(moment)) / 86400;
+}
+
+// Whether the year this moment falls in is a leap year.
+int is_leap_year(int moment) {
+    if (days_in_year(year_of(moment)) == 366) { return 1; }
+    return 0;
+}
+
+int days_in_year(int year) {
+    return (date_of(year + 1, 1, 1) - date_of(year, 1, 1)) / 86400;
+}
+
+verify "a date that does not exist is refused" {
+    assert date_of(2025, 2, 30) == 0 - 1;
+    assert date_of(2025, 13, 1) == 0 - 1;
+    assert date_of(2025, 4, 31) == 0 - 1;
+    assert date_of(2025, 2, 28) > 0;
+    assert date_of(2024, 2, 29) > 0;          // 2024 is a leap year
+    assert date_of(2025, 2, 29) == 0 - 1;     // 2025 is not
+}
+
+verify "a date survives being written down and read back" {
+    int d = date_of(2025, 3, 17);
+    assert str_eq(date_text(d), "2025-03-17") == 1;
+    assert date_parse("2025-03-17") == d;
+    assert year_of(d) == 2025;
+    assert month_of(d) == 3;
+    assert day_of(d) == 17;
+}
+
+verify "text that is not a date is refused rather than guessed at" {
+    assert date_parse("17/03/2025") == 0 - 1;
+    assert date_parse("2025-3-17") == 0 - 1;
+    assert date_parse("not a date") == 0 - 1;
+    assert date_parse("") == 0 - 1;
+    assert date_parse("2025-02-30") == 0 - 1;
+}
+
+verify "the arithmetic a business program does" {
+    int mon = date_of(2025, 3, 17);           // a Monday
+    assert weekday_of(mon) == 1;
+    assert weekday_of(add_days(mon, 6)) == 7;
+
+    // Across a month end, where adding 30 days is wrong.
+    int jan31 = date_of(2025, 1, 31);
+    assert str_eq(date_text(start_of_next_month(jan31)), "2025-02-01") == 1;
+    assert days_in_month(jan31) == 31;
+    assert days_in_month(date_of(2025, 2, 1)) == 28;
+    assert days_in_month(date_of(2024, 2, 1)) == 29;
+
+    // Overdue counts days, not elapsed seconds.
+    int monday_late = moment_of(2025, 3, 17, 23, 0, 0);
+    int tuesday_early = moment_of(2025, 3, 18, 1, 0, 0);
+    assert days_between(monday_late, tuesday_early) == 1;
+    assert days_between(tuesday_early, monday_late) == 0 - 1;
+    assert days_between(jan31, date_of(2025, 3, 1)) == 29;
+}
+
+verify "a moment with a wall clock time" {
+    int m = moment_of(2025, 12, 31, 23, 59, 59);
+    assert str_eq(moment_text(m), "2025-12-31 23:59:59") == 1;
+    assert moment_of(2025, 1, 1, 24, 0, 0) == 0 - 1;
+    assert moment_of(2025, 1, 1, 0, 60, 0) == 0 - 1;
+    assert hour_of(m) == 23;
+    assert minute_of(m) == 59;
+    assert second_of(m) == 59;
+}

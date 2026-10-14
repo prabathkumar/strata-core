@@ -159,7 +159,12 @@ transaction: a program that must never be refused should be the only writer.
   `"^1.2"` means nothing here.
 - **A query is a scan.** No index, no joins, no ordering, no `GROUP BY`.
   Aggregates read a list that already exists.
-- **The standard library is small.** `std/` is what there is. There is no
+- **The standard library is small, and that is not the same as being stuck.**
+  `std/` is what there is, but `foreign` reaches every C library on the
+  machine and the compiler checks the calls across it — `std/time.sta` is
+  dates borrowed from C's calendar, and `std/auth.sta` is password hashing
+  borrowed from `crypt(3)`. When something is missing, binding it is usually
+  an afternoon rather than a project. There is still no
   float-to-int cast, which you will notice the first afternoon you do
   arithmetic. An int IS accepted where a float is wanted — in an insert, an
   argument, a return, a comparison — and widens silently; a float is never

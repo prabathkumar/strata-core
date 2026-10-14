@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Dates, borrowed rather than invented
+
+`std/time.sta`. Nobody writes a business program without dates, and their
+absence was the first wall anybody hit.
+
+The calendar in C has been getting leap years, month lengths and the
+thirtieth of February right for forty years, so this binds it through
+`foreign` rather than guessing. That is the answer to "Strata has no
+ecosystem": it does not need to grow one before it is useful, because the FFI
+the compiler already checks reaches every C library there is.
+
+A moment is an `int` — seconds since 1970 UTC, which is what every operating
+system, database and protocol already means by a timestamp — so arithmetic on
+moments is ordinary arithmetic and nothing converts at a boundary.
+
+What it refuses is the point. `date_of(2025, 2, 30)` answers -1; C's own
+`mktime` quietly answers the second of March, which would file an invoice in
+the wrong month and tell nobody. `date_parse` reads exactly `YYYY-MM-DD` and
+nothing else, because a parser that guesses between 03/04 and 04/03 is how a
+shipment gets booked three weeks late.
+
+`days_in_month`, `start_of_next_month` and `days_between` are there because
+"add 30 days" is wrong eleven months a year, and because "how many days
+overdue" means whole days between two dates rather than elapsed seconds.
+
+Thirty-one assertions, in the file.
+
+
 ### Cutting text can no longer break it
 
 A `str` is bytes, and an index is a byte. That stays: it is the honest thing
