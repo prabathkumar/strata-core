@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Money that is exact
+
+`std/money.sta`. Money in this language was a `float`, and a float cannot hold
+0.10 — add ten of them and you get 0.9999999999999999. A ledger built that way
+is eventually a penny out, nobody can say which penny, and the honest answer
+is that the arithmetic was never exact to begin with.
+
+An amount is now an `int` counting minor units: 1250 is RM 12.50. That is how
+every accounting system and payment network already carries money, so nothing
+converts at a boundary, addition is addition, and a total is exact however
+many rows it has.
+
+Rounding happens in exactly two places and both say which way they go.
+`money_rate` applies a rate in hundredths of a percent — 6% is 600 — and
+rounds half away from zero, so a credit note is the mirror of the invoice it
+reverses rather than a cent adrift. `money_share` splits a total into parts
+that add back up to it: ten ringgit three ways is 3.34, 3.33 and 3.33, not
+three lots of 3.33 and a cent that surfaces in a reconciliation a month later.
+
+`money_parse` refuses what it cannot read without guessing — thousands
+separators, currency symbols, and anything with a third decimal place, which
+is a fraction of a cent that has to round somewhere the caller should choose.
+
+It does not carry the currency: an amount is a number, and adding ringgit to
+rupiah is a mistake this file cannot see. Thirty-four assertions, in the file.
+
+
 ### Dates, borrowed rather than invented
 
 `std/time.sta`. Nobody writes a business program without dates, and their

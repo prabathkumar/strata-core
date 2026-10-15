@@ -403,7 +403,7 @@ exceptions. What you build with Strata is yours.
 | Language | 19,700 lines of Strata in this repository — the compiler, the standard library, three applications and the examples |
 | Compiler | Self-hosting front end: lexer, parser, type checker and code generator written in Strata, 13,300 lines, **1.9% `native`**. Each is checked against an independent Python implementation on every commit — tokens, syntax trees, diagnostics and generated C compared byte for byte |
 | Fixpoint | The front end rebuilt from C it generated itself reproduces that C exactly |
-| Standard library | 18 modules that compile, link and run |
+| Standard library | 19 modules that compile, link and run |
 | Applications | An orders web service, a financial ledger, and a phone app — all on one schema definition each |
 | Storage | Tab-separated files or PostgreSQL, chosen by changing a string; writes send only the rows that changed |
 | Surfaces | One `layout` renders as a web page and draws as a phone screen |
@@ -1394,10 +1394,34 @@ does not exist is refused rather than normalised into the following month, and
 `date_parse` reads exactly `YYYY-MM-DD` because a parser that guesses between
 03/04 and 04/03 is how a shipment gets booked three weeks late.
 
+`std/money.sta` is the other half of that first afternoon, and it needed no C
+at all — just the right representation. An amount is an `int` of minor units,
+which is how every accounting system and payment network already carries
+money:
+
+```text
+import money from std;
+
+int main() {
+    int total = 0;
+    for (int i = 0; i < 10; i = i + 1) { total = total + money_of(0, 10); }
+    print(money_text(total));                  // 1.00, exactly
+    print(money_text(money_rate(1025, 600)));  // 0.62 — 6% of 10.25 rounds up
+    return 0;
+}
+```
+
+Ten lots of ten cents is one ringgit. As floats it is 0.9999999999999999, and
+a ledger built that way is eventually a penny out with nobody able to say
+which penny. Rounding happens in exactly two places — applying a rate, and
+splitting a total — and both say which way they go. `money_share` hands the
+remainder out a cent at a time, so ten ringgit split three ways is 3.34, 3.33
+and 3.33 rather than three lots of 3.33 and a cent that turns up in a
+reconciliation a month later.
+
 What is still missing is written down rather than implied: an HTTP client
-(libcurl), TLS, a decimal type for money, and a generator that writes the
-`foreign` block from a C header so that binding the fifth library costs a
-minute rather than a day. [docs/WHAT_TO_BUILD_NEXT.md](docs/WHAT_TO_BUILD_NEXT.md)
+(libcurl), TLS, and a generator that writes the `foreign` block from a C
+header so that binding the fifth library costs a minute rather than a day. [docs/WHAT_TO_BUILD_NEXT.md](docs/WHAT_TO_BUILD_NEXT.md)
 has the order and the reasoning.
 
 ## What is not true yet
@@ -1542,7 +1566,7 @@ what runs and what is planned is unambiguous.
 | `E007` / `E008` | E007 is the first advisory: an import with no local checkout is reported without stopping the build. E008 catches a bare name inside a query that is also a variable in scope — the column wins silently, so `Session <- [token == token]` compares the column with itself and matches every row. |
 | Sessions and passwords | `std/auth.sta`: SHA-512 `crypt(3)` with a random salt over FFI, and session tokens from `/dev/urandom`. `apps/orders` adds a CSRF token on every form and every write, a five-strike account lockout that answers identically for a locked account whatever was typed, and a 64-connection cap. A lockout is counted against the **pair** of account and source. Against the account alone it hands anybody a way to lock an operator out of their own service — guess wrong five times at a username you do not own. Against the source alone, everyone behind one office connection or a load balancer looks like a single address, so one careless colleague locks out the building. `journey_operate` proves it from a genuinely different source (`127.0.0.2`): the guesser stays locked and the operator signs in. What the pair does not stop is one source spreading attempts across many usernames — that needs a rate limit, which this is not. Expired sessions and stale lockouts are swept on a clock by the accept loop, so an idle service still tidies up rather than growing forever. Still no password policy and no reset flow. |
 | Formatter (`strata fmt`) | **Canonical indentation.** Written in Strata. Re-indents by brace depth, strips trailing whitespace, collapses blank runs, ends the file with one newline. It rewrites only leading whitespace, so comments survive and the inside of a `native` block is byte-identical — the lexer discards comments, so anything reprinting from tokens would delete them. It does **not** re-wrap lines, normalise spacing around operators, or sort anything. Two properties are tested over every file in the repo: the syntax tree is unchanged, and formatting is idempotent. CI fails if any tracked source is not canonical. |
-| Standard library | **Eighteen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `time`, `cli`, `json`, `toml`, `os`, `http`, `auth`, `metrics`, `postgres`, `ui`, `ml`, `simd_math`, `telemetry`, `testing`. `time` is dates and the arithmetic a business program does with them, borrowed from C's calendar rather than invented — `date_of` refuses the thirtieth of February, `days_in_month` is worked out rather than looked up in a table, and `start_of_next_month` exists because "add 30 days" is wrong eleven months a year. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did; `ui` describes a phone screen as a table of things to draw. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
+| Standard library | **Nineteen modules that compile, link and run** — `io`, `core`, `mem`, `str`, `time`, `money`, `cli`, `json`, `toml`, `os`, `http`, `auth`, `metrics`, `postgres`, `ui`, `ml`, `simd_math`, `telemetry`, `testing`. `money` is amounts kept as whole minor units so a total is exact however many rows it has, with the two roundings a business actually makes — a rate, and a split that cannot lose a cent; `time` is dates and the arithmetic a business program does with them, borrowed from C's calendar rather than invented — `date_of` refuses the thirtieth of February, `days_in_month` is worked out rather than looked up in a table, and `start_of_next_month` exists because "add 30 days" is wrong eleven months a year. `http` is a blocking HTTP/1.1 server written in Strata over `foreign`/`native`; `cli` is the command line, which before it existed was reachable only by writing C; `metrics` is counters in a page of shared memory, so a service that forks per connection can still add up what all its children did; `ui` describes a phone screen as a table of things to draw. Five more (`runtime`, `stdlib`, `tls`, `pkg_system`, `pkg_manager`) are quarantined in `std/unimplemented/`: they describe POSIX syscalls, an HTTP client and a TLS 1.3 handshake that were never built, and call functions that exist nowhere. Six examples built on them are quarantined too. |
 | Mobile: rules on the device | **Done and measured.** The rules compile for a phone's processor and, run under emulation, give byte-identical answers to the server build — `journey_mobile.py` checks the outputs match, not just that the ARM build exists. One definition of "an order over 1000 gets 5% off", running on the server, the website and the handset, so the app and the site cannot disagree. |
 | Mobile: screens drawn by Strata | **A two-screen app, on a desktop.** `std/ui.sta` describes a screen as an ordinary Strata table of things to draw — rectangles, text, touch regions — and paints it. Screens are **drawn, not borrowed**: asking each platform for its own widgets means two binding layers that share nothing and never match, and Apple's is not designed to be driven from C at all. One implementation, plus a shell per platform small enough to read in a sitting. |
 | Mobile: widgets | **Vertical flow layout, scrolling with clipping, text input, navigation.** A cursor-based flow so a screen is placed rather than hand-positioned; a list that scrolls, clamped at both ends and clipped to its window — a row scrolled out of sight stops answering taps, which is the half of scrolling that is invisible in a screenshot; input boxes with placeholder, caret and backspace; and a screen stack. State that must outlive a redraw — scroll position, what has been typed, which screen is showing — lives in tables, so `strata test` can set up a half-typed form scrolled halfway down and assert what it draws, with no phone, emulator or screenshot. `apps/orders_mobile` is a list and a new-order form against the same `Order` table the web service uses, and `journey_mobile.py` drives a whole session through it: scroll, open, type, backspace, save, and the new order in the list. |

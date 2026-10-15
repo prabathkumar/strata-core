@@ -1,0 +1,261 @@
+// STRATA STANDARD LIBRARY — std/money.sta
+// Amounts of money, kept exact.
+//
+// Money in this language was a `float` until this file existed, and a float
+// cannot hold 0.10. Add ten of them and you get 0.9999999999999999; a ledger
+// built that way is eventually a penny out, nobody can say which penny, and
+// the only honest answer is that the arithmetic was never exact to begin
+// with.
+//
+// WHAT AN AMOUNT IS HERE
+//
+// An `int`, counting the smallest unit the currency has -- cents, sen, pence.
+// RM 12.50 is 1250. That is how every accounting system and every payment
+// network already carries money, so nothing converts at a boundary, addition
+// is addition, and a total is exact however many rows it has.
+//
+// Two decimal places is assumed, which covers the currencies a business
+// system in this part of the world meets. A currency with three (the dinars)
+// or none (the yen) needs more than this file offers, and saying so is better
+// than pretending otherwise.
+//
+// WHERE ROUNDING HAPPENS
+//
+// Only where it must: applying a rate, and splitting a total. Both say which
+// way they round, and both are tested on the cases that bite -- a tax line
+// that ends in half a cent, and a bill divided three ways.
+//
+// WHAT THIS IS NOT
+//
+// It does not carry the currency. An amount is a number; which currency it is
+// belongs to the column it sits in, and adding ringgit to rupiah is a mistake
+// this file cannot see. It has no exchange rates and no formatting for
+// anything but a plain amount.
+
+import io  from std;
+import str from std;
+
+// ── Building an amount ───────────────────────────────────────────────────
+
+// From whole units and minor units: money_of(12, 50) is RM 12.50.
+//
+// Minor units outside 0..99 are refused rather than carried, because
+// money_of(12, 150) is somebody's mistake and quietly meaning 13.50 hides it.
+int money_of(int units, int minor) {
+    if (minor < 0) { return 0 - 1; }
+    if (minor > 99) { return 0 - 1; }
+    // A negative amount is built with money_negative_of, because
+    // money_of(-12, 50) reads as minus twelve fifty and would have to mean
+    // minus eleven fifty -- the minor units point the other way. Refusing is
+    // better than being clever about it.
+    if (units < 0) { return 0 - 1; }
+    return units * 100 + minor;
+}
+
+// A negative amount, built the way a person says it: minus twelve fifty.
+int money_negative_of(int units, int minor) {
+    int m = money_of(units, minor);
+    if (m < 0) { return m; }
+    return 0 - m;
+}
+
+// ── Writing an amount down ───────────────────────────────────────────────
+
+// 1250 becomes "12.50"; -5 becomes "-0.05". Always two places, because a
+// price list where one row reads 1250.5 and the next 340 is a price list
+// nobody trusts.
+str money_text(int amount) {
+    int neg = 0;
+    int a = amount;
+    if (a < 0) { neg = 1; a = 0 - a; }
+    int units = a / 100;
+    int minor = a % 100;
+    StringBuilder sb = sb_new();
+    if (neg == 1) { sb_append(&sb, "-"); }
+    sb_append(&sb, str(units));
+    sb_append(&sb, ".");
+    if (minor < 10) { sb_append(&sb, "0"); }
+    sb_append(&sb, str(minor));
+    return sb_to_str(&sb);
+}
+
+// ── Reading an amount somebody typed ─────────────────────────────────────
+
+// "12.50", "12.5", "12" and "-12.50" all read. Anything else is -1 ... which
+// is also a valid amount, so a caller that must tell them apart checks the
+// text first. A form field is the usual source, and a form field that is not
+// a number is an ordinary answer rather than a failure.
+//
+// Refused on purpose: thousands separators, currency symbols, and more than
+// two decimal places. "1,250.00" is four characters of ambiguity in a system
+// that also has European users, and 12.505 is a third of a cent that has to
+// round somewhere -- the caller should say where.
+int money_parse(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0 - 1; }
+    int i = 0;
+    int neg = 0;
+    if (text[0] == 45) { neg = 1; i = 1; }
+    int units = 0;
+    int seen = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 46) { break; }
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        units = units * 10 + (c - 48);
+        seen = 1;
+        i = i + 1;
+    }
+    if (seen == 0) { return 0 - 1; }
+    int minor = 0;
+    if (i < n) {
+        i = i + 1;                       // the point
+        int places = 0;
+        while (i < n) {
+            int c = text[i];
+            if (c < 48) { return 0 - 1; }
+            if (c > 57) { return 0 - 1; }
+            minor = minor * 10 + (c - 48);
+            places = places + 1;
+            i = i + 1;
+        }
+        if (places == 1) { minor = minor * 10; }
+        if (places > 2) { return 0 - 1; }
+        if (places == 0) { return 0 - 1; }
+    }
+    int total = units * 100 + minor;
+    if (neg == 1) { return 0 - total; }
+    return total;
+}
+
+// ── Arithmetic ───────────────────────────────────────────────────────────
+//
+// Addition and subtraction are ordinary integer arithmetic and need no
+// function. These are the two operations that cannot be done by eye.
+
+// An amount times a whole number of things: a unit price times a quantity.
+// Exact, because it is.
+int money_times(int amount, int quantity) {
+    return amount * quantity;
+}
+
+// A rate applied to an amount, in hundredths of a percent, rounded half away
+// from zero.
+//
+// Hundredths of a percent because tax rates have them: 6% is 600, 8.25% is
+// 825. Half away from zero because that is what an invoice does -- 0.5 cents
+// becomes a cent, in the direction the amount already points, so a credit
+// note is the mirror of the invoice it reverses rather than a cent adrift.
+int money_rate(int amount, int rate_bp) {
+    int neg = 0;
+    int a = amount;
+    if (a < 0) { neg = 1; a = 0 - a; }
+    int scaled = a * rate_bp;            // amount x rate, in 10000ths
+    int whole = scaled / 10000;
+    int rest = scaled % 10000;
+    if (rest * 2 >= 10000) { whole = whole + 1; }
+    if (neg == 1) { return 0 - whole; }
+    return whole;
+}
+
+// ── Splitting, which is where the cents go missing ───────────────────────
+
+// Divide an amount into `parts` shares that add back up to it exactly.
+//
+// This is the function people write by hand and get wrong. RM 10.00 split
+// three ways is not three lots of 3.33: that is 9.99, and the missing cent
+// turns up a month later in a reconciliation nobody can close. The remainder
+// is handed out one cent at a time to the earliest shares, so the parts
+// always sum to the whole.
+//
+// `which` is 0 for the first share. A caller walking 0..parts-1 gets every
+// share, and their total is the amount it started with.
+int money_share(int amount, int parts, int which) {
+    if (parts <= 0) { return 0; }
+    if (which < 0) { return 0; }
+    if (which >= parts) { return 0; }
+    int neg = 0;
+    int a = amount;
+    if (a < 0) { neg = 1; a = 0 - a; }
+    int base = a / parts;
+    int rest = a % parts;
+    int share = base;
+    if (which < rest) { share = share + 1; }
+    if (neg == 1) { return 0 - share; }
+    return share;
+}
+
+verify "an amount is exact where a float is not" {
+    // The case that started this: ten lots of ten cents.
+    int total = 0;
+    for (int i = 0; i < 10; i = i + 1) { total = total + money_of(0, 10); }
+    assert total == money_of(1, 0);
+    assert str_eq(money_text(total), "1.00") == 1;
+}
+
+verify "building and writing an amount" {
+    assert money_of(12, 50) == 1250;
+    assert str_eq(money_text(1250), "12.50") == 1;
+    assert str_eq(money_text(5), "0.05") == 1;
+    assert str_eq(money_text(0), "0.00") == 1;
+    assert str_eq(money_text(0 - 5), "-0.05") == 1;
+    assert str_eq(money_text(money_negative_of(12, 50)), "-12.50") == 1;
+    assert money_of(12, 100) == 0 - 1;         // not a minor unit
+    assert money_of(0 - 12, 50) == 0 - 1;      // say it with money_negative_of
+}
+
+verify "reading an amount somebody typed" {
+    assert money_parse("12.50") == 1250;
+    assert money_parse("12.5") == 1250;
+    assert money_parse("12") == 1200;
+    assert money_parse("0.05") == 5;
+    assert money_parse("-12.50") == 0 - 1250;
+    assert money_parse("1,250.00") == 0 - 1;   // ambiguous, refused
+    assert money_parse("RM12.50") == 0 - 1;
+    assert money_parse("12.505") == 0 - 1;     // a third of a cent
+    assert money_parse("12.") == 0 - 1;
+    assert money_parse("") == 0 - 1;
+    assert money_parse("abc") == 0 - 1;
+}
+
+verify "a rate rounds half away from zero, both ways" {
+    // 6% of 10.25 is 0.615 -- half a cent, which rounds up.
+    assert money_rate(1025, 600) == 62;
+    // and the credit note for it is the mirror, not a cent adrift.
+    assert money_rate(0 - 1025, 600) == 0 - 62;
+    // 8.25% of 100.00 is exactly 8.25, with nothing to round.
+    assert money_rate(10000, 825) == 825;
+    assert money_rate(0, 600) == 0;
+}
+
+verify "a split does not lose a cent" {
+    // The classic: ten ringgit, three ways.
+    int a = money_share(1000, 3, 0);
+    int b = money_share(1000, 3, 1);
+    int c = money_share(1000, 3, 2);
+    assert a + b + c == 1000;
+    assert a == 334;
+    assert b == 333;
+    assert c == 333;
+
+    // And it holds for an awkward number of parts over an awkward amount.
+    int total = 0;
+    for (int i = 0; i < 7; i = i + 1) { total = total + money_share(1234, 7, i); }
+    assert total == 1234;
+
+    // Negative amounts split the same way, so a refund divides like the
+    // charge it reverses.
+    int rtotal = 0;
+    for (int i = 0; i < 3; i = i + 1) { rtotal = rtotal + money_share(0 - 1000, 3, i); }
+    assert rtotal == 0 - 1000;
+}
+
+verify "a line on an invoice" {
+    int unit = money_parse("19.99");
+    int line = money_times(unit, 3);
+    int tax = money_rate(line, 600);
+    assert str_eq(money_text(line), "59.97") == 1;
+    assert str_eq(money_text(tax), "3.60") == 1;
+    assert str_eq(money_text(line + tax), "63.57") == 1;
+}

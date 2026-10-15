@@ -177,6 +177,14 @@ transaction: a program that must never be refused should be the only writer.
   second one an object the first built. It shows up as "cannot execute binary
   file", or as Xcode saying "Unknown file type". `file build/whatever.o` says
   which it is; rebuilding fixes it.
+- **Do not keep money in a `float`.** A float cannot hold 0.10, so ten of
+  them add up to 0.9999999999999999 and a ledger built that way is eventually
+  a penny out. `std/money.sta` keeps an amount as an `int` of minor units —
+  1250 is RM 12.50 — which is what every accounting system already does.
+  `money_rate` applies a tax rate and says which way it rounds; `money_share`
+  splits a total so the parts add back up to it. The language will happily let
+  you declare `float price`, and the compiler cannot tell that you meant
+  money.
 - **A float saved to a file loses a trailing `.0`.** A column holding `225.0`
   is written as `225` while `62.5` keeps its point. It reloads as the same
   number and the file's header still says the column is a float, so nothing
