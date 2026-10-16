@@ -200,6 +200,10 @@ transaction: a program that must never be refused should be the only writer.
   have no answer over nothing: they return 0 and set the error flag, so a
   report for an empty month cannot read as a month in which everything was
   free.
+- **`fetch` speaks plain HTTP and will not pretend otherwise.** There is no
+  TLS in Strata, so `fetch_get("https://...")` refuses rather than sending in
+  the clear. Use it for service-to-service calls inside a network you control;
+  anything crossing a network you do not own needs TLS, which is not here yet.
 - **No client-side interactivity**, because no JavaScript is emitted.
 - **`ast`, `lex`, `test` and `repair` still go through Python.** `build`,
   `check`, `fmt`, `deps` and `lsp` are self-hosted.

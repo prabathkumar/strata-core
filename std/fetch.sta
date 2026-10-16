@@ -1,0 +1,329 @@
+// STRATA STANDARD LIBRARY — std/fetch.sta
+// Calling another service over HTTP.
+//
+// A program that cannot call another service is not an enterprise program.
+// `std/http.sta` is a server; this is the other half.
+//
+// WHAT IT DOES
+//
+// One request, one response, blocking: connect, send, read until the other end
+// closes or the body is complete, hand back the status and the body. That
+// covers what an internal system actually does — ask another service for some
+// JSON, post a record, call a webhook.
+//
+// WHAT IT DOES NOT DO, AND THIS MATTERS
+//
+// **No HTTPS.** This speaks plain HTTP. There is no TLS anywhere in Strata
+// yet, so anything carrying a password or personal data across a network you
+// do not own needs more than this file. It is for service-to-service calls
+// inside a network you control, and saying that plainly is better than a
+// library that looks like it is secure and is not.
+//
+// No redirects, no cookies, no keep-alive, no chunked transfer encoding, no
+// compression, no proxy support, and no streaming — the whole body is read
+// into memory. A response larger than the cap is refused rather than
+// truncated, because a truncated JSON document that still parses is the kind
+// of wrong answer this language exists to prevent.
+//
+// WHY NOT libcurl
+//
+// Borrowing beats building, and for TLS it will: a hand-written TLS stack is
+// a liability, and `foreign` already reaches OpenSSL. For a plain HTTP
+// request over a socket there is nothing worth borrowing — the server next
+// door already speaks it the same way, with no dependency to install on a
+// machine that may not have it.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+foreign "sys/socket.h" link "" { }
+foreign "netinet/in.h" link "" { }
+foreign "arpa/inet.h"  link "" { }
+foreign "netdb.h"      link "" { }
+foreign "unistd.h"     link "" { }
+
+// The most a response body may be: 4 MB. A service answering with more than
+// that is a streaming problem, and this is not a streaming client.
+int fetch_cap() { return 4194304; }
+
+// ── Taking a URL apart ───────────────────────────────────────────────────
+//
+// Deliberately small: scheme, host, port, path. No user info, no query
+// parsing, no fragment -- the query is part of the path as far as a request
+// line is concerned, and the server is the one that reads it.
+
+str fetch_host_of(str url) {
+    str rest = fetch_after_scheme(url);
+    int n = str_len(rest);
+    for (int i = 0; i < n; i = i + 1) {
+        if (rest[i] == 47) { return str_slice(rest, 0, i); }
+        if (rest[i] == 58) { return str_slice(rest, 0, i); }
+    }
+    return rest;
+}
+
+int fetch_port_of(str url) {
+    str rest = fetch_after_scheme(url);
+    int n = str_len(rest);
+    for (int i = 0; i < n; i = i + 1) {
+        if (rest[i] == 47) { return 80; }
+        if (rest[i] == 58) {
+            int p = 0;
+            int j = i + 1;
+            while (j < n) {
+                int c = rest[j];
+                if (c < 48) { break; }
+                if (c > 57) { break; }
+                p = p * 10 + (c - 48);
+                j = j + 1;
+            }
+            if (p == 0) { return 80; }
+            return p;
+        }
+    }
+    return 80;
+}
+
+str fetch_path_of(str url) {
+    str rest = fetch_after_scheme(url);
+    int n = str_len(rest);
+    for (int i = 0; i < n; i = i + 1) {
+        if (rest[i] == 47) { return str_slice(rest, i, n); }
+    }
+    return "/";
+}
+
+str fetch_after_scheme(str url) {
+    int at = str_index_of(url, "://");
+    if (at < 0) { return url; }
+    return str_slice(url, at + 3, str_len(url));
+}
+
+// ── The call ─────────────────────────────────────────────────────────────
+
+// Connect to a host and port. -1 if the name does not resolve or nothing
+// answers.
+int fetch_connect(str host, int port) {
+    native "
+    struct addrinfo _h; memset(&_h, 0, sizeof(_h));
+    _h.ai_family = AF_INET; _h.ai_socktype = SOCK_STREAM;
+    char _p[16]; snprintf(_p, sizeof(_p), \"%ld\", (long)$port);
+    struct addrinfo* _r = NULL;
+    if (getaddrinfo($host, _p, &_h, &_r) != 0 || !_r) return -1;
+    int _fd = socket(_r->ai_family, _r->ai_socktype, _r->ai_protocol);
+    if (_fd < 0) { freeaddrinfo(_r); return -1; }
+    if (connect(_fd, _r->ai_addr, _r->ai_addrlen) != 0) {
+        close(_fd); freeaddrinfo(_r); return -1;
+    }
+    freeaddrinfo(_r);
+    return (int64_t)_fd;
+    ";
+}
+
+def fetch_send(int fd, str data) {
+    native "
+    const char* _d = $data; size_t _n = strlen(_d), _o = 0;
+    while (_o < _n) {
+        ssize_t _w = write($fd, _d + _o, _n - _o);
+        if (_w <= 0) break;
+        _o += (size_t)_w;
+    }
+    ";
+}
+
+// Everything the other end sends until it closes. "" when nothing arrives or
+// the answer is larger than the cap -- and in the second case the error flag
+// is set, because a truncated body that still parses is worse than none.
+str fetch_read_all(int fd, int cap) {
+    native "
+    size_t _cap = (size_t)$cap, _len = 0, _room = 65536;
+    char* _b = (char*)malloc(_room);
+    if (!_b) return strata_dup(\"\");
+    for (;;) {
+        if (_len + 4096 > _room) {
+            if (_room * 2 > _cap + 65536) { free(_b); return NULL; }
+            _room *= 2; _b = (char*)realloc(_b, _room);
+            if (!_b) return strata_dup(\"\");
+        }
+        ssize_t _r = read($fd, _b + _len, 4096);
+        if (_r <= 0) break;
+        _len += (size_t)_r;
+        if (_len > _cap) { free(_b); return NULL; }
+    }
+    _b[_len] = '\\0';
+    return _b;
+    ";
+}
+
+def fetch_close(int fd) { native "close($fd);"; }
+
+// ── What a caller uses ───────────────────────────────────────────────────
+
+// A GET, returning the whole response: headers, a blank line, then the body.
+// "" when the call did not happen at all, with the reason on the error flag.
+str fetch_raw(str method, str url, str body, str content_type) {
+    str host = fetch_host_of(url);
+    if (str_len(host) == 0) {
+        fail(str_cat(["fetch: no host in '", url, "'"]));
+        return "";
+    }
+    if (str_starts_with(url, "https://") == 1) {
+        fail("fetch: https is not supported — there is no TLS in Strata yet, so this would send in the clear rather than fail");
+        return "";
+    }
+    int fd = fetch_connect(host, fetch_port_of(url));
+    if (fd < 0) {
+        fail(str_cat(["fetch: could not reach ", host]));
+        return "";
+    }
+    StringBuilder req = sb_new();
+    sb_append(&req, method);
+    sb_append(&req, " ");
+    sb_append(&req, fetch_path_of(url));
+    sb_append(&req, " HTTP/1.1\r\nHost: ");
+    sb_append(&req, host);
+    sb_append(&req, "\r\nUser-Agent: strata/0\r\nAccept: */*\r\nConnection: close\r\n");
+    if (str_len(body) > 0) {
+        sb_append(&req, "Content-Type: ");
+        sb_append(&req, content_type);
+        sb_append(&req, "\r\nContent-Length: ");
+        sb_append(&req, str(str_len(body)));
+        sb_append(&req, "\r\n");
+    }
+    sb_append(&req, "\r\n");
+    sb_append(&req, body);
+    fetch_send(fd, sb_to_str(&req));
+    str answer = fetch_read_all(fd, fetch_cap());
+    fetch_close(fd);
+    if (str_len(answer) == 0) {
+        fail(str_cat(["fetch: ", host, " answered with nothing, or with more than this client will hold"]));
+        return "";
+    }
+    return answer;
+}
+
+str fetch_get(str url)                                { return fetch_raw("GET", url, "", ""); }
+str fetch_post(str url, str body, str content_type)   { return fetch_raw("POST", url, body, content_type); }
+str fetch_post_json(str url, str body)                { return fetch_raw("POST", url, body, "application/json"); }
+
+// The status line's number: 200, 404, 503. -1 when the answer is not an HTTP
+// response at all, which is what a service behind a confused proxy sends.
+int fetch_status(str response) {
+    if (str_len(response) < 12) { return 0 - 1; }
+    if (str_starts_with(response, "HTTP/") == 0) { return 0 - 1; }
+    int at = str_index_of(response, " ");
+    if (at < 0) { return 0 - 1; }
+    int v = 0;
+    int seen = 0;
+    for (int i = at + 1; i < str_len(response); i = i + 1) {
+        int c = response[i];
+        if (c < 48) { break; }
+        if (c > 57) { break; }
+        v = v * 10 + (c - 48);
+        seen = 1;
+    }
+    if (seen == 0) { return 0 - 1; }
+    return v;
+}
+
+// What follows the blank line. "" when there is no body or no blank line.
+str fetch_body(str response) {
+    int at = str_index_of(response, "\r\n\r\n");
+    if (at >= 0) { return str_slice(response, at + 4, str_len(response)); }
+    at = str_index_of(response, "\n\n");
+    if (at >= 0) { return str_slice(response, at + 2, str_len(response)); }
+    return "";
+}
+
+// One header's value, matched without regard to case because a server's
+// spelling of "Content-Type" is its own business. "" when absent.
+str fetch_header(str response, str name) {
+    int end = str_index_of(response, "\r\n\r\n");
+    if (end < 0) { end = str_len(response); }
+    str head = str_slice(response, 0, end);
+    str want = str_lower(name);
+    int n = str_len(head);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int eol = 0;
+        if (at_end == 0) { if (head[i] == 10) { eol = 1; } }
+        if (eol == 0) { if (at_end == 0) { continue; } }
+        str line = str_slice(head, start, i);
+        start = i + 1;
+        int colon = str_index_of(line, ":");
+        if (colon < 0) { continue; }
+        if (str_eq(str_lower(str_slice(line, 0, colon)), want) == 0) { continue; }
+        str value = str_slice(line, colon + 1, str_len(line));
+        return fetch_trim(value);
+    }
+    return "";
+}
+
+str str_lower(str value) {
+    StringBuilder sb = sb_new();
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c >= 65) { if (c <= 90) { c = c + 32; } }
+        sb_append(&sb, char_from_code(c));
+    }
+    return sb_to_str(&sb);
+}
+
+str fetch_trim(str value) {
+    int n = str_len(value);
+    int a = 0;
+    while (a < n) {
+        int c = value[a];
+        if (c != 32) { if (c != 9) { if (c != 13) { break; } } }
+        a = a + 1;
+    }
+    int b = n;
+    while (b > a) {
+        int c = value[b - 1];
+        if (c != 32) { if (c != 9) { if (c != 13) { break; } } }
+        b = b - 1;
+    }
+    return str_slice(value, a, b);
+}
+
+verify "a URL comes apart the way a request line needs it" {
+    assert str_eq(fetch_host_of("http://api.internal/orders"), "api.internal") == 1;
+    assert fetch_port_of("http://api.internal/orders") == 80;
+    assert str_eq(fetch_path_of("http://api.internal/orders"), "/orders") == 1;
+
+    assert str_eq(fetch_host_of("http://10.0.0.4:8080/v1/x?a=1"), "10.0.0.4") == 1;
+    assert fetch_port_of("http://10.0.0.4:8080/v1/x?a=1") == 8080;
+    assert str_eq(fetch_path_of("http://10.0.0.4:8080/v1/x?a=1"), "/v1/x?a=1") == 1;
+
+    // No path at all is a request for the root, not an empty request line.
+    assert str_eq(fetch_path_of("http://api.internal"), "/") == 1;
+    assert str_eq(fetch_host_of("api.internal/x"), "api.internal") == 1;
+}
+
+verify "a response comes apart" {
+    str r = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Trace: abc\r\n\r\n{\"id\":7}";
+    assert fetch_status(r) == 201;
+    assert str_eq(fetch_body(r), "{\"id\":7}") == 1;
+    assert str_eq(fetch_header(r, "Content-Type"), "application/json") == 1;
+    assert str_eq(fetch_header(r, "content-type"), "application/json") == 1;
+    assert str_eq(fetch_header(r, "X-Trace"), "abc") == 1;
+    assert str_eq(fetch_header(r, "Nothing"), "") == 1;
+}
+
+verify "something that is not an HTTP answer is not read as one" {
+    assert fetch_status("") == 0 - 1;
+    assert fetch_status("<html>proxy error</html>") == 0 - 1;
+    assert fetch_status("HTTP/1.1 nonsense") == 0 - 1;
+    assert str_eq(fetch_body("no blank line here"), "") == 1;
+}
+
+verify "https is refused rather than sent in the clear" {
+    str answer = fetch_get("https://example.com/");
+    assert str_len(answer) == 0;
+    assert had_error() == 1;
+    clear_error();
+}

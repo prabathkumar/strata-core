@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Calling another service
+
+`std/fetch.sta`. A program that cannot call another service is not an
+enterprise program, and `std/http.sta` only answered calls. This is the other
+half: connect, send, read the answer, hand back a status, a body and headers.
+
+`fetch_get`, `fetch_post_json` and `fetch_raw` are the whole surface.
+`fetch_status`, `fetch_body` and `fetch_header` take the answer apart, and
+anything that is not an HTTP response at all — a proxy's HTML error page —
+reads as -1 rather than as a status.
+
+**It refuses `https://` outright.** There is no TLS anywhere in Strata yet, so
+a client that accepted an https URL would send in the clear while looking
+secure, which is worse than not having one. The refusal says exactly that.
+
+This one is built rather than borrowed, and the reason is the limit of the
+argument: libcurl's headers are not on every machine, and a plain HTTP request
+over a socket is a hundred lines the server next door already contains. Where
+borrowing wins is TLS — a hand-written TLS stack is a liability and `foreign`
+reaches OpenSSL.
+
+No redirects, no cookies, no keep-alive, no chunked encoding, no compression,
+and no streaming: a body larger than four megabytes is refused rather than
+truncated, because a truncated JSON document that still parses is the kind of
+wrong answer this language exists to prevent.
+
+Twenty assertions, plus a Strata client talking to a Strata server over a real
+socket in both directions.
+
+
 ### Money that is exact
 
 `std/money.sta`. Money in this language was a `float`, and a float cannot hold
