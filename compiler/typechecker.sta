@@ -1073,6 +1073,7 @@ int infer(TC &tc, int node_p, int scope_p) {
         }
         validate_query(&tc, e.c1, e.s1, e.line, e.col, scope_p);
         validate_query_scoped(&tc, e.c1, e.s1, e.line, e.col, scope_p);
+        validate_query_order(&tc, e, e.s1, e.line, e.col);
         return ty_ptr(ty_list(ty_new(e.s1)));
     }
 
@@ -1558,6 +1559,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
         }
         if (qsch != 0) {
             validate_query(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
+            validate_query_order(&tc, qval, qval.s1, st.line, st.col);
             validate_query_scoped(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
         }
         // A query into a single record used to mean "the first row that
@@ -1740,6 +1742,41 @@ int scope_p) {
         validate_query_scoped(&tc, c.c1, schema, line, col, scope_p);
         validate_query_scoped(&tc, c.c2, schema, line, col, scope_p);
     }
+}
+
+// `by column` must name a column of this table, and one that can be ordered.
+//
+// This is the whole reason ordering is in the language rather than a library
+// function taking the column name as a string: rename the column and this
+// line stops compiling, like every other place that reads it.
+def validate_query_order(TC &tc, Node q, str schema, int line, int col) {
+    if (str_len(q.s2) == 0) { return; }
+    int sch = schema_find(tc.schemas, schema);
+    if (sch == 0) { return; }
+    Schema s = schema_at(sch);
+    int found = sym_find(s.fields, q.s2);
+    if (found == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'");
+        sb_append(&sb, q.s2);
+        sb_append(&sb, "' is not a column of '");
+        sb_append(&sb, schema);
+        sb_append(&sb, "'");
+        emit_hint(&tc, "E003", sb_to_str(&sb), line, col, hint_quoted("Order by one of: ", sym_names_repr(s.fields), ""));
+        return;
+    }
+    Sym f = sym_at(found);
+    str tn = ty_str(f.ty);
+    if (str_eq(tn, "int") == 1) { return; }
+    if (str_eq(tn, "float") == 1) { return; }
+    if (str_eq(tn, "str") == 1) { return; }
+    StringBuilder sb2 = sb_new();
+    sb_append(&sb2, "'");
+    sb_append(&sb2, q.s2);
+    sb_append(&sb2, "' is a '");
+    sb_append(&sb2, tn);
+    sb_append(&sb2, "', which has no order");
+    emit_hint(&tc, "E003", sb_to_str(&sb2), line, col, "Order by an int, a float or a str. Anything else has no first and no last, so `by` would be picking arbitrarily.");
 }
 
 def validate_query(TC &tc, int cond_p, str schema, int line, int col,

@@ -809,6 +809,7 @@ class TypeChecker:
                 undeclared_table_hint(q.source, 'before reporting on it'))
             return
         self._validate_query_cond(q.condition,q.source,decl.line,decl.col)
+        self._validate_query_order(q,q.source,decl.line,decl.col)
         # Metrics are expressions evaluated where `rows` is the datasource
         # result, so `strata_len(rows)` is what a count is written as. Without
         # this a metric declared `int` and assigned a str compiled silently.
@@ -822,6 +823,34 @@ class TypeChecker:
                     f"Type mismatch: metric '{m.name}' declared as '{declared}' "
                     f"but assigned '{actual}'",
                     m.line,m.col,f"Change value to type '{declared}' or update declaration")
+
+    def _validate_query_order(self, q, src, line, col):
+        """`by column` must name a column of this table, and one that can be
+        ordered.
+
+        This is the whole reason ordering is in the language rather than a
+        library function taking a column name as a string: rename the column
+        and this line stops compiling, like every other place that reads it.
+        """
+        if not getattr(q, "order_by", ""):
+            return
+        cols = self.schemas.get(src, {})
+        name = q.order_by
+        if name not in cols:
+            near = ", ".join(sorted(cols)) or "none"
+            self._error("E003",
+                f"'{name}' is not a column of '{src}'",
+                line, col,
+                f"Hint: order by one of: {near}")
+            return
+        t = cols[name]
+        tn = getattr(t, "name", str(t))
+        if tn not in ("int", "float", "str"):
+            self._error("E003",
+                f"'{name}' is a '{tn}', which has no order",
+                line, col,
+                "Hint: order by an int, a float or a str. Anything else has "
+                "no first and no last, so `by` would be picking arbitrarily.")
 
     def _check_stmt(self,stmt,scope):
         if isinstance(stmt,VarDecl): self._check_var_decl(stmt,scope)
@@ -887,6 +916,7 @@ class TypeChecker:
                     undeclared_table_hint(src, 'before querying'))
             else:
                 self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col,scope)
+                self._validate_query_order(stmt.value,src,stmt.line,stmt.col)
             # A query into a single record used to mean "the first row that
             # matches, or none" -- and "none" was a raw null with nothing in
             # the language able to test for it, so every use of the form was a
@@ -1089,6 +1119,7 @@ class TypeChecker:
                     undeclared_table_hint(src, 'before querying it'))
                 return None
             self._validate_query_cond(expr.condition,src,expr.line,expr.col,scope)
+            self._validate_query_order(expr,src,expr.line,expr.col)
             return SType("list",is_list=True,element_type=SType(src))
         return None
 

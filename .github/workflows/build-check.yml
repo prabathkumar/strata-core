@@ -122,6 +122,14 @@ jobs:
     - name: Two Runs Do Not Lose An Update
       run: python3 test_suite/two_runs_do_not_lose_an_update.py
 
+    # "Show me the ten largest invoices" is the first thing anyone asks of a
+    # business system, and until `by` existed the language had no answer. The
+    # check that matters here is the last one: renaming the column breaks the
+    # query that ordered by it, which a library sort taking a column name as
+    # a string would never have noticed.
+    - name: The Ten Largest
+      run: python3 test_suite/the_ten_largest.py
+
     # Every model API is https-only, so until there was TLS this language
     # could not call one. What this checks is not that a request can be made
     # but that the four quiet failures of a TLS client are all loud: an
@@ -452,7 +460,10 @@ jobs:
                      "Strata has no HTTP client" \
                      "there is no TLS in Strata" \
                      "https is not supported" \
-                     "no TLS anywhere in Strata"; do
+                     "no TLS anywhere in Strata" \
+                     "there is no ORDER BY" \
+                     "no way to sort or rank rows" \
+                     "no ordering in a query"; do
           if grep -rqF "$stale" README.md TUTORIAL.md FOR_DEVELOPERS.md \
                         LANGUAGE_SPECIFICATION.md 2>/dev/null; then
             note "a retired claim is back in the documentation: \"$stale\". It was true once and is not now; two statements that disagree is how a reader stops believing the rest."

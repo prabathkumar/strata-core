@@ -226,10 +226,38 @@ int main() {
 ```
 
 A query is an expression and may appear anywhere a value may. It is a scan:
-there are no joins, no ordering, no indexes and no aggregates inside the
-condition. Inside the brackets a bare name is always the **column** — if a
-variable of the same name is in scope, that is E008 rather than a silent
-comparison of the column with itself.
+there are no joins, no indexes and no aggregates inside the condition. Inside
+the brackets a bare name is always the **column** — if a variable of the same
+name is in scope, that is E008 rather than a silent comparison of the column
+with itself.
+
+#### `by` and `first` — ordering and taking the top of it
+
+```text
+list[Invoice] biggest = Invoice <- [paid == 0] by amount desc first 10;
+```
+
+`by <column>` orders the result; `desc` reverses it and `asc` is the default
+and may be written. `first N` takes the first N **after** the ordering, so the
+line above is the ten largest unpaid invoices rather than ten arbitrary ones
+put in order. One column, not several.
+
+The column is checked against the schema exactly like one in the condition is:
+`by total` on a table with no `total` is E003, and renaming the column breaks
+this line. That is why ordering is in the language rather than a library
+function — `sort_by(rows, "amount")` would take the column as a string, and a
+string is a schema nothing checks.
+
+The order is **stable**: rows with the same value keep the order the table had,
+in both directions. A report cannot change between runs with nothing in the
+data changing.
+
+`by`, `asc`, `desc` and `first` are contextual. They are ordinary identifiers
+everywhere else, so a variable named `first` is still legal.
+
+Ordering a column with no order — anything that is not `int`, `float` or `str`
+— is E003. `first 0` is a parse error: a query that should return nothing is a
+condition, not a limit.
 
 An insert must name every column (E009).
 
@@ -568,7 +596,8 @@ this document implied otherwise:
 - no `map`, `set`, or dictionary type
 - no date or time type in the language. `std/time.sta` provides dates as
   seconds since 1970 UTC, borrowed from C's calendar; there are no time zones
-- no grouping or ordering in a query
+- no grouping in a query. Ordering exists (`by`, `first`); there is no
+  `group by`, and no aggregate inside a condition
 - no user-defined generics, no interfaces, no inheritance
 - no exceptions — errors are return values
 - no garbage collector, and no `free`: `delete` unlinks a row and does not

@@ -67,6 +67,14 @@ you is a good use. A Python script running inside a Strata process is not.
   is in `docs/CALLING_A_MODEL.md`: ask for JSON, load it into a declared
   table, and a model that renames a field or invents one is refused the same
   way a supplier's CSV is.
+- **Ordering, in the language.** `Invoice <- [paid == 0] by amount desc
+  first 10` — the ten largest unpaid invoices. This was item 1 on the list
+  below and it was a language gap, not a library one. It is in the query
+  rather than a `sort_by(rows, "amount")` because a column name passed as a
+  string is a schema nothing checks: rename the column and the library call
+  still compiles and silently sorts by nothing. Here it is E003, like every
+  other place that reads the column. The sort is stable, so a report does not
+  change between runs with nothing in the data changing.
 - **`std/csv.sta`** — the file a supplier actually sends: quoted commas,
   doubled quotes, embedded newlines, CRLF, no final newline. `csv_row_ok` is
   the point of it — one damaged row is not a damaged file, so the reader says
@@ -74,11 +82,9 @@ you is a good use. A Python script running inside a Strata process is not.
 
 ### What is missing, in the order it hurts
 
-1. **Sorting rows.** This turned out to be a *language* gap, not a library one.
-   There is no `ORDER BY`, and a column cannot be projected out of a result
-   except inside an aggregate, so a program cannot show the ten largest
-   anything. It is now the biggest remaining gap and it is a syntax decision
-   before it is code.
+1. **Grouping.** Ordering is done; `group by` is not. "Total by customer" is
+   still a loop with a running tally, which works and does not read like the
+   question. This is the same kind of language-level gap ordering was.
 2. **Time zones**, on top of `std/time.sta`. Everything is UTC today.
 3. **TLS on the SERVER.** The client has it now, through `std/tls.sta`;
    `std/http.sta` does not, so nothing it serves can face the internet

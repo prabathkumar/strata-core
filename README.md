@@ -1474,9 +1474,8 @@ section to read before you decide anything.
 It is pre-release and written by one person. It has no ecosystem, nobody else
 has built anything with it, and it is not something to put a production system
 on today. It has run on physical phones, through a device farm rather than
-through a store. There is no package registry, no time zones, and no way to
-sort or rank rows — there is no `ORDER BY`, which is a language gap and the
-largest one left. Dates, decimal money, CSV and an HTTP client now exist as
+through a store. There is no package registry, no time zones, no server-side
+TLS and no `group by`. Dates, decimal money, CSV and an HTTP client now exist as
 standard library modules; money is kept as whole minor units rather than as a
 float, because a float cannot hold 0.10 exactly. `ast`, `lex`, `test` and
 `repair` still go through Python.

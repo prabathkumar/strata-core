@@ -195,6 +195,14 @@ transaction: a program that must never be refused should be the only writer.
   sent. It only bites when you CUT: `str_slice` refuses to cut a character in
   half rather than hand you a broken byte. Use `str_chars` to count characters
   and `str_truncate(value, max_bytes)` to trim to a column width.
+- **Rows can be ordered, and the column is checked.**
+  `Invoice <- [paid == 0] by amount desc first 10` is the ten largest unpaid
+  invoices. `first N` is applied after the ordering, never before. The order
+  is stable, so equal rows keep the order the table had and a report does not
+  change between runs with nothing in the data changing. `by` names a column,
+  not a string, so renaming the column breaks this line like it breaks every
+  other line that reads it — which is the reason it is not a `sort_by(rows,
+  "amount")` library call. One column; there is no `group by` yet.
 - **An aggregate over no rows reports.** `sum` and `count` of nothing answer 0
   and 0 and say nothing, because those are the answers. `avg`, `min` and `max`
   have no answer over nothing: they return 0 and set the error flag, so a

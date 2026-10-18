@@ -518,6 +518,69 @@ static void* strata_list_new(strata_int count, size_t elem_size) {
 
 /* A query allocates for every row in the table and then reports how many
    actually matched. */
+/* Ordering a query's result.
+ *
+ * `Ticket <- [...] by due desc` becomes a call to this with the kind of the
+ * column, its offset inside the row struct, and which way round. Taking an
+ * offset rather than generating a comparator per table per column keeps the
+ * emitted C the same size however many ordered queries a program has.
+ *
+ * It is a MERGE sort, not qsort, and that is deliberate: qsort is not stable,
+ * so two rows with the same key could come back in either order and a report
+ * could change between runs with nothing in the data changing. Here, equal
+ * rows keep the order the table had, which is the order they were inserted.
+ * A program that wants a tie broken says so with a second pass.
+ *
+ * Kind: 0 whole number, 1 decimal, 2 text. Text compares byte by byte, which
+ * is not an alphabet for any human language and is not claimed to be.
+ */
+static int strata_order_cmp(void* a, void* b, int kind, strata_int off, int desc) {
+    const char* pa = (const char*)a + off;
+    const char* pb = (const char*)b + off;
+    int r = 0;
+    if (kind == 0) {
+        strata_int x, y; memcpy(&x, pa, sizeof x); memcpy(&y, pb, sizeof y);
+        r = (x < y) ? -1 : ((x > y) ? 1 : 0);
+    } else if (kind == 1) {
+        strata_float x, y; memcpy(&x, pa, sizeof x); memcpy(&y, pb, sizeof y);
+        r = (x < y) ? -1 : ((x > y) ? 1 : 0);
+    } else {
+        strata_str x, y; memcpy(&x, pa, sizeof x); memcpy(&y, pb, sizeof y);
+        const char* sx = x ? (const char*)x : "";
+        const char* sy = y ? (const char*)y : "";
+        r = strcmp(sx, sy);
+        if (r < 0) r = -1; else if (r > 0) r = 1;
+    }
+    return desc ? -r : r;
+}
+
+static void strata_sort_rows(void** rows, strata_int n, int kind,
+                             strata_int off, int desc) {
+    if (!rows || n < 2) return;
+    void** tmp = (void**)malloc((size_t)n * sizeof(void*));
+    if (!tmp) return;            /* no order is better than a wrong order */
+    for (strata_int w = 1; w < n; w *= 2) {
+        for (strata_int lo = 0; lo < n; lo += 2 * w) {
+            strata_int mid = lo + w, hi = lo + 2 * w;
+            if (mid > n) mid = n;
+            if (hi > n) hi = n;
+            strata_int i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                /* <= keeps the earlier row first, which is what makes this
+                 * stable. A plain < here would quietly reverse equal rows. */
+                if (strata_order_cmp(rows[i], rows[j], kind, off, desc) <= 0)
+                    tmp[k++] = rows[i++];
+                else
+                    tmp[k++] = rows[j++];
+            }
+            while (i < mid) tmp[k++] = rows[i++];
+            while (j < hi)  tmp[k++] = rows[j++];
+        }
+        for (strata_int t = 0; t < n; t++) rows[t] = tmp[t];
+    }
+    free(tmp);
+}
+
 static void strata_list_set_len(void* list, strata_int count) {
     if (list) ((strata_int*)list)[-1] = count;
 }

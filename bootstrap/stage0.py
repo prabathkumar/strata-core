@@ -2570,6 +2570,9 @@ int main(int argc, char** argv) {
                 self.emit(f"if ({unwrap_once(cond)}) {{ {cname(name)}[_n++] = _row; }}")
                 self.indent -= 1
                 self.emit("}")
+                order = self._order_clause(stmt.value, src, cname(name), "_n")
+                if order:
+                    self.emit(order.rstrip())
                 self.emit(f"strata_list_set_len({cname(name)}, _n);")
                 self.indent -= 1
                 self.emit("}")
@@ -2958,6 +2961,34 @@ int main(int argc, char** argv) {
             return call
         return f"((strata_int)({call}))"
 
+    def _order_clause(self, expr, src, tag, nvar):
+        """The C that orders and trims a query's result, or "" for a query
+        that asked for neither.
+
+        `offsetof` is what makes one runtime function serve every table: the
+        generated code says where the column sits inside the row rather than
+        carrying a comparator of its own.
+        """
+        out = ""
+        col = getattr(expr, "order_by", "")
+        if col:
+            kind, ctype = 0, None
+            for f in self.schema_fields.get(src, []):
+                if f.name == col:
+                    ctype = self._c_type(f.field_type)
+                    break
+            if ctype == "strata_float":  kind = 1
+            elif ctype == "strata_str":  kind = 2
+            desc = 1 if getattr(expr, "order_desc", False) else 0
+            out += (f"strata_sort_rows((void**){tag}, {nvar}, {kind}, "
+                    f"offsetof({src}, {col}), {desc}); ")
+        lim = getattr(expr, "limit", 0)
+        if lim:
+            # Trimming after the sort, never before: `first 10` means the ten
+            # largest, not ten arbitrary rows that were then put in order.
+            out += f"if ({nvar} > {lim}LL) {{ {nvar} = {lim}LL; }} "
+        return out
+
     def _gen_query_expr(self, expr, param_names):
         """A query used where a value is expected, not on the right of a
         declaration. It becomes a statement expression that collects the
@@ -2982,7 +3013,8 @@ int main(int argc, char** argv) {
                 f"for (strata_int {tag}i = 0; {tag}i < {src}__count; {tag}i++) {{ "
                 f"{src}* _row = {src}__rows[{tag}i]; "
                 f"if ({cond}) {{ {tag}[{tag}n++] = _row; }} }} "
-                f"strata_list_set_len({tag}, {tag}n); {tag}; }})")
+                + self._order_clause(expr, src, tag, f"{tag}n")
+                + f"strata_list_set_len({tag}, {tag}n); {tag}; }})")
 
     def _gen_call(self, expr, param_names):
         if expr.callee == "str":

@@ -105,10 +105,35 @@ class PredictExpr(Node):
 
 @dataclass
 class QueryExpr(Node):
+    """`Source <- [cond]`, with an optional `by column [desc]` and `first N`.
+
+    The ordering is part of the query rather than a library call on the
+    result, for the same reason the condition is: a column named here is
+    checked against the schema at build time, so renaming it breaks this line
+    too. A `sort_by(rows, "amount")` would take the column name as a string,
+    and a string is exactly the thing this language exists to stop people
+    putting a schema into.
+
+    One column, not several. A second one is a real want and the shape below
+    extends to it; shipping one that works beats shipping two that are
+    half-checked.
+    """
     source: str
     condition: Any
-    def to_dict(self): return {"node":"QueryExpr","source":self.source,
-                               "condition":self.condition.to_dict()}
+    order_by: str = ""
+    order_desc: bool = False
+    limit: int = 0
+    def to_dict(self):
+        d = {"node":"QueryExpr","source":self.source,
+             "condition":self.condition.to_dict()}
+        # Emitted only when asked for, so every query written before ordering
+        # existed still serialises to exactly what it used to.
+        if self.order_by:
+            d["order_by"] = self.order_by
+            d["order_desc"] = self.order_desc
+        if self.limit:
+            d["limit"] = self.limit
+        return d
 
 @dataclass
 class ConstDecl(Node):
@@ -1218,9 +1243,10 @@ class Parser:
             self._consume(TT.L_BRACKET)
             cond = self._parse_expr()
             self._consume(TT.R_BRACKET)
+            q = self._parse_query_tail(
+                QueryExpr(vtype.line, vtype.col, src, cond))
             self._consume(TT.SEMICOLON)
-            return VarDecl(vtype.line, vtype.col, vtype, name,
-                           QueryExpr(vtype.line, vtype.col, src, cond))
+            return VarDecl(vtype.line, vtype.col, vtype, name, q)
         val = self._parse_expr()
         if consume_semicolon:
             self._consume(TT.SEMICOLON)
@@ -1250,6 +1276,35 @@ class Parser:
         return VerifyBlock(t.line, t.col, label, body)
 
     # ── Expressions (Pratt precedence) ────────────────────────────────────────
+
+    def _parse_query_tail(self, q):
+        """The optional `by column [asc|desc]` and `first N` after `]`.
+
+        `by`, `asc`, `desc` and `first` are contextual: they are ordinary
+        identifiers everywhere else, so no program that used one as a variable
+        name stopped compiling when ordering arrived.
+        """
+        if self._check(TT.IDENT) and self._peek().value == "by":
+            self._advance()
+            col = self._consume(TT.IDENT).value
+            q.order_by = col
+            if self._check(TT.IDENT) and self._peek().value in ("asc", "desc"):
+                q.order_desc = self._advance().value == "desc"
+        if self._check(TT.IDENT) and self._peek().value == "first":
+            at = self._advance()
+            n = self._consume(TT.INT_LIT)
+            try:
+                v = int(n.value)
+            except ValueError:
+                v = 0
+            if v <= 0:
+                raise ParseError(
+                    f"'first {n.value}' asks for no rows. `first` takes a "
+                    f"count of 1 or more; a query that should return nothing "
+                    f"is a condition, not a limit.",
+                    at.line, at.col, self.file)
+            q.limit = v
+        return q
 
     def _parse_expr(self) -> Any:
         return self._parse_or()
@@ -1463,7 +1518,8 @@ class Parser:
                 self._consume(TT.L_BRACKET)
                 cond = self._parse_expr()
                 self._consume(TT.R_BRACKET)
-                return QueryExpr(t.line, t.col, name, cond)
+                return self._parse_query_tail(
+                    QueryExpr(t.line, t.col, name, cond))
             # Function call
             if self._check(TT.L_PAREN):
                 self._consume(TT.L_PAREN)

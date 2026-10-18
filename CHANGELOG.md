@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### The ten largest anything
+
+`by` and `first` on a query.
+
+```text
+list[Invoice] biggest = Invoice <- [paid == 0] by amount desc first 10;
+```
+
+"Show me the ten largest invoices" is the first thing anyone asks of a
+business system, and until this the language had no answer. A query could
+filter rows and the aggregates could add them up, but a column could not be
+projected out of a result except inside an aggregate, so there was no way to
+rank anything. It was the largest remaining gap and it was a *language* gap,
+not a missing library.
+
+Which is the whole argument for how it is written. The obvious fix is a
+library function:
+
+```text
+sort_by(rows, "amount")        // not this
+```
+
+and it is the wrong fix, because a column name passed as a string is a schema
+that nothing checks. Rename `amount` and that call still compiles, still
+runs, and silently sorts by nothing. The claim this language is built on is
+that renaming a column breaks every line that reads it before the program
+runs, and a library sort would have been a hole straight through the middle
+of it.
+
+So `by` is part of the query and the column is checked like any other:
+`by total` on a table with no `total` is E003, with the real columns named in
+the hint, from both compilers. `test_suite/the_ten_largest.py` ends with that
+exact check — rename the column, and the query that ordered by it stops
+compiling.
+
+Details that were decisions rather than defaults:
+
+- **`first N` is applied after the ordering**, never before, so
+  `by amount desc first 3` is the three largest rather than three arbitrary
+  rows that were then put in order.
+- **The sort is stable.** It is a merge sort in the runtime rather than
+  `qsort`, because `qsort` is not stable: two rows with the same key could
+  come back either way round, and a report could change between runs with
+  nothing in the data changing. Equal rows keep the order the table had, in
+  both directions.
+- **`by`, `asc`, `desc` and `first` are contextual words, not reserved ones.**
+  They are ordinary identifiers everywhere else, so no program that used
+  `first` as a variable name stopped compiling.
+- **`first 0` is a parse error.** A query that should return nothing is a
+  condition, not a limit.
+- **One column.** A second is a real want and the shape extends to it;
+  shipping one that works beats shipping two that are half-checked.
+- **Ordering a column with no order** -- anything that is not `int`, `float`
+  or `str` -- is E003 rather than an arbitrary answer.
+
+One runtime function serves every table: the generated code passes the
+column's `offsetof` inside the row struct, so a program with fifty ordered
+queries carries no more comparator code than one with a single query. Both
+generators emit it identically and the fixpoint still closes.
+
+There is still no `group by`. "Total by customer" is still a loop with a
+running tally, and that is now the largest language-level gap.
+
 ### A model can be called, and the connection is actually checked
 
 `std/tls.sta` and `std/llm.sta`, and the end of the largest honest gap in the

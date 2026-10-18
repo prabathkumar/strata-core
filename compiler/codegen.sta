@@ -228,10 +228,48 @@ str gen_query_expr(Gen &g, Node e) {
     sb_append(&sb, src); sb_append(&sb, "__rows["); sb_append(&sb, tag);
     sb_append(&sb, "i]; if ("); sb_append(&sb, cond); sb_append(&sb, ") { ");
     sb_append(&sb, tag); sb_append(&sb, "["); sb_append(&sb, tag);
-    sb_append(&sb, "n++] = _row; } } strata_list_set_len(");
+    sb_append(&sb, "n++] = _row; } } ");
+    StringBuilder nvb = sb_new();
+    sb_append(&nvb, tag); sb_append(&nvb, "n");
+    sb_append(&sb, order_clause(&g, e, src, tag, sb_to_str(&nvb)));
+    sb_append(&sb, "strata_list_set_len(");
     sb_append(&sb, tag); sb_append(&sb, ", "); sb_append(&sb, tag);
     sb_append(&sb, "n); "); sb_append(&sb, tag); sb_append(&sb, "; })");
     return sb_to_str(&sb);
+}
+
+// The C that orders and trims a query's result, or "" for a query that asked
+// for neither.
+//
+// `offsetof` is what lets one runtime function serve every table: the
+// generated code says where the column sits inside the row rather than
+// carrying a comparator of its own, so a program with fifty ordered queries
+// is no larger than one with a single comparator.
+str order_clause(Gen &g, Node e, str src, str tag, str nvar) {
+    StringBuilder out = sb_new();
+    if (str_len(e.s2) > 0) {
+        StringBuilder key = sb_new();
+        sb_append(&key, src); sb_append(&key, "."); sb_append(&key, e.s2);
+        str ct = bind_get(g.field_types, sb_to_str(&key));
+        int kind = 0;
+        if (str_eq(ct, "strata_float") == 1) { kind = 1; }
+        if (str_eq(ct, "strata_str") == 1) { kind = 2; }
+        sb_append(&out, "strata_sort_rows((void**)");
+        sb_append(&out, tag); sb_append(&out, ", "); sb_append(&out, nvar);
+        sb_append(&out, ", "); sb_append(&out, str(kind));
+        sb_append(&out, ", offsetof("); sb_append(&out, src);
+        sb_append(&out, ", "); sb_append(&out, e.s2); sb_append(&out, "), ");
+        sb_append(&out, str(e.i1)); sb_append(&out, "); ");
+    }
+    if (e.i2 > 0) {
+        // Trimming after the sort, never before: `first 10` means the ten
+        // largest, not ten arbitrary rows that were then put in order.
+        sb_append(&out, "if ("); sb_append(&out, nvar); sb_append(&out, " > ");
+        sb_append(&out, str(e.i2)); sb_append(&out, "LL) { ");
+        sb_append(&out, nvar); sb_append(&out, " = ");
+        sb_append(&out, str(e.i2)); sb_append(&out, "LL; } ");
+    }
+    return sb_to_str(&out);
 }
 
 // sum/avg/min/max over a list of numbers, or over one column projected out
@@ -1514,6 +1552,8 @@ def gen_var_decl(Gen &g, Node st) {
         cg_emit(&g, sb_to_str(&test));
         g.indent = g.indent - 1;
         cg_emit(&g, "}");
+        str ordered = order_clause(&g, val, val.s1, cname(st.s1), "_n");
+        if (str_len(ordered) > 0) { cg_emit(&g, str_truncate(ordered, str_len(ordered) - 1)); }
         StringBuilder term = sb_new();
         sb_append(&term, "strata_list_set_len("); sb_append(&term, cname(st.s1));
         sb_append(&term, ", _n);");
