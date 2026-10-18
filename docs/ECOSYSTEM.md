@@ -11,12 +11,15 @@ first thing a developer notices.
 
 What it *does* have is the part most people assume is the hard bit:
 
-- **21 standard library modules** — dates, decimal money, CSV, an HTTP client,
-  an HTTP server, sessions and password hashing, JSON, TOML, PostgreSQL, CLI,
-  metrics, telemetry, a tensor bridge, SIMD maths, strings, files, memory, a
-  test harness, a drawing surface. The four newest — `time`, `money`, `csv`,
-  `fetch` — are the ones a business program reaches for in its first hour, and
-  three of the four are borrowed from C rather than invented.
+- **23 standard library modules** — TLS, a language-model client, dates,
+  decimal money, CSV, an HTTP client, an HTTP server, sessions and password
+  hashing, JSON, TOML, PostgreSQL, CLI, metrics, telemetry, a tensor bridge,
+  SIMD maths, strings, files, memory, a test harness, a drawing surface. The
+  six newest — `time`, `money`, `csv`, `fetch`, `tls`, `llm` — are the ones a
+  business program reaches for in its first hour, and most of them are
+  borrowed from C rather than invented. `tls` is the clearest case: it is a
+  hundred lines of glue over OpenSSL, and the hand-written TLS 1.3 handshake
+  that used to sit in `std/unimplemented/` was deleted rather than finished.
 - **Dependencies that work.** A project declares them in `Strata.toml`:
 
   ```toml

@@ -1617,7 +1617,20 @@ int main(int argc, char** argv) {
         # stopped being the only user of its header.
         if decl.header not in self._foreign_headers:
             self._foreign_headers.add(decl.header)
-            self.emit_raw(f"#include <{decl.header}>")
+            # An OpenSSL header is wrapped, because the library's RUNTIME is
+            # on every machine and its HEADERS are not. std/fetch.sta imports
+            # std/tls.sta so that https:// is a real request, which would
+            # otherwise mean every program that calls another service stops
+            # compiling on a machine without libssl-dev. Wrapped, such a
+            # machine builds everything and gets a std/tls.sta that refuses
+            # and says why. STRATA_TLS is defined by the build only when
+            # pkg-config can actually find OpenSSL.
+            if decl.header.startswith("openssl/"):
+                self.emit_raw("#ifdef STRATA_TLS")
+                self.emit_raw(f"#include <{decl.header}>")
+                self.emit_raw("#endif")
+            else:
+                self.emit_raw(f"#include <{decl.header}>")
         if decl.link:
             self.link_libs.append(decl.link)
         # Record return types so conversions dispatch correctly: without this
@@ -3077,6 +3090,36 @@ def _resolve_module(imp, search_root, app_root=None):
             return cand
     return None
 
+_OPENSSL_PKG = None
+
+
+def openssl_pkg():
+    """Where OpenSSL is, as pkg-config reports it, or None.
+
+    Asked once. The runtime library is on every machine; the headers and the
+    .pc file are not, and a machine without them must still build everything
+    -- std/fetch.sta imports std/tls.sta so that https:// is a real request,
+    and without this a missing libssl-dev would stop every program that calls
+    another service from compiling at all.
+    """
+    global _OPENSSL_PKG
+    if _OPENSSL_PKG is None:
+        try:
+            ok = subprocess.run(["pkg-config", "--exists", "openssl"],
+                                capture_output=True, text=True).returncode == 0
+            if ok:
+                cf = subprocess.run(["pkg-config", "--cflags", "openssl"],
+                                    capture_output=True, text=True).stdout.strip()
+                lf = subprocess.run(["pkg-config", "--libs-only-L", "openssl"],
+                                    capture_output=True, text=True).stdout.strip()
+                _OPENSSL_PKG = (cf, lf)
+            else:
+                _OPENSSL_PKG = False
+        except (FileNotFoundError, OSError):
+            _OPENSSL_PKG = False
+    return _OPENSSL_PKG or None
+
+
 def link_flags_libs(link_flags):
     """The library names inside a list of -l flags.
 
@@ -3282,6 +3325,12 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     c_source = gen.generate()
     # There is no libcrypt on macOS: crypt(3) is in libSystem, so asking for
     # it is a link error rather than a no-op.
+    # Without OpenSSL, `foreign ... link "ssl"` asks for a library that is not
+    # here. The include was already wrapped in #ifdef STRATA_TLS; dropping the
+    # -l flags with it is the other half, so the binary builds and std/tls.sta
+    # is a refusal rather than a link error nobody can act on.
+    if openssl_pkg() is None:
+        gen.link_libs = [l for l in gen.link_libs if l not in ("ssl", "crypto")]
     _libs = [l for l in dict.fromkeys(gen.link_libs)
              if not (l == "crypt" and platform.system() == "Darwin")]
     link_flags = [f"-l{l}" for l in _libs]
@@ -3357,6 +3406,21 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
                 portability = portability + [flag + d]
         # Debian keeps libpq-fe.h in a subdirectory of the include dir.
         portability = portability + ["-I/usr/include/postgresql"]
+    # Linking OpenSSL is what turns TLS on, and like the Postgres flag it comes
+    # from the program's own `foreign ... link "ssl"` -- which comes from
+    # importing `tls from std` -- so a program that never calls out over https
+    # carries neither the dependency nor the code.
+    #
+    # pkg-config is asked where OpenSSL is rather than guessing /usr/include:
+    # Homebrew keeps it somewhere else entirely. If pkg-config cannot answer,
+    # STRATA_TLS is not defined and std/tls.sta compiles to a refusal that says
+    # why, which is a build that works and tells the truth rather than a build
+    # that fails on a machine that was never going to speak https anyway.
+    if any(l == "ssl" for l in link_flags_libs(link_flags)):
+        _pkg = openssl_pkg()
+        if _pkg:
+            portability = portability + ["-DSTRATA_TLS"]
+            portability = portability + [f for f in (_pkg[0] + " " + _pkg[1]).split() if f]
     if target == "wasm":
         flags = (cc_argv + ["-Oz","--target=wasm32","-nostdlib",
                   "-Wl,--no-entry","-Wl,--strip-all",

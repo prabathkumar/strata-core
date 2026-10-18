@@ -33,7 +33,7 @@ you is a good use. A Python script running inside a Strata process is not.
 | Piece | State |
 |---|---|
 | `foreign` blocks, type-checked both sides | Works. This is the door to every C library there is. |
-| 21 `std/` modules: time, money, csv, fetch, http, auth, json, toml, postgres, cli, io, str, mem, os, ui, testing, metrics, telemetry, ml, simd_math, core | Work, with the limits written at the top of each file. |
+| 23 `std/` modules: tls, llm, time, money, csv, fetch, http, auth, json, toml, postgres, cli, io, str, mem, os, ui, testing, metrics, telemetry, ml, simd_math, core | Work, with the limits written at the top of each file. |
 | `strata deps` with path and git dependencies, `Strata.lock`, duplicate names refused loudly | Works, and is tested on every commit. |
 | A test harness (`strata test`), a formatter (`strata fmt`), a repair tool (`strata repair`) | Work. |
 | `docs/ECOSYSTEM.md` | A design note for a package registry. Nothing built. |
@@ -57,6 +57,16 @@ you is a good use. A Python script running inside a Strata process is not.
   headers are not installable on the build machine. It refuses `https://`
   outright instead of pretending, and caps a body at 4 MB by refusing it rather
   than truncating it.
+- **`std/tls.sta`** — a verifying TLS client, borrowed from OpenSSL through
+  `foreign`. The certificate is checked and separately checked to be for the
+  host asked for, and there is no flag to turn either off. A machine without
+  OpenSSL's headers still builds everything; `std/tls.sta` compiles to a
+  refusal that says why, rather than a link error nobody can act on.
+- **`std/llm.sta`** — calling a language model over that connection, and not
+  believing it. The pattern that makes this Strata rather than an HTTP client
+  is in `docs/CALLING_A_MODEL.md`: ask for JSON, load it into a declared
+  table, and a model that renames a field or invents one is refused the same
+  way a supplier's CSV is.
 - **`std/csv.sta`** — the file a supplier actually sends: quoted commas,
   doubled quotes, embedded newlines, CRLF, no final newline. `csv_row_ok` is
   the point of it — one damaged row is not a damaged file, so the reader says
@@ -70,8 +80,11 @@ you is a good use. A Python script running inside a Strata process is not.
    anything. It is now the biggest remaining gap and it is a syntax decision
    before it is code.
 2. **Time zones**, on top of `std/time.sta`. Everything is UTC today.
-3. **TLS.** The server has none, so nothing it serves can face the internet.
-   OpenSSL through `foreign`. `std/unimplemented/tls.sta` is a placeholder.
+3. **TLS on the SERVER.** The client has it now, through `std/tls.sta`;
+   `std/http.sta` does not, so nothing it serves can face the internet
+   without something in front of it. The same OpenSSL binding, the other way
+   round: `SSL_accept` rather than `SSL_connect`, and a certificate and key
+   to load.
 4. **A decimal *type*, in the language.** `std/money.sta` covers the ledger
    case with whole minor units, which is the case that was losing pennies. A
    first-class decimal in the compiler is still the better answer and is still

@@ -11,13 +11,18 @@
 // covers what an internal system actually does — ask another service for some
 // JSON, post a record, call a webhook.
 //
-// WHAT IT DOES NOT DO, AND THIS MATTERS
+// HTTPS
 //
-// **No HTTPS.** This speaks plain HTTP. There is no TLS anywhere in Strata
-// yet, so anything carrying a password or personal data across a network you
-// do not own needs more than this file. It is for service-to-service calls
-// inside a network you control, and saying that plainly is better than a
-// library that looks like it is secure and is not.
+// `https://` works, through `std/tls.sta`, which borrows OpenSSL. The
+// certificate is verified and the hostname is checked against it, with no way
+// to turn either off -- see that file for why there is no "insecure" flag.
+//
+// If the machine this was built on had no OpenSSL, the binary still runs and
+// still serves plain HTTP; an `https://` call refuses and says that is why,
+// rather than quietly sending in the clear. `tls_available()` answers the
+// question before you ask it.
+//
+// WHAT IT DOES NOT DO, AND THIS MATTERS
 //
 // No redirects, no cookies, no keep-alive, no chunked transfer encoding, no
 // compression, no proxy support, and no streaming — the whole body is read
@@ -27,15 +32,16 @@
 //
 // WHY NOT libcurl
 //
-// Borrowing beats building, and for TLS it will: a hand-written TLS stack is
-// a liability, and `foreign` already reaches OpenSSL. For a plain HTTP
-// request over a socket there is nothing worth borrowing — the server next
-// door already speaks it the same way, with no dependency to install on a
-// machine that may not have it.
+// Borrowing beats building, and for TLS it was: the handshake is OpenSSL's,
+// because a hand-written TLS stack is a liability. For the HTTP part over an
+// already-open connection there is nothing worth borrowing — the server next
+// door already speaks it the same way, and libcurl would be a second
+// dependency to install on a machine that may not have it.
 
 import io  from std;
 import str from std;
 import mem from std;
+import tls from std;
 
 foreign "sys/socket.h" link "" { }
 foreign "netinet/in.h" link "" { }
@@ -63,11 +69,20 @@ str fetch_host_of(str url) {
     return rest;
 }
 
+// 443 for https, 80 for everything else, unless the URL says otherwise. A
+// default that ignores the scheme is how a program ends up knocking on port
+// 80 with a TLS handshake and waiting for an answer that never comes.
+int fetch_default_port(str url) {
+    if (str_starts_with(url, "https://") == 1) { return 443; }
+    return 80;
+}
+
 int fetch_port_of(str url) {
+    int fallback = fetch_default_port(url);
     str rest = fetch_after_scheme(url);
     int n = str_len(rest);
     for (int i = 0; i < n; i = i + 1) {
-        if (rest[i] == 47) { return 80; }
+        if (rest[i] == 47) { return fallback; }
         if (rest[i] == 58) {
             int p = 0;
             int j = i + 1;
@@ -78,11 +93,11 @@ int fetch_port_of(str url) {
                 p = p * 10 + (c - 48);
                 j = j + 1;
             }
-            if (p == 0) { return 80; }
+            if (p == 0) { return fallback; }
             return p;
         }
     }
-    return 80;
+    return fallback;
 }
 
 str fetch_path_of(str url) {
@@ -163,19 +178,47 @@ def fetch_close(int fd) { native "close($fd);"; }
 // A GET, returning the whole response: headers, a blank line, then the body.
 // "" when the call did not happen at all, with the reason on the error flag.
 str fetch_raw(str method, str url, str body, str content_type) {
+    return fetch_with_headers(method, url, body, content_type, "");
+}
+
+// The same call, with extra header lines of your own: each one "Name: value"
+// and each one ending "\r\n". This is how an Authorization header gets sent,
+// and it is a separate function rather than a fifth argument on the common
+// one because most calls do not need it and should not have to pass "".
+//
+// Nothing here logs `extra` or echoes it back in an error message. A header
+// is where the credential lives, and a library that prints the request it
+// failed to make is how a key ends up in a log file.
+str fetch_with_headers(str method, str url, str body, str content_type, str extra) {
     str host = fetch_host_of(url);
     if (str_len(host) == 0) {
         fail(str_cat(["fetch: no host in '", url, "'"]));
         return "";
     }
-    if (str_starts_with(url, "https://") == 1) {
-        fail("fetch: https is not supported — there is no TLS in Strata yet, so this would send in the clear rather than fail");
-        return "";
+    int secure = str_starts_with(url, "https://");
+    if (secure == 1) {
+        if (tls_available() == 0) {
+            fail(str_cat(["fetch: cannot call ", url,
+            " — this binary was built on a machine with no OpenSSL, and sending it in the clear instead is not an option"]));
+            return "";
+        }
     }
-    int fd = fetch_connect(host, fetch_port_of(url));
-    if (fd < 0) {
-        fail(str_cat(["fetch: could not reach ", host]));
-        return "";
+
+    // Two transports, one conversation. `fd` is a plain socket; `conn` is a
+    // verified TLS session. Exactly one of them is open, and the rest of this
+    // function says which it is writing to rather than hiding it behind a
+    // layer -- there are two of them, and two is not enough to be worth one.
+    int fd = 0 - 1;
+    int conn = 0;
+    if (secure == 1) {
+        conn = tls_connect(host, fetch_port_of(url));
+        if (conn == 0) { return ""; }
+    } else {
+        fd = fetch_connect(host, fetch_port_of(url));
+        if (fd < 0) {
+            fail(str_cat(["fetch: could not reach ", host]));
+            return "";
+        }
     }
     StringBuilder req = sb_new();
     sb_append(&req, method);
@@ -184,6 +227,7 @@ str fetch_raw(str method, str url, str body, str content_type) {
     sb_append(&req, " HTTP/1.1\r\nHost: ");
     sb_append(&req, host);
     sb_append(&req, "\r\nUser-Agent: strata/0\r\nAccept: */*\r\nConnection: close\r\n");
+    if (str_len(extra) > 0) { sb_append(&req, extra); }
     if (str_len(body) > 0) {
         sb_append(&req, "Content-Type: ");
         sb_append(&req, content_type);
@@ -193,9 +237,16 @@ str fetch_raw(str method, str url, str body, str content_type) {
     }
     sb_append(&req, "\r\n");
     sb_append(&req, body);
-    fetch_send(fd, sb_to_str(&req));
-    str answer = fetch_read_all(fd, fetch_cap());
-    fetch_close(fd);
+    str answer = "";
+    if (secure == 1) {
+        tls_send(conn, sb_to_str(&req));
+        answer = tls_read_all(conn, fetch_cap());
+        tls_close(conn);
+    } else {
+        fetch_send(fd, sb_to_str(&req));
+        answer = fetch_read_all(fd, fetch_cap());
+        fetch_close(fd);
+    }
     if (str_len(answer) == 0) {
         fail(str_cat(["fetch: ", host, " answered with nothing, or with more than this client will hold"]));
         return "";
@@ -321,8 +372,21 @@ verify "something that is not an HTTP answer is not read as one" {
     assert str_eq(fetch_body("no blank line here"), "") == 1;
 }
 
-verify "https is refused rather than sent in the clear" {
-    str answer = fetch_get("https://example.com/");
+verify "the scheme picks the port, because a wrong default waits forever" {
+    assert fetch_port_of("https://api.example.com/v1") == 443;
+    assert fetch_port_of("http://api.example.com/v1") == 80;
+    // An explicit port still wins over both.
+    assert fetch_port_of("https://api.example.com:8443/v1") == 8443;
+    assert fetch_port_of("http://api.example.com:8080/v1") == 8080;
+    assert str_eq(fetch_host_of("https://api.example.com/v1"), "api.example.com") == 1;
+    assert str_eq(fetch_path_of("https://api.example.com/v1"), "/v1") == 1;
+}
+
+verify "https is either done properly or refused, never downgraded" {
+    // On a machine with OpenSSL this reaches a host that does not exist and
+    // fails there; on a machine without it, it refuses before opening a
+    // socket. What must never happen is a plain-HTTP request to port 443.
+    str answer = fetch_get("https://no.such.host.invalid.strata/");
     assert str_len(answer) == 0;
     assert had_error() == 1;
     clear_error();

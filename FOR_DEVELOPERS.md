@@ -205,10 +205,22 @@ transaction: a program that must never be refused should be the only writer.
   columns by header name, and `csv_row_ok` tells you whether one row has the
   shape the header promised. Refusing a whole file for one damaged row is a
   choice, not a requirement.
-- **`fetch` speaks plain HTTP and will not pretend otherwise.** There is no
-  TLS in Strata, so `fetch_get("https://...")` refuses rather than sending in
-  the clear. Use it for service-to-service calls inside a network you control;
-  anything crossing a network you do not own needs TLS, which is not here yet.
+- **`fetch` speaks https, and the certificate is checked.** `std/tls.sta`
+  borrows OpenSSL through `foreign`. It verifies the certificate and
+  separately checks that it is a certificate *for the host you asked for* —
+  the check people leave out, because OpenSSL does not do it unless asked.
+  There is no flag to turn either off; a test or a re-signing proxy points
+  `SSL_CERT_FILE` at its own authority instead. Built on a machine without
+  OpenSSL's headers, everything still compiles and `tls_available()` is 0,
+  and an https call refuses rather than going out in the clear.
+- **Calling a language model is `std/llm.sta`, and not believing it is the
+  point.** Three environment variables, no provider list, no default model,
+  and a key that is never logged or quoted back in an error. The pattern worth
+  copying is in `docs/CALLING_A_MODEL.md`: ask for JSON, load it into a
+  declared `table`, and a model that renames a field or invents one is refused
+  at the door — the same contract the rest of the system is under.
+- **The TLS is client-side only.** `std/http.sta` still serves plain HTTP, so
+  anything facing the internet needs something in front of it.
 - **No client-side interactivity**, because no JavaScript is emitted.
 - **`ast`, `lex`, `test` and `repair` still go through Python.** `build`,
   `check`, `fmt`, `deps` and `lsp` are self-hosted.

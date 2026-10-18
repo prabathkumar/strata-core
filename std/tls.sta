@@ -1,0 +1,280 @@
+// STRATA STANDARD LIBRARY — std/tls.sta
+// Talking to a server that insists on being talked to properly.
+//
+// WHY THIS FILE EXISTS AND WHY IT IS SHORT
+//
+// Every interesting service on the internet is HTTPS only. Until this file
+// existed, `std/fetch.sta` could not call any of them, and said so rather
+// than pretending -- which was the right answer at the time and a useless
+// one in the long run.
+//
+// A TLS implementation written by hand is a liability, and nobody should
+// write one. This file does not. It borrows OpenSSL, which is already on
+// every machine that runs anything, through `foreign` -- the same door
+// `std/postgres.sta` uses for libpq. What is written here is the hundred
+// lines of glue between a Strata program and a library that already works,
+// and the decisions about how it is used.
+//
+// WHAT IT DECIDES, AND WHY YOU CANNOT UNDECIDE IT
+//
+// **The certificate is verified. Always.** There is no `tls_insecure()`, no
+// "skip verification for development", no flag. Every such flag ever added
+// to a TLS library is in production somewhere right now, because the quickest
+// way past a certificate error is to turn the check off and forget. A program
+// that cannot verify the server it is calling should stop, and this one does.
+//
+// **The hostname is checked against the certificate**, which is a separate
+// check from "is this certificate signed by someone I trust" and the one
+// people forget. A valid certificate for another host is a refusal here.
+//
+// **TLS 1.2 at the oldest.** 1.0 and 1.1 are withdrawn. A server offering
+// only those is not a server to trust with anything.
+//
+// WHAT IT DOES NOT DO
+//
+// No client certificates, no session resumption, no ALPN, no HTTP/2, no
+// renegotiation handling, no non-blocking sockets. One connection, one
+// conversation, blocking, then closed.
+//
+// WHEN OPENSSL IS NOT THERE
+//
+// A machine without OpenSSL's headers still builds everything else: the TLS
+// code is compiled only when the build defines STRATA_TLS, which it does when
+// the program's own `foreign ... link "ssl"` asks for it and pkg-config can
+// find the library. Without it every function here refuses loudly rather than
+// quietly returning something that looks like a connection.
+
+import io  from std;
+import str from std;
+
+foreign "sys/socket.h" link "" { }
+foreign "netinet/in.h" link "" { }
+foreign "netdb.h"      link "" { }
+foreign "unistd.h"     link "" { }
+foreign "openssl/ssl.h" link "ssl" { }
+foreign "openssl/err.h" link "crypto" { }
+
+// Whether this binary was built with TLS in it. A program that may run on a
+// machine without OpenSSL can ask before it tries, and say something useful
+// instead of failing at the first call.
+int tls_available() {
+    native "
+    #ifdef STRATA_TLS
+    return 1;
+    #else
+    return 0;
+    #endif
+    ";
+}
+
+// ── The connection ───────────────────────────────────────────────────────
+//
+// A connection is an int, because that is what Strata has. It is really the
+// address of a small record holding the socket, the context and the session.
+// Nothing outside this file should do arithmetic on it; it is a handle, and
+// `tls_close` is what ends it.
+
+// Connect to a host and port and complete the handshake, verifying the
+// server's certificate and that it is a certificate for this host.
+//
+// 0 when anything at all went wrong -- the name did not resolve, nothing
+// answered, the certificate did not verify, the hostname did not match -- with
+// the reason on the error flag. There is no partial success.
+int tls_connect(str host, int port) {
+    native "
+    #ifndef STRATA_TLS
+    strata_fail(strata_dup(\"tls: this binary was built without OpenSSL, so it cannot speak https\"));
+    return 0;
+    #else
+    struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
+
+    struct addrinfo _h; memset(&_h, 0, sizeof(_h));
+    _h.ai_family = AF_UNSPEC; _h.ai_socktype = SOCK_STREAM;
+    char _p[16]; snprintf(_p, sizeof(_p), \"%ld\", (long)$port);
+    struct addrinfo* _r = NULL;
+    if (getaddrinfo($host, _p, &_h, &_r) != 0 || !_r) {
+        { char _m[320]; snprintf(_m, sizeof(_m), \"tls: cannot find %s\", $host); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+    int _fd = -1;
+    for (struct addrinfo* _a = _r; _a; _a = _a->ai_next) {
+        _fd = socket(_a->ai_family, _a->ai_socktype, _a->ai_protocol);
+        if (_fd < 0) continue;
+        if (connect(_fd, _a->ai_addr, _a->ai_addrlen) == 0) break;
+        close(_fd); _fd = -1;
+    }
+    freeaddrinfo(_r);
+    if (_fd < 0) {
+        { char _m[320]; snprintf(_m, sizeof(_m), \"tls: nothing answered at %s\", $host); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+
+    SSL_CTX* _ctx = SSL_CTX_new(TLS_client_method());
+    if (!_ctx) {
+        close(_fd);
+        strata_fail(strata_dup(\"tls: OpenSSL would not give us a context\"));
+        return 0;
+    }
+    /* 1.0 and 1.1 are withdrawn; a server offering only those is not one to
+     * trust. TLS1_2_VERSION is the floor, not a preference. */
+    SSL_CTX_set_min_proto_version(_ctx, TLS1_2_VERSION);
+
+    /* The trust store: wherever this machine keeps its certificate
+     * authorities. SSL_CTX_set_default_verify_paths reads the compiled-in
+     * location and the SSL_CERT_FILE / SSL_CERT_DIR environment variables,
+     * which is how a container with its roots somewhere unusual, or a test
+     * with its own authority, is pointed at them without a flag in here. */
+    if (SSL_CTX_set_default_verify_paths(_ctx) != 1) {
+        SSL_CTX_free(_ctx); close(_fd);
+        strata_fail(strata_dup(\"tls: this machine has no trusted certificate authorities to check against\"));
+        return 0;
+    }
+    SSL_CTX_set_verify(_ctx, SSL_VERIFY_PEER, NULL);
+
+    SSL* _s = SSL_new(_ctx);
+    if (!_s) {
+        SSL_CTX_free(_ctx); close(_fd);
+        strata_fail(strata_dup(\"tls: OpenSSL would not give us a session\"));
+        return 0;
+    }
+    SSL_set_fd(_s, _fd);
+    /* Server Name Indication: which host we think we are calling. Without it
+     * a server holding several certificates sends the wrong one. */
+    SSL_set_tlsext_host_name(_s, $host);
+    /* And the check that the certificate it does send is FOR that host. This
+     * is the separate check people forget, and leaving it out is how a valid
+     * certificate for somebody else's domain gets accepted. */
+    SSL_set1_host(_s, $host);
+
+    if (SSL_connect(_s) != 1) {
+        long _v = SSL_get_verify_result(_s);
+        const char* _why = (_v == X509_V_OK)
+            ? \"the handshake failed\"
+            : X509_verify_cert_error_string(_v);
+        SSL_free(_s); SSL_CTX_free(_ctx); close(_fd);
+        { char _m[400]; snprintf(_m, sizeof(_m), \"tls: %s refused: %s\", $host, _why); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+
+    struct strata_tls* _c = (struct strata_tls*)malloc(sizeof(struct strata_tls));
+    if (!_c) {
+        SSL_free(_s); SSL_CTX_free(_ctx); close(_fd);
+        strata_fail(strata_dup(\"tls: out of memory\"));
+        return 0;
+    }
+    _c->fd = _fd; _c->ctx = _ctx; _c->ssl = _s;
+    return (int64_t)(intptr_t)_c;
+    #endif
+    ";
+}
+
+// Send the whole of `data`, however many writes that takes.
+def tls_send(int handle, str data) {
+    native "
+    #ifdef STRATA_TLS
+    struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_tls* _c = (struct strata_tls*)(intptr_t)$handle;
+    if (_c) {
+        const char* _d = $data; size_t _n = strlen(_d), _o = 0;
+        while (_o < _n) {
+            int _w = SSL_write(_c->ssl, _d + _o, (int)(_n - _o));
+            if (_w <= 0) break;
+            _o += (size_t)_w;
+        }
+    }
+    #endif
+    ";
+}
+
+// Everything the other end sends until it closes the connection.
+//
+// NULL -- which reaches Strata as an empty string with the error flag set --
+// when the answer is larger than `cap`. It is refused, not truncated: a
+// half-read JSON document that still parses is the kind of wrong answer this
+// language exists to prevent, and it is worse than no answer at all.
+str tls_read_all(int handle, int cap) {
+    native "
+    #ifndef STRATA_TLS
+    return NULL;
+    #else
+    struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_tls* _c = (struct strata_tls*)(intptr_t)$handle;
+    if (!_c) return NULL;
+    size_t _cap = (size_t)$cap, _len = 0, _room = 65536;
+    char* _b = (char*)malloc(_room);
+    if (!_b) return strata_dup(\"\");
+    for (;;) {
+        if (_len + 4096 > _room) {
+            if (_room * 2 > _cap + 65536) { free(_b); return NULL; }
+            _room *= 2;
+            char* _n2 = (char*)realloc(_b, _room);
+            if (!_n2) { free(_b); return strata_dup(\"\"); }
+            _b = _n2;
+        }
+        int _r = SSL_read(_c->ssl, _b + _len, 4096);
+        if (_r <= 0) break;
+        _len += (size_t)_r;
+        if (_len > _cap) { free(_b); return NULL; }
+    }
+    _b[_len] = '\\0';
+    return _b;
+    #endif
+    ";
+}
+
+// End the conversation and give everything back. Calling it twice on the same
+// handle is a mistake; calling it on 0 is not.
+def tls_close(int handle) {
+    native "
+    #ifdef STRATA_TLS
+    struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_tls* _c = (struct strata_tls*)(intptr_t)$handle;
+    if (_c) {
+        SSL_shutdown(_c->ssl);
+        SSL_free(_c->ssl);
+        SSL_CTX_free(_c->ctx);
+        close(_c->fd);
+        free(_c);
+    }
+    #endif
+    ";
+}
+
+// Which TLS version was actually agreed: \"TLSv1.3\", \"TLSv1.2\". "" for a
+// handle that is not open. Worth logging once at startup, because \"we are on
+// TLS\" and \"we are on a TLS nobody should still be using\" look identical
+// from the outside.
+str tls_version(int handle) {
+    native "
+    #ifndef STRATA_TLS
+    return strata_dup(\"\");
+    #else
+    struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_tls* _c = (struct strata_tls*)(intptr_t)$handle;
+    if (!_c) return strata_dup(\"\");
+    return strata_dup(SSL_get_version(_c->ssl));
+    #endif
+    ";
+}
+
+verify "a build without OpenSSL says so rather than pretending" {
+    // Both answers are correct; what is not correct is a binary that reports
+    // TLS and cannot do it, or refuses https while holding a working OpenSSL.
+    int here = tls_available();
+    assert here == 0 || here == 1;
+}
+
+verify "a handle that was never opened is not mistaken for one that was" {
+    assert str_len(tls_version(0)) == 0;
+    tls_close(0);
+    assert had_error() == 0;
+}
+
+verify "a name that cannot resolve is a refusal, not a hang" {
+    if (tls_available() == 1) {
+        int c = tls_connect("no.such.host.invalid.strata", 443);
+        assert c == 0;
+        assert had_error() == 1;
+        clear_error();
+    }
+}

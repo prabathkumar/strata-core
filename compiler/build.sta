@@ -172,14 +172,72 @@ str postgres_flags() {
     return sb_to_str(&sb);
 }
 
+// Linking OpenSSL is what turns TLS on, and like the Postgres flag it comes
+// from the program's own `foreign ... link "ssl"` -- which comes from
+// importing `tls from std` -- so a program that never calls out over https
+// carries neither the dependency nor the code.
+//
+// pkg-config is asked where OpenSSL is rather than guessing /usr/include:
+// Homebrew keeps it somewhere else entirely, and a machine may carry headers
+// that do not match the library next to them. If pkg-config cannot answer,
+// STRATA_TLS is not defined and std/tls.sta compiles to a refusal that says
+// why -- which is a build that works and tells the truth, rather than a build
+// that fails on a machine that was never going to speak https anyway.
+int openssl_is_here() {
+    str probe = capture("pkg-config --exists openssl 2>/dev/null && echo yes");
+    if (str_len(probe) == 0) { return 0; }
+    return 1;
+}
+
+str openssl_flags() {
+    if (openssl_is_here() == 0) { return ""; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, " -DSTRATA_TLS");
+    str cflags = capture("pkg-config --cflags openssl 2>/dev/null");
+    str libs = capture("pkg-config --libs-only-L openssl 2>/dev/null");
+    if (str_len(cflags) > 0) { sb_append(&sb, " "); sb_append(&sb, cflags); }
+    if (str_len(libs) > 0) { sb_append(&sb, " "); sb_append(&sb, libs); }
+    return sb_to_str(&sb);
+}
+
+// Without OpenSSL, `foreign ... link "ssl"` asks for a library that is not
+// here. The include is already wrapped in #ifdef STRATA_TLS; dropping the -l
+// flags with it is the other half, so the binary builds and std/tls.sta is a
+// refusal rather than a link error nobody can act on.
+str usable_libs(str libs) {
+    if (openssl_is_here() == 1) { return libs; }
+    StringBuilder out = sb_new();
+    sb_append(&out, ",");
+    int n = str_len(libs);
+    StringBuilder word = sb_new();
+    for (int i = 0; i < n; i = i + 1) {
+        int c = libs[i];
+        if (c == 44) {
+            str w = sb_to_str(&word);
+            if (str_len(w) > 0) {
+                if (str_eq(w, "ssl") == 0) {
+                    if (str_eq(w, "crypto") == 0) {
+                        sb_append(&out, w); sb_append(&out, ",");
+                    }
+                }
+            }
+            word = sb_new();
+            continue;
+        }
+        sb_append(&word, char_from_code(c));
+    }
+    return sb_to_str(&out);
+}
+
 // The whole command, as it will be run.
 //
 // `is_library` is a unit with no main(): a library, linked as an object file
 // rather than asked for an entry point it cannot have. In test mode the
 // generated entry point IS main(), so such a unit is a program even when its
 // source declares none.
-str cc_command(str cc, str c_path, str out_path, str target, str libs,
+str cc_command(str cc, str c_path, str out_path, str target, str raw_libs,
 int is_library) {
+    str libs = usable_libs(raw_libs);
     StringBuilder sb = sb_new();
     sb_append(&sb, cc);
 
@@ -187,6 +245,7 @@ int is_library) {
         sb_append(&sb, " -Oz --target=wasm32 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export-dynamic -Wl,--allow-undefined ");
         sb_append(&sb, portability_flags());
         if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+        if (links_against(libs, "ssl") == 1) { sb_append(&sb, openssl_flags()); }
         sb_append(&sb, " -o ");
         sb_append(&sb, out_path);
         sb_append(&sb, " ");
@@ -198,6 +257,7 @@ int is_library) {
         sb_append(&sb, " -O2 -c ");
         sb_append(&sb, portability_flags());
         if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+        if (links_against(libs, "ssl") == 1) { sb_append(&sb, openssl_flags()); }
         sb_append(&sb, " -o ");
         sb_append(&sb, out_path);
         sb_append(&sb, " ");
@@ -208,6 +268,7 @@ int is_library) {
     sb_append(&sb, " -O2 ");
     sb_append(&sb, portability_flags());
     if (links_against(libs, "pq") == 1) { sb_append(&sb, postgres_flags()); }
+    if (links_against(libs, "ssl") == 1) { sb_append(&sb, openssl_flags()); }
     sb_append(&sb, " -o ");
     sb_append(&sb, out_path);
     sb_append(&sb, " ");

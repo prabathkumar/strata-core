@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### A model can be called, and the connection is actually checked
+
+`std/tls.sta` and `std/llm.sta`, and the end of the largest honest gap in the
+standard library.
+
+Every language model API is https-only. Until now `std/fetch.sta` refused
+every `https://` URL and said why, which was the right answer and a useless
+one: it meant Strata could not call a model, a payment gateway, a shipping
+API or anything else that lives on the public internet.
+
+**`std/tls.sta` borrows OpenSSL** through `foreign`, which is the same door
+`std/postgres.sta` uses for libpq. It is about a hundred lines of glue. The
+hand-written TLS 1.3 handshake that had been sitting in `std/unimplemented/`
+since September was deleted rather than finished — a TLS stack written here
+would be a liability however finished it looked, and that is the clearest case
+in the project for borrowing over building.
+
+Two decisions in it that cannot be undone from outside:
+
+- **The certificate is verified, always.** There is no `tls_insecure()` and no
+  development flag. Every such flag ever added to a TLS library is in
+  production somewhere right now, because the quickest way past a certificate
+  error is to turn the check off and then forget. A test or a re-signing proxy
+  points `SSL_CERT_FILE` at its own authority, which is a deployment decision
+  made where those are made.
+- **The hostname is checked against the certificate**, which is a separate
+  check from "is this signed by someone I trust" and the one people leave out,
+  because OpenSSL does not do it unless asked.
+
+**`std/llm.sta`** calls a chat-completions endpoint over that connection.
+There is no provider list and no per-provider special case; three environment
+variables, none of them with a default. The key is read once, never logged,
+and never quoted back in an error — a library that prints the request it
+failed to make is how a key reaches a log file.
+
+The part that is Strata rather than a careful HTTP client is in
+`docs/CALLING_A_MODEL.md`: **ask the model for JSON, then load it into a
+declared table.** A model that renames a field, invents one, or sends a string
+where an `int` was declared is refused at the door, the same way a supplier's
+CSV is refused by `std/csv.sta`. A model is the one source that will
+confidently give a well-formed answer to a question nobody asked, so a
+declared shape matters more there than anywhere else.
+
+One bug this found and fixed on the way: `json_string_field` stops at the
+first quote it sees, which is right for the small documents it was written
+for and wrong for a model's answer, which is full of `\"` and `\n`. Stopping
+at the first escaped quote returns half a sentence that still looks like an
+answer. `llm_unquote_from` reads the escapes.
+
+`test_suite/a_model_can_be_called_safely.py` runs on every commit against a
+local TLS server with a certificate minted on the spot — no network, same
+answer every time — and checks that all four quiet failures are loud: an
+untrusted authority, a valid certificate for the wrong host, an answer
+truncated at its first escaped quote, and a key about to go out in the clear.
+
+**On a machine with no OpenSSL headers, everything still builds.** That was
+not free: the `#include <openssl/...>` is emitted inside `#ifdef STRATA_TLS`
+and the `-lssl -lcrypto` flags are dropped with it, in both the Python oracle
+and the self-hosted generator, so the two stay byte-identical. Without them
+`tls_available()` is 0 and an https call refuses with a message saying the
+build had no OpenSSL — rather than sending it in the clear.
+
+This is what makes it an AI story rather than a claim. `std/ml.sta` and the
+compiler's `model`/`predict` remain what they always were: one dense layer,
+weights from a text file, no training, and honest about it.
+
 ### Reading the file a supplier actually sends
 
 `std/csv.sta`. Every business system takes data from somewhere it does not

@@ -2972,9 +2972,20 @@ def gen_decl(Gen &g, Node d) {
     if (d.kind == 74) {
         // The header declares the functions; re-declaring them risks
         // conflicting with the real signature.
+        // An OpenSSL header is wrapped, because the library's RUNTIME is on
+        // every machine and its HEADERS are not. std/fetch.sta imports
+        // std/tls.sta so that https:// is a real request, which would
+        // otherwise mean every program that calls another service stops
+        // compiling on a machine without libssl-dev. Wrapped, such a machine
+        // builds everything and gets a std/tls.sta that refuses and says why.
+        // STRATA_TLS is defined by the build only when pkg-config can
+        // actually find OpenSSL.
+        int guarded = str_starts_with(d.s1, "openssl/");
+        if (guarded == 1) { emit_raw(&g, "#ifdef STRATA_TLS"); }
         StringBuilder sb = sb_new();
         sb_append(&sb, "#include <"); sb_append(&sb, d.s1); sb_append(&sb, ">");
         emit_raw(&g, sb_to_str(&sb));
+        if (guarded == 1) { emit_raw(&g, "#endif"); }
         // Return types are recorded so conversions dispatch correctly:
         // without this str(sqrt(x)) routes a float through the int converter.
         NodeVec ffns = nv_at(d.v1);

@@ -1,0 +1,340 @@
+// STRATA STANDARD LIBRARY — std/llm.sta
+// Calling a language model, the way a program calls anything else.
+//
+// WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
+//
+// This is not a machine learning framework and it does not run a model.
+// `std/ml.sta` and the compiler's `model`/`predict` do a small amount of
+// that, and they are honest about how small. This file does the thing an
+// enterprise program actually needs: **call somebody else's model over the
+// network and get an answer back**, with the same refusals the rest of this
+// language applies to anything coming in from outside.
+//
+// There is no agent loop here, no tool calling, no streaming, no retries, no
+// token accounting, no conversation memory, no prompt templating. Those are
+// decisions a program makes, not a library, and a library that makes them for
+// you is one you end up fighting.
+//
+// THE PART THAT IS NOT JUST AN HTTP CALL
+//
+// A model answers with text, and text is the least trustworthy thing a
+// program can be handed. The usual shape -- parse the JSON, reach for the
+// field you wanted, carry on -- fails silently when the model returns prose
+// instead of the JSON you asked for, or returns JSON with a field renamed.
+//
+// So the useful pattern in Strata is: **ask for JSON, then load it into a
+// declared table.** The columns are declared, the types are declared, and a
+// row the model sends with a column you never declared is refused at the door
+// rather than read as something else. That check is the whole point of this
+// language, and it applies to a model's output exactly as it applies to a
+// supplier's CSV. `llm_ask` hands back the text; what you do with it is where
+// the safety is, and `docs/CALLING_A_MODEL.md` shows the full shape.
+//
+// CREDENTIALS
+//
+// The key is read from the environment and never from a file in your project,
+// never from an argument, and never written to a log. Nothing in this file
+// prints a request. If a call fails you get the status and the host, not the
+// headers.
+//
+// WHICH SERVICE
+//
+// Anything that speaks the chat-completions shape, which is most of them.
+// Point STRATA_LLM_URL at it. There is no list of providers in here and no
+// per-provider special case; the day one of them changes its JSON, that is a
+// change to your program, not a new version of the standard library.
+
+import io    from std;
+import str   from std;
+import os    from std;
+import json  from std;
+import fetch from std;
+
+// ── Where to call, and with what ─────────────────────────────────────────
+
+// The full URL of the chat-completions endpoint. Empty when unset, which is
+// a refusal rather than a guess -- guessing a provider is how a key for one
+// service gets sent to another.
+str llm_url()   { return env("STRATA_LLM_URL"); }
+
+// The model name, passed through untouched.
+str llm_model() { return env("STRATA_LLM_MODEL"); }
+
+// The key. Read here, used once, never stored and never printed.
+str llm_key()   { return env("STRATA_LLM_KEY"); }
+
+// The most a reply may be: 1 MB. A model answering with more than that is
+// not answering the question that was asked.
+int llm_cap() { return 1048576; }
+
+// ── The request ──────────────────────────────────────────────────────────
+
+// The request body, as JSON. Separate from the call so a program can see
+// exactly what it is about to send -- and so this is testable without a
+// network, which is why the assertions at the bottom of this file exist.
+//
+// `temperature` is in hundredths, because Strata has no decimal literal in a
+// context like this and 0 means 0: llm_body(..., 0) is a model asked to be as
+// repeatable as it can be, which is what a program usually wants and is not
+// what most defaults give you.
+str llm_body(str model_name, str system_prompt, str user_prompt, int temperature_hundredths) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"model\":");
+    sb_append(&sb, json_str(model_name));
+    sb_append(&sb, ",\"temperature\":");
+    sb_append(&sb, str(temperature_hundredths));
+    sb_append(&sb, ".0e-2");
+    sb_append(&sb, ",\"messages\":[");
+    if (str_len(system_prompt) > 0) {
+        sb_append(&sb, "{\"role\":\"system\",\"content\":");
+        sb_append(&sb, json_str(system_prompt));
+        sb_append(&sb, "},");
+    }
+    sb_append(&sb, "{\"role\":\"user\",\"content\":");
+    sb_append(&sb, json_str(user_prompt));
+    sb_append(&sb, "}]}");
+    return sb_to_str(&sb);
+}
+
+// ── Reading the answer ───────────────────────────────────────────────────
+
+// A JSON string value, read properly -- which means a backslash escape does
+// not end it.
+//
+// `json_string_field` in std/json.sta stops at the first quote it sees, which
+// is correct for the small documents it was written for and wrong here: a
+// model's answer is full of \" and \n, and stopping at the first escaped
+// quote silently truncates it. A truncated answer that still looks like an
+// answer is the exact failure this language exists to prevent, so this reads
+// the escapes.
+str llm_unquote_from(str text, int quote_at) {
+    int n = str_len(text);
+    StringBuilder sb = sb_new();
+    int i = quote_at + 1;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) { return sb_to_str(&sb); }
+        if (c == 92) {
+            if (i + 1 >= n) { return sb_to_str(&sb); }
+            int e = text[i + 1];
+            if (e == 110)      { sb_append(&sb, char_from_code(10)); }
+            else if (e == 116) { sb_append(&sb, char_from_code(9)); }
+            else if (e == 114) { sb_append(&sb, char_from_code(13)); }
+            else if (e == 98)  { sb_append(&sb, char_from_code(8)); }
+            else if (e == 102) { sb_append(&sb, char_from_code(12)); }
+            else if (e == 117) {
+                // \uXXXX. Anything that is not plain ASCII is left as the
+                // escape rather than guessed at: this file does not carry a
+                // UTF-16 surrogate decoder, and writing half of one is worse
+                // than writing none.
+                int v = 0;
+                int ok = 1;
+                for (int k = 0; k < 4; k = k + 1) {
+                    if (i + 2 + k >= n) { ok = 0; break; }
+                    int h = text[i + 2 + k];
+                    int d = 0 - 1;
+                    if (h >= 48) { if (h <= 57) { d = h - 48; } }
+                    if (h >= 97) { if (h <= 102) { d = h - 87; } }
+                    if (h >= 65) { if (h <= 70) { d = h - 55; } }
+                    if (d < 0) { ok = 0; break; }
+                    v = v * 16 + d;
+                }
+                if (ok == 1) {
+                    if (v < 128) { sb_append(&sb, char_from_code(v)); }
+                    else { sb_append(&sb, str_slice(text, i, i + 6)); }
+                    i = i + 6;
+                    continue;
+                }
+                sb_append(&sb, "u");
+            }
+            else { sb_append(&sb, char_from_code(e)); }
+            i = i + 2;
+            continue;
+        }
+        sb_append(&sb, char_from_code(c));
+        i = i + 1;
+    }
+    // Ran off the end without a closing quote: the document is truncated.
+    fail("llm: the answer stopped in the middle of a string, so it is not a whole answer");
+    return "";
+}
+
+// The assistant's text out of a chat-completions reply. "" with the error
+// flag set when the reply has no such field, which is what a service sends
+// when it is reporting an error in a shape this does not know.
+str llm_content_of(str reply) {
+    int at = str_index_of(reply, "\"content\"");
+    if (at < 0) {
+        fail("llm: the reply has no content field, so it is not an answer to this question");
+        return "";
+    }
+    int n = str_len(reply);
+    int i = at + 9;
+    while (i < n) {
+        int c = reply[i];
+        if (c == 34) { return llm_unquote_from(reply, i); }
+        if (c == 44) { break; }
+        if (c == 125) { break; }
+        i = i + 1;
+    }
+    fail("llm: the reply's content field does not hold text");
+    return "";
+}
+
+// The error message a service sends when it refuses. "" when there is none.
+str llm_error_of(str reply) {
+    int at = str_index_of(reply, "\"message\"");
+    if (at < 0) { return ""; }
+    int n = str_len(reply);
+    for (int i = at + 9; i < n; i = i + 1) {
+        if (reply[i] == 34) { return llm_unquote_from(reply, i); }
+    }
+    return "";
+}
+
+// ── The call ─────────────────────────────────────────────────────────────
+
+// Ask the model and get its text back. "" with the error flag set for every
+// way this can go wrong, and the reasons are separate because they need
+// different fixes: an unset key is a deployment problem, a 401 is the wrong
+// key, a 429 is capacity, and a reply with no content field is the service
+// telling you something this library does not understand.
+//
+// Nothing here retries. A retry is a decision about money and about whether
+// the request was safe to repeat, and a library does not know either.
+str llm_ask(str system_prompt, str user_prompt) {
+    return llm_ask_at(llm_url(), llm_model(), llm_key(), system_prompt, user_prompt, 0);
+}
+
+str llm_ask_at(str url, str model_name, str key, str system_prompt, str user_prompt,
+int temperature_hundredths) {
+    if (str_len(url) == 0) {
+        fail("llm: STRATA_LLM_URL is not set, and this will not guess which service to send your prompt to");
+        return "";
+    }
+    if (str_len(model_name) == 0) {
+        fail("llm: STRATA_LLM_MODEL is not set, and a default model is a bill you did not agree to");
+        return "";
+    }
+    if (str_len(key) == 0) {
+        fail("llm: STRATA_LLM_KEY is not set");
+        return "";
+    }
+    if (str_starts_with(url, "https://") == 0) {
+        // A key in an Authorization header over plain HTTP is a key given
+        // away. localhost is the one place this is a reasonable thing to do,
+        // and it is still worth being explicit about.
+        if (str_starts_with(url, "http://localhost") == 0) {
+            if (str_starts_with(url, "http://127.0.0.1") == 0) {
+                fail("llm: refusing to send a key to a plain-HTTP address that is not localhost");
+                return "";
+            }
+        }
+    }
+
+    StringBuilder hdr = sb_new();
+    sb_append(&hdr, "Authorization: Bearer ");
+    sb_append(&hdr, key);
+    sb_append(&hdr, "\r\n");
+
+    str reply = fetch_with_headers("POST", url,
+    llm_body(model_name, system_prompt, user_prompt,
+    temperature_hundredths),
+    "application/json", sb_to_str(&hdr));
+    if (str_len(reply) == 0) { return ""; }
+
+    int status = fetch_status(reply);
+    str payload = fetch_body(reply);
+    if (status != 200) {
+        str why = llm_error_of(payload);
+        if (str_len(why) == 0) { why = "no reason given"; }
+        fail(str_cat(["llm: the service answered ", str(status), ": ", why]));
+        return "";
+    }
+    if (str_len(payload) > llm_cap()) {
+        fail("llm: the answer is larger than this client will hold");
+        return "";
+    }
+    return llm_content_of(payload);
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "the request is the request, and the prompt survives being JSON" {
+    str b = llm_body("m-1", "be brief", "say \"hi\"\nplease", 0);
+    assert str_index_of(b, "\"model\":\"m-1\"") >= 0;
+    assert str_index_of(b, "\"role\":\"system\"") >= 0;
+    assert str_index_of(b, "\"role\":\"user\"") >= 0;
+    // The quotes and the newline in the prompt are escaped, not passed
+    // through -- an unescaped newline makes the whole document invalid and
+    // the service rejects the call with something unhelpful.
+    assert str_index_of(b, "say \\\"hi\\\"\\nplease") >= 0;
+
+    // No system prompt means no system message, not an empty one.
+    str b2 = llm_body("m-1", "", "hello", 0);
+    assert str_index_of(b2, "\"role\":\"system\"") < 0;
+    assert str_index_of(b2, "\"role\":\"user\"") >= 0;
+}
+
+verify "an answer full of escapes is read whole, not truncated at the first quote" {
+    str reply = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"He said \\\"yes\\\".\\nThen he left.\"}}]}";
+    str got = llm_content_of(reply);
+    // This is the bug the plain JSON reader would have: stopping at the
+    // escaped quote gives "He said \\" and the program carries on with it.
+    assert str_index_of(got, "He said \"yes\".") >= 0;
+    assert str_index_of(got, "Then he left.") >= 0;
+    assert str_len(got) > 20;
+}
+
+verify "the escapes a model actually sends come out as the characters they mean" {
+    assert str_eq(llm_content_of("{\"content\":\"a\\tb\"}"), str_cat(["a", char_from_code(9), "b"])) == 1;
+    assert str_eq(llm_content_of("{\"content\":\"a\\\\b\"}"), "a\\b") == 1;
+    assert str_eq(llm_content_of("{\"content\":\"a\\u0041b\"}"), "aAb") == 1;
+    assert str_eq(llm_content_of("{\"content\":\"\"}"), "") == 1;
+}
+
+verify "a reply that is not an answer is refused, not read as an empty one" {
+    // A service reporting an error has no content field. The difference
+    // between "the model said nothing" and "the service refused" matters, and
+    // a library that returns "" for both has thrown it away.
+    str got = llm_content_of("{\"error\":{\"message\":\"model not found\",\"type\":\"invalid_request\"}}");
+    assert str_len(got) == 0;
+    assert had_error() == 1;
+    clear_error();
+
+    assert str_eq(llm_error_of("{\"error\":{\"message\":\"model not found\"}}"), "model not found") == 1;
+    assert str_eq(llm_error_of("{\"choices\":[]}"), "") == 1;
+}
+
+verify "a truncated answer is a failure, not a short answer" {
+    str got = llm_content_of("{\"content\":\"the answer begins and then the document ju");
+    assert str_len(got) == 0;
+    assert had_error() == 1;
+    clear_error();
+}
+
+verify "a missing key is a refusal with a reason, and the key is never in it" {
+    str got = llm_ask_at("https://api.example.com/v1/chat", "m", "", "", "hi", 0);
+    assert str_len(got) == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "STRATA_LLM_KEY") >= 0;
+    clear_error();
+
+    got = llm_ask_at("", "m", "k", "", "hi", 0);
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "STRATA_LLM_URL") >= 0;
+    clear_error();
+
+    got = llm_ask_at("https://api.example.com/v1/chat", "", "k", "", "hi", 0);
+    assert had_error() == 1;
+    clear_error();
+}
+
+verify "a key is not sent over plain HTTP to anywhere but this machine" {
+    str got = llm_ask_at("http://api.example.com/v1/chat", "m", "secret-key", "", "hi", 0);
+    assert str_len(got) == 0;
+    assert had_error() == 1;
+    // And the refusal does not quote the key back.
+    assert str_index_of(last_error(), "secret-key") < 0;
+    clear_error();
+}

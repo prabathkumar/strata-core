@@ -47,6 +47,16 @@ jobs:
     - name: Install The PostgreSQL Client Headers
       run: sudo apt-get update && sudo apt-get install -y libpq-dev
 
+    # std/tls.sta declares `foreign "openssl/ssl.h"`, and std/fetch.sta now
+    # imports it so that https:// is a real request rather than a refusal.
+    # The runtime library is on every machine; the headers and the .pc file
+    # that pkg-config reads are not, and without them the build still
+    # succeeds -- std/tls.sta compiles to a refusal that explains itself --
+    # which would make every TLS check below pass for the wrong reason. So it
+    # is installed here, where the whole standard library is compiled.
+    - name: Install The OpenSSL Headers
+      run: sudo apt-get install -y libssl-dev && pkg-config --modversion openssl
+
     # The conformance suite is the compiler's own regression gate: E001-E006
     # plus end-to-end compile-and-run. It exits non-zero on any failure.
     # A file can exist locally, be required by every build, and never reach
@@ -111,6 +121,14 @@ jobs:
     # second save used to replace the first one's work with both exiting 0.
     - name: Two Runs Do Not Lose An Update
       run: python3 test_suite/two_runs_do_not_lose_an_update.py
+
+    # Every model API is https-only, so until there was TLS this language
+    # could not call one. What this checks is not that a request can be made
+    # but that the four quiet failures of a TLS client are all loud: an
+    # untrusted authority, a valid certificate for the wrong host, an answer
+    # truncated at its first escaped quote, and a key sent in the clear.
+    - name: A Model Can Be Called Safely
+      run: python3 test_suite/a_model_can_be_called_safely.py
 
     # `load` was taught to refuse a damaged file. `scan`, `rewrite` and
     # `append` were not, and each had its own way of being quietly wrong --
@@ -431,7 +449,10 @@ jobs:
                      "money is a float" \
                      "no dates or times" \
                      "there is no date type" \
-                     "Strata has no HTTP client"; do
+                     "Strata has no HTTP client" \
+                     "there is no TLS in Strata" \
+                     "https is not supported" \
+                     "no TLS anywhere in Strata"; do
           if grep -rqF "$stale" README.md TUTORIAL.md FOR_DEVELOPERS.md \
                         LANGUAGE_SPECIFICATION.md 2>/dev/null; then
             note "a retired claim is back in the documentation: \"$stale\". It was true once and is not now; two statements that disagree is how a reader stops believing the rest."
