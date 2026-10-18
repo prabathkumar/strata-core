@@ -566,7 +566,8 @@ this document implied otherwise:
 - no module-level variables. `const` gives a fixed value; there is nowhere to
   keep something that changes
 - no `map`, `set`, or dictionary type
-- no date or time type
+- no date or time type in the language. `std/time.sta` provides dates as
+  seconds since 1970 UTC, borrowed from C's calendar; there are no time zones
 - no grouping or ordering in a query
 - no user-defined generics, no interfaces, no inheritance
 - no exceptions — errors are return values

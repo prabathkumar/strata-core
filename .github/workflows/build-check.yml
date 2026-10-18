@@ -427,7 +427,11 @@ jobs:
                      "the Android shell has never been compiled" \
                      "no application has been built with it" \
                      "there is no formatter" \
-                     "the compiler cannot compile itself"; do
+                     "the compiler cannot compile itself" \
+                     "money is a float" \
+                     "no dates or times" \
+                     "there is no date type" \
+                     "Strata has no HTTP client"; do
           if grep -rqF "$stale" README.md TUTORIAL.md FOR_DEVELOPERS.md \
                         LANGUAGE_SPECIFICATION.md 2>/dev/null; then
             note "a retired claim is back in the documentation: \"$stale\". It was true once and is not now; two statements that disagree is how a reader stops believing the rest."

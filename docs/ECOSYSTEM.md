@@ -11,9 +11,12 @@ first thing a developer notices.
 
 What it *does* have is the part most people assume is the hard bit:
 
-- **17 standard library modules** — HTTP, sessions and password hashing, JSON,
-  TOML, PostgreSQL, CLI, metrics, telemetry, a tensor bridge, SIMD maths,
-  strings, files, memory, a test harness, a drawing surface.
+- **21 standard library modules** — dates, decimal money, CSV, an HTTP client,
+  an HTTP server, sessions and password hashing, JSON, TOML, PostgreSQL, CLI,
+  metrics, telemetry, a tensor bridge, SIMD maths, strings, files, memory, a
+  test harness, a drawing surface. The four newest — `time`, `money`, `csv`,
+  `fetch` — are the ones a business program reaches for in its first hour, and
+  three of the four are borrowed from C rather than invented.
 - **Dependencies that work.** A project declares them in `Strata.toml`:
 
   ```toml

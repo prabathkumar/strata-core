@@ -341,15 +341,17 @@ already set out to put the tiers in one place.
 | Screen fields checked against the **database** schema | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ | ❌ |
 | One compiler over database, rules and screens | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | An insert that omits a column fails the build | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
-| Mobile from the same source | ⚠️ | ⚠️ | ✅ | ❌ | ⚠️ | ❌ | ✅ | ❌ |
+| Mobile from the same source | ✅ | ⚠️ | ✅ | ❌ | ⚠️ | ❌ | ✅ | ❌ |
 | The application is text you own, not a vendor's model | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Diagnostics built for a machine to repair | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Repairs its own errors with no model required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Runs its repair loop on a laptop CPU, source never leaving it | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Single native binary, no runtime | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Requests served in parallel | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Shared-memory concurrency (threads or async) | 🔜 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
-| Package registry | 🔜 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Requests served in parallel | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Shared memory between workers | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
+| Threads or async inside one process | ❌ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ |
+| Dependencies by path and git, locked and tested | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Package registry to find them in | 🔜 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 **And the row that is not in the table.** Java, C#, Python, Elixir, TypeScript
 and the low-code platforms all have mature ecosystems, libraries for everything,
@@ -358,15 +360,27 @@ none of that, and none of it is something code can deliver — it arrives with
 time and users or it does not arrive. For almost any project you would start
 today, one of those is the right answer.
 
-**The ⚠️ marks mean what they say.** Strata serves requests in parallel by
-forking a process per connection, which runs on every core, inherits the
-loaded tables copy-on-write and shares counters through memory mapped before
-the first fork. What it does not have is threads or async: nothing shares
-mutable memory, so a write takes a file lock and a slow request holds a
-process. That is a real concurrency model with real limits, not an absence.
-Strata's mobile tier compiles against its
-contract and has run on physical handsets of both kinds, through a device
-farm rather than through a store. In Java, jOOQ generates
+**What the concurrency rows mean.** Strata serves requests in parallel by
+forking a process per connection. That runs on every core, inherits the loaded
+tables copy-on-write, and shares counters through memory mapped before the
+first fork — so requests are parallel and memory is shared, and both rows are
+ticks. What it does not have is threads or async inside one process: a write
+takes a file lock, and a slow request holds a process rather than yielding.
+That is a real concurrency model with real limits, not an absence, and the
+limits are the reason the third row is a cross rather than a warning.
+
+**What the mobile row means.** The phone tier is compiled from the same source
+and checked against the same schema as the database and the web tier, and it
+has run on physical handsets of both kinds through a device farm. What has not
+happened is shipping through an app store, which is distribution rather than
+source.
+
+**What the registry rows mean.** Declaring a dependency works and is tested on
+every commit: path and git dependencies, transitive fetching into one flat
+directory, a lock file, and two packages that disagree over a name reported
+with both askers named rather than resolved silently. What does not exist is a
+place to *find* a package you did not already know about. `docs/ECOSYSTEM.md`
+is the design note for it, and nothing in it is built. In Java, jOOQ generates
 typed code from a real schema while JPQL strings are not checked; in C#, EF
 Core checks LINQ against your *model*, and the model against the database is a
 migration somebody ran — which is what the second row is about. Elixir's Ecto
@@ -1363,9 +1377,10 @@ non-integer, or indexing something that is not a list, is caught at build time.
 
 ## Borrowing beats building
 
-A new language usually dies of its ecosystem: there is no date library, no
-HTTP client, no anything, and a team that would otherwise try it cannot get
-through the first afternoon. Writing all of that is years of work nobody will
+A new language usually dies of its ecosystem: no date library, no HTTP
+client, no anything, and a team that would otherwise try it cannot get through
+the first afternoon. That is the gap that stops developers, not missing
+compiler features. Writing all of that is years of work nobody will
 thank you for, and the result is worse than what already exists.
 
 Strata does not try. `foreign` names a C header and a library, and the
@@ -1459,9 +1474,11 @@ section to read before you decide anything.
 It is pre-release and written by one person. It has no ecosystem, nobody else
 has built anything with it, and it is not something to put a production system
 on today. It has run on physical phones, through a device farm rather than
-through a store. There is no package registry, no dates or times, no HTTP
-client, no TLS and no decimal type — money is a float, which is wrong for
-money and is written down rather than hidden. `ast`, `lex`, `test` and
+through a store. There is no package registry, no TLS, no time zones, and no way to
+sort or rank rows — there is no `ORDER BY`, which is a language gap and the
+largest one left. Dates, decimal money, CSV and an HTTP client now exist as
+standard library modules; money is kept as whole minor units rather than as a
+float, because a float cannot hold 0.10 exactly. `ast`, `lex`, `test` and
 `repair` still go through Python.
 
 Twelve blind pilots have been run: a fresh evaluator given a clean checkout,

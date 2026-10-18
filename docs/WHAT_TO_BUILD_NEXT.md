@@ -33,27 +33,49 @@ you is a good use. A Python script running inside a Strata process is not.
 | Piece | State |
 |---|---|
 | `foreign` blocks, type-checked both sides | Works. This is the door to every C library there is. |
-| 17 `std/` modules: http, auth, json, toml, postgres, cli, io, str, mem, os, ui, testing, metrics, telemetry, ml, simd_math, core | Work, with the limits written at the top of each file. |
+| 21 `std/` modules: time, money, csv, fetch, http, auth, json, toml, postgres, cli, io, str, mem, os, ui, testing, metrics, telemetry, ml, simd_math, core | Work, with the limits written at the top of each file. |
 | `strata deps` with path and git dependencies, `Strata.lock`, duplicate names refused loudly | Works, and is tested on every commit. |
 | A test harness (`strata test`), a formatter (`strata fmt`), a repair tool (`strata repair`) | Work. |
 | `docs/ECOSYSTEM.md` | A design note for a package registry. Nothing built. |
 
+### Since built (items 1, 2 and 4 of the list below are done)
+
+- **`std/time.sta`** — dates, borrowed from C's calendar rather than invented.
+  A moment is seconds since 1970 UTC. `date_of` refuses the thirtieth of
+  February instead of quietly returning the second of March, which is what C
+  does on its own. `days_in_month` is worked out, not looked up.
+  `start_of_next_month` exists because "add 30 days" is wrong eleven months a
+  year. No time zones yet: everything is UTC, and that is written at the top of
+  the file rather than left to be discovered.
+- **`std/money.sta`** — an amount is a whole number of minor units, so a total
+  is exact however many rows it has. Two roundings, because those are the two a
+  business makes: a rate (half away from zero) and a split that cannot lose a
+  cent (10.00 into three is 3.34, 3.33, 3.33). `money_parse` refuses thousands
+  separators, currency symbols and three decimal places rather than guessing.
+- **`std/fetch.sta`** — the other half of `http`: calling another service
+  rather than answering one. Written rather than borrowed only because libcurl
+  headers are not installable on the build machine. It refuses `https://`
+  outright instead of pretending, and caps a body at 4 MB by refusing it rather
+  than truncating it.
+- **`std/csv.sta`** — the file a supplier actually sends: quoted commas,
+  doubled quotes, embedded newlines, CRLF, no final newline. `csv_row_ok` is
+  the point of it — one damaged row is not a damaged file, so the reader says
+  which row to set aside and keeps the rest.
+
 ### What is missing, in the order it hurts
 
-1. **Dates and times.** There is no date type, no parsing, no formatting, no
-   time zones. Every business program needs this in its first hour. Today you
-   would reach for C's `strftime` through `foreign` and hand-roll the rest.
-   This is the single biggest gap. Borrow the C library, wrap it properly, do
-   not invent a calendar.
-2. **An HTTP *client*.** `std/http.sta` is a server. A program that cannot call
-   another service is not an enterprise program. Bind libcurl through
-   `foreign`; do not write a client by hand.
+1. **Sorting rows.** This turned out to be a *language* gap, not a library one.
+   There is no `ORDER BY`, and a column cannot be projected out of a result
+   except inside an aggregate, so a program cannot show the ten largest
+   anything. It is now the biggest remaining gap and it is a syntax decision
+   before it is code.
+2. **Time zones**, on top of `std/time.sta`. Everything is UTC today.
 3. **TLS.** The server has none, so nothing it serves can face the internet.
    OpenSSL through `foreign`. `std/unimplemented/tls.sta` is a placeholder.
-4. **Decimal money.** Today money is a float, and a float cannot hold 0.10
-   exactly. A ledger that uses floats will eventually be a penny out and nobody
-   will know why. This may want to be a language type, not a library, which
-   makes it the one item on this list that touches the compiler.
+4. **A decimal *type*, in the language.** `std/money.sta` covers the ledger
+   case with whole minor units, which is the case that was losing pennies. A
+   first-class decimal in the compiler is still the better answer and is still
+   unbuilt.
 5. **A C header to `foreign` generator.** A Python script that reads a header
    and writes the declarations. This turns "bind a C library" from a day into a
    minute, and it is the multiplier that makes items 1 to 3 cheap for everyone
