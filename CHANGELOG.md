@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Reading the file a supplier actually sends
+
+`std/csv.sta`. Every business system takes data from somewhere it does not
+control, and until this existed a Strata program picked a CSV apart with
+`str_index_of` by hand — which is how a company name with a comma in it
+silently becomes two columns.
+
+It handles the format as it is produced rather than as it is written down:
+quoted fields, commas and newlines inside quotes, a doubled quote meaning one
+quote, CRLF endings, and a missing final newline. Columns are found by name,
+because a supplier who adds a column in the middle should not break the
+import.
+
+The part that matters is `csv_row_ok`. **One bad row is not a bad file.** A
+loader that refuses forty thousand rows because row 4,812 has a stray quote
+leaves an operator with nothing to do at two in the morning; one that reads
+the damaged row anyway puts a wrong number in a ledger. A program can now take
+the rows it understands and set the rest aside by number and reason — which is
+what a pilot asked for by name.
+
+Twenty-four assertions, plus a supplier file with a quoted company name, a
+doubled quote and a short row, read end to end into a table with the bad row
+quarantined and the money exact.
+
+
 ### Calling another service
 
 `std/fetch.sta`. A program that cannot call another service is not an

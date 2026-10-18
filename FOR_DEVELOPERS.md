@@ -200,6 +200,11 @@ transaction: a program that must never be refused should be the only writer.
   have no answer over nothing: they return 0 and set the error flag, so a
   report for an empty month cannot read as a month in which everything was
   free.
+- **Supplier files: take the good rows, set the bad ones aside.** `std/csv.sta`
+  reads quoted commas, embedded newlines and doubled quotes properly, finds
+  columns by header name, and `csv_row_ok` tells you whether one row has the
+  shape the header promised. Refusing a whole file for one damaged row is a
+  choice, not a requirement.
 - **`fetch` speaks plain HTTP and will not pretend otherwise.** There is no
   TLS in Strata, so `fetch_get("https://...")` refuses rather than sending in
   the clear. Use it for service-to-service calls inside a network you control;

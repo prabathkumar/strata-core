@@ -1,0 +1,330 @@
+// STRATA STANDARD LIBRARY — std/csv.sta
+// Reading the file a supplier actually sends.
+//
+// Every business system takes data from somewhere it does not control: a
+// price list, a bank statement, a payroll export. It arrives as CSV, it is
+// never quite what the specification said, and until this file existed a
+// Strata program had to pick it apart with str_index_of by hand -- which is
+// how a field containing a comma silently becomes two columns.
+//
+// WHAT IT HANDLES
+//
+// Quoted fields, commas and newlines inside quotes, doubled quotes as an
+// escaped quote, CRLF endings, a missing final newline, and a blank line.
+// That is the shape of the format as it is actually produced, which is not
+// quite the shape anybody writes down.
+//
+// HOW IT IS USED
+//
+// By index rather than by handing back a list, because a row is read column
+// by column anyway and this keeps the whole file out of memory twice:
+//
+//     int n = csv_rows(text);
+//     for (int r = 1; r < n; r = r + 1) {          // row 0 is the header
+//         str name = csv_cell(text, r, 0);
+//         int qty  = str_to_int(csv_cell(text, r, 1));
+//         ...
+//     }
+//
+// ONE BAD ROW IS NOT A BAD FILE
+//
+// This is the part that matters, and the part a pilot asked for by name. A
+// loader that refuses the whole file because row 4,812 has a stray quote
+// gives an operator nothing to do at two in the morning. `csv_row_ok` says
+// whether one row has the column count the header promised, so a program can
+// take the rows it understands and set the rest aside with their numbers --
+// rather than choosing between all of it and none of it.
+//
+// WHAT THIS IS NOT
+//
+// It does not guess types, and it does not guess a delimiter: a file is
+// commas unless you say semicolons. It holds the text in memory, so a file
+// larger than memory needs `scan` and a different approach. There is no
+// writer beyond `csv_escape` for one field.
+
+import io  from std;
+import str from std;
+
+// ── Walking the text ─────────────────────────────────────────────────────
+//
+// One scanner, used by everything below. It returns the index just past the
+// field that starts at `from_at`, and reports through `out` what the field
+// held and whether the row ended there. Written once because a second scanner
+// that disagrees with the first about quoting is a bug nobody finds.
+
+// The whole file, as rows. A blank final line is not a row.
+int csv_rows(str text) { return csv_count(text, 44); }
+
+// With a delimiter of your choosing: 59 is a semicolon, 9 a tab.
+int csv_rows_with(str text, int delim) { return csv_count(text, delim); }
+
+int csv_count(str text, int delim) {
+    int n = str_len(text);
+    if (n == 0) { return 0; }
+    int rows = 0;
+    int i = 0;
+    while (i < n) {
+        i = csv_row_end(text, i, delim);
+        rows = rows + 1;
+        if (i < n) { i = csv_skip_newline(text, i); }
+    }
+    // A file ending in a newline does not have an empty last row.
+    return rows;
+}
+
+// The index of the newline that ends the row starting at `from_at`, skipping
+// newlines that are inside quotes.
+int csv_row_end(str text, int from_at, int delim) {
+    int n = str_len(text);
+    int i = from_at;
+    int quoted = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) {
+            if (quoted == 1) {
+                if (i + 1 < n) {
+                    if (text[i + 1] == 34) { i = i + 2; continue; }
+                }
+                quoted = 0;
+                i = i + 1;
+                continue;
+            }
+            quoted = 1;
+            i = i + 1;
+            continue;
+        }
+        if (quoted == 0) {
+            if (c == 10) { return i; }
+            if (c == 13) { return i; }
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+int csv_skip_newline(str text, int at) {
+    int n = str_len(text);
+    int i = at;
+    if (i < n) { if (text[i] == 13) { i = i + 1; } }
+    if (i < n) { if (text[i] == 10) { i = i + 1; } }
+    return i;
+}
+
+// Where row `row` starts. -1 when there is no such row.
+int csv_row_start(str text, int row, int delim) {
+    int n = str_len(text);
+    if (row < 0) { return 0 - 1; }
+    int i = 0;
+    int r = 0;
+    while (i <= n) {
+        if (r == row) { return i; }
+        if (i >= n) { return 0 - 1; }
+        i = csv_row_end(text, i, delim);
+        if (i >= n) { return 0 - 1; }
+        i = csv_skip_newline(text, i);
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+// ── Cells ────────────────────────────────────────────────────────────────
+
+// How many columns row `row` has.
+int csv_columns(str text, int row) { return csv_columns_with(text, row, 44); }
+
+int csv_columns_with(str text, int row, int delim) {
+    int start = csv_row_start(text, row, delim);
+    if (start < 0) { return 0; }
+    int end = csv_row_end(text, start, delim);
+    if (end <= start) { return 0; }
+    int count = 1;
+    int i = start;
+    int quoted = 0;
+    while (i < end) {
+        int c = text[i];
+        if (c == 34) {
+            if (quoted == 1) {
+                if (i + 1 < end) { if (text[i + 1] == 34) { i = i + 2; continue; } }
+                quoted = 0;
+            } else { quoted = 1; }
+            i = i + 1;
+            continue;
+        }
+        if (quoted == 0) { if (c == delim) { count = count + 1; } }
+        i = i + 1;
+    }
+    return count;
+}
+
+// One cell, with its quotes removed and any doubled quote put back to one.
+// "" for a cell that is not there, which is also what an empty cell gives --
+// use csv_columns when the difference matters.
+str csv_cell(str text, int row, int column) {
+    return csv_cell_with(text, row, column, 44);
+}
+
+str csv_cell_with(str text, int row, int column, int delim) {
+    int start = csv_row_start(text, row, delim);
+    if (start < 0) { return ""; }
+    int end = csv_row_end(text, start, delim);
+    int i = start;
+    int col = 0;
+    int field_start = start;
+    int quoted = 0;
+    while (i <= end) {
+        int at_end = 0;
+        if (i == end) { at_end = 1; }
+        int c = 0;
+        if (at_end == 0) { c = text[i]; }
+        if (at_end == 0) {
+            if (c == 34) {
+                if (quoted == 1) {
+                    if (i + 1 < end) { if (text[i + 1] == 34) { i = i + 2; continue; } }
+                    quoted = 0;
+                } else { quoted = 1; }
+                i = i + 1;
+                continue;
+            }
+        }
+        int boundary = at_end;
+        if (at_end == 0) { if (quoted == 0) { if (c == delim) { boundary = 1; } } }
+        if (boundary == 1) {
+            if (col == column) { return csv_unquote(str_slice(text, field_start, i)); }
+            col = col + 1;
+            field_start = i + 1;
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// Trim the surrounding quotes, and turn "" back into one quote.
+str csv_unquote(str field) {
+    int n = str_len(field);
+    if (n < 2) { return field; }
+    if (field[0] != 34) { return field; }
+    if (field[n - 1] != 34) { return field; }
+    StringBuilder sb = sb_new();
+    int i = 1;
+    while (i < n - 1) {
+        int c = field[i];
+        if (c == 34) {
+            if (i + 1 < n - 1) { if (field[i + 1] == 34) { sb_append(&sb, "\""); i = i + 2; continue; } }
+        }
+        sb_append(&sb, char_from_code(c));
+        i = i + 1;
+    }
+    return sb_to_str(&sb);
+}
+
+// ── One bad row is not a bad file ────────────────────────────────────────
+
+// Whether this row has as many columns as the header does.
+//
+// A supplier file with one stray quote in row 4,812 should cost you row
+// 4,812, not the file. A loader that refuses everything leaves an operator
+// with nothing to do at two in the morning, and a loader that reads the
+// damaged row anyway puts the wrong number in a ledger. This lets a program
+// take the rows it understands and set the rest aside by number.
+int csv_row_ok(str text, int row) {
+    if (row <= 0) { return 0; }
+    int want = csv_columns(text, 0);
+    if (want == 0) { return 0; }
+    if (csv_columns(text, row) != want) { return 0; }
+    return 1;
+}
+
+// The column a header names, or -1. Matching by name rather than by position
+// is what survives a supplier adding a column in the middle, which they do.
+int csv_column_of(str text, str name) {
+    int n = csv_columns(text, 0);
+    for (int i = 0; i < n; i = i + 1) {
+        if (str_eq(csv_cell(text, 0, i), name) == 1) { return i; }
+    }
+    return 0 - 1;
+}
+
+// A cell by header name rather than by number.
+str csv_value(str text, int row, str column_name) {
+    int at = csv_column_of(text, column_name);
+    if (at < 0) { return ""; }
+    return csv_cell(text, row, at);
+}
+
+// ── Writing one field ────────────────────────────────────────────────────
+
+// Quoted only when it has to be: a delimiter, a quote, or a newline in it.
+str csv_escape(str value) {
+    int n = str_len(value);
+    int needs = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c == 44) { needs = 1; }
+        if (c == 34) { needs = 1; }
+        if (c == 10) { needs = 1; }
+        if (c == 13) { needs = 1; }
+    }
+    if (needs == 0) { return value; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "\"");
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c == 34) { sb_append(&sb, "\""); }
+        sb_append(&sb, char_from_code(c));
+    }
+    sb_append(&sb, "\"");
+    return sb_to_str(&sb);
+}
+
+verify "a plain file reads" {
+    str t = "name,qty\nbolt,10\nnut,4\n";
+    assert csv_rows(t) == 3;
+    assert csv_columns(t, 0) == 2;
+    assert str_eq(csv_cell(t, 0, 0), "name") == 1;
+    assert str_eq(csv_cell(t, 1, 0), "bolt") == 1;
+    assert str_eq(csv_cell(t, 2, 1), "4") == 1;
+}
+
+verify "a field with a comma in it is one field" {
+    // The failure that makes hand-parsing wrong, and the reason this exists.
+    str t = "name,note\n\"Selasih, Sdn Bhd\",ok\n";
+    assert csv_columns(t, 1) == 2;
+    assert str_eq(csv_cell(t, 1, 0), "Selasih, Sdn Bhd") == 1;
+    assert str_eq(csv_cell(t, 1, 1), "ok") == 1;
+}
+
+verify "quotes, newlines and CRLF survive" {
+    str t = "a,b\r\n\"he said \"\"hi\"\"\",\"two\nlines\"\r\n";
+    assert csv_rows(t) == 2;
+    assert str_eq(csv_cell(t, 1, 0), "he said \"hi\"") == 1;
+    assert str_eq(csv_cell(t, 1, 1), "two\nlines") == 1;
+}
+
+verify "a file without a final newline is not short a row" {
+    str t = "a,b\n1,2";
+    assert csv_rows(t) == 2;
+    assert str_eq(csv_cell(t, 1, 1), "2") == 1;
+}
+
+verify "columns are found by name, not by position" {
+    str t = "sku,name,price\nX1,bolt,1.50\n";
+    assert csv_column_of(t, "price") == 2;
+    assert csv_column_of(t, "missing") == 0 - 1;
+    assert str_eq(csv_value(t, 1, "name"), "bolt") == 1;
+    assert str_eq(csv_value(t, 1, "price"), "1.50") == 1;
+}
+
+verify "one bad row is not a bad file" {
+    str t = "a,b,c\n1,2,3\n4,5\n6,7,8\n";
+    assert csv_row_ok(t, 1) == 1;
+    assert csv_row_ok(t, 2) == 0;      // short a column
+    assert csv_row_ok(t, 3) == 1;
+    // and the good rows are still readable either side of it
+    assert str_eq(csv_cell(t, 3, 2), "8") == 1;
+}
+
+verify "a field is quoted only when it must be" {
+    assert str_eq(csv_escape("plain"), "plain") == 1;
+    assert str_eq(csv_escape("a,b"), "\"a,b\"") == 1;
+    assert str_eq(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"") == 1;
+}
