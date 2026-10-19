@@ -47,6 +47,7 @@ foreign "sys/socket.h" link "" { }
 foreign "netinet/in.h" link "" { }
 foreign "arpa/inet.h"  link "" { }
 foreign "netdb.h"      link "" { }
+foreign "sys/time.h"   link "" { }
 foreign "unistd.h"     link "" { }
 
 // The most a response body may be: 4 MB. A service answering with more than
@@ -119,6 +120,15 @@ str fetch_after_scheme(str url) {
 
 // Connect to a host and port. -1 if the name does not resolve or nothing
 // answers.
+// How long to wait, in seconds, for a connection and for each read: 30.
+//
+// There was no timeout at all. A service that accepts the socket and never
+// answers held the program forever, with nothing logged -- a batch job that
+// never finishes and never says why. Found by a blind evaluator, round 13.
+// A number here is better than no number; a caller who needs a different one
+// is better served by a setting than by a hang.
+int fetch_timeout_seconds() { return 30; }
+
 int fetch_connect(str host, int port) {
     native "
     struct addrinfo _h; memset(&_h, 0, sizeof(_h));
@@ -132,6 +142,16 @@ int fetch_connect(str host, int port) {
         close(_fd); freeaddrinfo(_r); return -1;
     }
     freeaddrinfo(_r);
+    /* Without these a peer that accepts and never writes holds this process
+     * for as long as it cares to. SO_RCVTIMEO makes read() give up, which
+     * fetch_read_all reports as the end of the answer -- and the caller then
+     * sees a response with no complete status line, which is a refusal. */
+    {
+        struct timeval _tv;
+        _tv.tv_sec = 30; _tv.tv_usec = 0;   /* fetch_timeout_seconds() */
+        setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &_tv, sizeof(_tv));
+        setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &_tv, sizeof(_tv));
+    }
     return (int64_t)_fd;
     ";
 }
@@ -156,16 +176,27 @@ str fetch_read_all(int fd, int cap) {
     char* _b = (char*)malloc(_room);
     if (!_b) return strata_dup(\"\");
     for (;;) {
-        if (_len + 4096 > _room) {
-            if (_room * 2 > _cap + 65536) { free(_b); return NULL; }
-            _room *= 2; _b = (char*)realloc(_b, _room);
-            if (!_b) return strata_dup(\"\");
+        if (_len + 4096 + 1 > _room) {
+            if (_room * 2 > _cap + 65536) { free(_b); return strata_dup(\"\"); }
+            _room *= 2;
+            char* _n2 = (char*)realloc(_b, _room);
+            if (!_n2) { free(_b); return strata_dup(\"\"); }
+            _b = _n2;
         }
         ssize_t _r = read($fd, _b + _len, 4096);
         if (_r <= 0) break;
         _len += (size_t)_r;
-        if (_len > _cap) { free(_b); return NULL; }
+        /* Over the cap. Refused, not truncated -- and refused as an EMPTY
+         * STRING rather than as C's NULL, which is what the caller is
+         * expecting. Returning NULL here crashed every program that did the
+         * documented `str_len(answer)` on the result: the module promised a
+         * refusal and delivered a segmentation fault. Found by a blind
+         * evaluator, round 13. */
+        if (_len > _cap) { free(_b); return strata_dup(\"\"); }
     }
+    /* _room is kept one byte ahead of _len above, so this cannot run past the
+     * allocation. It could, when the peer closed with the buffer exactly
+     * full. */
     _b[_len] = '\\0';
     return _b;
     ";
@@ -278,12 +309,80 @@ int fetch_status(str response) {
     return v;
 }
 
-// What follows the blank line. "" when there is no body or no blank line.
+// What follows the blank line, with chunked transfer encoding undone.
+//
+// "" when there is no body, no blank line, or the framing is damaged -- and
+// in the last case the error flag is set, because a body that cannot be
+// trusted is worse than no body.
+//
+// CHUNKING, which is why this is not two lines.
+//
+// This module used to say "no chunked transfer encoding" and then not look
+// at the header. The chunk framing came back as part of the body, so a
+// response in two chunks put a hexadecimal length marker INSIDE a value:
+// a supplier name came out as `Selasi\r\n1c\r\nh Sdn Bhd` and the program
+// was perfectly happy. That is the "truncated document that still parses"
+// failure this module exists to prevent, and it is the common case rather
+// than the edge case -- most proxies and most frameworks chunk by default
+// when there is no Content-Length. Found by a blind evaluator, round 13.
+//
+// Decoding it is a dozen lines and removes the whole class, which is better
+// than refusing a response most servers send.
 str fetch_body(str response) {
     int at = str_index_of(response, "\r\n\r\n");
-    if (at >= 0) { return str_slice(response, at + 4, str_len(response)); }
-    at = str_index_of(response, "\n\n");
-    if (at >= 0) { return str_slice(response, at + 2, str_len(response)); }
+    int skip = 4;
+    if (at < 0) {
+        at = str_index_of(response, "\n\n");
+        skip = 2;
+    }
+    if (at < 0) { return ""; }
+    str raw = str_slice(response, at + skip, str_len(response));
+    str te = str_lower(fetch_header(response, "Transfer-Encoding"));
+    if (str_index_of(te, "chunked") < 0) { return raw; }
+    return fetch_dechunk(raw);
+}
+
+// Undo chunked framing: a hex length, CRLF, that many bytes, CRLF, repeat,
+// ending at a zero length.
+str fetch_dechunk(str raw) {
+    int n = str_len(raw);
+    StringBuilder out = sb_new();
+    int i = 0;
+    while (i < n) {
+        // The hex length, up to the CRLF. A chunk extension after a
+        // semicolon is allowed and ignored.
+        int size = 0;
+        int digits = 0;
+        while (i < n) {
+            int c = raw[i];
+            int d = 0 - 1;
+            if (c >= 48) { if (c <= 57) { d = c - 48; } }
+            if (c >= 97) { if (c <= 102) { d = c - 87; } }
+            if (c >= 65) { if (c <= 70) { d = c - 55; } }
+            if (d < 0) { break; }
+            size = size * 16 + d;
+            digits = digits + 1;
+            i = i + 1;
+        }
+        if (digits == 0) {
+            fail("fetch: the response says it is chunked and its framing is damaged");
+            return "";
+        }
+        // Skip anything else on the length line, then the CRLF.
+        while (i < n) { if (raw[i] == 10) { break; } i = i + 1; }
+        if (i < n) { i = i + 1; }
+        if (size == 0) { return sb_to_str(&out); }
+        if (i + size > n) {
+            fail("fetch: the response says it is chunked and it stops in the middle of a chunk");
+            return "";
+        }
+        sb_append(&out, str_slice(raw, i, i + size));
+        i = i + size;
+        // The CRLF after the chunk.
+        while (i < n) { if (raw[i] == 10) { i = i + 1; break; } i = i + 1; }
+    }
+    // Ran out before the terminating zero-length chunk.
+    fail("fetch: the response says it is chunked and the last chunk never arrived");
     return "";
 }
 
@@ -353,6 +452,36 @@ verify "a URL comes apart the way a request line needs it" {
     // No path at all is a request for the root, not an empty request line.
     assert str_eq(fetch_path_of("http://api.internal"), "/") == 1;
     assert str_eq(fetch_host_of("api.internal/x"), "api.internal") == 1;
+}
+
+verify "chunk framing never reaches a value" {
+    // Two chunks splitting a supplier name. Before this was decoded, the
+    // hexadecimal length marker arrived INSIDE the name and the program
+    // carried on with it.
+    str r = str_cat(["HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+    "Transfer-Encoding: chunked\r\n\r\n",
+    "6\r\n{\"a\":\"\r\n",
+    "f\r\nSelasih Sdn Bhd\r\n",
+    "0\r\n\r\n"]);
+    str body = fetch_body(r);
+    assert str_index_of(body, "\r\n") < 0;
+    assert str_index_of(body, "Selasih Sdn Bhd") >= 0;
+    assert had_error() == 0;
+
+    // A single chunk is the ordinary case and comes out whole.
+    str one = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+    assert str_eq(fetch_body(one), "hello") == 1;
+
+    // Framing that stops in the middle is a refusal, not a short body.
+    str cut = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n20\r\nonly a few bytes";
+    assert str_len(fetch_body(cut)) == 0;
+    assert had_error() == 1;
+    clear_error();
+
+    // A response that is not chunked is untouched.
+    str plain = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    assert str_eq(fetch_body(plain), "hello") == 1;
+    assert had_error() == 0;
 }
 
 verify "a response comes apart" {

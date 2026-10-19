@@ -96,6 +96,19 @@ str llm_body(str model_name, str system_prompt, str user_prompt, int temperature
     return sb_to_str(&sb);
 }
 
+// Whether a host names this machine and nothing else.
+//
+// The whole host, compared in full -- not a prefix of it. "localhost" is this
+// machine; "localhost.supplier.example" is a domain somebody else owns and
+// happens to have named well.
+int is_this_machine(str host) {
+    if (str_eq(host, "localhost") == 1) { return 1; }
+    if (str_eq(host, "127.0.0.1") == 1) { return 1; }
+    if (str_eq(host, "::1") == 1) { return 1; }
+    if (str_eq(host, "[::1]") == 1) { return 1; }
+    return 0;
+}
+
 // ── Reading the answer ───────────────────────────────────────────────────
 
 // A JSON string value, read properly -- which means a backslash escape does
@@ -222,13 +235,16 @@ int temperature_hundredths) {
     }
     if (str_starts_with(url, "https://") == 0) {
         // A key in an Authorization header over plain HTTP is a key given
-        // away. localhost is the one place this is a reasonable thing to do,
-        // and it is still worth being explicit about.
-        if (str_starts_with(url, "http://localhost") == 0) {
-            if (str_starts_with(url, "http://127.0.0.1") == 0) {
-                fail("llm: refusing to send a key to a plain-HTTP address that is not localhost");
-                return "";
-            }
+        // away. This machine is the one place it is reasonable, and the
+        // check has to be on the HOST, not on how the URL starts.
+        //
+        // It was a prefix match, which `http://localhost.supplier.example/`
+        // satisfies -- a hostname somebody else controls, reached over a
+        // plain socket, carrying the key. `http://127.0.0.1.attacker.example`
+        // passed the same way. Found by a blind evaluator, round 13.
+        if (is_this_machine(fetch_host_of(url)) == 0) {
+            fail("llm: refusing to send a key to a plain-HTTP address that is not this machine");
+            return "";
         }
     }
 
@@ -337,4 +353,24 @@ verify "a key is not sent over plain HTTP to anywhere but this machine" {
     // And the refusal does not quote the key back.
     assert str_index_of(last_error(), "secret-key") < 0;
     clear_error();
+
+    // A host that merely BEGINS with localhost is a domain somebody else
+    // owns. The guard used to be a prefix match and let these through.
+    got = llm_ask_at("http://localhost.supplier.example:8914/v1/chat", "m", "secret-key", "", "hi", 0);
+    assert str_len(got) == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "not this machine") >= 0;
+    assert str_index_of(last_error(), "secret-key") < 0;
+    clear_error();
+
+    got = llm_ask_at("http://127.0.0.1.attacker.example/v1/chat", "m", "secret-key", "", "hi", 0);
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "not this machine") >= 0;
+    clear_error();
+
+    // And the real thing is still allowed through this guard.
+    assert is_this_machine("localhost") == 1;
+    assert is_this_machine("127.0.0.1") == 1;
+    assert is_this_machine("localhost.supplier.example") == 0;
+    assert is_this_machine("127.0.0.1.attacker.example") == 0;
 }

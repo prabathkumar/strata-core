@@ -77,6 +77,32 @@ int date_of(int year, int month, int day) {
 }
 
 // A moment from a date and a wall clock time, UTC. -1 if either is impossible.
+// Whether that is a real date, with no in-band sentinel to confuse it with a
+// real moment.
+//
+// `date_of` answers -1 for a date that does not exist, and -1 is also a
+// perfectly good moment -- one second before 1970. One second of ambiguity is
+// one second too many when the answer decides whether an invoice is overdue,
+// so anything that needs to know "is this real" asks here instead of looking
+// at the sign.
+int date_is_valid(int year, int month, int day) {
+    native "
+    if ($month < 1 || $month > 12 || $day < 1 || $day > 31) return 0;
+    struct tm _t; memset(&_t, 0, sizeof(_t));
+    _t.tm_year = (int)$year - 1900;
+    _t.tm_mon  = (int)$month - 1;
+    _t.tm_mday = (int)$day;
+    _t.tm_hour = 12;
+    time_t _s = timegm(&_t);
+    if (_s == (time_t)-1) return 0;
+    struct tm _b; gmtime_r(&_s, &_b);
+    if (_b.tm_year + 1900 != (int)$year) return 0;
+    if (_b.tm_mon + 1 != (int)$month) return 0;
+    if (_b.tm_mday != (int)$day) return 0;
+    return 1;
+    ";
+}
+
 int moment_of(int year, int month, int day, int hour, int minute, int second) {
     if (hour < 0) { return 0 - 1; }
     if (hour > 23) { return 0 - 1; }
@@ -84,8 +110,14 @@ int moment_of(int year, int month, int day, int hour, int minute, int second) {
     if (minute > 59) { return 0 - 1; }
     if (second < 0) { return 0 - 1; }
     if (second > 60) { return 0 - 1; }
+    // Asked whether the DATE is real, rather than whether date_of came back
+    // negative. Every date before 1970 is a negative moment, and treating
+    // negative as "impossible" meant moment_of refused the whole of history:
+    // a date of birth with a time on it came back as a date that does not
+    // exist. date_of itself handled pre-1970 correctly all along. Found by a
+    // blind evaluator, round 13.
+    if (date_is_valid(year, month, day) == 0) { return 0 - 1; }
     int base = date_of(year, month, day);
-    if (base < 0) { return 0 - 1; }
     return base + hour * 3600 + minute * 60 + second;
 }
 
@@ -149,7 +181,38 @@ str moment_text(int moment) {
 // One format and no guessing. A parser that accepts 03/04/2025 has to decide
 // whether that is March or April, and whichever it picks it will be wrong for
 // half the world -- which is how a shipment gets booked three weeks late.
+// Whether that text is a date this will read. Ask this when the answer
+// matters, because -1 is also a real moment.
+int date_parse_ok(str text) {
+    if (str_len(text) != 10) { return 0; }
+    if (text[4] != 45) { return 0; }
+    if (text[7] != 45) { return 0; }
+    int y = digits_of(text, 0, 4);
+    int m = digits_of(text, 5, 7);
+    int d = digits_of(text, 8, 10);
+    if (y < 0) { return 0; }
+    if (m < 0) { return 0; }
+    if (d < 0) { return 0; }
+    return date_is_valid(y, m, d);
+}
+
+// A date, or -1 and the error flag set.
+//
+// The flag is the part that is new. Both this and `money_parse` answered -1
+// for text they could not read, and -1 is a legal input to everything
+// downstream -- so a blank cell in a supplier file became an invoice 56 years
+// overdue for minus one cent, exit 0, nothing said. Found by a blind
+// evaluator, round 13. The value is unchanged for anyone already testing it;
+// the flag is there for everyone who was not.
 int date_parse(str text) {
+    if (date_parse_ok(text) == 0) {
+        fail(str_cat(["time: '", text, "' is not a date in the form YYYY-MM-DD"]));
+        return 0 - 1;
+    }
+    return date_parse_value(text);
+}
+
+int date_parse_value(str text) {
     if (str_len(text) != 10) { return 0 - 1; }
     if (text[4] != 45) { return 0 - 1; }
     if (text[7] != 45) { return 0 - 1; }
@@ -251,11 +314,27 @@ verify "a date survives being written down and read back" {
 }
 
 verify "text that is not a date is refused rather than guessed at" {
+    // Each of these answers -1 AND sets the error flag, so a caller who does
+    // not test the value still cannot carry on with it by accident.
     assert date_parse("17/03/2025") == 0 - 1;
+    assert had_error() == 1; clear_error();
     assert date_parse("2025-3-17") == 0 - 1;
+    assert had_error() == 1; clear_error();
     assert date_parse("not a date") == 0 - 1;
+    assert had_error() == 1; clear_error();
     assert date_parse("") == 0 - 1;
+    assert had_error() == 1; clear_error();
     assert date_parse("2025-02-30") == 0 - 1;
+    assert had_error() == 1; clear_error();
+
+    // And a date before 1970 is a real date, not a failure -- the moment is
+    // negative and the flag stays down.
+    assert date_parse_ok("1965-03-02") == 1;
+    assert date_parse("1965-03-02") < 0;
+    assert had_error() == 0;
+    assert str_eq(date_text(date_parse("1965-03-02")), "1965-03-02") == 1;
+    assert str_eq(moment_text(moment_of(1965, 3, 2, 9, 0, 0)), "1965-03-02 09:00:00") == 1;
+    assert had_error() == 0;
 }
 
 verify "the arithmetic a business program does" {

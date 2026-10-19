@@ -122,6 +122,20 @@ jobs:
     - name: Two Runs Do Not Lose An Update
       run: python3 test_suite/two_runs_do_not_lose_an_update.py
 
+    # The project's central claim, as a test rather than a sentence in the
+    # README. Round 13 found the phone tier carrying its own copy of the
+    # schema, so a rename broke the web build and left the phone compiling
+    # against a column that was gone. It also fails if anybody pastes a
+    # second copy of a table back in.
+    - name: One Rename, Every Tier
+      run: python3 test_suite/a_rename_reaches_every_tier.py
+
+    # Round 13 found a file with Windows line endings loading silently and
+    # corrupting every text column, one stray quote deleting the rest of a
+    # CSV, and a handful of libraries answering -1 instead of saying no.
+    - name: Round Thirteen Stays Fixed
+      run: python3 test_suite/round_thirteen_stays_fixed.py
+
     # "Show me the ten largest invoices" is the first thing anyone asks of a
     # business system, and until `by` existed the language had no answer. The
     # check that matters here is the last one: renaming the column breaks the

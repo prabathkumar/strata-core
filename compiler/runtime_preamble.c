@@ -804,7 +804,7 @@ static void strata_write_escaped(FILE* f, strata_str s) {
     if (!s) return;
     size_t n = 0;
     for (const char* q = s; *q; q++) {
-        n += (*q == '\\' || *q == '\t' || *q == '\n') ? 2 : 1;
+        n += (*q == '\\' || *q == '\t' || *q == '\n' || *q == '\r') ? 2 : 1;
     }
     if (n >= STRATA_FIELD_CAP) {
         fprintf(stderr, "[STRATA WRITE] refusing to store a text value of %lu "
@@ -820,6 +820,13 @@ static void strata_write_escaped(FILE* f, strata_str s) {
         if (*p == '\\') fputs("\\\\", f);
         else if (*p == '\t') fputs("\\t", f);
         else if (*p == '\n') fputs("\\n", f);
+        /* A carriage return inside a value is escaped like the other two.
+         * It was not, and that was half of a data-corruption bug: a bare CR
+         * in the file was ambiguous between "part of this value" and "the
+         * first half of a Windows line ending". With it escaped here, a raw
+         * CR before a newline can only be a line ending, which is what lets
+         * the reader strip it without guessing. */
+        else if (*p == '\r') fputs("\\r", f);
         else fputc(*p, f);
     }
 }
@@ -833,8 +840,29 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
             int e = fgetc(f);
             if (e == 't') c = '\t';
             else if (e == 'n') c = '\n';
+            else if (e == 'r') c = '\r';
             else if (e == '\\') c = '\\';
             else c = e;
+            if (n < cap - 1) { buf[n++] = (char)c; } else { over = 1; }
+            continue;
+        }
+        /* A Windows line ending. The file is the same data with a different
+         * terminator -- a repository checked out with autocrlf, a file opened
+         * once in Notepad -- and refusing it would be refusing ordinary input.
+         * Keeping the CR was worse: every text value came back one byte longer
+         * than it looked, `name == "two"` matched nothing, and a save wrote the
+         * CR back into the canonical file permanently. Found by a blind
+         * evaluator, round 13.
+         *
+         * This is only unambiguous because strata_write_escaped escapes a real
+         * CR above. A raw CR immediately before a newline therefore cannot be
+         * data, so stripping it is reading the file correctly rather than
+         * guessing at it. A bare CR not followed by a newline is left alone --
+         * that is a hand-written file, and the byte is all we know. */
+        if (c == '\r') {
+            int nx = fgetc(f);
+            if (nx == '\n') { c = '\n'; break; }
+            if (nx != EOF) { ungetc(nx, f); }
         }
         if (n < cap - 1) { buf[n++] = (char)c; }
         else { over = 1; }

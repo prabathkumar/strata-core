@@ -195,17 +195,19 @@ def tls_send(int handle, str data) {
 str tls_read_all(int handle, int cap) {
     native "
     #ifndef STRATA_TLS
-    return NULL;
+    return strata_dup(\"\");
     #else
     struct strata_tls { int fd; SSL_CTX* ctx; SSL* ssl; };
     struct strata_tls* _c = (struct strata_tls*)(intptr_t)$handle;
-    if (!_c) return NULL;
+    if (!_c) return strata_dup(\"\");
     size_t _cap = (size_t)$cap, _len = 0, _room = 65536;
     char* _b = (char*)malloc(_room);
     if (!_b) return strata_dup(\"\");
     for (;;) {
-        if (_len + 4096 > _room) {
-            if (_room * 2 > _cap + 65536) { free(_b); return NULL; }
+        /* One byte of headroom kept at all times, so the terminator below
+         * cannot run past the allocation. */
+        if (_len + 4096 + 1 > _room) {
+            if (_room * 2 > _cap + 65536) { free(_b); return strata_dup(\"\"); }
             _room *= 2;
             char* _n2 = (char*)realloc(_b, _room);
             if (!_n2) { free(_b); return strata_dup(\"\"); }
@@ -214,7 +216,10 @@ str tls_read_all(int handle, int cap) {
         int _r = SSL_read(_c->ssl, _b + _len, 4096);
         if (_r <= 0) break;
         _len += (size_t)_r;
-        if (_len > _cap) { free(_b); return NULL; }
+        /* An empty string, never C's NULL: the caller does str_len() on this
+         * and NULL crashed it. The plain-HTTP half of this had the same bug
+         * and the same fix -- see std/fetch.sta. */
+        if (_len > _cap) { free(_b); return strata_dup(\"\"); }
     }
     _b[_len] = '\\0';
     return _b;

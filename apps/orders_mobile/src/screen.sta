@@ -5,22 +5,21 @@
 // the app and the website cannot disagree about what an order is, because
 // there is only one description of one.
 //
+// That last sentence was false until round 13. This file carried its own
+// copy of the `database Order` block, so renaming a column broke the web
+// build and left this one compiling against a column that was gone. It now
+// imports the real schema through a path dependency, and
+// test_suite/a_rename_reaches_every_tier.py fails if anybody copies it back.
+//
 // Nothing here knows whether it is running on a phone, in a test, or on a
 // build machine. It produces a list of things to draw; who paints them is the
 // host's business.
 
-import io  from std;
-import str from std;
-import mem from std;
-import ui  from std;
-
-database Order {
-    int   id;
-    str   customer;
-    str   region;
-    float amount;
-    str   status;
-}
+import io     from std;
+import str    from std;
+import mem    from std;
+import ui     from std;
+import schema from orders;
 
 // A phone screen in device-independent pixels. 411x731 is a common Android
 // size; the host scales by one factor, because a layout needing more than one

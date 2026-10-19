@@ -2,6 +2,116 @@
 
 ## Unreleased
 
+### Everything round thirteen found
+
+Two blind evaluators, a clean checkout, no history, one question: could a
+development team adopt this? Nine findings between them. Three were data loss
+or corruption, and all three had the same shape -- **the program exits 0 and
+is wrong**, which is the failure this language exists to prevent.
+
+The round covered the four standard library modules, TLS, the model client
+and the ordering work that had all gone in since round 12 and that nobody
+outside had ever looked at. That is the lesson underneath the finding count:
+a lot of capability had been added since anything was last independently
+checked.
+
+**The three that mattered.**
+
+A `.tsv` with Windows line endings loaded silently and left an invisible
+carriage return on the end of every text value. `name == "two"` matched
+nothing, while the `int` column in the same row parsed perfectly -- so the
+two halves of one row disagreed about whether the file was clean, which is
+what made it hard to see. Then `save` wrote the carriage return back into the
+canonical file, so the damage outlived the machine that caused it. It is
+fixed in both halves: `save` now escapes a carriage return the way it already
+escaped tabs and newlines, which is what makes a raw CR before a newline
+unambiguously a line ending rather than data, which in turn is what lets the
+reader strip it without guessing. A file from a Windows editor is ordinary
+input and is now read correctly; a carriage return that really is inside a
+value still round-trips exactly.
+
+One stray quote in a CSV deleted every row after it, with no error. An
+unterminated quote ran the scanner to the end of the text, so every remaining
+newline counted as being inside the field. That is the exact opposite of
+`std/csv.sta`'s one promise, and the input is a company name typed with an
+unbalanced `"`. The scanner now remembers the first newline it passed while
+inside a quote and ends the row there if the quote never closes: one row is
+damaged, `csv_row_ok` says so, and the rest of the file reads normally.
+
+`strata check` said "No errors. OK" on programs neither compiler could build.
+`text R.amount` with a number passed the checker and then failed as raw C
+compiler output about a file the developer never wrote -- and only
+`-Werror=int-conversion` stood between that and a page rendering a
+pointer-shaped integer as text. A clean `check` is load-bearing: the tutorial,
+CI and the repair loop all rely on it. Both checkers now refuse it with E001
+and a hint naming `str()`.
+
+**And the cross-tier claim, which was false.**
+
+`apps/orders_mobile/src/screen.sta` carried its own copy of `database Order`,
+written out by hand, with a comment above it saying there was only one
+description of an order. There were two. Renaming `customer` broke the web
+build exactly as advertised and left the phone app compiling clean against a
+column that no longer existed. The README claimed the app and the site could
+not disagree; in the source, they could.
+
+The phone app now takes the schema as a path dependency -- the ordinary
+mechanism, already tested on every commit -- and
+`test_suite/a_rename_reaches_every_tier.py` fails if any tier of one
+application ever re-declares another tier's table again. A copy cannot drift
+if there is no copy, and the only durable fix for a copy-paste is a test that
+notices the paste.
+
+**The quieter six.**
+
+- `fetch` handed back HTTP chunk framing as part of the body, so a
+  hexadecimal length marker landed in the middle of a supplier's name and the
+  program carried on with it. Most proxies chunk by default, so this was the
+  common case. It is decoded now, and damaged framing is a refusal.
+- `fetch` returned C's `NULL` for an over-cap response, and the documented
+  `str_len(answer)` on it segfaulted -- a promised refusal delivered as a
+  crash. It returns an empty string, and the one-byte overrun next to it is
+  gone too. `std/tls.sta` had the same bug in the same place.
+- `fetch` had no timeout, so a peer that accepted and never answered held the
+  program forever with nothing logged. Thirty seconds, on connect and on read.
+- `std/llm.sta`'s plain-HTTP guard was a prefix match, so
+  `http://localhost.somebody-elses-domain.example` satisfied it and the key
+  went out in the clear over a plain socket. It compares the whole host now.
+- `money_parse` accepted numbers too large to hold and returned a plausible
+  wrong amount -- `"99999999999999999999"` came back as about eighteen
+  quadrillion, and `"92233720368547758.08"` came back negative. Refused before
+  it overflows, and `money_times` and `money_rate` refuse rather than wrap.
+- `moment_of` refused every date before 1970, reading a negative moment as the
+  "impossible date" sentinel. `date_of` had handled pre-1970 correctly all
+  along. There is a `date_is_valid` now, so validity is asked about directly
+  rather than inferred from a sign.
+
+**The one underneath several of them.** `date_parse` and `money_parse` both
+answered `-1` for text they could not read, and `-1` is a legal input to
+everything downstream -- so a blank cell in a supplier file became an invoice
+56 years overdue for minus one cent, exit 0, nothing said. Both set the error
+flag now. The value is unchanged for anyone already testing it; the flag is
+there for everyone who was not.
+
+**Two more, found in passing.** A UTF-8 byte-order mark -- which every CSV
+Excel exports begins with -- made the first column unfindable by name,
+silently. And reading a CSV row by row was super-quadratic: 4,000 rows took
+6.7 seconds and 20,000 never finished. There is a cursor now
+(`csv_first_row` / `csv_next_row` / `csv_cell_at`), so the same 20,000 rows
+read in well under a second. It is a cursor rather than a cache because a
+cache keyed on a string's address can be wrong after that string is freed,
+and a wrong answer is the thing being fixed.
+
+**Where nothing was found, having been tried hard.** Ordering survived
+everything both evaluators threw at it, including stability in both
+directions over sixty tied rows. `std/tls.sta` passed a close read with no
+findings. `std/time.sta` passed everything but the pre-1970 sentinel. And the
+two compilers agreed on every single program either evaluator wrote, which is
+the two-compiler equivalence doing its job.
+
+The Beta gate -- two consecutive rounds with zero data loss and zero silent
+wrong answers -- remains at zero. Round 14 is the next thing.
+
 ### The ten largest anything
 
 `by` and `first` on a query.

@@ -208,6 +208,20 @@ transaction: a program that must never be refused should be the only writer.
   have no answer over nothing: they return 0 and set the error flag, so a
   report for an empty month cannot read as a month in which everything was
   free.
+- **A file from a Windows machine reads correctly.** A `.tsv` with CRLF line
+  endings used to leave an invisible carriage return on every text value, so
+  comparisons stopped matching and a later `save` baked the damage into the
+  canonical file. A carriage return that is genuinely inside a value is
+  escaped on write, which is what makes a raw one before a newline
+  unambiguously a line ending.
+- **For a CSV of any size, use the cursor.** `csv_cell(text, row, col)` counts
+  from row 0 every call, which is fine for a short file and quadratic for a
+  real one. `csv_first_row` / `csv_next_row` / `csv_cell_at` walk it once:
+  20,000 rows in well under a second rather than never finishing.
+- **`date_parse` and `money_parse` set the error flag.** They also still
+  answer -1, but -1 is a legal input to everything downstream, so a blank cell
+  used to become an invoice 56 years overdue for minus one cent. Check
+  `had_error()` after parsing anything that came from outside.
 - **Supplier files: take the good rows, set the bad ones aside.** `std/csv.sta`
   reads quoted commas, embedded newlines and doubled quotes properly, finds
   columns by header name, and `csv_row_ok` tells you whether one row has the

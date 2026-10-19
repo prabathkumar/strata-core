@@ -685,7 +685,26 @@ class TypeChecker:
         if label is not None:
             bare_name = isinstance(label, Identifier) and not scope.lookup(label.name)
             if not bare_name:
-                self._infer_type(label,scope)
+                lt = self._infer_type(label,scope)
+                # The label is written into the page through
+                # strata_html_escape, which takes text. Anything else was a
+                # clean `strata check` followed by a build that failed with
+                # raw C compiler output about a file the developer never
+                # wrote -- and only -Werror=int-conversion stood between that
+                # and a page rendering a pointer-shaped integer as text. A
+                # clean check has to mean a clean build; this was the hole in
+                # that. Found by a blind evaluator, round 13.
+                #
+                # `canvas` is the exception: its label names the element
+                # rather than being drawn.
+                if (stmt.tag != "canvas" and lt is not None
+                        and not lt.is_list and lt.name != "str"):
+                    self._error("E001",
+                        f"'{stmt.tag}' shows text, and this is '{lt}'",
+                        stmt.line, stmt.col,
+                        f"Hint: wrap it in str(...) — `{stmt.tag} str(...)`. "
+                        f"A page is text, and the generated C has nothing to "
+                        f"convert a '{lt}' with.")
         for p in stmt.props: self._infer_type(p.value,scope)
         inner=Scope(scope)
         for c in stmt.children: self._check_stmt(c,inner)

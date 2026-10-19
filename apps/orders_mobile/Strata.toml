@@ -5,3 +5,17 @@ version = "0.1.0"
 [build]
 main = "src/main.sta"
 output = "build/orders_mobile"
+
+# The phone tier does not get its own copy of the schema.
+#
+# It had one: `database Order { ... }` written out again in src/screen.sta,
+# with a comment above it saying there was only one description of an order.
+# There were two, and they drifted the moment anybody renamed a column --
+# the web build broke correctly and the phone build stayed green, still
+# drawing a column that no longer existed. Found by a blind evaluator,
+# round 13, and it was the project's own central claim that it broke.
+#
+# This is the ordinary dependency mechanism, the same one
+# test_suite/journey_dependency.py exercises on every commit.
+[dependencies]
+orders = { path = "../orders" }
