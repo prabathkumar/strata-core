@@ -1,0 +1,104 @@
+// The web tier.
+//
+// A layout is a value: `render Outstanding(...)` yields the document as a
+// str, which is what lets it answer an HTTP request without a template
+// language, a second syntax or a renderer to install.
+//
+// Every column this page shows is checked against `database Bill`. There is
+// no string naming a field anywhere in here, which is why renaming a column
+// in schema.sta stops this file compiling rather than producing a page with
+// an empty cell in it.
+
+import io     from std;
+import str    from std;
+import time   from std;
+import money  from std;
+import schema from app;
+import rules  from app;
+
+// How a row reads to a person. Written once, because "3 days late" and
+// "due in 3 days" being the same sentence with a sign flipped is exactly the
+// kind of thing that drifts when two tiers each write their own.
+str when_text(int due, int today) {
+    int late = days_late(due, today);
+    if (late == 1) { return "1 day late"; }
+    if (late > 0) { return str_cat([str(late), " days late"]); }
+    if (late == 0) { return "due today"; }
+    if (late == 0 - 1) { return "due tomorrow"; }
+    return str_cat(["due in ", str(0 - late), " days"]);
+}
+
+str when_colour(int due, int today) {
+    int late = days_late(due, today);
+    if (late > 0) { return "#ff7b72"; }
+    if (late > 0 - 7) { return "#f0b429"; }
+    return "#8b949e";
+}
+
+layout Outstanding(str notice, int today) {
+    window "Payables" [width = 1000] {
+        row [padding = 16, background = "#10131a"] {
+            text "PAYABLES" [color = "#7ee787", weight = "bold", size = 18];
+            spacer;
+            text str_cat([str(count_outstanding()), " open"]) [color = "#8b949e"];
+            spacer;
+            text str_cat(["owed ", money_text(total_outstanding())]) [color = "#ffffff"];
+            spacer;
+            text str_cat(["overdue ", money_text(total_overdue(today))]) [color = "#ff7b72"];
+        }
+
+        column [padding = 20] {
+            text notice [color = "#7ee787"];
+
+            text "Oldest first" [color = "#8b949e", weight = "bold"];
+            // Ordering is part of the query, and `due` is checked against the
+            // schema like any other column. A library sort taking "due" as a
+            // string would still compile after a rename.
+            list[Bill] oldest = Bill <- [state == "OPEN"] by due first 20;
+            for B in oldest {
+                row [padding = 8, background = "#1b1f27"] {
+                    text B.reference [color = "#ffffff"];
+                    spacer;
+                    text supplier_name(B.supplier_id) [color = "#8b949e"];
+                    spacer;
+                    text date_text(B.due) [color = "#8b949e"];
+                    spacer;
+                    text when_text(B.due, today) [color = when_colour(B.due, today)];
+                    spacer;
+                    text money_text(B.amount) [color = "#7ee787"];
+                    spacer;
+                    form [action = "/paid", method = "post"] {
+                        field "id" [type = "hidden", value = str(B.id)];
+                        button "Mark paid" [type = "submit"];
+                    }
+                }
+            }
+
+            text "Largest five" [color = "#8b949e", weight = "bold"];
+            list[Bill] largest = Bill <- [state == "OPEN"] by amount desc first 5;
+            for B in largest {
+                row [padding = 8, background = "#161b22"] {
+                    text B.reference [color = "#ffffff"];
+                    spacer;
+                    text supplier_name(B.supplier_id) [color = "#8b949e"];
+                    spacer;
+                    text money_text(B.amount) [color = "#7ee787"];
+                    spacer;
+                    text str_cat(["tax ", money_text(tax_on(B.amount))]) [color = "#8b949e"];
+                }
+            }
+
+            text "Set aside by the last import" [color = "#8b949e", weight = "bold"];
+            list[Rejected] bad = Rejected <- [id > 0] by row first 20;
+            for R in bad {
+                row [padding = 8, background = "#2d1b1b"] {
+                    text str_cat(["line ", str(R.row)]) [color = "#8b949e"];
+                    spacer;
+                    text R.reference [color = "#ffffff"];
+                    spacer;
+                    text R.reason [color = "#ff7b72"];
+                }
+            }
+        }
+    }
+}

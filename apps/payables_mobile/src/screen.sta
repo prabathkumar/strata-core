@@ -1,0 +1,89 @@
+// Payables, on a phone.
+//
+// One screen: what is owed, oldest first, with the late ones marked. Written
+// in Strata, drawn by Strata, against the SAME `Bill` table the web page and
+// the import use -- taken as a dependency rather than copied, so renaming a
+// column in apps/payables/src/schema.sta stops this file compiling too.
+//
+// It also calls the same `rules.sta`. "Overdue" is one definition here, on
+// the web page, in the report and on the command line, rather than four that
+// happen to agree this month.
+//
+// Nothing here knows whether it is running on a phone, in a test or on a
+// build machine. It produces a list of things to draw; who paints them is the
+// host's business.
+
+import io     from std;
+import str    from std;
+import mem    from std;
+import ui     from std;
+import time   from std;
+import money  from std;
+import schema from payables;
+import rules  from payables;
+
+const int SCREEN_W = 411;
+const int SCREEN_H = 731;
+
+const int BAR_H  = 64;
+const int ROW_H  = 92;
+
+const int INK     = 0x1A1A1A;
+const int MUTED   = 0x757575;
+const int PAPER   = 0xF0F0F0;
+const int BAR     = 0x1F4E62;
+const int BAR_INK = 0xFFFFFF;
+const int CARD    = 0xFFFFFF;
+const int LINE    = 0xE1E1E1;
+const int DANGER  = 0xB3172C;
+const int WARN    = 0xB4690E;
+
+int late_colour(int due, int today) {
+    if (is_overdue(due, today) == 1) { return DANGER; }
+    if (days_late(due, today) > 0 - 7) { return WARN; }
+    return MUTED;
+}
+
+str late_text(int due, int today) {
+    int late = days_late(due, today);
+    if (late == 1) { return "1 day late"; }
+    if (late > 0) { return str_cat([str(late), " days late"]); }
+    if (late == 0) { return "due today"; }
+    if (late == 0 - 1) { return "due tomorrow"; }
+    return str_cat(["due in ", str(0 - late), " days"]);
+}
+
+int draw_screen(int today) {
+    ui_begin();
+    ui_rect(0, 0, SCREEN_W, SCREEN_H, PAPER);
+    ui_rect(0, 0, SCREEN_W, BAR_H, BAR);
+    ui_text(16, 22, "PAYABLES", BAR_INK, 2);
+    str owed = money_text(total_outstanding());
+    ui_text(SCREEN_W - ui_text_width(owed, 1) - 16, 30, owed, BAR_INK, 1);
+
+    // Oldest first, and only the first twenty: a phone is not where anybody
+    // reads four thousand rows. The ordering is part of the query, so `due`
+    // is checked against the schema here exactly as it is on the web page.
+    list[Bill] oldest = Bill <- [state == "OPEN"] by due first 20;
+
+    int window_top = BAR_H;
+    int window_bot = SCREEN_H;
+    int content_h = count(oldest) * ROW_H;
+    int offset = ui_scroll_by("payables.scroll", 0, content_h,
+    window_bot - window_top);
+
+    ui_clip(window_top, window_bot);
+    ui_flow(12, window_top + 8 - offset, SCREEN_W - 24, 8);
+    for B in oldest {
+        int at = ui_panel(ROW_H - 8, CARD);
+        ui_rect(12, at + ROW_H - 9, SCREEN_W - 24, 1, LINE);
+        ui_text(24, at + 12, B.reference, INK, 2);
+        ui_text(24, at + 38, supplier_name(B.supplier_id), MUTED, 1);
+        ui_text(24, at + 58, late_text(B.due, today),
+        late_colour(B.due, today), 1);
+        str amount = money_text(B.amount);
+        ui_text(SCREEN_W - ui_text_width(amount, 2) - 24, at + 28, amount, INK, 2);
+    }
+    ui_clip_off();
+    return count(oldest);
+}

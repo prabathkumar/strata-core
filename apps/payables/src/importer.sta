@@ -1,0 +1,142 @@
+// Taking in the file a supplier actually sends.
+//
+// This is the tier that meets the outside world, and it is written on one
+// assumption: **the file is wrong somewhere, and the job is to say where.**
+//
+// A supplier's export has a company name with a comma in it, an amount typed
+// with a currency symbol, a date in the wrong order, a blank cell where a due
+// date should be, and a byte-order mark at the front because it came out of
+// Excel. None of those should cost you the other four thousand rows, and none
+// of them should become a plausible number that flows into a ledger.
+//
+// So every value is parsed by something that can say no:
+//
+//   csv_row_ok_at   the row has the columns the header promised, and no
+//                   unterminated quote
+//   date_parse_ok   it is a date, before asking what date
+//   money_parse_ok  it is an amount, before asking how much
+//
+// and a row that fails any of them is written to `Rejected` with its line
+// number and the reason, rather than dropped or guessed at.
+//
+// It walks the file with a CURSOR -- csv_first_row, csv_next_row, csv_cell_at
+// -- rather than by row number. Taking a row number means counting from row
+// zero to find it, which is fine for twenty rows and quadratic for twenty
+// thousand.
+
+import io     from std;
+import str    from std;
+import csv    from std;
+import time   from std;
+import money  from std;
+import schema from app;
+import rules  from app;
+
+// The columns this expects, by name. Position is not relied on: a supplier
+// who adds a column in the middle has not broken the import.
+str column_reference() { return "reference"; }
+str column_supplier()  { return "supplier"; }
+str column_due()       { return "due"; }
+str column_amount()    { return "amount"; }
+
+// One row's worth of checking. "" when the row is good; otherwise the reason
+// it is not, in words a person can act on.
+str row_problem(str text, int at, int want, int c_ref, int c_sup, int c_due, int c_amt) {
+    if (csv_row_ok_at(text, at, want) == 0) {
+        if (csv_row_unterminated(text, at, 44) == 1) {
+            return "a quote is opened and never closed";
+        }
+        return str_cat(["it has ", str(csv_columns_at(text, at)),
+        " columns and the header promised ", str(want)]);
+    }
+    if (str_len(csv_cell_at(text, at, c_ref)) == 0) {
+        return "the reference is blank";
+    }
+    str supplier = csv_cell_at(text, at, c_sup);
+    if (str_len(supplier) == 0) { return "the supplier is blank"; }
+    if (supplier_id_named(supplier) == 0) {
+        return str_cat(["there is no supplier called '", supplier, "'"]);
+    }
+    str due_text = csv_cell_at(text, at, c_due);
+    if (date_parse_ok(due_text) == 0) {
+        if (str_len(due_text) == 0) { return "the due date is blank"; }
+        return str_cat(["'", due_text, "' is not a date in the form YYYY-MM-DD"]);
+    }
+    str amount_text = csv_cell_at(text, at, c_amt);
+    if (money_parse_ok(amount_text) == 0) {
+        if (str_len(amount_text) == 0) { return "the amount is blank"; }
+        return str_cat(["'", amount_text, "' is not an amount"]);
+    }
+    return "";
+}
+
+// The id of the supplier with that name, or 0.
+//
+// Written as a scan rather than as `Supplier <- [name == wanted]` because
+// inside a query a bare name is always the COLUMN. Comparing the column with
+// a variable of the same name would match every row, so the checker reports
+// E008 and refuses -- which it did while this file was being written, which
+// is the system working.
+int supplier_id_named(str wanted) {
+    list[Supplier] all = Supplier <- [id > 0];
+    for S in all {
+        if (str_eq(S.name, wanted) == 1) { return S.id; }
+    }
+    return 0;
+}
+
+// Read the whole file. Returns how many rows were taken; the ones that were
+// not are in `Rejected`, each with its line number and its reason.
+int import_text(str text) {
+    int want = csv_columns(text, 0);
+    if (want == 0) { fail("payables: that file has no header row"); return 0; }
+
+    int c_ref = csv_column_of(text, column_reference());
+    int c_sup = csv_column_of(text, column_supplier());
+    int c_due = csv_column_of(text, column_due());
+    int c_amt = csv_column_of(text, column_amount());
+    if (c_ref < 0) { fail("payables: the file has no 'reference' column"); return 0; }
+    if (c_sup < 0) { fail("payables: the file has no 'supplier' column"); return 0; }
+    if (c_due < 0) { fail("payables: the file has no 'due' column"); return 0; }
+    if (c_amt < 0) { fail("payables: the file has no 'amount' column"); return 0; }
+
+    int next_id = next_bill_id();
+    int next_bad = next_rejected_id();
+    int taken = 0;
+
+    int at = csv_first_row(text);
+    at = csv_next_row(text, at);            // past the header
+    int line = 2;                            // the header was line 1
+    while (at >= 0) {
+        str why = row_problem(text, at, want, c_ref, c_sup, c_due, c_amt);
+        if (str_len(why) > 0) {
+            str shown = "";
+            if (csv_columns_at(text, at) > c_ref) {
+                shown = csv_cell_at(text, at, c_ref);
+            }
+            Rejected <- [id = next_bad, row = line, reference = shown, reason = why];
+            next_bad = next_bad + 1;
+        } else {
+            Bill <- [id = next_id,
+            supplier_id = supplier_id_named(csv_cell_at(text, at, c_sup)),
+            reference = csv_cell_at(text, at, c_ref),
+            due = date_parse(csv_cell_at(text, at, c_due)),
+            amount = money_parse(csv_cell_at(text, at, c_amt)),
+            state = "OPEN"];
+            next_id = next_id + 1;
+            taken = taken + 1;
+        }
+        at = csv_next_row(text, at);
+        line = line + 1;
+    }
+    return taken;
+}
+
+int import_file(str path) {
+    str text = file_read(path);
+    if (str_len(text) == 0) {
+        fail(str_cat(["payables: there is nothing in '", path, "'"]));
+        return 0;
+    }
+    return import_text(text);
+}

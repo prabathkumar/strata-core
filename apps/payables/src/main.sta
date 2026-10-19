@@ -1,0 +1,196 @@
+// Payables — what we owe suppliers, and what is late.
+//
+//   payables import <file.csv>   take in a supplier file
+//   payables show                what is owed, and what was set aside
+//   payables report              write largest.md
+//   payables paid <id>           mark a bill paid
+//   payables serve [port]        the web page
+//
+// This application exists to be read, not to be impressive. It is the
+// smallest system that still touches every tier -- a file coming in, stored
+// tables, rules, a web page, a report and a phone screen -- so that one
+// schema change can be shown breaking all of them at once.
+//
+// `docs/THE_DEMONSTRATOR.md` is the walkthrough.
+
+import io       from std;
+import str      from std;
+import mem      from std;
+import cli      from std;
+import time     from std;
+import money    from std;
+import http     from std;
+import schema   from app;
+import rules    from app;
+import importer from app;
+import views    from app;
+
+// The five largest open bills, as a document. The ordering is part of the
+// query -- which it was not until recently, and a report like this could not
+// be written at all.
+report Largest {
+    title: "Largest open bills",
+    datasource: Bill <- [state == "OPEN"] by amount desc first 5,
+    metrics: {
+        int shown = strata_len(rows);
+    }
+}
+
+// ── The web page ─────────────────────────────────────────────────────────
+
+int handle(int conn, str request, int today) {
+    str path = http_path(request);
+    str method = http_method(request);
+
+    if (str_eq(path, "/health") == 1) {
+        return http_respond(conn, 200, "application/json", "{\"ok\":true}");
+    }
+
+    if (str_eq(method, "POST") == 1) {
+        if (str_eq(path, "/paid") == 1) {
+            str id_text = http_form_value(http_body(request), "id");
+            int changed = mark_paid(str_to_int(id_text));
+            if (changed == 1) { save_all(); }
+            return http_redirect(conn, "/");
+        }
+        return http_bad_request(conn, "that is not something this page does");
+    }
+
+    if (str_eq(path, "/") == 1) {
+        return http_respond(conn, 200, "text/html",
+        render Outstanding("", today));
+    }
+    return http_not_found(conn);
+}
+
+int serve(int port) {
+    int fd = http_listen(port);
+    if (fd < 0) { eprint("payables: could not bind that port"); return 1; }
+    http_ignore_broken_pipes();
+    http_reap_children();
+    print(str_cat(["payables serving on port ", str(port)]));
+    while (1 == 1) {
+        int conn = http_accept(fd);
+        if (conn < 0) { continue; }
+        int pid = http_fork();
+        if (pid == 0) {
+            http_close(fd);
+            http_set_timeout(conn, 5);
+            str request = http_read_request(conn);
+            if (str_len(request) == 0) { http_request_timeout(conn); }
+            else {
+                int lock = lock_exclusive("data/.lock");
+                load_all();
+                handle(conn, request, now());
+                unlock(lock);
+            }
+            http_close(conn);
+            http_exit(0);
+        }
+        http_close(conn);
+    }
+    return 0;
+}
+
+// ── Commands ─────────────────────────────────────────────────────────────
+
+int cmd_import(str path) {
+    if (str_len(path) == 0) {
+        eprint("usage: payables import <file.csv>");
+        return 2;
+    }
+    int lock = lock_exclusive("data/.lock");
+    load_all();
+    int before_bad = count(Rejected <- [id > 0]);
+    int taken = import_file(path);
+    if (had_error() == 1) {
+        eprint(last_error());
+        clear_error();
+        unlock(lock);
+        return 1;
+    }
+    save_all();
+    int set_aside = count(Rejected <- [id > 0]) - before_bad;
+    unlock(lock);
+    print(str_cat(["took ", str(taken), " bill(s), set aside ", str(set_aside)]));
+    if (set_aside > 0) { print("run 'payables show' to see which lines and why"); }
+    return 0;
+}
+
+int cmd_show() {
+    int lock = lock_shared("data/.lock");
+    load_all();
+    int today = now();
+
+    print(str_cat([str(count_outstanding()), " open, ",
+    money_text(total_outstanding()), " owed, ",
+    money_text(total_overdue(today)), " of it overdue"]));
+    print("");
+
+    list[Bill] oldest = Bill <- [state == "OPEN"] by due first 10;
+    if (count(oldest) > 0) { print("oldest first:"); }
+    for B in oldest {
+        print(str_cat(["  ", B.reference, "  ", supplier_name(B.supplier_id),
+        "  ", date_text(B.due), "  ",
+        when_text(B.due, today), "  ", money_text(B.amount)]));
+    }
+
+    list[Rejected] bad = Rejected <- [id > 0] by row;
+    if (count(bad) > 0) {
+        print("");
+        print("set aside:");
+        for R in bad {
+            print(str_cat(["  line ", str(R.row), "  ", R.reference, "  ", R.reason]));
+        }
+    }
+    unlock(lock);
+    return 0;
+}
+
+int cmd_report() {
+    int lock = lock_shared("data/.lock");
+    load_all();
+    render Largest to "largest.md";
+    unlock(lock);
+    print("wrote largest.md");
+    return 0;
+}
+
+int cmd_paid(str id_text) {
+    if (str_len(id_text) == 0) {
+        eprint("usage: payables paid <id>");
+        return 2;
+    }
+    int lock = lock_exclusive("data/.lock");
+    load_all();
+    int changed = mark_paid(str_to_int(id_text));
+    if (changed == 1) { save_all(); }
+    unlock(lock);
+    if (changed == 1) { print("marked paid"); return 0; }
+    eprint("no bill with that id");
+    return 1;
+}
+
+int main() {
+    str cmd = subcommand();
+
+    if (str_eq(cmd, "import") == 1) { return cmd_import(positional(1)); }
+    if (str_eq(cmd, "show") == 1)   { return cmd_show(); }
+    if (str_eq(cmd, "report") == 1) { return cmd_report(); }
+    if (str_eq(cmd, "paid") == 1)   { return cmd_paid(positional(1)); }
+    if (str_eq(cmd, "serve") == 1) {
+        int port = 8095;
+        str given = positional(1);
+        if (str_len(given) > 0) { port = str_to_int(given); }
+        return serve(port);
+    }
+
+    print("payables — what we owe suppliers, and what is late");
+    print("");
+    print("  payables import <file.csv>   take in a supplier file");
+    print("  payables show                what is owed, and what was set aside");
+    print("  payables report              write largest.md");
+    print("  payables paid <id>           mark a bill paid");
+    print("  payables serve [port]        the web page");
+    return 0;
+}

@@ -1,0 +1,11 @@
+# Strata.lock — written by `strata deps`. Commit it.
+#
+# Every package a build of this project uses, including the ones reached
+# through another package. A path dependency records the path as declared,
+# not where it landed on one machine; a git dependency records the exact
+# revision. `asked-by` is what pulled it in.
+
+[payables]
+kind = "path"
+path = "../payables"
+asked-by = "this project"

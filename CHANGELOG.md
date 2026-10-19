@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Something to actually look at
+
+`apps/payables`, `apps/payables_mobile`, `docs/THE_DEMONSTRATOR.md` and
+`test_suite/journey_payables.py`.
+
+Sixty-six CI steps prove the compiler works. They do not show anybody what
+the language is FOR, and a development manager does not adopt a language
+because its differential tests pass. This is the thing to put in front of
+one.
+
+It is the smallest system that still touches every tier -- a supplier file
+coming in, stored tables, rules, a web page, a report, a command line and a
+phone screen -- built so that **one schema change can be shown breaking all
+of them at once**. About 600 lines of Strata.
+
+Deliberate choices in it:
+
+- **The supplier file is a real one.** `data/incoming.csv` has a byte-order
+  mark because it came out of Excel, a company name with a comma inside
+  quotes, a doubled quote inside another name, an amount typed `RM250.00`, a
+  date of 30 February, a blank due-date cell and a supplier nobody has heard
+  of. Five rows are good. The five that are not come back with their line
+  numbers and a reason in words -- `line 6 INV-1005 '2026-02-30' is not a
+  date in the form YYYY-MM-DD` -- rather than being dropped or guessed at.
+  Every value is parsed by something that can say no.
+- **The money is exact.** `amount` is a whole number of minor units, so
+  155640.60 is 155640.60 however many rows went into it. A float would be a
+  penny out eventually and nobody could say why.
+- **The ranking is part of the query**, not a library call taking a column
+  name as a string, which is what makes the rename step work.
+- **The phone takes the schema as a dependency**, not a copy. That is the
+  mistake round 13 found in the orders app after a year, and building a new
+  application was the real test of whether the lesson stuck.
+
+The journey runs all seven steps against the real binaries and real files on
+every commit: the import, the totals, the ranking, the served page, the phone
+screen, marking a bill paid, and then the rename -- which must stop ALL SIX
+tiers compiling. A system where five of six break is worse than useless,
+because the sixth is the one that ships.
+
+`docs/THE_DEMONSTRATOR.md` ends with what it does NOT show: a `report` writes
+raw stored values rather than formatted ones, there is no authentication, it
+stays on files rather than PostgreSQL, there is no `group by`, and 600 lines
+is not a payables system. A demonstrator that oversells is worse than none.
+
 ### Everything round fourteen found, and the lesson about how round thirteen was repaired
 
 Round 14 ran against the tree round 13's repairs had just landed in. Ten

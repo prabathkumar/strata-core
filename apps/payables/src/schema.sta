@@ -1,0 +1,45 @@
+// The data tier, and the only description of it.
+//
+// Every other tier is checked against these declarations: the import, the
+// rules, the web page, the report and the phone screen. Rename a column here
+// and all five fail to build. That is the whole claim of this language, and
+// `test_suite/journey_payables.py` proves it by doing exactly that.
+//
+// TWO CHOICES WORTH EXPLAINING
+//
+// `amount` is an `int`, not a `float`, and it holds MINOR UNITS -- cents, or
+// sen. A float cannot hold 0.10 exactly, so a ledger that uses one is
+// eventually a penny out and nobody can say why. `std/money.sta` does the
+// arithmetic and the formatting.
+//
+// `due` is an `int` too, and it holds SECONDS SINCE 1970 UTC, which is what
+// `std/time.sta` calls a moment. The language has no date type; the library
+// has the calendar, borrowed from C rather than invented.
+
+database Supplier {
+    int id;
+    str name;
+    int terms_days;            // how long this supplier gives us to pay
+}
+
+database Bill {
+    int id;
+    int supplier_id;
+    str reference;             // the supplier's own number for it
+    int due;                   // a moment: seconds since 1970 UTC
+    int amount;                // minor units
+    str state;                 // "OPEN" or "PAID"
+}
+
+// A row the import could not take, kept rather than thrown away.
+//
+// A supplier file arrives with one bad line in it and the question is never
+// "all of it or none of it" -- it is "which line, and why". Setting them
+// aside here means somebody can be shown the three rows that need a human
+// without anybody re-running the import to find out what they were.
+database Rejected {
+    int id;
+    int row;                   // the line number in the file it came from
+    str reference;
+    str reason;
+}

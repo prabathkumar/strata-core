@@ -1,0 +1,11 @@
+[package]
+name = "payables"
+version = "0.1.0"
+
+[build]
+main = "src/main.sta"
+output = "build/payables"
+
+[run]
+port = 8095
+data = "data/bills.tsv"

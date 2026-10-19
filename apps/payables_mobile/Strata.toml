@@ -1,0 +1,16 @@
+[package]
+name = "payables_mobile"
+version = "0.1.0"
+
+[build]
+main = "src/main.sta"
+output = "build/payables_mobile"
+
+# The phone tier does not get its own copy of the schema.
+#
+# It takes it from the application it belongs to, so there is one description
+# of a bill and a rename reaches this file like it reaches every other. That
+# is the ordinary dependency mechanism, and `test_suite/journey_payables.py`
+# fails if this ever becomes a copy.
+[dependencies]
+payables = { path = "../payables" }

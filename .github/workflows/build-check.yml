@@ -122,6 +122,16 @@ jobs:
     - name: Two Runs Do Not Lose An Update
       run: python3 test_suite/two_runs_do_not_lose_an_update.py
 
+    # The demonstrator. Sixty-six CI steps prove the compiler works; they do
+    # not show anybody what the language is FOR. apps/payables is the
+    # smallest system that still touches every tier -- a supplier file in,
+    # stored tables, rules, a web page, a report, a command line and a phone
+    # screen -- and this journey ends by renaming one column and checking
+    # that ALL SIX stop building. docs/THE_DEMONSTRATOR.md is the
+    # walkthrough.
+    - name: Journey — The Demonstrator
+      run: python3 test_suite/journey_payables.py
+
     # The project's central claim, as a test rather than a sentence in the
     # README. Round 13 found the phone tier carrying its own copy of the
     # schema, so a rename broke the web build and left the phone compiling

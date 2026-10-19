@@ -1,0 +1,20 @@
+// The phone app's entry point.
+//
+// Draws one frame and prints what it drew, so a build machine can check the
+// screen without a handset. The real host paints the same list.
+
+import io     from std;
+import str    from std;
+import ui     from std;
+import time   from std;
+import schema from payables;
+import rules  from payables;
+import screen from app;
+
+int main() {
+    load_all();
+    int shown = draw_screen(now());
+    print(str_cat(["drew ", str(shown), " bill(s) on the ",
+    ui_screen_name(), " screen"]));
+    return 0;
+}

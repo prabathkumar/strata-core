@@ -47,6 +47,33 @@ strata new myapp && cd myapp && strata run
 
 The `export` is needed once per shell, until you add it to your shell profile.
 
+## Then twenty minutes with the demonstrator
+
+`apps/payables` is the smallest system that still touches every tier: a
+supplier file coming in, stored tables, business rules, a web page, a report,
+a command line and a phone screen. About 600 lines.
+
+```bash
+cd apps/payables
+../../bin/strata build src/main.sta -o build/payables
+./build/payables import data/incoming.csv     # a real supplier file
+./build/payables show
+```
+
+The file has a byte-order mark from Excel, a company name with a comma inside
+quotes, an amount typed `RM250.00`, a date of 30 February and a supplier
+nobody has heard of. Five rows are good and five are not, and the five that
+are not come back with their line numbers and a reason in words.
+
+Then open `src/schema.sta`, rename `amount` to `gross`, and build anything.
+**All six tiers stop compiling** — the rules, the import, the web page, the
+report, the command line and the phone — before the program runs. That is the
+sentence the whole project is built to be able to say, and
+`test_suite/journey_payables.py` checks it on every commit.
+
+`docs/THE_DEMONSTRATOR.md` is the walkthrough, including an honest list of
+what it does not show.
+
 ## Why this is different
 
 **One language checks the database, the rules and the screen together.** Rename

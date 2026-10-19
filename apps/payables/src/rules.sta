@@ -1,0 +1,123 @@
+// The rules tier.
+//
+// Written once, and the only copy. The web page, the report, the command
+// line and the phone screen all call these -- so "overdue" means one thing
+// across the system rather than four things that agree today.
+
+import io     from std;
+import str    from std;
+import time   from std;
+import money  from std;
+import schema from app;
+
+// ── Loading and saving ───────────────────────────────────────────────────
+
+// A first run has no data files yet, and a missing file is not a damaged
+// one. Asked about rather than attempted, so the first thing anybody sees
+// when they try this is not three refusals for files that were never
+// supposed to exist yet. A file that IS there and cannot be read still
+// refuses loudly, which is the case that matters.
+def load_all() {
+    if (file_exists("data/suppliers.tsv") == 1) { load Supplier from "data/suppliers.tsv"; }
+    if (file_exists("data/bills.tsv") == 1)     { load Bill     from "data/bills.tsv"; }
+    if (file_exists("data/rejected.tsv") == 1)  { load Rejected from "data/rejected.tsv"; }
+}
+
+def save_all() {
+    save Supplier to "data/suppliers.tsv";
+    save Bill     to "data/bills.tsv";
+    save Rejected to "data/rejected.tsv";
+}
+
+// ── Who ──────────────────────────────────────────────────────────────────
+
+str supplier_name(int supplier_id) {
+    list[Supplier] found = Supplier <- [id == supplier_id];
+    for S in found { return S.name; }
+    return "(unknown supplier)";
+}
+
+int supplier_terms(int supplier_id) {
+    list[Supplier] found = Supplier <- [id == supplier_id];
+    for S in found { return S.terms_days; }
+    return 30;
+}
+
+// ── When ─────────────────────────────────────────────────────────────────
+
+// Whole days between a bill's due date and today. Negative while there is
+// still time, positive once it is late.
+//
+// `days_between` is whole days, not hours divided by 24, because "due
+// tomorrow at nine" and "due tomorrow at five" are both due tomorrow.
+int days_late(int due, int today) {
+    return days_between(due, today);
+}
+
+int is_overdue(int due, int today) {
+    if (days_between(due, today) > 0) { return 1; }
+    return 0;
+}
+
+// What a bill becomes when a supplier's terms are applied to an issue date.
+int due_from(int issued, int supplier_id) {
+    return add_days(issued, supplier_terms(supplier_id));
+}
+
+// ── How much ─────────────────────────────────────────────────────────────
+
+// Everything still owed, in minor units. Exact: these are whole numbers, so
+// a thousand rows add up to the same answer every time.
+int total_outstanding() {
+    list[Bill] open_bills = Bill <- [state == "OPEN"];
+    if (count(open_bills) == 0) { return 0; }
+    return sum(open_bills.amount);
+}
+
+int count_outstanding() {
+    return count(Bill <- [state == "OPEN"]);
+}
+
+// Everything overdue as of `today`.
+int total_overdue(int today) {
+    list[Bill] open_bills = Bill <- [state == "OPEN"];
+    int owed = 0;
+    for B in open_bills {
+        if (is_overdue(B.due, today) == 1) { owed = owed + B.amount; }
+    }
+    return owed;
+}
+
+// The tax on a line, in minor units, rounded the way an invoice rounds:
+// half away from zero, so a credit note is the mirror of what it reverses.
+int tax_on(int amount) {
+    return money_rate(amount, service_tax_rate());
+}
+
+// Hundredths of a percent. 6% is 600.
+int service_tax_rate() { return 600; }
+
+// ── Changing a bill ──────────────────────────────────────────────────────
+//
+// A query returns the STORED rows, so writing through one changes the table.
+// That is the only way to update a row in this language, and it is worth
+// knowing before meeting it by accident.
+
+int mark_paid(int bill_id) {
+    list[Bill] found = Bill <- [id == bill_id];
+    if (count(found) == 0) { return 0; }
+    for B in found { B.state = "PAID"; }
+    return 1;
+}
+
+int next_bill_id() {
+    list[Bill] all = Bill <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+int next_rejected_id() {
+    list[Rejected] all = Rejected <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
