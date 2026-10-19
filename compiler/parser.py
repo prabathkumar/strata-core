@@ -955,8 +955,14 @@ class Parser:
                 self._consume(TT.L_BRACKET)
                 cond = self._parse_expr()
                 self._consume(TT.R_BRACKET)
+                # A report's datasource takes `by` and `first` like any other
+                # query. It did not, which meant the top-ten report that
+                # motivated ordering in the first place could not be written
+                # -- `Expected COMMA, got 'by'`. Found by a blind evaluator,
+                # round 14.
+                datasource = self._parse_query_tail(
+                    QueryExpr(t.line, t.col, src_name, cond))
                 self._consume(TT.COMMA)
-                datasource = QueryExpr(t.line, t.col, src_name, cond)
             elif self._at_word('metrics'):
                 self._advance()
                 self._consume(TT.COLON)

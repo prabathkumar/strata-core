@@ -135,7 +135,21 @@ class Lexer:
             ch=self._advance()
             if ch=='\\':
                 esc=self._advance()
-                buf.append(ESC.get(esc,esc))
+                if esc not in ESC:
+                    # An escape this language does not have used to drop the
+                    # backslash and keep the letter, so "C:\path\to\file"
+                    # silently became C:path<tab>ofile -- a Windows path, a
+                    # regular expression or a byte written as \xef quietly
+                    # turning into different text. In a language whose whole
+                    # pitch is that wrong answers are refused rather than
+                    # guessed at, an unrecognised escape is not a thing to
+                    # guess at. Found by a blind evaluator, round 14.
+                    raise LexError(
+                        f"'\\{esc}' is not an escape this language has. "
+                        f"It has \\n, \\t, \\r, \\\" and \\\\ — write "
+                        f"\\\\{esc} for a backslash followed by '{esc}'",
+                        self.line, self.col)
+                buf.append(ESC[esc])
             elif ch=='"':
                 self._add(TT.STR_LIT,''.join(buf),sl,sc); return
             elif ch=='\n':

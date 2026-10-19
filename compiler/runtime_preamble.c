@@ -897,7 +897,9 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
 #define STRATA_NAME_CAP 64
 
 /* Returns the number of columns in the header, -1 if the file has no header
-   (written before headers existed), or -2 if the file is empty. */
+   (written before headers existed), -2 if the file is empty, or -3 if the
+   header itself is damaged -- a column with no type, or with a type this
+   reader does not know. */
 static int strata_read_header(FILE* f, char names[][STRATA_NAME_CAP],
                               char* types, int cap, char* table_out) {
     char buf[256];
@@ -915,13 +917,29 @@ static int strata_read_header(FILE* f, char names[][STRATA_NAME_CAP],
     while (more > 0 && n < cap) {
         more = strata_read_field(f, buf, 256);
         char* colon = strchr(buf, ':');
-        if (colon) {
-            *colon = '\0';
-            strncpy(names[n], buf, STRATA_NAME_CAP - 1);
-            names[n][STRATA_NAME_CAP - 1] = '\0';
-            types[n] = colon[1];
-            n++;
-        }
+        /* The WHOLE type tag has to be exactly one of i, f or s.
+         *
+         * Only colon[1] was compared, so "name:sGARBAGE" and "id:integer"
+         * both passed. That was not merely sloppy -- it lost data. A .tsv
+         * with classic CR-only line endings has no newline anywhere, so the
+         * entire file arrives as one header line: the last column reads as
+         * name "name" with type 's' followed by rubbish, which passed, and
+         * then there were no data rows left. Two rows of stored data vanished
+         * with exit 0 and nothing on stderr. Found by a blind evaluator,
+         * round 14.
+         *
+         * A header this reader cannot make sense of is now a refusal, which
+         * is what the rest of the loader does with everything it cannot make
+         * sense of. -3 says so; the caller turns it into a message naming the
+         * file. */
+        if (!colon) return -3;
+        if (colon[1] == '\0' || colon[2] != '\0') return -3;
+        if (colon[1] != 'i' && colon[1] != 'f' && colon[1] != 's') return -3;
+        *colon = '\0';
+        strncpy(names[n], buf, STRATA_NAME_CAP - 1);
+        names[n][STRATA_NAME_CAP - 1] = '\0';
+        types[n] = colon[1];
+        n++;
         if (more == 0) break;
     }
     return n;

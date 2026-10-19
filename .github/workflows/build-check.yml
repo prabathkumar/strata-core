@@ -136,6 +136,15 @@ jobs:
     - name: Round Thirteen Stays Fixed
       run: python3 test_suite/round_thirteen_stays_fixed.py
 
+    # Round 14 ran against the tree round 13's repairs had just landed in,
+    # and its sharpest finding was about how those repairs were made: the
+    # label was fixed and the loop over properties one line below it was left
+    # alone. Each check here is grouped by the question the repair should
+    # have asked -- what ELSE reaches the page, what ELSE has no signature --
+    # rather than by the symptom a report happened to show.
+    - name: Round Fourteen Stays Fixed
+      run: python3 test_suite/round_fourteen_stays_fixed.py
+
     # "Show me the ten largest invoices" is the first thing anyone asks of a
     # business system, and until `by` existed the language had no answer. The
     # check that matters here is the last one: renaming the column breaks the

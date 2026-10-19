@@ -2676,6 +2676,16 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&e0, "    if (_ncol == -2) { fclose(f); "); sb_append(&e0, name);
     sb_append(&e0, "__count = 0; return 1; }");
     emit_raw(&g, sb_to_str(&e0));
+    // A damaged header: a column with no type, or a type this reader does not
+    // know. A CR-only file arrives this way -- the whole file reads as one
+    // header line -- and used to load as an empty table in silence.
+    emit_raw(&g, "    if (_ncol == -3) {");
+    StringBuilder e3 = sb_new();
+    sb_append(&e3, "        strata_load_refuse(\""); sb_append(&e3, name);
+    sb_append(&e3, "\", path, \"its header line is damaged: a column has no type, or a type this version does not know. If it was written on a machine using carriage returns alone as line endings, convert it first.\");");
+    emit_raw(&g, sb_to_str(&e3));
+    emit_raw(&g, "        fclose(f); return 0;");
+    emit_raw(&g, "    }");
     emit_raw(&g, "    if (_ncol == -1) {");
     StringBuilder e1 = sb_new();
     sb_append(&e1, "        strata_load_refuse(\""); sb_append(&e1, name);

@@ -302,6 +302,10 @@ def skip_block_comment(Lex &l) {
 
 // Mirrors the oracle: escapes are decoded, and a literal newline inside a
 // string advances the line counter while staying part of the value.
+// Stopping, the way the parser stops. A lexer that reports and carries on
+// hands the parser tokens the grammar already rejected.
+def lex_stop() { native "exit(1);"; }
+
 str scan_string_body(Lex &l) {
     StringBuilder sb = sb_new();
     while (lex_at_end(&l) == 0) {
@@ -313,8 +317,22 @@ str scan_string_body(Lex &l) {
             if (e == 114) { sb_append(&sb, char_str(13)); }
             if (e == 34)  { sb_append(&sb, char_str(34)); }
             if (e == 92)  { sb_append(&sb, char_str(92)); }
+            // An escape this language does not have used to drop the
+            // backslash and keep the letter, so "C:\\path\\to\\file" silently
+            // became C:path<tab>ofile -- a Windows path, a regular expression
+            // or a byte written as \\xef quietly turning into different text.
+            // In a language whose whole pitch is that wrong answers are
+            // refused rather than guessed at, an unrecognised escape is not a
+            // thing to guess at. Found by a blind evaluator, round 14.
             if (e != 110) { if (e != 116) { if (e != 114) { if (e != 34) { if (e != 92) {
-                                sb_append(&sb, char_str(e));
+                                StringBuilder le = sb_new();
+                                sb_append(&le, "[STRATA LEX ERROR] '\\");
+                                sb_append(&le, char_str(e));
+                                sb_append(&le, "' is not an escape this language has. It has \\n, \\t, \\r, \\\" and \\\\ — write \\\\");
+                                sb_append(&le, char_str(e));
+                                sb_append(&le, " for a backslash followed by that letter.");
+                                eprint(sb_to_str(&le));
+                                lex_stop();
                             } } } } }
         }
         if (c == 34) { return sb_to_str(&sb); }

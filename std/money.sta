@@ -98,16 +98,65 @@ str money_text(int amount) {
 // money than exists and is not a limit any ledger will meet.
 int money_largest_units() { return 92233720368547757; }
 
+// Whether that text is an amount this will read.
+//
+// Ask this when the answer matters, because -1 is ALSO a real amount: minus
+// one cent. A credit note, a rounding adjustment, a refund -- ordinary ledger
+// rows. Adding the error flag to money_parse without this turned that
+// documented ambiguity into an active false refusal of "-0.01" and nothing
+// else, which is exactly the kind of bug that survives a test suite and
+// surfaces in production. Found by a blind evaluator, round 14, in a repair
+// made during round 13.
+//
+// This parses the text and asks whether it parsed, rather than looking at the
+// answer -- which is the only way to tell "could not read it" from "read it,
+// and it was minus a cent".
+int money_parse_ok(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0; }
+    int i = 0;
+    if (text[0] == 45) { i = 1; }
+    int seen = 0;
+    int units = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 46) { break; }
+        if (c < 48) { return 0; }
+        if (c > 57) { return 0; }
+        if (units > money_largest_units()) { return 0; }
+        units = units * 10 + (c - 48);
+        seen = 1;
+        i = i + 1;
+    }
+    if (seen == 0) { return 0; }
+    if (units > money_largest_units()) { return 0; }
+    if (i < n) {
+        i = i + 1;                       // the point
+        int places = 0;
+        while (i < n) {
+            int c = text[i];
+            if (c < 48) { return 0; }
+            if (c > 57) { return 0; }
+            places = places + 1;
+            i = i + 1;
+        }
+        if (places == 0) { return 0; }
+        if (places > 2) { return 0; }
+    }
+    return 1;
+}
+
 // An amount, or -1 and the error flag set.
 //
-// The flag is the part that is new -- see date_parse in std/time.sta for the
-// failure the two of them composed into.
+// The flag is there because -1 alone was not enough: -1 is a legal input to
+// everything downstream, so a blank cell became an invoice for minus one
+// cent. See date_parse in std/time.sta for the other half of that failure.
 int money_parse(str text) {
-    int v = money_parse_value(text);
-    if (v == 0 - 1) {
+    if (money_parse_ok(text) == 0) {
         fail(str_cat(["money: '", text, "' is not an amount this will read"]));
+        return 0 - 1;
     }
-    return v;
+    return money_parse_value(text);
 }
 
 int money_parse_value(str text) {
@@ -287,6 +336,17 @@ verify "reading an amount somebody typed" {
     assert had_error() == 1; clear_error();
     assert money_parse("abc") == 0 - 1;
     assert had_error() == 1; clear_error();
+
+    // Minus one cent is an amount, not a failure. It shares the -1 that
+    // means "could not read this", which is why money_parse_ok exists.
+    assert money_parse("-0.01") == 0 - 1;
+    assert had_error() == 0;
+    assert money_parse_ok("-0.01") == 1;
+    assert money_parse_ok("") == 0;
+    assert money_parse_ok("RM1") == 0;
+    assert str_eq(money_text(money_parse("-0.01")), "-0.01") == 1;
+    assert money_parse("-0.02") == 0 - 2;
+    assert had_error() == 0;
 
     // A number too large to hold is refused rather than wrapped into a
     // plausible amount.

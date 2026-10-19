@@ -329,17 +329,72 @@ int fetch_status(str response) {
 // Decoding it is a dozen lines and removes the whole class, which is better
 // than refusing a response most servers send.
 str fetch_body(str response) {
-    int at = str_index_of(response, "\r\n\r\n");
+    // Where the headers stop.
+    //
+    // This used to look for "\r\n\r\n" across the WHOLE response and fall
+    // back to "\n\n" only if that was absent anywhere -- so a server sending
+    // LF-only headers had its boundary found inside the chunk terminator far
+    // down the body, and the whole body was lost with a misleading message.
+    // Whichever separator comes FIRST is the one that ends the headers.
+    // Found by a blind evaluator, round 14.
+    int crlf = str_index_of(response, "\r\n\r\n");
+    int lf = str_index_of(response, "\n\n");
+    int at = crlf;
     int skip = 4;
-    if (at < 0) {
-        at = str_index_of(response, "\n\n");
-        skip = 2;
+    if (crlf < 0) { at = lf; skip = 2; }
+    else {
+        if (lf >= 0) { if (lf < crlf) { at = lf; skip = 2; } }
     }
     if (at < 0) { return ""; }
     str raw = str_slice(response, at + skip, str_len(response));
+
     str te = str_lower(fetch_header(response, "Transfer-Encoding"));
-    if (str_index_of(te, "chunked") < 0) { return raw; }
-    return fetch_dechunk(raw);
+    if (str_index_of(te, "chunked") >= 0) { return fetch_dechunk(raw); }
+
+    // The length the server promised, against the length that arrived.
+    //
+    // Chunked framing was validated and this was not looked at at all, so the
+    // SAME truncation was a loud refusal when the server chunked and a silent
+    // short body when it sent a length -- a declared 50 bytes arriving as 5,
+    // exit 0, no error. That is the "truncated document that still parses"
+    // failure this module's own header says it exists to prevent. Found by a
+    // blind evaluator, round 14.
+    //
+    // A response with no Content-Length and no chunking ends when the
+    // connection closes, which is legal and unverifiable, so it is taken as
+    // it comes.
+    str cl = fetch_header(response, "Content-Length");
+    if (str_len(cl) > 0) {
+        int want = fetch_digits(cl);
+        if (want >= 0) {
+            if (str_len(raw) < want) {
+                fail(str_cat(["fetch: the answer stops early — ",
+                str(str_len(raw)), " bytes arrived of the ",
+                cl, " it said it was sending"]));
+                return "";
+            }
+            // More than promised is the rest of a pipelined response, not
+            // part of this one.
+            if (str_len(raw) > want) { return str_slice(raw, 0, want); }
+        }
+    }
+    return raw;
+}
+
+// The number a header value spells, or -1 if it is not a plain number. Not
+// str_to_int, because that reports an error for text it cannot read and a
+// header this client does not understand is an ordinary thing to meet.
+int fetch_digits(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0 - 1; }
+    int v = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        int c = text[i];
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+    }
+    return v;
 }
 
 // Undo chunked framing: a hex length, CRLF, that many bytes, CRLF, repeat,
@@ -481,6 +536,40 @@ verify "chunk framing never reaches a value" {
     // A response that is not chunked is untouched.
     str plain = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
     assert str_eq(fetch_body(plain), "hello") == 1;
+    assert had_error() == 0;
+}
+
+verify "an answer that stops early is refused, not handed over short" {
+    // The same truncation the chunked path already caught: a server that
+    // says 50 bytes and sends 5.
+    str short_one = "HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\nhello";
+    assert str_len(fetch_body(short_one)) == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "stops early") >= 0;
+    clear_error();
+
+    // The right length is handed over whole.
+    str whole = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    assert str_eq(fetch_body(whole), "hello") == 1;
+    assert had_error() == 0;
+
+    // More than promised: the extra is somebody else's response.
+    str over = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloHTTP/1.1 200 OK";
+    assert str_eq(fetch_body(over), "hello") == 1;
+    assert had_error() == 0;
+
+    // No length and no chunking ends when the connection does, which is
+    // legal and cannot be checked.
+    str open_ended = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello";
+    assert str_eq(fetch_body(open_ended), "hello") == 1;
+    assert had_error() == 0;
+}
+
+verify "headers end at the first blank line, whichever kind it is" {
+    // A server using LF-only headers had its boundary found inside the chunk
+    // terminator far down the body, and lost the whole body.
+    str lf = "HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\n5\r\nhello\r\n0\r\n\r\n";
+    assert str_eq(fetch_body(lf), "hello") == 1;
     assert had_error() == 0;
 }
 

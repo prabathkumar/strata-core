@@ -795,6 +795,16 @@ int main(int argc, char** argv) {
         self.emit_raw("    int _ncol = strata_read_header(f, _names, _types, "
                       "STRATA_MAX_COLS, _table);")
         self.emit_raw(f"    if (_ncol == -2) {{ fclose(f); {name}__count = 0; return 1; }}")
+        # A damaged header: a column with no type, or a type this reader does
+        # not know. A CR-only file arrives this way -- the whole file reads as
+        # one header line -- and used to load as an empty table in silence.
+        self.emit_raw("    if (_ncol == -3) {")
+        self.emit_raw(f'        strata_load_refuse("{name}", path, "its header '
+                      f'line is damaged: a column has no type, or a type this '
+                      f'version does not know. If it was written on a machine '
+                      f'using carriage returns alone as line endings, convert it first.");')
+        self.emit_raw("        fclose(f); return 0;")
+        self.emit_raw("    }")
         self.emit_raw("    if (_ncol == -1) {")
         self.emit_raw(f'        strata_load_refuse("{name}", path, "no schema header; '
                       f'it was written before headers existed. Re-save it.");')

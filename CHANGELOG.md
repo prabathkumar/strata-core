@@ -2,6 +2,85 @@
 
 ## Unreleased
 
+### Everything round fourteen found, and the lesson about how round thirteen was repaired
+
+Round 14 ran against the tree round 13's repairs had just landed in. Ten
+findings, and the sharpest was not a bug at all:
+
+> the round-13 repair was applied to the one expression the previous report
+> happened to show, and the loop over `stmt.props` immediately underneath it
+> was left alone. Until repairs are made by asking "what else reaches
+> `strata_html_escape`?" rather than "what did the report show?", each round
+> will keep finding the same bug one line over.
+
+That is correct, and it is the organising idea of this release. Each repair
+below is grouped by the QUESTION it should have asked.
+
+**What else is a line ending?** Round 13 handled CRLF. A `.tsv` with classic
+CR-only endings has no newline anywhere, so the whole file read as one header
+line — and the header's type tag was compared by its FIRST BYTE only, so
+`name:sGARBAGE` passed. The result was a table that loaded as empty: two rows
+of stored data gone, exit 0, nothing on stderr. The tag is compared in full
+now, and a header this reader cannot make sense of is a refusal naming the
+likely cause.
+
+**What else reaches the page?** A label, which round 13 fixed — and a
+property value, one line below it, which it did not. `field "x" [value = n]`
+with a number still passed `strata check` and then failed the build with raw
+C compiler output, and a *recognised* property with a non-`str` value was
+silently dropped from the page instead. Both are checked now, in both
+checkers. A literal stays exempt, because the generator handles it at compile
+time and it never reaches the escaper.
+
+**What else has no signature?** `RUNTIME_BUILTINS` was a list of names with no
+types attached, so a call to any of them got no return type and no argument
+checking. `str s = str_len("abc");` passed check and failed the build; so did
+the wrong number of arguments; and `str n = strata_len(rows);` in a report
+metric **built cleanly and segfaulted**. Three of those are written the way
+the tutorial teaches. Twenty prelude builtins have real signatures now.
+
+**What else is a truncated body?** Round 13 taught `fetch` to refuse a
+chunked response that stops early. A response with a `Content-Length` was not
+looked at at all — a declared 50 bytes arriving as 5 came back as a complete
+body, exit 0. The same truncation, caught one way and missed the other.
+Checked now. Beside it: the header/body split was searched across the whole
+response, so a server using LF-only headers had its boundary found inside the
+chunk terminator and lost the entire body.
+
+**And one this project caused.** Adding the error flag to `money_parse` in
+round 13 turned a documented ambiguity into an active false refusal. `-1` is
+both "could not read this" and the real amount **minus one cent** — a credit
+note, a rounding adjustment, a refund. `money_parse("-0.01")` started being
+set aside as unreadable. There is a `money_parse_ok` now, the way `date_parse`
+already had one, and it parses the text rather than inspecting the answer.
+
+The rest:
+
+- An escape this language does not have used to drop the backslash and keep
+  the letter, so `"C:\path\to\file"` silently became different text. It is
+  a refusal now, naming the five escapes that do exist.
+- A report's datasource takes `by` and `first`. It did not, which meant the
+  top-ten report that motivated ordering in the first place could not be
+  written.
+- A freshly cloned project with an unfetched dependency produced ten
+  cascading errors, none of which named the dependency, the manifest or
+  `strata deps` — and whose hint advised declaring the table locally, which
+  is exactly the duplicate schema round 13 had just removed. The hint now
+  says to run `strata deps` and says plainly not to declare it again.
+
+**Where nothing was found, having been tried hard.** Ordering survived
+everything, including writing through an ordered query and a sixty-row tie in
+both directions. The CSV cursor added in round 13 was compared cell by cell
+against the row-number API over fifteen awkward files and was byte-identical
+on every one. The `.tsv` carriage-return escaping round-tripped every case
+byte for byte. The phone tier's path dependency holds: a rename, a retype and
+a drop all break it. Five concurrent processes on one table lost nothing. And
+the two compilers agreed on every program either evaluator wrote, including
+the ones that failed — they share their bugs rather than diverging.
+
+The Beta gate — two consecutive rounds with zero data loss and zero silent
+wrong answers — remains at zero.
+
 ### Everything round thirteen found
 
 Two blind evaluators, a clean checkout, no history, one question: could a

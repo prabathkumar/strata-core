@@ -143,6 +143,47 @@ RUNTIME_BUILTINS = frozenset((
     'native',
 ))
 
+# What those builtins actually take and give back.
+#
+# RUNTIME_BUILTINS above is a list of NAMES, which was enough to stop a false
+# "undefined function" and nothing more: a call to one of them got no return
+# type and no argument checking. So `str s = str_len("abc");` passed
+# `strata check` and failed the build; so did the wrong number of arguments;
+# and `str n = strata_len(rows);` in a report metric built cleanly and
+# SEGFAULTED. Three of those are written the way the tutorial teaches. Found
+# by a blind evaluator, round 14.
+#
+# A name with no signature is a hole in `strata check`, and `strata check` is
+# the thing a team adopts this language for. Anything left out of this table
+# keeps the old behaviour, so it is a floor rather than a promise -- but
+# test_suite/the_check_is_sound.py asserts that every name in RUNTIME_BUILTINS
+# that a program can actually call has one.
+#
+# `None` for an argument type means "any": strata_len takes a list of
+# anything, and the element type is not this table's business.
+PRELUDE_SIGNATURES = {
+    'str_len':          ('int',   ('str',)),
+    'str_eq':           ('int',   ('str', 'str')),
+    'str_index_of':     ('int',   ('str', 'str')),
+    'str_starts_with':  ('int',   ('str', 'str')),
+    'str_slice':        ('str',   ('str', 'int', 'int')),
+    'str_concat':       ('str',   ('str', 'str')),
+    'str_to_int':       ('int',   ('str',)),
+    'int_to_str':       ('str',   ('int',)),
+    'float_to_str':     ('str',   ('float',)),
+    'file_read':        ('str',   ('str',)),
+    'file_write':       ('int',   ('str', 'str')),
+    'file_exists':      ('int',   ('str',)),
+    'strata_len':       ('int',   (None,)),
+    'strata_dup':       ('str',   ('str',)),
+    'strata_concat':    ('str',   ('str', 'str')),
+    'strata_int_to_str':   ('str', ('int',)),
+    'strata_float_to_str': ('str', ('float',)),
+    'current_message':  ('str',   ()),
+    'strata_publish':   ('int',   ('str', 'str')),
+    'strata_model_load':('int',   (None, 'str')),
+}
+
 # Handled before the lookup, but listed so the test above can be exhaustive.
 CAST_AND_AGGREGATE = frozenset((
     'str', 'int', 'float', 'bool', 'len', 'sum', 'avg', 'min', 'max', 'count',
@@ -219,6 +260,24 @@ def undeclared_table_hint(name, verb):
             f"import schema from app;")
 
 
+def unfetched_dependency_hint(name, verb, deps):
+    """The same situation, when the project declares a dependency that has
+    not been fetched.
+
+    Following the ordinary hint here is actively harmful: the table IS
+    declared, in a dependency, and declaring it again locally is precisely the
+    duplicate schema that let a rename break one tier and not another. A
+    freshly cloned project produced ten cascading errors of which none named
+    the dependency, the manifest or the command. Found by a blind evaluator,
+    round 14.
+    """
+    which = ", ".join(sorted(deps))
+    return (f"Run 'strata deps' first. This project declares the dependency "
+            f"{which} and nothing has fetched it yet, so '{name}' cannot be "
+            f"seen. Do NOT declare 'database {name}' here as well -- a second "
+            f"copy of a table is how one tier gets left behind by a rename")
+
+
 # Which std module declares a given function, read from std/ once and kept.
 # The answer is a fact about the source tree, so it is looked up rather than
 # listed: a list would go stale the first time std/ changed.
@@ -246,6 +305,65 @@ def std_module_providing(fn_name):
                     text, re.M):
                 _STD_INDEX.setdefault(m.group(1), mod)
     return _STD_INDEX.get(fn_name)
+
+
+def _declared_dependencies(filename):
+    """The names under [dependencies] in the nearest Strata.toml above
+    `filename`, so an unresolved import of one can say `strata deps` rather
+    than leaving a developer to guess.
+
+    Read with a few lines rather than a TOML library, because this needs the
+    key names on the left of `=` in one section and nothing else.
+    """
+    import os as _os
+    if not filename:
+        return set()
+    d = _os.path.dirname(_os.path.abspath(filename))
+    manifest = None
+    for _ in range(8):
+        cand = _os.path.join(d, "Strata.toml")
+        if _os.path.isfile(cand):
+            manifest = cand
+            break
+        parent = _os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if manifest is None:
+        return set()
+    names, inside = set(), False
+    try:
+        with open(manifest) as f:
+            for line in f:
+                t = line.strip()
+                if t.startswith("["):
+                    inside = t.startswith("[dependencies")
+                    continue
+                if inside and "=" in t and not t.startswith("#"):
+                    names.add(t.split("=", 1)[0].strip())
+    except OSError:
+        return set()
+    return names
+
+
+def _unfetched_dependencies(filename, declared):
+    """Declared dependencies with nothing in .strata/deps/ for them."""
+    import os as _os
+    if not declared or not filename:
+        return set()
+    d = _os.path.dirname(_os.path.abspath(filename))
+    for _ in range(8):
+        if _os.path.isfile(_os.path.join(d, "Strata.toml")):
+            deps = _os.path.join(d, ".strata", "deps")
+            # A fetched dependency is a directory holding its own manifest.
+            return {n for n in declared
+                    if not _os.path.isfile(
+                        _os.path.join(deps, n, "Strata.toml"))}
+        parent = _os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return set()
 
 
 class TypeChecker:
@@ -276,6 +394,9 @@ class TypeChecker:
         self.fn_borrows={}
         self.strict_calls = modules is not None
         self.unresolved_imports = unresolved_imports or []
+        self.declared_dependencies = _declared_dependencies(filename)
+        self.unfetched_dependencies = _unfetched_dependencies(
+            filename, self.declared_dependencies)
         # Which file the diagnostics being produced right now belong to.
         # Empty means the file being compiled: the renderer fills in the path
         # it was given, so a record never has to carry one spelling of a path
@@ -327,6 +448,12 @@ class TypeChecker:
         self._check_project_modules()
         return self.errors
 
+    def _table_hint(self, name, verb):
+        if self.unfetched_dependencies:
+            return unfetched_dependency_hint(name, verb,
+                                             self.unfetched_dependencies)
+        return undeclared_table_hint(name, verb)
+
     def _report_unresolved_imports(self):
         """An import with no local checkout, reported at its own line.
 
@@ -358,6 +485,26 @@ class TypeChecker:
                     f"Expected src/{imp.name}.sta. Check the spelling, or "
                     f"remove the import — while it is unresolved, nothing in "
                     f"this file that calls into it is checked at all")
+                continue
+            # A DECLARED dependency that has not been fetched is not an
+            # external module somebody will supply at link time -- it is one
+            # `strata deps` away, and saying so is the difference between a
+            # second and an afternoon. A freshly cloned project produced ten
+            # cascading errors, none of which named the dependency, the
+            # manifest or the command, and whose hint advised declaring the
+            # table locally -- which is precisely the duplicate schema the
+            # round-13 repair had just removed. Found by a blind evaluator,
+            # round 14.
+            if imp.source in self.declared_dependencies:
+                self._error("E007",
+                    f"'{imp.name}' comes from the dependency "
+                    f"'{imp.source}', which has not been fetched",
+                    imp.line, imp.col,
+                    f"Run 'strata deps' in this project. Strata.toml declares "
+                    f"'{imp.source}' and nothing has put it in .strata/deps/ "
+                    f"yet, so nothing it declares is checked here — including "
+                    f"the tables it declares. Do not declare them again "
+                    f"locally; that is the copy this import exists to avoid")
                 continue
             self._error("E007",
                 f"'{imp.name}' from '{imp.source}' has no local checkout",
@@ -705,7 +852,34 @@ class TypeChecker:
                         f"Hint: wrap it in str(...) — `{stmt.tag} str(...)`. "
                         f"A page is text, and the generated C has nothing to "
                         f"convert a '{lt}' with.")
-        for p in stmt.props: self._infer_type(p.value,scope)
+        # EVERY value that reaches the page, not only the label.
+        #
+        # The label check above was added in round 13 and this loop, one line
+        # below it, was left alone -- so `field "x" [value = n]` with a number
+        # still passed `strata check` and then failed the build with raw C
+        # compiler output, and a recognised property with a non-str value was
+        # silently dropped from the page instead. Found by a blind evaluator
+        # in round 14, who pointed out that the round-13 repair had been made
+        # by fixing the one expression the previous report happened to show
+        # rather than by asking what else reaches strata_html_escape. This is
+        # the answer to that question: a label, and a property value.
+        #
+        # A LITERAL is exempt because the generator handles it at compile
+        # time -- `text "a" [size = 14]` becomes font-size:14px and never
+        # reaches the escaper. Anything else becomes a computed attribute,
+        # which does.
+        for p in stmt.props:
+            pt = self._infer_type(p.value,scope)
+            if isinstance(p.value, (StrLiteral, IntLiteral, FloatLiteral)):
+                continue
+            if pt is not None and not pt.is_list and pt.name != "str":
+                self._error("E001",
+                    f"'{p.name}' is written into the page as text, and this "
+                    f"is '{pt}'",
+                    stmt.line, stmt.col,
+                    f"Hint: wrap it in str(...) — `{p.name} = str(...)`. "
+                    f"A page is text, and the generated C has nothing to "
+                    f"convert a '{pt}' with.")
         inner=Scope(scope)
         for c in stmt.children: self._check_stmt(c,inner)
 
@@ -716,7 +890,7 @@ class TypeChecker:
         if stmt.table not in self.schemas:
             self._error("E004",f"Database '{stmt.table}' not declared",
                 stmt.line,stmt.col,
-                undeclared_table_hint(stmt.table, 'before scanning it'))
+                self._table_hint(stmt.table, 'before scanning it'))
             return
         inner=Scope(scope)
         inner.define(stmt.var,SType(stmt.table))
@@ -742,7 +916,7 @@ class TypeChecker:
         """`Table <- [col = expr, ...]` — validate target and every column."""
         if stmt.target not in self.schemas:
             self._error("E004",f"Database '{stmt.target}' not declared",
-                stmt.line,stmt.col,undeclared_table_hint(stmt.target, 'first'))
+                stmt.line,stmt.col,self._table_hint(stmt.target, 'first'))
             return
         fields=self.schemas[stmt.target]
         for col,value in stmt.assignments:
@@ -825,7 +999,7 @@ class TypeChecker:
         if q.source not in self.schemas:
             self._error("E004",f"Database '{q.source}' not declared",
                 decl.line,decl.col,
-                undeclared_table_hint(q.source, 'before reporting on it'))
+                self._table_hint(q.source, 'before reporting on it'))
             return
         self._validate_query_cond(q.condition,q.source,decl.line,decl.col)
         self._validate_query_order(q,q.source,decl.line,decl.col)
@@ -898,14 +1072,14 @@ class TypeChecker:
         elif isinstance(stmt,DeleteStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",
-                    stmt.line,stmt.col,undeclared_table_hint(stmt.table, 'before deleting from it'))
+                    stmt.line,stmt.col,self._table_hint(stmt.table, 'before deleting from it'))
             else:
                 self._validate_query_cond(stmt.condition,stmt.table,
                                           stmt.line,stmt.col,scope)
         elif isinstance(stmt,TableIOStmt):
             if stmt.table not in self.schemas:
                 self._error("E004",f"Database '{stmt.table}' not declared",
-                    stmt.line,stmt.col,undeclared_table_hint(stmt.table, 'first'))
+                    stmt.line,stmt.col,self._table_hint(stmt.table, 'first'))
         elif isinstance(stmt,Element): self._check_element(stmt,scope)
         elif isinstance(stmt,ForInStmt): self._check_for_in(stmt,scope)
         elif isinstance(stmt,ScanStmt): self._check_scan(stmt,scope)
@@ -932,7 +1106,7 @@ class TypeChecker:
             src=stmt.value.source
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",stmt.line,stmt.col,
-                    undeclared_table_hint(src, 'before querying'))
+                    self._table_hint(src, 'before querying'))
             else:
                 self._validate_query_cond(stmt.value.condition,src,stmt.line,stmt.col,scope)
                 self._validate_query_order(stmt.value,src,stmt.line,stmt.col)
@@ -1135,7 +1309,7 @@ class TypeChecker:
             if src not in self.schemas:
                 self._error("E004",f"Database '{src}' not declared",
                     expr.line,expr.col,
-                    undeclared_table_hint(src, 'before querying it'))
+                    self._table_hint(src, 'before querying it'))
                 return None
             self._validate_query_cond(expr.condition,src,expr.line,expr.col,scope)
             self._validate_query_order(expr,src,expr.line,expr.col)
@@ -1203,6 +1377,30 @@ class TypeChecker:
         if expr.callee in ("sum","avg","min","max","count"):
             return self._infer_aggregate(expr,scope)
         fn=self.functions.get(expr.callee)
+        # A prelude builtin that nothing else declares. Checked here rather
+        # than waved through, so a clean check means a clean build. A real
+        # declaration -- std/io.sta declaring file_read, say -- wins, because
+        # that one carries the borrow flags and the exact types.
+        if fn is None and expr.callee in PRELUDE_SIGNATURES:
+            rt_name, arg_names = PRELUDE_SIGNATURES[expr.callee]
+            if len(expr.args) != len(arg_names):
+                for a in expr.args: self._infer_type(a,scope)
+                sig = f"{expr.callee}({', '.join(a or 'any' for a in arg_names)})"
+                self._error("E012",
+                    f"'{expr.callee}' expects {len(arg_names)} args, "
+                    f"got {len(expr.args)}",
+                    expr.line, expr.col, f"It is declared as {sig}")
+                return SType(rt_name)
+            for i,(arg,want) in enumerate(zip(expr.args, arg_names)):
+                at = self._infer_type(arg,scope)
+                if want is None or at is None:
+                    continue
+                if not is_compatible(SType(want), at):
+                    self._error("E012",
+                        f"Arg {i+1} of '{expr.callee}': expected '{want}', "
+                        f"got '{at}'",
+                        expr.line, expr.col, f"Cast argument to '{want}'")
+            return SType(rt_name)
         if fn is None:
             # Whether or not the callee resolves, its arguments are ordinary
             # expressions and every rule still applies inside them — otherwise

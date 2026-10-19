@@ -290,10 +290,15 @@ database TC {
     str constants;
     // ",name:line:col," already reported as an ambiguous query identifier.
     str ambiguous_seen;
+    // The project's source directory, when there is one. current_file is set
+    // only while an IMPORTED module is being checked and is empty for the
+    // root file, so a hint that needs to find the project's Strata.toml has
+    // nothing to walk up from without this.
+    str src_dir;
 }
 
 TC tc_new() {
-    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; _t->constants=\",\"; _t->ambiguous_seen=\",\"; return _t;";
+    native "TC* _t=(TC*)calloc(1,sizeof(TC)); _t->imported=\"\"; _t->current_file=\"\"; _t->constants=\",\"; _t->ambiguous_seen=\",\"; _t->src_dir=\"\"; return _t;";
 }
 
 // Functions the generated C already has, from the runtime prelude or as a
@@ -307,6 +312,91 @@ int is_runtime_builtin(str name) {
     sb_append(&needle, ",");
     if (str_index_of(known, sb_to_str(&needle)) >= 0) { return 1; }
     return 0;
+}
+
+// What those builtins take and give back.
+//
+// is_runtime_builtin above is a list of NAMES, which was enough to stop a
+// false "undefined function" and nothing more: a call to one of them got no
+// return type and no argument checking. So `str s = str_len("abc");` passed
+// `strata check` and failed the build; so did the wrong number of arguments;
+// and `str n = strata_len(rows);` in a report metric built cleanly and
+// SEGFAULTED. Three of those are written the way the tutorial teaches. Found
+// by a blind evaluator, round 14.
+//
+// One string, read as `name:return:arg,arg;` -- the same shape as STD_INDEX
+// above, and for the same reason: there are no maps in this language, and a
+// table a human can read in one line beats a structure that needs three
+// functions to walk. An "any" argument is `*`.
+str prelude_signatures() {
+    return ";str_len:int:str;str_eq:int:str,str;str_index_of:int:str,str;str_starts_with:int:str,str;str_slice:str:str,int,int;str_concat:str:str,str;str_to_int:int:str;int_to_str:str:int;float_to_str:str:float;file_read:str:str;file_write:int:str,str;file_exists:int:str;strata_len:int:*;strata_dup:str:str;strata_concat:str:str,str;strata_int_to_str:str:int;strata_float_to_str:str:float;current_message:str:;strata_publish:int:str,str;strata_model_load:int:*,str;";
+}
+
+// The signature of `name`, as "return:arg,arg", or "" when it has none.
+str prelude_signature_of(str name) {
+    str all = prelude_signatures();
+    StringBuilder needle = sb_new();
+    sb_append(&needle, ";");
+    sb_append(&needle, name);
+    sb_append(&needle, ":");
+    int at = str_index_of(all, sb_to_str(&needle));
+    if (at < 0) { return ""; }
+    int from_at = at + str_len(sb_to_str(&needle));
+    int n = str_len(all);
+    for (int i = from_at; i < n; i = i + 1) {
+        if (all[i] == 59) { return str_slice(all, from_at, i); }
+    }
+    return "";
+}
+
+// The return type out of "int:str,str".
+str prelude_return_of(str sig) {
+    int n = str_len(sig);
+    for (int i = 0; i < n; i = i + 1) {
+        if (sig[i] == 58) { return str_slice(sig, 0, i); }
+    }
+    return sig;
+}
+
+// The argument list out of "int:str,str", as ",str,str," -- or "," for none.
+str prelude_args_of(str sig) {
+    int n = str_len(sig);
+    for (int i = 0; i < n; i = i + 1) {
+        if (sig[i] == 58) {
+            StringBuilder sb = sb_new();
+            sb_append(&sb, ",");
+            sb_append(&sb, str_slice(sig, i + 1, n));
+            sb_append(&sb, ",");
+            return sb_to_str(&sb);
+        }
+    }
+    return ",";
+}
+
+// How many arguments ",str,int,int," names.
+int prelude_arity(str args) {
+    int n = str_len(args);
+    if (n <= 2) { return 0; }
+    int count = 1;
+    for (int i = 1; i < n - 1; i = i + 1) {
+        if (args[i] == 44) { count = count + 1; }
+    }
+    return count;
+}
+
+// The i-th argument type out of ",str,int,int,".
+str prelude_arg_at(str args, int which) {
+    int n = str_len(args);
+    int seen = 0;
+    int from_at = 1;
+    for (int i = 1; i < n; i = i + 1) {
+        if (args[i] == 44) {
+            if (seen == which) { return str_slice(args, from_at, i); }
+            seen = seen + 1;
+            from_at = i + 1;
+        }
+    }
+    return "";
 }
 
 int name_in_list(str names, str name) {
@@ -1068,7 +1158,7 @@ int infer(TC &tc, int node_p, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, e.s1);
             sb_append(&qsb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, undeclared_table_hint(e.s1, "first"));
+            emit_hint(&tc, "E004", sb_to_str(&qsb), e.line, e.col, table_hint(&tc, e.s1, "first"));
             return 0;
         }
         validate_query(&tc, e.c1, e.s1, e.line, e.col, scope_p);
@@ -1172,6 +1262,116 @@ int infer_binary(TC &tc, Node e, int scope_p) {
 // A table the file cannot see is usually one it did not import -- see
 // typechecker.py. The old hint sent a newcomer to declare a second,
 // conflicting schema.
+// The names under [dependencies] in the nearest Strata.toml above `from_file`
+// that have nothing in .strata/deps/ yet, as ",a,b,". "," for none.
+//
+// Following the ordinary "declare it" hint in this situation is actively
+// harmful: the table IS declared, in a dependency, and declaring it again
+// locally is precisely the duplicate schema that let a rename break one tier
+// and not another. A freshly cloned project produced ten cascading errors of
+// which none named the dependency, the manifest or the command. Found by a
+// blind evaluator, round 14.
+str unfetched_dependencies(str from_file) {
+    native "
+    char _d[4096];
+    snprintf(_d, sizeof(_d), \"%s\", $from_file ? $from_file : \"\");
+    char* _slash = strrchr(_d, '/');
+    if (_slash) *_slash = '\\0'; else strcpy(_d, \".\");
+    char _manifest[4200];
+    int _found = 0;
+    for (int _i = 0; _i < 8; _i++) {
+        snprintf(_manifest, sizeof(_manifest), \"%s/Strata.toml\", _d);
+        FILE* _probe = fopen(_manifest, \"r\");
+        if (_probe) { fclose(_probe); _found = 1; break; }
+        char* _up = strrchr(_d, '/');
+        if (!_up) break;
+        *_up = '\\0';
+        if (_d[0] == '\\0') break;
+    }
+    if (!_found) return strata_dup(\",\");
+    FILE* _f = fopen(_manifest, \"r\");
+    if (!_f) return strata_dup(\",\");
+    char _line[1024];
+    int _inside = 0;
+    static char _out[2048];
+    _out[0] = ','; _out[1] = '\\0';
+    while (fgets(_line, sizeof(_line), _f)) {
+        char* _p = _line;
+        while (*_p == ' ' || *_p == '\\t') _p++;
+        if (*_p == '[') {
+            _inside = (strncmp(_p, \"[dependencies\", 13) == 0);
+            continue;
+        }
+        if (!_inside || *_p == '#') continue;
+        char* _eq = strchr(_p, '=');
+        if (!_eq) continue;
+        *_eq = '\\0';
+        char* _end = _eq - 1;
+        while (_end > _p && (*_end == ' ' || *_end == '\\t')) { *_end = '\\0'; _end--; }
+        if (*_p == '\\0') continue;
+        /* A fetched dependency is a directory holding its own manifest.
+         * Asked for by opening that file rather than by stat()ing the
+         * directory, so this needs no header beyond stdio. */
+        char _dep[4300];
+        snprintf(_dep, sizeof(_dep), \"%s/.strata/deps/%s/Strata.toml\", _d, _p);
+        FILE* _dp = fopen(_dep, \"r\");
+        if (_dp) { fclose(_dp); continue; }       /* fetched */
+        if (strlen(_out) + strlen(_p) + 2 >= sizeof(_out)) break;
+        strcat(_out, _p);
+        strcat(_out, \",\");
+    }
+    fclose(_f);
+    return strata_dup(_out);
+    ";
+}
+
+// The names out of ",a,b," as "a, b".
+str dependency_list_text(str packed) {
+    int n = str_len(packed);
+    StringBuilder sb = sb_new();
+    int from_at = 1;
+    int first = 1;
+    for (int i = 1; i < n; i = i + 1) {
+        if (packed[i] == 44) {
+            str one = str_slice(packed, from_at, i);
+            if (str_len(one) > 0) {
+                if (first == 0) { sb_append(&sb, ", "); }
+                sb_append(&sb, one);
+                first = 0;
+            }
+            from_at = i + 1;
+        }
+    }
+    return sb_to_str(&sb);
+}
+
+str unfetched_dependency_hint(str name, str verb, str packed) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "Run 'strata deps' first. This project declares the dependency ");
+    sb_append(&sb, dependency_list_text(packed));
+    sb_append(&sb, " and nothing has fetched it yet, so '");
+    sb_append(&sb, name);
+    sb_append(&sb, "' cannot be seen. Do NOT declare 'database ");
+    sb_append(&sb, name);
+    sb_append(&sb, "' here as well -- a second copy of a table is how one tier gets left behind by a rename");
+    return sb_to_str(&sb);
+}
+
+str table_hint(TC &tc, str name, str verb) {
+    str where = tc.current_file;
+    if (str_len(where) == 0) {
+        // The root file. src_dir is a directory, and the walk below expects a
+        // path whose last segment it can drop, so a name is added.
+        if (str_len(tc.src_dir) == 0) { return undeclared_table_hint(name, verb); }
+        where = str_concat(tc.src_dir, "/x.sta");
+    }
+    str packed = unfetched_dependencies(where);
+    if (str_len(packed) > 1) {
+        return unfetched_dependency_hint(name, verb, packed);
+    }
+    return undeclared_table_hint(name, verb);
+}
+
 str undeclared_table_hint(str name, str verb) {
     StringBuilder sb = sb_new();
     sb_append(&sb, "Declare 'database ");
@@ -1189,7 +1389,7 @@ str undeclared_table_hint(str name, str verb) {
 // test_suite/std_index_is_current.py rebuilds it from std/ and fails if the
 // two disagree.
 str STD_INDEX() {
-    return ",add_days:time,add_hours:time,add_minutes:time,arg:cli,arg_count:cli,assert_true:testing,capture:os,char_from_code:str,clear_error:io,convert_int_to_str:core,csv_bom_len:csv,csv_cell:csv,csv_cell_at:csv,csv_cell_at_with:csv,csv_cell_with:csv,csv_column_of:csv,csv_columns:csv,csv_columns_at:csv,csv_columns_at_with:csv,csv_columns_with:csv,csv_count:csv,csv_escape:csv,csv_first_row:csv,csv_next_row:csv,csv_next_row_with:csv,csv_row_end:csv,csv_row_ok:csv,csv_row_ok_at:csv,csv_row_start:csv,csv_row_unterminated:csv,csv_rows:csv,csv_rows_with:csv,csv_skip_newline:csv,csv_unquote:csv,csv_value:csv,date_is_valid:time,date_of:time,date_parse:time,date_parse_ok:time,date_parse_value:time,date_text:time,day_of:time,days_between:time,days_in_month:time,days_in_year:time,digits_of:time,dispatch_performance_audit:telemetry,drop_extension:os,dup_str:auth,env:os,eprint:io,eprint_raw:io,error_at:io,error_count:io,errors_held:io,extract_json_int:json,fail:io,fetch_after_scheme:fetch,fetch_body:fetch,fetch_cap:fetch,fetch_close:fetch,fetch_connect:fetch,fetch_dechunk:fetch,fetch_default_port:fetch,fetch_get:fetch,fetch_header:fetch,fetch_host_of:fetch,fetch_path_of:fetch,fetch_port_of:fetch,fetch_post:fetch,fetch_post_json:fetch,fetch_raw:fetch,fetch_read_all:fetch,fetch_send:fetch,fetch_status:fetch,fetch_timeout_seconds:fetch,fetch_trim:fetch,fetch_with_headers:fetch,file_exists:io,file_read:io,file_write:io,flag_value:cli,float_to_str:io,had_error:io,has_flag:cli,hash_password:auth,hex_digit:http,hex_nibble:json,hour_of:time,http_accept:http,http_bad_request:http,http_body:http,http_close:http,http_cookie:http,http_exit:http,http_forbidden:http,http_fork:http,http_form_value:http,http_header:http,http_ignore_broken_pipes:http,http_listen:http,http_method:http,http_not_found:http,http_ok:http,http_path:http,http_peer_ip:http,http_query_string:http,http_read_request:http,http_reap_children:http,http_reap_finished:http,http_redirect:http,http_redirect_with:http,http_request_timeout:http,http_respond:http,http_respond_with:http,http_set_timeout:http,http_too_busy:http,int_to_str:io,is_database_url:postgres,is_directory:os,is_leap_year:time,is_this_machine:llm,json_control:json,json_field:json,json_index_of_key:json,json_int:json,json_next:json,json_num:json,json_num_end:json,json_str:json,json_string_field:json,json_string_field_from:json,last_error:io,line_end:toml,llm_ask:llm,llm_ask_at:llm,llm_body:llm,llm_cap:llm,llm_content_of:llm,llm_error_of:llm,llm_key:llm,llm_model:llm,llm_unquote_from:llm,llm_url:llm,lock_exclusive:http,lock_shared:http,log_failure:http,log_request:http,lower:http,make_dir:os,mem_alloc:mem,mem_free:mem,metric_header:metrics,metric_line:metrics,metric_one:metrics,metrics_add:metrics,metrics_get:metrics,metrics_now_seconds:metrics,metrics_open:metrics,metrics_raise:metrics,metrics_record:metrics,metrics_refused:metrics,metrics_render:metrics,metrics_set:metrics,metrics_start:metrics,metrics_uptime_seconds:metrics,minute_of:time,moment_of:time,moment_text:time,money_largest_units:money,money_negative_of:money,money_of:money,money_parse:money,money_parse_value:money,money_rate:money,money_share:money,money_text:money,money_times:money,money_would_overflow:money,month_of:time,new_session_token:auth,now:time,now_millis:http,now_seconds_utc:http,parent_dir:os,password_matches:auth,positional:cli,print:io,print_int:io,print_line:core,print_raw:io,random_hex:auth,read_line:io,record_telemetry_metric:telemetry,resolve_env_path:postgres,run:os,sb_append:str,sb_append_line:str,sb_length:str,sb_new:str,sb_to_str:str,scratch_reset:mem,scratch_used:mem,second_of:time,start_of_day:time,start_of_month:time,start_of_next_month:time,str_cat:str,str_chars:str,str_concat:mem,str_eq:mem,str_fixed:str,str_index_of:mem,str_join:str,str_len:mem,str_lower:fetch,str_slice:mem,str_starts_with:mem,str_to_float:io,str_to_int:io,str_truncate:str,subcommand:cli,tls_available:tls,tls_close:tls,tls_connect:tls,tls_read_all:tls,tls_send:tls,tls_version:tls,toml_field:toml,toml_get:toml,toml_keys:toml,toml_section:toml,tool_exists:os,trim:toml,trim_spaces:http,ui_advance:ui,ui_backspace:ui,ui_begin:ui,ui_button:ui,ui_clip:ui,ui_clip_bot:ui,ui_clip_off:ui,ui_clip_top:ui,ui_flow:ui,ui_flow_gap:ui,ui_flow_w:ui,ui_flow_x:ui,ui_flow_y:ui,ui_focus:ui,ui_focused:ui,ui_get:ui,ui_get_text:ui,ui_go:ui,ui_hit:ui,ui_input:ui,ui_line:ui,ui_next_id:ui,ui_next_state_id:ui,ui_paint_bmp:ui,ui_panel:ui,ui_rect:ui,ui_screen_name:ui,ui_scroll_by:ui,ui_scroll_of:ui,ui_set:ui,ui_set_text:ui,ui_text:ui,ui_text_height:ui,ui_text_width:ui,ui_touch:ui,ui_type:ui,ui_value:ui,unlock:http,unquote:toml,url_decode:http,verify_model_dimensions:ml,verify_vector_alignment:simd_math,weekday_of:time,year_of:time,";
+    return ",add_days:time,add_hours:time,add_minutes:time,arg:cli,arg_count:cli,assert_true:testing,capture:os,char_from_code:str,clear_error:io,convert_int_to_str:core,csv_bom_len:csv,csv_cell:csv,csv_cell_at:csv,csv_cell_at_with:csv,csv_cell_with:csv,csv_column_of:csv,csv_columns:csv,csv_columns_at:csv,csv_columns_at_with:csv,csv_columns_with:csv,csv_count:csv,csv_escape:csv,csv_first_row:csv,csv_next_row:csv,csv_next_row_with:csv,csv_row_end:csv,csv_row_ok:csv,csv_row_ok_at:csv,csv_row_start:csv,csv_row_unterminated:csv,csv_rows:csv,csv_rows_with:csv,csv_skip_newline:csv,csv_unquote:csv,csv_value:csv,date_is_valid:time,date_of:time,date_parse:time,date_parse_ok:time,date_parse_value:time,date_text:time,day_of:time,days_between:time,days_in_month:time,days_in_year:time,digits_of:time,dispatch_performance_audit:telemetry,drop_extension:os,dup_str:auth,env:os,eprint:io,eprint_raw:io,error_at:io,error_count:io,errors_held:io,extract_json_int:json,fail:io,fetch_after_scheme:fetch,fetch_body:fetch,fetch_cap:fetch,fetch_close:fetch,fetch_connect:fetch,fetch_dechunk:fetch,fetch_default_port:fetch,fetch_digits:fetch,fetch_get:fetch,fetch_header:fetch,fetch_host_of:fetch,fetch_path_of:fetch,fetch_port_of:fetch,fetch_post:fetch,fetch_post_json:fetch,fetch_raw:fetch,fetch_read_all:fetch,fetch_send:fetch,fetch_status:fetch,fetch_timeout_seconds:fetch,fetch_trim:fetch,fetch_with_headers:fetch,file_exists:io,file_read:io,file_write:io,flag_value:cli,float_to_str:io,had_error:io,has_flag:cli,hash_password:auth,hex_digit:http,hex_nibble:json,hour_of:time,http_accept:http,http_bad_request:http,http_body:http,http_close:http,http_cookie:http,http_exit:http,http_forbidden:http,http_fork:http,http_form_value:http,http_header:http,http_ignore_broken_pipes:http,http_listen:http,http_method:http,http_not_found:http,http_ok:http,http_path:http,http_peer_ip:http,http_query_string:http,http_read_request:http,http_reap_children:http,http_reap_finished:http,http_redirect:http,http_redirect_with:http,http_request_timeout:http,http_respond:http,http_respond_with:http,http_set_timeout:http,http_too_busy:http,int_to_str:io,is_database_url:postgres,is_directory:os,is_leap_year:time,is_this_machine:llm,json_control:json,json_field:json,json_index_of_key:json,json_int:json,json_next:json,json_num:json,json_num_end:json,json_str:json,json_string_field:json,json_string_field_from:json,last_error:io,line_end:toml,llm_ask:llm,llm_ask_at:llm,llm_body:llm,llm_cap:llm,llm_content_of:llm,llm_error_of:llm,llm_key:llm,llm_model:llm,llm_unquote_from:llm,llm_url:llm,lock_exclusive:http,lock_shared:http,log_failure:http,log_request:http,lower:http,make_dir:os,mem_alloc:mem,mem_free:mem,metric_header:metrics,metric_line:metrics,metric_one:metrics,metrics_add:metrics,metrics_get:metrics,metrics_now_seconds:metrics,metrics_open:metrics,metrics_raise:metrics,metrics_record:metrics,metrics_refused:metrics,metrics_render:metrics,metrics_set:metrics,metrics_start:metrics,metrics_uptime_seconds:metrics,minute_of:time,moment_of:time,moment_text:time,money_largest_units:money,money_negative_of:money,money_of:money,money_parse:money,money_parse_ok:money,money_parse_value:money,money_rate:money,money_share:money,money_text:money,money_times:money,money_would_overflow:money,month_of:time,new_session_token:auth,now:time,now_millis:http,now_seconds_utc:http,parent_dir:os,password_matches:auth,positional:cli,print:io,print_int:io,print_line:core,print_raw:io,random_hex:auth,read_line:io,record_telemetry_metric:telemetry,resolve_env_path:postgres,run:os,sb_append:str,sb_append_line:str,sb_length:str,sb_new:str,sb_to_str:str,scratch_reset:mem,scratch_used:mem,second_of:time,start_of_day:time,start_of_month:time,start_of_next_month:time,str_cat:str,str_chars:str,str_concat:mem,str_eq:mem,str_fixed:str,str_index_of:mem,str_join:str,str_len:mem,str_lower:fetch,str_slice:mem,str_starts_with:mem,str_to_float:io,str_to_int:io,str_truncate:str,subcommand:cli,tls_available:tls,tls_close:tls,tls_connect:tls,tls_read_all:tls,tls_send:tls,tls_version:tls,toml_field:toml,toml_get:toml,toml_keys:toml,toml_section:toml,tool_exists:os,trim:toml,trim_spaces:http,ui_advance:ui,ui_backspace:ui,ui_begin:ui,ui_button:ui,ui_clip:ui,ui_clip_bot:ui,ui_clip_off:ui,ui_clip_top:ui,ui_flow:ui,ui_flow_gap:ui,ui_flow_w:ui,ui_flow_x:ui,ui_flow_y:ui,ui_focus:ui,ui_focused:ui,ui_get:ui,ui_get_text:ui,ui_go:ui,ui_hit:ui,ui_input:ui,ui_line:ui,ui_next_id:ui,ui_next_state_id:ui,ui_paint_bmp:ui,ui_panel:ui,ui_rect:ui,ui_screen_name:ui,ui_scroll_by:ui,ui_scroll_of:ui,ui_set:ui,ui_set_text:ui,ui_text:ui,ui_text_height:ui,ui_text_width:ui,ui_touch:ui,ui_type:ui,ui_value:ui,unlock:http,unquote:toml,url_decode:http,verify_model_dimensions:ml,verify_vector_alignment:simd_math,weekday_of:time,year_of:time,";
 }
 
 str std_module_providing(str fname) {
@@ -1381,6 +1581,48 @@ int infer_call(TC &tc, Node e, int scope_p) {
     if (agg == 1) { return infer_aggregate(&tc, e, scope_p); }
 
     int fp = fn_find(tc.fns, e.s1);
+    // A prelude builtin that nothing else declares. Checked rather than waved
+    // through, so a clean check means a clean build. A real declaration --
+    // std/io.sta declaring file_read, say -- wins, because that one carries
+    // the borrow flags and the exact types.
+    if (fp == 0) {
+        str psig = prelude_signature_of(e.s1);
+        if (str_len(psig) > 0) {
+            str pargs = prelude_args_of(psig);
+            int want = prelude_arity(pargs);
+            if (na != want) {
+                for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+                StringBuilder am = sb_new();
+                sb_append(&am, "'"); sb_append(&am, e.s1);
+                sb_append(&am, "' expects "); sb_append(&am, str(want));
+                sb_append(&am, " args, got "); sb_append(&am, str(na));
+                StringBuilder ah = sb_new();
+                sb_append(&ah, "It is declared as "); sb_append(&ah, e.s1);
+                sb_append(&ah, "("); sb_append(&ah, str_slice(pargs, 1, str_len(pargs) - 1));
+                sb_append(&ah, ")");
+                emit_hint(&tc, "E012", sb_to_str(&am), e.line, e.col, sb_to_str(&ah));
+                return ty_ptr(ty_new(prelude_return_of(psig)));
+            }
+            for (int i = 0; i < na; i = i + 1) {
+                int at = infer(&tc, node_ptr(nv_get(&args, i)), scope_p);
+                str wantt = prelude_arg_at(pargs, i);
+                if (str_eq(wantt, "*") == 1) { continue; }
+                if (at == 0) { continue; }
+                if (ty_compatible(ty_ptr(ty_new(wantt)), at) == 0) {
+                    StringBuilder am2 = sb_new();
+                    sb_append(&am2, "Arg "); sb_append(&am2, str(i + 1));
+                    sb_append(&am2, " of '"); sb_append(&am2, e.s1);
+                    sb_append(&am2, "': expected '"); sb_append(&am2, wantt);
+                    sb_append(&am2, "', got '"); sb_append(&am2, ty_str(at));
+                    sb_append(&am2, "'");
+                    StringBuilder ah2 = sb_new();
+                    sb_append(&ah2, "Cast argument to '"); sb_append(&ah2, wantt); sb_append(&ah2, "'");
+                    emit_hint(&tc, "E012", sb_to_str(&am2), e.line, e.col, sb_to_str(&ah2));
+                }
+            }
+            return ty_ptr(ty_new(prelude_return_of(psig)));
+        }
+    }
     if (fp == 0) {
         // Unknown callee: arguments are still ordinary expressions and every
         // rule applies inside them.
@@ -1555,7 +1797,7 @@ def check_var_decl(TC &tc, Node st, int scope_p) {
             sb_append(&qsb, "Database '");
             sb_append(&qsb, qval.s1);
             sb_append(&qsb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, undeclared_table_hint(qval.s1, "first"));
+            emit_hint(&tc, "E004", sb_to_str(&qsb), st.line, st.col, table_hint(&tc, qval.s1, "first"));
         }
         if (qsch != 0) {
             validate_query(&tc, qval.c1, qval.s1, st.line, st.col, scope_p);
@@ -1843,7 +2085,7 @@ def check_stmt_insert(TC &tc, Node st, int scope_p) {
         sb_append(&sb, "Database '");
         sb_append(&sb, st.s1);
         sb_append(&sb, "' not declared");
-        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s1, "first"));
+        emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, table_hint(&tc, st.s1, "first"));
         return;
     }
     Schema s = schema_at(sch);
@@ -2037,7 +2279,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             sb_append(&sb, "Database '");
             sb_append(&sb, st.s1);
             sb_append(&sb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s1, "first"));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, table_hint(&tc, st.s1, "first"));
             return;
         }
         validate_query(&tc, st.c1, st.s1, st.line, st.col, scope_p);
@@ -2050,7 +2292,7 @@ def check_stmt(TC &tc, Node st, int scope_p) {
             StringBuilder sb = sb_new();
             sb_append(&sb, "Database '"); sb_append(&sb, st.s2);
             sb_append(&sb, "' not declared");
-            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, undeclared_table_hint(st.s2, "first"));
+            emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col, table_hint(&tc, st.s2, "first"));
         }
         return;
     }
@@ -2076,7 +2318,7 @@ def check_scan(TC &tc, Node st, int scope_p) {
         sb_append(&sb, st.s1);
         sb_append(&sb, "' not declared");
         emit_hint(&tc, "E004", sb_to_str(&sb), st.line, st.col,
-        undeclared_table_hint(st.s1, "before scanning it"));
+        table_hint(&tc, st.s1, "before scanning it"));
         return;
     }
     Scp inner = scp_new(scope_p);
@@ -2111,7 +2353,7 @@ def check_report(TC &tc, Node decl) {
         sb_append(&sb, "Database '");
         sb_append(&sb, q.s1);
         sb_append(&sb, "' not declared");
-        emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, undeclared_table_hint(q.s1, "first"));
+        emit_hint(&tc, "E004", sb_to_str(&sb), decl.line, decl.col, table_hint(&tc, q.s1, "first"));
         return;
     }
     validate_query(&tc, q.c1, q.s1, decl.line, decl.col, 0);
@@ -2205,9 +2447,51 @@ def check_element(TC &tc, Node st, int scope_p) {
     }
     NodeVec props = nv_at(st.v1);
     int np = props.len;
+    // EVERY value that reaches the page, not only the label.
+    //
+    // The label check above was added in round 13 and this loop, one line
+    // below it, was left alone -- so `field "x" [value = n]` with a number
+    // still passed `strata check` and then failed the build with raw C
+    // compiler output, and a recognised property with a non-str value was
+    // silently dropped from the page instead. Found by a blind evaluator in
+    // round 14, who pointed out that the round-13 repair had been made by
+    // fixing the one expression the previous report happened to show rather
+    // than by asking what else reaches strata_html_escape. This is the
+    // answer to that question: a label, and a property value.
+    //
+    // A LITERAL is exempt because the generator handles it at compile time --
+    // `text "a" [size = 14]` becomes font-size:14px and never reaches the
+    // escaper. Anything else becomes a computed attribute, which does.
     for (int i = 0; i < np; i = i + 1) {
         Node pr = nv_get(&props, i);
-        infer(&tc, pr.c1, scope_p);
+        int pt = infer(&tc, pr.c1, scope_p);
+        Node pv = node_at(pr.c1);
+        int literal = 0;
+        if (pv.kind == 50) { literal = 1; }
+        if (pv.kind == 51) { literal = 1; }
+        if (pv.kind == 52) { literal = 1; }
+        if (literal == 0) {
+            if (pt != 0) {
+                Ty pty = ty_at(pt);
+                if (pty.is_list == 0) {
+                    if (str_eq(pty.name, "str") == 0) {
+                        StringBuilder pm = sb_new();
+                        sb_append(&pm, "'");
+                        sb_append(&pm, pr.s1);
+                        sb_append(&pm, "' is written into the page as text, and this is '");
+                        sb_append(&pm, ty_str(pt));
+                        sb_append(&pm, "'");
+                        StringBuilder ph = sb_new();
+                        sb_append(&ph, "wrap it in str(...) — `");
+                        sb_append(&ph, pr.s1);
+                        sb_append(&ph, " = str(...)`. A page is text, and the generated C has nothing to convert a '");
+                        sb_append(&ph, ty_str(pt));
+                        sb_append(&ph, "' with.");
+                        emit_hint(&tc, "E001", sb_to_str(&pm), st.line, st.col, sb_to_str(&ph));
+                    }
+                }
+            }
+        }
     }
     Scp inner = scp_new(scope_p);
     int ip = scp_ptr(inner);
@@ -2391,6 +2675,7 @@ str src_dir, int report_imports, int mods_p) {
     TC tc = tc_new();
     tc.strict_calls = strict;
     tc.imported = imported;
+    tc.src_dir = src_dir;
     if (report_imports == 1) { report_unresolved_imports(&tc, unit, root, src_dir); }
     // Signatures from imported modules, so a call into std/ is checked for
     // arity and argument types rather than left to the C compiler. Names
