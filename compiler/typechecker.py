@@ -182,7 +182,46 @@ PRELUDE_SIGNATURES = {
     'current_message':  ('str',   ()),
     'strata_publish':   ('int',   ('str', 'str')),
     'strata_model_load':('int',   (None, 'str')),
+    # Tensors. `strata_tensor` gives back a tensor, which this table spells
+    # None because a tensor's shape is part of its type and that is the
+    # declaration's business, not this one's. The INDEX arguments are what
+    # matter here: they were unchecked, and an unchecked index is a segfault.
+    'strata_tensor':       (None, ('int',)),
+    'strata_tensor_set':   (None, (None, 'int', 'float')),
+    'strata_tensor_get':   ('float', (None, 'int')),
+    'strata_tensor_add':   (None, (None, None, 'int')),
+    'strata_predict':      (None, (None, None)),
+    'strata_activate':     ('float', ('float', 'int')),
+    'strata_weight_count': ('int', (None,)),
+    # The string builder's raw form, used by generated code and reachable
+    # from a program.
+    'sb_new_f':         (None,  ()),
+    'sb_append_f':      (None,  (None, 'str')),
+    'sb_append_line_f': (None,  (None, 'str')),
+    # Streams.
+    'strata_on':          (None, ('str', None)),
+    'strata_run':         ('int', ()),
+    'strata_set_message': (None, ('str',)),
+    # The storage layer's own helpers. A program can reach them; nothing
+    # sensible calls them, and an unchecked call to one writes to a FILE*.
+    'strata_write_escaped': (None, (None, 'str')),
+    'strata_read_field':    ('int', (None, None, 'int')),
+    'strata_read_header':   ('int', (None, None, None, 'int', None)),
+    'strata_load_refuse':   (None, ('str', 'str', 'str')),
 }
+
+# `native` is the one name with no signature, and it cannot have one: it is
+# not a function but a compiler intrinsic that pastes C into the output. Every
+# OTHER name in RUNTIME_BUILTINS must appear in PRELUDE_SIGNATURES above, and
+# test_suite/every_builtin_is_signed.py fails the build if one does not.
+#
+# That test is the actual repair from round 15. The previous three rounds each
+# found a builtin with no signature, each one was signed, and the next round
+# found another -- because the design was a list of names with a list of
+# exceptions beside it, which is a deny-list of known holes rather than a type
+# system. A name cannot be added now without a signature, so the hole cannot
+# come back by omission.
+SIGNATURE_EXEMPT = frozenset(('native',))
 
 # Handled before the lookup, but listed so the test above can be exhaustive.
 CAST_AND_AGGREGATE = frozenset((
@@ -1366,7 +1405,27 @@ class TypeChecker:
         if expr.callee in ("str","int","float"):
             # Infer the arguments even though the result type is fixed:
             # otherwise every rule is silently skipped inside str(...).
-            for a in expr.args: self._infer_type(a,scope)
+            ats = [self._infer_type(a,scope) for a in expr.args]
+            # `int(some_text)` compiled to a POINTER CAST. It printed a heap
+            # address -- a different one every run, which is an ASLR leak --
+            # and it is the obvious thing a developer writes to parse a
+            # string. `float("3.5")` did not build at all, so the family was
+            # inconsistent as well as unsound. Found by a blind evaluator,
+            # round 15.
+            #
+            # int() and float() convert between NUMBERS. Text is read by a
+            # function that can report that it could not.
+            if expr.callee in ("int", "float") and len(ats) == 1:
+                at = ats[0]
+                if at is not None and at.name == "str" and not at.is_list:
+                    reader = "str_to_int" if expr.callee == "int" else "str_to_float"
+                    self._error("E012",
+                        f"'{expr.callee}()' converts between numbers, and "
+                        f"this is text",
+                        expr.line, expr.col,
+                        f"Hint: use {reader}(...) — it reads the text and "
+                        f"sets the error flag when it cannot, which a cast "
+                        f"cannot do")
             return {"str":T_STR,"int":T_INT,"float":T_FLOAT}[expr.callee]
         if expr.callee=="bool":
             for a in expr.args: self._infer_type(a,scope)
@@ -1383,6 +1442,9 @@ class TypeChecker:
         # that one carries the borrow flags and the exact types.
         if fn is None and expr.callee in PRELUDE_SIGNATURES:
             rt_name, arg_names = PRELUDE_SIGNATURES[expr.callee]
+            # A None return means this table does not model the type -- a
+            # tensor, a string-builder handle, a FILE*. The ARGUMENTS are
+            # still checked, which is the part that was segfaulting.
             if len(expr.args) != len(arg_names):
                 for a in expr.args: self._infer_type(a,scope)
                 sig = f"{expr.callee}({', '.join(a or 'any' for a in arg_names)})"
@@ -1390,7 +1452,7 @@ class TypeChecker:
                     f"'{expr.callee}' expects {len(arg_names)} args, "
                     f"got {len(expr.args)}",
                     expr.line, expr.col, f"It is declared as {sig}")
-                return SType(rt_name)
+                return SType(rt_name) if rt_name else None
             for i,(arg,want) in enumerate(zip(expr.args, arg_names)):
                 at = self._infer_type(arg,scope)
                 if want is None or at is None:
@@ -1400,7 +1462,7 @@ class TypeChecker:
                         f"Arg {i+1} of '{expr.callee}': expected '{want}', "
                         f"got '{at}'",
                         expr.line, expr.col, f"Cast argument to '{want}'")
-            return SType(rt_name)
+            return SType(rt_name) if rt_name else None
         if fn is None:
             # Whether or not the callee resolves, its arguments are ordinary
             # expressions and every rule still applies inside them — otherwise

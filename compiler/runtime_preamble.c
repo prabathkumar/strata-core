@@ -590,6 +590,28 @@ static strata_int strata_len(void* list) {
     return ((strata_int*)list)[-1];
 }
 
+/* Whether `i` names an element of `list`, and a refusal when it does not.
+ *
+ * `list[100000000]` on a three-element list passed `strata check`, built
+ * cleanly and SEGFAULTED -- no builtins, no tensors, just a list literal and
+ * a constant index. `list[99]` was quieter and worse: it printed 0. Found by
+ * a blind evaluator, round 15.
+ *
+ * It costs one comparison against a length the list already carries in the
+ * word before its data, so this is not a trade against speed. Returning the
+ * index rather than a pointer keeps the generated C the same shape for every
+ * element type.
+ */
+static strata_int strata_bounds(void* list, strata_int i) {
+    strata_int n = strata_len(list);
+    if (!list || i < 0 || i >= n) {
+        strata_error_set("index %lld is outside a list of %lld element(s)",
+                         (long long)i, (long long)n);
+        return -1;
+    }
+    return i;
+}
+
 /* ── Rendering to a string ────────────────────────────────────────────────
    A layout compiles to a function that writes to a FILE*. open_memstream
    gives it a FILE* backed by a growing buffer, so the same generated function
@@ -690,12 +712,39 @@ typedef struct {
     char acts[STRATA_MAX_LAYERS];
 } StrataModel;
 
+/* A tensor carries its element count in the word before its data, the same
+ * way a list does, so an index can be checked without the caller passing a
+ * length it may not have. Reading or writing past the end used to be a
+ * segfault for a read and a silent heap write for a write, both with exit 0.
+ * Found by a blind evaluator, round 15. */
 static double* strata_tensor(strata_int n) {
-    double* t = (double*)calloc((size_t)n, sizeof(double));
-    return t;
+    if (n < 0) n = 0;
+    strata_int* raw = (strata_int*)calloc(sizeof(strata_int) + (size_t)n * sizeof(double), 1);
+    if (!raw) return NULL;
+    raw[0] = n;
+    return (double*)(void*)(raw + 1);
 }
-static void strata_tensor_set(double* t, strata_int i, strata_float v) { t[i] = v; }
-static strata_float strata_tensor_get(double* t, strata_int i) { return t[i]; }
+static strata_int strata_tensor_len(double* t) {
+    if (!t) return 0;
+    return ((strata_int*)(void*)t)[-1];
+}
+static int strata_tensor_in(double* t, strata_int i) {
+    strata_int n = strata_tensor_len(t);
+    if (!t || i < 0 || i >= n) {
+        strata_error_set("tensor index %lld is outside a tensor of %lld",
+                         (long long)i, (long long)n);
+        return 0;
+    }
+    return 1;
+}
+static void strata_tensor_set(double* t, strata_int i, strata_float v) {
+    if (!strata_tensor_in(t, i)) return;
+    t[i] = v;
+}
+static strata_float strata_tensor_get(double* t, strata_int i) {
+    if (!strata_tensor_in(t, i)) return 0.0;
+    return t[i];
+}
 
 static double strata_activate(double x, char a) {
     if (a == 'r') return x > 0.0 ? x : 0.0;

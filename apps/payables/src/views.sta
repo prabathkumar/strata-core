@@ -89,7 +89,7 @@ layout Outstanding(str notice, int today) {
             }
 
             text "Set aside by the last import" [color = "#8b949e", weight = "bold"];
-            list[Rejected] bad = Rejected <- [id > 0] by row first 20;
+            list[Rejected] bad = Rejected <- [run == latest_run()] by row first 20;
             for R in bad {
                 row [padding = 8, background = "#2d1b1b"] {
                     text str_cat(["line ", str(R.row)]) [color = "#8b949e"];

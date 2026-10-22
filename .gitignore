@@ -55,3 +55,15 @@ DerivedData/
 # Transfer artefacts, never part of the project.
 .strata.bundle
 *.patch
+
+# The demonstrator's data files are WRITTEN by it, not shipped with it.
+#
+# They were committed already populated, so the very first command in
+# docs/THE_DEMONSTRATOR.md imported on top of them and printed double what
+# the walkthrough said -- the first thing an evaluating manager sees,
+# silently disagreeing with its own documentation. Found by a blind
+# evaluator, round 15. data/suppliers.tsv IS shipped, because it is reference
+# data the import needs; the rest is output.
+apps/payables/data/bills.tsv
+apps/payables/data/rejected.tsv
+apps/payables/largest.md

@@ -12,7 +12,13 @@ import rules  from payables;
 import screen from app;
 
 int main() {
-    load_all();
+    // A phone that draws an empty screen and exits 0 when it could not read
+    // the data tells the person holding it that they owe nothing.
+    if (load_all() == 0) {
+        eprint(load_refusal());
+        clear_error();
+        return 1;
+    }
     int shown = draw_screen(now());
     print(str_cat(["drew ", str(shown), " bill(s) on the ",
     ui_screen_name(), " screen"]));

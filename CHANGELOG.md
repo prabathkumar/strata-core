@@ -2,6 +2,95 @@
 
 ## Unreleased
 
+### Everything round fifteen found, and a rule instead of another patch
+
+Two blind evaluators against the tree the demonstrator had just landed in.
+Ten findings. The most useful was not a bug:
+
+> the signature table was patched name-by-name after the last evaluation,
+> which is why a third of the builtins are still open: the design is a
+> deny-list of known holes, not a type system. The single thing that would
+> change my answer: make an un-typed construct a hard error rather than a
+> pass.
+
+That is right, and it explains three rounds in a row: each found a prelude
+builtin with no signature, each one was signed, and the next round found
+another. So the repair is a TEST rather than more signatures.
+`test_suite/every_builtin_is_signed.py` fails the build if any builtin lacks
+a signature, if a signature names something that is not a builtin, or if the
+two checkers disagree about one. All 37 are signed; `native` is the single
+named exemption, because it is a compiler intrinsic that pastes C into the
+output rather than a function that can have a type. The hole cannot come back
+by omission.
+
+**A list index past the end was a segfault.** `xs[100000000]` on a
+three-element list passed `strata check`, built cleanly and crashed — no
+builtins, no tensors, just a list literal and a constant index. `xs[99]` was
+quieter and worse: it printed 0. Every index is checked now against the
+length the list already carries in the word before its data, so this costs
+one comparison and nothing else. Out of range is a refusal with the error
+flag set, which means a program that does not look still exits 65 rather than
+carrying on with a number it invented. Writing through an index is checked
+the same way, as a statement rather than an expression — the README's own
+sorting example is what found that half.
+
+**Tensors had the same hole twice**: reading past the end was a segfault and
+writing past the end was a silent heap write that reported success. A tensor
+now carries its element count the way a list does.
+
+**`int(some_text)` compiled to a pointer cast.** It printed a heap address, a
+different one every run, which is an ASLR leak — and it is the obvious thing
+a developer writes to parse a string. `float("3.5")` did not build at all, so
+the family was inconsistent as well as unsound. Both refuse now, naming
+`str_to_int` / `str_to_float`, which can report that they could not read it.
+
+**Every computed layout property was silently dropped from the page.**
+`[color = when_colour(row.due, today)]` produced no attribute at all, with no
+error at compile time or run time — so the demonstrator's own red "this is
+late" marker never appeared. The style attribute is now opened, written into
+at run time and closed, rather than baked into one string at compile time.
+
+### And the demonstrator's own six
+
+Round 15's other evaluator went at `apps/payables`, which nobody had looked
+at. The headline held — it attacked the rename claim from five angles and
+found no tier that drifted — but four findings were one design flaw in four
+places: **an error was reported to stderr and then ignored**, so the program
+went on to answer the question confidently and wrongly.
+
+A refused load left the web page serving HTTP 200 with "0 open, owed 0.00" —
+a company told it owes nothing — the phone app drawing an empty screen and
+exiting 0, and the report writing a confident empty document and saying it
+had succeeded. That is precisely the class of bug this language is sold as
+preventing, which makes it worse here than anywhere else. `load_all()` now
+returns a result every tier must handle: the command line exits 1, the phone
+exits 65, the page answers 503, and the report writes nothing.
+
+The rest:
+
+- **The first command in the walkthrough printed double.** The data files
+  were committed already populated, so the documented sequence imported on
+  top of them. They are generated output and are no longer tracked — and a
+  bill that has already been taken is now set aside as a duplicate rather
+  than added again, so re-running an import cannot double a ledger.
+- **The importer reported rows it had not stored.** One 5,000-character
+  reference made the whole SAVE refuse, after the summary line had already
+  said every row was taken; on a 4,000-row file that discarded all 4,000.
+  A value too long for a stored column is now set aside with its line number
+  like every other bad row.
+- **"Set aside by the last import" was every rejection ever recorded.** The
+  code computed the distinction and the display ignored it.
+- **`payables paid` on an already-paid bill** reported success and rewrote
+  the data files; a non-numeric id produced two messages, the second meant
+  for a different audience.
+
+One test flaw of our own, found while fixing these: the journey asserted
+"19 days late" against fixture dates and a moving today, so it would have
+gone red on its own a few days later. It matches the shape now.
+
+The Beta gate — two consecutive rounds with zero data loss and zero silent
+wrong answers — remains at zero.
+
 ### Something to actually look at
 
 `apps/payables`, `apps/payables_mobile`, `docs/THE_DEMONSTRATOR.md` and

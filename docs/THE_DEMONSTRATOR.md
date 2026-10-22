@@ -52,6 +52,9 @@ set aside:
   line 9  INV-1008  there is no supplier called 'He said "fine"'
 ```
 
+The day counts move with the calendar, so yours will differ from the ones
+printed above; the amounts and the five rejections will not.
+
 Nothing was guessed at and nothing was dropped. That is the whole of
 `src/importer.sta`: every value is parsed by something that can say no
 (`csv_row_ok_at`, `date_parse_ok`, `money_parse_ok`) and a row that fails any

@@ -12,21 +12,59 @@ import schema from app;
 
 // ── Loading and saving ───────────────────────────────────────────────────
 
+// Whether the data could be read. **Every caller must look at this.**
+//
+// It used to be a `def` that returned nothing, and every tier except the
+// import ignored whether it had worked. A refused load left the tables
+// empty, and the program carried straight on: the web page answered HTTP 200
+// with "0 open, owed 0.00" -- a company told it owes nothing -- the phone app
+// drew an empty screen and exited 0, and the report wrote a confident empty
+// document and said it had succeeded. Found by a blind evaluator, round 15,
+// in this project's own demonstrator, and it is precisely the class of bug
+// this language is sold as preventing. That made it worse here than it would
+// be anywhere else.
+//
 // A first run has no data files yet, and a missing file is not a damaged
-// one. Asked about rather than attempted, so the first thing anybody sees
-// when they try this is not three refusals for files that were never
-// supposed to exist yet. A file that IS there and cannot be read still
-// refuses loudly, which is the case that matters.
-def load_all() {
+// one, so the files are asked about rather than attempted. A file that IS
+// there and cannot be read is a refusal, and this returns 0.
+int load_all() {
     if (file_exists("data/suppliers.tsv") == 1) { load Supplier from "data/suppliers.tsv"; }
     if (file_exists("data/bills.tsv") == 1)     { load Bill     from "data/bills.tsv"; }
     if (file_exists("data/rejected.tsv") == 1)  { load Rejected from "data/rejected.tsv"; }
+    if (had_error() == 1) { return 0; }
+    return 1;
+}
+
+// What a tier says when it cannot read the data. One sentence, written once,
+// so the command line, the page and the phone all refuse the same way.
+str load_refusal() {
+    return "payables: the stored data could not be read, so this cannot answer. The reason is above; fix the file or restore it from a backup.";
 }
 
 def save_all() {
     save Supplier to "data/suppliers.tsv";
     save Bill     to "data/bills.tsv";
     save Rejected to "data/rejected.tsv";
+}
+
+// Whether that text is a whole number, asked before converting rather than
+// after. `str_to_int` reports its own error, which is right for it and wrong
+// for a command line: `payables paid abc` printed "no bill with that id" and
+// THEN an internal diagnostic about a number it could not hold, and exited
+// 65. Two messages for one mistake, the second one meant for a different
+// audience. Found by a blind evaluator, round 15.
+int is_whole_number(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0; }
+    int i = 0;
+    if (text[0] == 45) { i = 1; }
+    if (i >= n) { return 0; }
+    while (i < n) {
+        if (text[i] < 48) { return 0; }
+        if (text[i] > 57) { return 0; }
+        i = i + 1;
+    }
+    return 1;
 }
 
 // ── Who ──────────────────────────────────────────────────────────────────
@@ -103,17 +141,49 @@ int service_tax_rate() { return 600; }
 // That is the only way to update a row in this language, and it is worth
 // knowing before meeting it by accident.
 
+// 1 when a bill moved from OPEN to PAID, 0 otherwise -- including when it
+// was already paid. It used to answer 1 regardless, so `payables paid 3`
+// twice printed "marked paid" twice and rewrote the data files for nothing.
+// Found by a blind evaluator, round 15.
 int mark_paid(int bill_id) {
     list[Bill] found = Bill <- [id == bill_id];
     if (count(found) == 0) { return 0; }
-    for B in found { B.state = "PAID"; }
-    return 1;
+    int moved = 0;
+    for B in found {
+        if (str_eq(B.state, "OPEN") == 1) {
+            B.state = "PAID";
+            moved = 1;
+        }
+    }
+    return moved;
+}
+
+// Whether that bill exists at all, which is a different question from
+// whether it moved.
+int bill_exists(int bill_id) {
+    return count(Bill <- [id == bill_id]);
 }
 
 int next_bill_id() {
     list[Bill] all = Bill <- [id > 0];
     if (count(all) == 0) { return 1; }
     return max(all.id) + 1;
+}
+
+// The number of the import about to happen. One more than the highest any
+// set-aside row carries.
+int next_run() {
+    list[Rejected] all = Rejected <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.run) + 1;
+}
+
+// The rows the most recent import set aside, which is what "set aside by the
+// last import" means.
+int latest_run() {
+    list[Rejected] all = Rejected <- [id > 0];
+    if (count(all) == 0) { return 0; }
+    return max(all.run);
 }
 
 int next_rejected_id() {

@@ -752,8 +752,19 @@ str gen_expr(Gen &g, int p) {
             sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "])");
             return sb_to_str(&sb);
         }
-        sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "[");
-        sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "]");
+        // Every list index is checked against the length the list already
+        // carries. `xs[100000000]` on a three-element list passed
+        // `strata check`, built, and segfaulted; `xs[99]` printed 0. Found by
+        // a blind evaluator, round 15. One comparison, and the zero value of
+        // the element type when it is out of range -- with the error flag
+        // set, so a program that does not look still exits 65 rather than
+        // carrying on with a number it invented.
+        str lt = gen_expr(&g, e.c1);
+        sb_append(&sb, "({ __typeof__("); sb_append(&sb, lt);
+        sb_append(&sb, ") _bl = ("); sb_append(&sb, lt);
+        sb_append(&sb, "); strata_int _bi = strata_bounds((void*)_bl, (");
+        sb_append(&sb, gen_expr(&g, e.c2));
+        sb_append(&sb, ")); _bi < 0 ? (__typeof__(*_bl)){0} : _bl[_bi]; })");
         return sb_to_str(&sb);
     }
 
@@ -1165,11 +1176,38 @@ def gen_stmt(Gen &g, Node st) {
     }
 
     if (k == 28) {                                    // assignment
+        Node tg = node_at(st.c1);
+        // Writing THROUGH an index is checked too, and it has to be a
+        // statement rather than the expression form used for a read: the
+        // bounds-checked read is a statement expression, which yields a
+        // value and cannot be assigned to. `data[j] = data[j+1]` in the
+        // README's own sorting example is what found that.
+        if (tg.kind == 49) {
+            if (str_eq(expr_ctype(&g, tg.c1), "strata_str") == 0) {
+                str wl = gen_expr(&g, tg.c1);
+                cg_emit(&g, "{");
+                g.indent = g.indent + 1;
+                StringBuilder d0 = sb_new();
+                sb_append(&d0, "__typeof__("); sb_append(&d0, wl);
+                sb_append(&d0, ") _wl = ("); sb_append(&d0, wl); sb_append(&d0, ");");
+                cg_emit(&g, sb_to_str(&d0));
+                StringBuilder d1 = sb_new();
+                sb_append(&d1, "strata_int _wi = strata_bounds((void*)_wl, (");
+                sb_append(&d1, gen_expr(&g, tg.c2)); sb_append(&d1, "));");
+                cg_emit(&g, sb_to_str(&d1));
+                StringBuilder d2 = sb_new();
+                sb_append(&d2, "if (_wi >= 0) { _wl[_wi] = ");
+                sb_append(&d2, gen_expr(&g, st.c2)); sb_append(&d2, "; }");
+                cg_emit(&g, sb_to_str(&d2));
+                g.indent = g.indent - 1;
+                cg_emit(&g, "}");
+                return;
+            }
+        }
         // A str column of a scan or rewrite row owns its characters -- see
         // stage0.py. A plain assignment stored a literal into a field the
         // next row would free.
         str owning = "";
-        Node tg = node_at(st.c1);
         if (tg.kind == 48) {
             Node ob = node_at(tg.c1);
             if (ob.kind == 54) {
@@ -4392,6 +4430,82 @@ str style_attr(Gen &g, Node el) {
     return sb_to_str(&sb);
 }
 
+// Whether any CSS property of this element has a computed value.
+//
+// It used to be SKIPPED, silently, at compile time and at run time: the one
+// attribute whose value was a function call simply did not appear on the
+// page, so a red "this is late" marker was absent and nothing said so. Found
+// by a blind evaluator, round 15, in this project's own demonstrator.
+int has_computed_css(Gen &g, Node el) {
+    if (str_eq(el.s1, "window") == 1) { return 0; }
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node pr = nv_get(&props, i);
+        if (str_len(css_for_prop(pr.s1, "x")) == 0) { continue; }
+        Node pv = node_at(pr.c1);
+        if (pv.kind == 50) { continue; }
+        if (pv.kind == 51) { continue; }
+        if (pv.kind == 52) { continue; }
+        return 1;
+    }
+    return 0;
+}
+
+// The style attribute, opened but not closed, so the computed pieces can be
+// written into it at run time.
+str style_attr_open(Gen &g, Node el) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, " style=\\\"");
+    sb_append(&sb, css_for(&g, el));
+    return sb_to_str(&sb);
+}
+
+// The run-time half of the style attribute. A spec may use its value more
+// than once -- padding_x is padding-left and padding-right -- so the
+// argument is repeated to match.
+def emit_computed_css(Gen &g, Node el) {
+    if (str_eq(el.s1, "window") == 1) { return; }
+    int first = 1;
+    if (str_len(css_for(&g, el)) > 0) { first = 0; }
+    NodeVec props = nv_at(el.v1);
+    int n = props.len;
+    for (int i = 0; i < n; i = i + 1) {
+        Node pr = nv_get(&props, i);
+        str probe = css_for_prop(pr.s1, char_from_code(1));
+        if (str_len(probe) == 0) { continue; }
+        Node pv = node_at(pr.c1);
+        if (pv.kind == 50) { continue; }
+        if (pv.kind == 51) { continue; }
+        if (pv.kind == 52) { continue; }
+        // The probe carries \x01 wherever the value goes. Doubling a literal
+        // percent first, because this lands inside a C format string.
+        StringBuilder piece = sb_new();
+        int pn = str_len(probe);
+        int holes = 0;
+        for (int k = 0; k < pn; k = k + 1) {
+            int c = probe[k];
+            if (c == 1) { sb_append(&piece, "%s"); holes = holes + 1; continue; }
+            if (c == 37) { sb_append(&piece, "%%"); continue; }
+            sb_append(&piece, char_from_code(c));
+        }
+        str value = gen_expr(&g, pr.c1);
+        StringBuilder line = sb_new();
+        sb_append(&line, "fprintf(_out,\"");
+        if (first == 0) { sb_append(&line, ";"); }
+        sb_append(&line, sb_to_str(&piece));
+        sb_append(&line, "\"");
+        for (int a = 0; a < holes; a = a + 1) {
+            sb_append(&line, ", strata_html_escape(");
+            sb_append(&line, value);
+            sb_append(&line, ")");
+        }
+        sb_append(&line, ");");
+        cg_emit(&g, sb_to_str(&line));
+        first = 0;
+    }
+}
+
 // Attributes whose value is an expression rather than a literal. A row's own
 // id has to reach the form that acts on it, and a literal cannot carry it.
 // Emitted as their own fprintf because the value is only known at run time.
@@ -4463,9 +4577,20 @@ def gen_element(Gen &g, Node el) {
     sb_append(&open, "<"); sb_append(&open, tag); sb_append(&open, attrs);
     emit_fprintf(&g, sb_to_str(&open));
     emit_computed_attrs(&g, el);
-    StringBuilder close_open = sb_new();
-    sb_append(&close_open, style); sb_append(&close_open, ">");
-    emit_fprintf(&g, sb_to_str(&close_open));
+    // The style attribute is opened, the computed pieces are written into
+    // it, and then it is closed -- rather than being one baked string, so a
+    // property whose value is only known at run time still reaches the page
+    // instead of being quietly left out.
+    int live = has_computed_css(&g, el);
+    if (live == 1) {
+        emit_fprintf(&g, style_attr_open(&g, el));
+        emit_computed_css(&g, el);
+        emit_fprintf(&g, "\\\">");
+    } else {
+        StringBuilder close_open = sb_new();
+        sb_append(&close_open, style); sb_append(&close_open, ">");
+        emit_fprintf(&g, sb_to_str(&close_open));
+    }
     // A void element has no closing tag and no children.
     if (is_void_tag(tag) == 1) { return; }
 

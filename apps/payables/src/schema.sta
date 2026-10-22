@@ -42,4 +42,5 @@ database Rejected {
     int row;                   // the line number in the file it came from
     str reference;
     str reason;
+    int run;                   // which import set it aside
 }

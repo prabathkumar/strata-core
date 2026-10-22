@@ -1507,7 +1507,7 @@ standard library modules; money is kept as whole minor units rather than as a
 float, because a float cannot hold 0.10 exactly. `ast`, `lex`, `test` and
 `repair` still go through Python.
 
-Fourteen blind pilots have been run: a fresh evaluator given a clean checkout,
+Fifteen blind pilots have been run: a fresh evaluator given a clean checkout,
 no history, and one question — could your team adopt this? Every round found
 something, most rounds found something that destroys data, and every finding
 is fixed with a test that names the round that found it. Round 13 found nine
@@ -1516,7 +1516,10 @@ since round 12 and never independently looked at — including one that made
 this document's own cross-tier claim false for the phone tier. Round 14 then
 found ten, one of which round 13's own repair had introduced, and made the
 sharpest point any round has: a repair aimed at the symptom a report showed,
-rather than at the question behind it, leaves the same bug one line over. That is the honest
+rather than at the question behind it, leaves the same bug one line over.
+Round 15 made the same point one level up — that patching a hole each time
+one is found is a deny-list, not a type system — and the repair for it is a
+test that makes the lists agree by force rather than by diligence. That is the honest
 summary: the language is getting harder to break, and it is still being
 broken. The roadmap below is exhaustive about the rest rather than quiet
 about it.

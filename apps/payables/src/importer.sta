@@ -57,6 +57,14 @@ str row_problem(str text, int at, int want, int c_ref, int c_sup, int c_due, int
     if (supplier_id_named(supplier) == 0) {
         return str_cat(["there is no supplier called '", supplier, "'"]);
     }
+    // Already taken. Re-running an import used to double the ledger in
+    // silence -- every bill and every rejection listed twice, exit 0. A
+    // supplier's reference is theirs and is unique to them, so the pair of
+    // supplier and reference is what identifies a bill. Found by a blind
+    // evaluator, round 15.
+    if (already_taken(supplier_id_named(supplier), csv_cell_at(text, at, c_ref)) == 1) {
+        return "this bill has already been imported";
+    }
     str due_text = csv_cell_at(text, at, c_due);
     if (date_parse_ok(due_text) == 0) {
         if (str_len(due_text) == 0) { return "the due date is blank"; }
@@ -67,8 +75,27 @@ str row_problem(str text, int at, int want, int c_ref, int c_sup, int c_due, int
         if (str_len(amount_text) == 0) { return "the amount is blank"; }
         return str_cat(["'", amount_text, "' is not an amount"]);
     }
+    // Longer than a stored column holds.
+    //
+    // The storage layer refuses a text value over 4095 characters -- rightly
+    // -- but this file did not know, so one 5000-character reference in a
+    // 4,000-row file made the SAVE refuse and nothing at all was stored,
+    // while the summary line had already said "took 4,000". Found by a blind
+    // evaluator, round 15. The row that cannot be stored is now the row that
+    // is set aside, which is what the rest of this file already does.
+    if (str_len(csv_cell_at(text, at, c_ref)) > longest_stored_text()) {
+        return str_cat(["the reference is ",
+        str(str_len(csv_cell_at(text, at, c_ref))),
+        " characters and a stored column holds ",
+        str(longest_stored_text())]);
+    }
     return "";
 }
+
+// What a stored text column holds. The same number the storage layer
+// enforces; asked here so a row that cannot be stored is set aside with a
+// reason rather than destroying the write.
+int longest_stored_text() { return 4095; }
 
 // The id of the supplier with that name, or 0.
 //
@@ -77,6 +104,15 @@ str row_problem(str text, int at, int want, int c_ref, int c_sup, int c_due, int
 // a variable of the same name would match every row, so the checker reports
 // E008 and refuses -- which it did while this file was being written, which
 // is the system working.
+// Whether this supplier's bill with that reference is already stored.
+int already_taken(int supplier, str reference) {
+    list[Bill] mine = Bill <- [supplier_id == supplier];
+    for B in mine {
+        if (str_eq(B.reference, reference) == 1) { return 1; }
+    }
+    return 0;
+}
+
 int supplier_id_named(str wanted) {
     list[Supplier] all = Supplier <- [id > 0];
     for S in all {
@@ -102,6 +138,11 @@ int import_text(str text) {
 
     int next_id = next_bill_id();
     int next_bad = next_rejected_id();
+    // Which import this is. The page is headed "set aside by the LAST
+    // import" and used to show every rejection ever recorded, from every run
+    // -- the code knew the difference and the display did not. Found by a
+    // blind evaluator, round 15.
+    int this_run = next_run();
     int taken = 0;
 
     int at = csv_first_row(text);
@@ -114,7 +155,13 @@ int import_text(str text) {
             if (csv_columns_at(text, at) > c_ref) {
                 shown = csv_cell_at(text, at, c_ref);
             }
-            Rejected <- [id = next_bad, row = line, reference = shown, reason = why];
+            // The reference is stored in Rejected too, so it is truncated
+            // to what a column holds -- otherwise setting a row aside for
+            // being too long would itself fail to save.
+            Rejected <- [id = next_bad, row = line,
+            reference = str_truncate(shown, 120),
+            reason = str_truncate(why, 400),
+            run = this_run];
             next_bad = next_bad + 1;
         } else {
             Bill <- [id = next_id,

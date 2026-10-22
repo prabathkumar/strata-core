@@ -1,6 +1,0 @@
-#strata	Rejected	id:i	row:i	reference:s	reason:s
-1	5	INV-1004	'RM250.00' is not an amount
-2	6	INV-1005	'2026-02-30' is not a date in the form YYYY-MM-DD
-3	7	INV-1006	the due date is blank
-4	8	INV-1007	there is no supplier called 'Nobody Ltd'
-5	9	INV-1008	there is no supplier called 'He said "fine"'

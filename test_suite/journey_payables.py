@@ -112,6 +112,24 @@ def main():
         ok("it takes the five good rows and sets aside the five bad ones",
            "took 5 bill(s), set aside 5" in out, out)
 
+        # The number it prints is the number that is stored. Round 15 found
+        # one over-long reference making the whole SAVE refuse while the
+        # summary line had already claimed every row was taken.
+        out2, rc2 = run([exe, "show"], app)
+        ok("and the five it says it took are the five that are there",
+           "5 open" in out2, out2[-300:])
+
+        # A second import of the same file does not double the ledger. It
+        # used to, in silence -- which is what the walkthrough's own first
+        # command did on a fresh checkout, because the data files were
+        # committed already populated.
+        again, _ = run([exe, "import", "data/incoming.csv"], app)
+        ok("importing the same file twice takes nothing the second time",
+           "took 0 bill(s)" in again, again)
+        out3, _ = run([exe, "show"], app)
+        ok("and the ledger is unchanged",
+           "155640.60 owed" in out3, out3[-300:])
+
         out, rc = run([exe, "show"], app)
         ok("a company name with a comma in it survived",
            "Selasih Sdn Bhd" in out, out)
@@ -170,6 +188,76 @@ def main():
             srv.terminate()
             srv.wait(timeout=30)
 
+        # ── 4b. The late marker is actually on the page ──────────────────
+        #
+        # `[color = when_colour(B.due, today)]` -- a property whose value is a
+        # function call. Round 15 found that every such property was silently
+        # dropped from the page: the red "this is late" signal the view
+        # exists to produce was simply absent, with no error anywhere.
+        # Matched by SHAPE rather than by a day count: the fixture dates are
+        # fixed and today is not, so "19 days late" was a test that would
+        # have gone red on its own a few days later.
+        ok("the computed colour reaches the page, not just the literal ones",
+           re.search(r'style="color:#ff7b72">\d+ days? late', page) is not None,
+           page[:600])
+
+        # ── 4c. A tier that cannot read the data refuses to answer ───────
+        #
+        # Round 15 found the opposite: an HTTP 200 page saying the company
+        # owed nothing, a phone app exiting 0 on an empty screen, and a
+        # report writing a confident empty document -- all after a refused
+        # load. That is the class of bug this language is sold as preventing.
+        bills = os.path.join(app, "data", "bills.tsv")
+        shutil.copy(bills, os.path.join(tmp, "good.tsv"))
+        with open(bills) as f:
+            rows = f.read().split("\n")
+        for i, line in enumerate(rows):
+            if line.startswith("2\t"):
+                parts = line.split("\t")
+                parts[3] = "notanumber"
+                rows[i] = "\t".join(parts)
+                break
+        with open(bills, "w") as f:
+            f.write("\n".join(rows))
+
+        out, rc = run([exe, "show"], app)
+        ok("the command line refuses when the data cannot be read",
+           rc != 0 and "could not be read" in out, out[-300:])
+        # The one written by the successful run above is removed first, so
+        # this asks whether a NEW one was written rather than whether an old
+        # one is lying around.
+        report_path = os.path.join(app, "largest.md")
+        if os.path.exists(report_path):
+            os.remove(report_path)
+        out, rc = run([exe, "report"], app)
+        ok("and the report refuses rather than writing an empty one",
+           rc != 0 and not os.path.exists(report_path), out[-300:])
+        out, rc = run([phone_exe], app)
+        ok("and the phone refuses rather than drawing an empty screen",
+           rc != 0, out[-300:])
+
+        srv = subprocess.Popen([exe, "serve", "8232"], cwd=app,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+        try:
+            code, body = 0, ""
+            for _ in range(40):
+                try:
+                    r = urllib.request.urlopen("http://127.0.0.1:8232/", timeout=3)
+                    code, body = r.getcode(), r.read().decode()
+                    break
+                except urllib.error.HTTPError as e:
+                    code, body = e.code, e.read().decode()
+                    break
+                except (urllib.error.URLError, OSError):
+                    time.sleep(0.25)
+            ok("and the page answers 503, not 200 with a zero total",
+               code == 503 and "could not be read" in body, f"{code} {body[:200]}")
+        finally:
+            srv.terminate()
+            srv.wait(timeout=30)
+        shutil.copy(os.path.join(tmp, "good.tsv"), bills)
+
         # ── 5. The phone, from the same table ────────────────────────────
         out, rc = run([phone_exe], app)
         ok("the phone screen draws the same five bills",
@@ -178,6 +266,13 @@ def main():
         # ── 6. Marking one paid moves the totals ─────────────────────────
         out, rc = run([exe, "paid", "3"], app)
         ok("a bill can be marked paid", rc == 0, out)
+        again2, _ = run([exe, "paid", "3"], app)
+        ok("and marking it paid twice says so rather than claiming success",
+           "already paid" in again2, again2)
+        bad, rc = run([exe, "paid", "abc"], app)
+        ok("a bill number that is not a number gets one message, not two",
+           "not a bill number" in bad and "whole number this can hold" not in bad,
+           bad)
         out, rc = run([exe, "show"], app)
         ok("and the total drops by exactly that bill",
            "58340.60 owed" in out, out)

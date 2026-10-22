@@ -329,7 +329,7 @@ int is_runtime_builtin(str name) {
 // table a human can read in one line beats a structure that needs three
 // functions to walk. An "any" argument is `*`.
 str prelude_signatures() {
-    return ";str_len:int:str;str_eq:int:str,str;str_index_of:int:str,str;str_starts_with:int:str,str;str_slice:str:str,int,int;str_concat:str:str,str;str_to_int:int:str;int_to_str:str:int;float_to_str:str:float;file_read:str:str;file_write:int:str,str;file_exists:int:str;strata_len:int:*;strata_dup:str:str;strata_concat:str:str,str;strata_int_to_str:str:int;strata_float_to_str:str:float;current_message:str:;strata_publish:int:str,str;strata_model_load:int:*,str;";
+    return ";str_len:int:str;str_eq:int:str,str;str_index_of:int:str,str;str_starts_with:int:str,str;str_slice:str:str,int,int;str_concat:str:str,str;str_to_int:int:str;int_to_str:str:int;float_to_str:str:float;file_read:str:str;file_write:int:str,str;file_exists:int:str;strata_len:int:*;strata_dup:str:str;strata_concat:str:str,str;strata_int_to_str:str:int;strata_float_to_str:str:float;current_message:str:;strata_publish:int:str,str;strata_model_load:int:*,str;strata_tensor:*:int;strata_tensor_set:*:*,int,float;strata_tensor_get:float:*,int;strata_tensor_add:*:*,*,int;strata_predict:*:*,*;strata_activate:float:float,int;strata_weight_count:int:*;sb_new_f:*:;sb_append_f:*:*,str;sb_append_line_f:*:*,str;strata_on:*:str,*;strata_run:int:;strata_set_message:*:str;strata_write_escaped:*:*,str;strata_read_field:int:*,*,int;strata_read_header:int:*,*,*,int,*;strata_load_refuse:*:str,str,str;";
 }
 
 // The signature of `name`, as "return:arg,arg", or "" when it has none.
@@ -1544,6 +1544,33 @@ int infer_aggregate(TC &tc, Node e, int scope_p) {
     return ty_ptr(ty_new("float"));
 }
 
+// `int(some_text)` compiled to a POINTER CAST. It printed a heap address --
+// a different one every run, which is an ASLR leak -- and it is the obvious
+// thing a developer writes to parse a string. `float("3.5")` did not build at
+// all, so the family was inconsistent as well as unsound. Found by a blind
+// evaluator, round 15.
+//
+// int() and float() convert between NUMBERS. Text is read by a function that
+// can report that it could not.
+def refuse_text_cast(TC &tc, Node e, NodeVec &args, int na, int scope_p,
+str which, str reader) {
+    for (int i = 0; i < na; i = i + 1) {
+        int at = infer(&tc, node_ptr(nv_get(&args, i)), scope_p);
+        if (na != 1) { continue; }
+        if (at == 0) { continue; }
+        Ty t = ty_at(at);
+        if (t.is_list == 1) { continue; }
+        if (str_eq(t.name, "str") == 0) { continue; }
+        StringBuilder m = sb_new();
+        sb_append(&m, "'"); sb_append(&m, which);
+        sb_append(&m, "()' converts between numbers, and this is text");
+        StringBuilder h = sb_new();
+        sb_append(&h, "use "); sb_append(&h, reader);
+        sb_append(&h, "(...) — it reads the text and sets the error flag when it cannot, which a cast cannot do");
+        emit_hint(&tc, "E012", sb_to_str(&m), e.line, e.col, sb_to_str(&h));
+    }
+}
+
 int infer_call(TC &tc, Node e, int scope_p) {
     NodeVec args = nv_at(e.v1);
     int na = args.len;
@@ -1553,11 +1580,11 @@ int infer_call(TC &tc, Node e, int scope_p) {
         return ty_ptr(ty_new("str"));
     }
     if (str_eq(e.s1, "int") == 1) {
-        for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+        refuse_text_cast(&tc, e, &args, na, scope_p, "int", "str_to_int");
         return ty_ptr(ty_new("int"));
     }
     if (str_eq(e.s1, "float") == 1) {
-        for (int i = 0; i < na; i = i + 1) { infer(&tc, node_ptr(nv_get(&args, i)), scope_p); }
+        refuse_text_cast(&tc, e, &args, na, scope_p, "float", "str_to_float");
         return ty_ptr(ty_new("float"));
     }
     if (str_eq(e.s1, "bool") == 1) {
@@ -1601,7 +1628,9 @@ int infer_call(TC &tc, Node e, int scope_p) {
                 sb_append(&ah, "("); sb_append(&ah, str_slice(pargs, 1, str_len(pargs) - 1));
                 sb_append(&ah, ")");
                 emit_hint(&tc, "E012", sb_to_str(&am), e.line, e.col, sb_to_str(&ah));
-                return ty_ptr(ty_new(prelude_return_of(psig)));
+                str rt0 = prelude_return_of(psig);
+                if (str_eq(rt0, "*") == 1) { return 0; }
+                return ty_ptr(ty_new(rt0));
             }
             for (int i = 0; i < na; i = i + 1) {
                 int at = infer(&tc, node_ptr(nv_get(&args, i)), scope_p);
@@ -1620,7 +1649,12 @@ int infer_call(TC &tc, Node e, int scope_p) {
                     emit_hint(&tc, "E012", sb_to_str(&am2), e.line, e.col, sb_to_str(&ah2));
                 }
             }
-            return ty_ptr(ty_new(prelude_return_of(psig)));
+            str rt = prelude_return_of(psig);
+            // `*` means this table does not model the return type -- a
+            // tensor, a string-builder handle, a FILE*. The ARGUMENTS are
+            // still checked, which is the part that was segfaulting.
+            if (str_eq(rt, "*") == 1) { return 0; }
+            return ty_ptr(ty_new(rt));
         }
     }
     if (fp == 0) {

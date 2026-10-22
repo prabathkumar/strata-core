@@ -122,6 +122,19 @@ jobs:
     - name: Two Runs Do Not Lose An Update
       run: python3 test_suite/two_runs_do_not_lose_an_update.py
 
+    # The structural repair from round 15. Three rounds in a row each found
+    # a prelude builtin with no signature, each one was signed, and the next
+    # round found another -- because the design was a list of names with a
+    # list of exceptions beside it. This makes the two agree by force.
+    - name: Every Builtin Is Signed
+      run: python3 test_suite/every_builtin_is_signed.py
+
+    # Round 15 found a segfault from a list literal and a constant index, a
+    # pointer cast printing a heap address, and every computed layout
+    # property silently dropped from the page.
+    - name: Round Fifteen Stays Fixed
+      run: python3 test_suite/round_fifteen_stays_fixed.py
+
     # The demonstrator. Sixty-six CI steps prove the compiler works; they do
     # not show anybody what the language is FOR. apps/payables is the
     # smallest system that still touches every tier -- a supplier file in,

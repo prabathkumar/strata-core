@@ -80,8 +80,14 @@ int serve(int port) {
             if (str_len(request) == 0) { http_request_timeout(conn); }
             else {
                 int lock = lock_exclusive("data/.lock");
-                load_all();
-                handle(conn, request, now());
+                if (load_all() == 0) {
+                    // A page that answers 200 with "you owe nothing" when it
+                    // could not read the data is worse than no page.
+                    clear_error();
+                    http_respond(conn, 503, "text/plain", load_refusal());
+                } else {
+                    handle(conn, request, now());
+                }
                 unlock(lock);
             }
             http_close(conn);
@@ -100,7 +106,12 @@ int cmd_import(str path) {
         return 2;
     }
     int lock = lock_exclusive("data/.lock");
-    load_all();
+    if (load_all() == 0) {
+        eprint(load_refusal());
+        clear_error();
+        unlock(lock);
+        return 1;
+    }
     int before_bad = count(Rejected <- [id > 0]);
     int taken = import_file(path);
     if (had_error() == 1) {
@@ -119,7 +130,12 @@ int cmd_import(str path) {
 
 int cmd_show() {
     int lock = lock_shared("data/.lock");
-    load_all();
+    if (load_all() == 0) {
+        eprint(load_refusal());
+        clear_error();
+        unlock(lock);
+        return 1;
+    }
     int today = now();
 
     print(str_cat([str(count_outstanding()), " open, ",
@@ -135,7 +151,7 @@ int cmd_show() {
         when_text(B.due, today), "  ", money_text(B.amount)]));
     }
 
-    list[Rejected] bad = Rejected <- [id > 0] by row;
+    list[Rejected] bad = Rejected <- [run == latest_run()] by row;
     if (count(bad) > 0) {
         print("");
         print("set aside:");
@@ -149,7 +165,12 @@ int cmd_show() {
 
 int cmd_report() {
     int lock = lock_shared("data/.lock");
-    load_all();
+    if (load_all() == 0) {
+        eprint(load_refusal());
+        clear_error();
+        unlock(lock);
+        return 1;
+    }
     render Largest to "largest.md";
     unlock(lock);
     print("wrote largest.md");
@@ -161,12 +182,24 @@ int cmd_paid(str id_text) {
         eprint("usage: payables paid <id>");
         return 2;
     }
+    if (is_whole_number(id_text) == 0) {
+        eprint(str_cat(["payables: '", id_text, "' is not a bill number"]));
+        return 2;
+    }
     int lock = lock_exclusive("data/.lock");
-    load_all();
-    int changed = mark_paid(str_to_int(id_text));
+    if (load_all() == 0) {
+        eprint(load_refusal());
+        clear_error();
+        unlock(lock);
+        return 1;
+    }
+    int which = str_to_int(id_text);
+    int changed = mark_paid(which);
     if (changed == 1) { save_all(); }
+    int exists = bill_exists(which);
     unlock(lock);
     if (changed == 1) { print("marked paid"); return 0; }
+    if (exists > 0) { print("that bill was already paid"); return 0; }
     eprint("no bill with that id");
     return 1;
 }

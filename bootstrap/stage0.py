@@ -1557,6 +1557,15 @@ int main(int argc, char** argv) {
             v = p.value
             raw = v.value if isinstance(v, (StrLiteral, IntLiteral, FloatLiteral)) else None
             if raw is None:
+                # A computed value -- `color = when_colour(row.due, today)`.
+                # It used to be SKIPPED, silently, at compile time and at run
+                # time: the one attribute whose value was a function call
+                # simply did not appear on the page, so a red "this is late"
+                # marker was absent and nothing anywhere said so. Found by a
+                # blind evaluator, round 15, in this project's own
+                # demonstrator. It is emitted at run time now, by
+                # _computed_css below; here it is only skipped from the
+                # STATIC string.
                 continue
             parts.append(spec.format(raw) if "{" in spec else f"{spec}:{raw}")
         # Same reason as _html_escape: this string is emitted inside a C
@@ -1924,6 +1933,44 @@ int main(int argc, char** argv) {
             out.append((p.name, p.value))
         return out
 
+    def _computed_css(self, el):
+        """CSS properties whose value is an expression rather than a literal.
+
+        The static ones are baked into one style="..." string at compile
+        time; these have to be written as the page is produced. Returned as
+        (css-property-spec, expression) pairs.
+        """
+        out = []
+        for p in el.props:
+            if el.tag == "window":
+                continue
+            spec = self.CSS_PROPS.get(p.name)
+            if spec is None:
+                continue
+            if isinstance(p.value, (StrLiteral, IntLiteral, FloatLiteral)):
+                continue
+            out.append((spec, p.value))
+        return out
+
+    def _emit_computed_css(self, el):
+        """The run-time half of the style attribute.
+
+        A spec may use its value more than once -- `padding_x` is
+        padding-left and padding-right -- so the argument is repeated to
+        match. A literal `%` in a spec is doubled, because this lands inside
+        a C format string.
+        """
+        first = not self._css_for(el)
+        for spec, value in self._computed_css(el):
+            piece = spec.format(*(["\x00"] * 4)) if "{" in spec else f"{spec}:\x00"
+            piece = piece.replace("%", "%%").replace("\x00", "%s")
+            n = piece.count("%s")
+            gen = self._gen_expr(value, [])
+            args = ", ".join([f"strata_html_escape({gen})"] * n)
+            sep = "" if first else ";"
+            first = False
+            self.emit(f'fprintf(_out,"{sep}{piece}", {args});')
+
     def _gen_element(self, el):
         tag = self.HTML_TAG.get(el.tag, "div")
         css = self._css_for(el)
@@ -1935,10 +1982,20 @@ int main(int argc, char** argv) {
            and " name=" not in attrs:
             attrs = f' name=\\"{self._fmt_lit(el.label.value)}\\"' + attrs
         computed = self._computed_attrs(el)
+        # The style attribute is opened, the computed pieces are written into
+        # it, and then it is closed -- rather than being one baked string, so
+        # a property whose value is only known at run time still reaches the
+        # page instead of being quietly left out.
+        live_css = self._computed_css(el)
         if tag in self.VOID_TAGS:
             self.emit('fprintf(_out,"<' + tag + attrs + '");')
             self._emit_computed_attrs(computed)
-            self.emit('fprintf(_out,"' + style + '>");')
+            if live_css:
+                self.emit('fprintf(_out," style=\\"' + css + '");')
+                self._emit_computed_css(el)
+                self.emit('fprintf(_out,"\\">");')
+            else:
+                self.emit('fprintf(_out,"' + style + '>");')
             return
         if el.tag == "window":
             title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
@@ -1950,7 +2007,12 @@ int main(int argc, char** argv) {
             return
         self.emit('fprintf(_out,"<' + tag + attrs + '");')
         self._emit_computed_attrs(computed)
-        self.emit('fprintf(_out,"' + style + '>");')
+        if live_css:
+            self.emit('fprintf(_out," style=\\"' + css + '");')
+            self._emit_computed_css(el)
+            self.emit('fprintf(_out,"\\">");')
+        else:
+            self.emit('fprintf(_out,"' + style + '>");')
         if el.label is not None and el.tag != "canvas":
             if isinstance(el.label, StrLiteral):
                 self.emit('fprintf(_out,"%s","' + self._html_escape(el.label.value) + '");')
@@ -2381,6 +2443,25 @@ int main(int argc, char** argv) {
         elif isinstance(stmt, IfStmt):
             self._gen_if(stmt, param_names)
         elif isinstance(stmt, AssignStmt):
+            # Writing THROUGH an index is checked too, and it has to be a
+            # statement rather than the expression form used for a read: the
+            # bounds-checked read is a statement expression, which yields a
+            # value and cannot be assigned to. `data[j] = data[j+1]` in the
+            # README's own sorting example is what found that.
+            if (isinstance(stmt.target, IndexExpr)
+                    and self._expr_ctype(stmt.target.target, param_names)
+                        != "strata_str"):
+                lst = self._gen_expr(stmt.target.target, param_names)
+                idx = self._gen_expr(stmt.target.index, param_names)
+                val = self._gen_expr(stmt.value, param_names)
+                self.emit("{")
+                self.indent += 1
+                self.emit(f"__typeof__({lst}) _wl = ({lst});")
+                self.emit(f"strata_int _wi = strata_bounds((void*)_wl, ({idx}));")
+                self.emit(f"if (_wi >= 0) {{ _wl[_wi] = {val}; }}")
+                self.indent -= 1
+                self.emit("}")
+                return
             tgt = self._gen_expr(stmt.target, param_names)
             val = self._gen_expr(stmt.value, param_names)
             # A str column of a scan or rewrite row owns its characters: the
@@ -2840,7 +2921,16 @@ int main(int argc, char** argv) {
             # machine.
             if self._expr_ctype(expr.target, param_names) == "strata_str":
                 return f"((strata_int)(unsigned char){target}[{index}])"
-            return f"{target}[{index}]"
+            # Every list index is checked against the length the list already
+            # carries. `xs[100000000]` on a three-element list passed
+            # `strata check`, built, and segfaulted; `xs[99]` printed 0.
+            # Found by a blind evaluator, round 15. One comparison, and the
+            # zero value of the element type when it is out of range -- with
+            # the error flag set, so a program that does not look still exits
+            # 65 rather than carrying on with a number it invented.
+            return ("({ __typeof__(" + target + ") _bl = (" + target + "); "
+                    "strata_int _bi = strata_bounds((void*)_bl, (" + index + ")); "
+                    "_bi < 0 ? (__typeof__(*_bl)){0} : _bl[_bi]; })")
         if isinstance(expr, MemberAccess):
             obj = self._gen_expr(expr.obj, param_names)
             ct = self._expr_ctype(expr.obj, param_names) or ""
