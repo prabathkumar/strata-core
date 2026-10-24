@@ -338,13 +338,35 @@ str http_method(str request) {
 
 int http_respond(int conn, int status, str content_type, str body) {
     native "
-    const char* reason = \"OK\";
+    /* The default is derived from the status class, not left at \"OK\".
+     * A status with no entry in the table below used to answer \"405 OK\",
+     * which reads as a success to anything scanning the status line and to
+     * any person reading a log. Naming ten more codes would only have moved
+     * the hole, so the fallback itself can no longer say OK for anything
+     * that is not a 2xx. Found by a blind evaluator, round 16. */
+    const char* reason = \"Unknown Status\";
+    if ($status >= 100 && $status < 200) reason = \"Informational\";
+    if ($status >= 200 && $status < 300) reason = \"OK\";
+    if ($status >= 300 && $status < 400) reason = \"Redirection\";
+    if ($status >= 400 && $status < 500) reason = \"Request Error\";
+    if ($status >= 500 && $status < 600) reason = \"Server Error\";
     if ($status == 404) reason = \"Not Found\";
     if ($status == 400) reason = \"Bad Request\";
     if ($status == 403) reason = \"Forbidden\";
     if ($status == 408) reason = \"Request Timeout\";
     if ($status == 503) reason = \"Service Unavailable\";
     if ($status == 500) reason = \"Internal Server Error\";
+    /* The common codes still get their exact phrase. */
+    if ($status == 201) reason = \"Created\";
+    if ($status == 204) reason = \"No Content\";
+    if ($status == 303) reason = \"See Other\";
+    if ($status == 401) reason = \"Unauthorized\";
+    if ($status == 405) reason = \"Method Not Allowed\";
+    if ($status == 409) reason = \"Conflict\";
+    if ($status == 413) reason = \"Payload Too Large\";
+    if ($status == 422) reason = \"Unprocessable Content\";
+    if ($status == 429) reason = \"Too Many Requests\";
+    if ($status == 501) reason = \"Not Implemented\";
     char head[512];
     int hl = snprintf(head, sizeof(head),
         \"HTTP/1.1 %lld %s\\r\\n\"

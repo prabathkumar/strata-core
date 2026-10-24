@@ -135,6 +135,14 @@ jobs:
     - name: Round Fifteen Stays Fixed
       run: python3 test_suite/round_fifteen_stays_fixed.py
 
+    # Round 16 found one design gap wearing four hats: an indexed read that
+    # was checked for lists but not for text, and not for tensors at all.
+    # Also a computed CSS value that could close its own declaration, a
+    # refusal answering "405 OK" on the status line, and a scan over a
+    # damaged file that left the program carrying a partial total.
+    - name: Round Sixteen Stays Fixed
+      run: python3 test_suite/round_sixteen_stays_fixed.py
+
     # The demonstrator. Sixty-six CI steps prove the compiler works; they do
     # not show anybody what the language is FOR. apps/payables is the
     # smallest system that still touches every tier -- a supplier file in,

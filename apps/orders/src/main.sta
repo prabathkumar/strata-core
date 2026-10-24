@@ -208,6 +208,38 @@ str summary_page() {
 
 // ── Routing ──────────────────────────────────────────────────────────────────
 
+// Whether this address changes stored data.
+//
+// THE ROUTE DECIDES, NOT THE METHOD STRING. Both used to be read from the
+// request separately: `handle` matched on the path alone and never looked at
+// the method, while `serve` chose the lock from the method alone. So a write
+// sent as `GET /orders` skipped the CSRF check AND ran under the READER's
+// lock, in parallel with other writers -- and the lost-update guard, which
+// compares the file against what was read, cannot see a writer it is sharing
+// a lock with. A customer was answered "303, your order was created" and the
+// row was not there. Found by a blind evaluator, round 16, and it is the
+// first data loss found in this project for three rounds.
+//
+// One function, asked by both, so the lock and the refusal can no longer
+// disagree about what a request is.
+int is_write_path(str path) {
+    if (str_eq(path, "/orders") == 1) { return 1; }
+    if (str_eq(path, "/close") == 1) { return 1; }
+    if (str_eq(path, "/logout") == 1) { return 1; }
+    return 0;
+}
+
+// The same question for a whole request, including the sign-in form, which
+// writes an attempt row and a session.
+int writes_data(str request) {
+    str path = http_path(request);
+    if (is_write_path(path) == 1) { return 1; }
+    if (str_eq(path, "/login") == 1) {
+        if (str_eq(http_method(request), "POST") == 1) { return 1; }
+    }
+    return 0;
+}
+
 int handle(int conn, str request) {
     str method = http_method(request);
     str path   = http_path(request);
@@ -235,7 +267,9 @@ int handle(int conn, str request) {
     }
     if (str_eq(path, "/login") == 1) {
         if (str_eq(method, "POST") == 1) { return do_login(conn, body); }
-        return http_ok(conn, render LoginPage);
+        if (str_eq(method, "GET") == 1) { return http_ok(conn, render LoginPage); }
+        return http_respond(conn, 405, "text/html; charset=utf-8",
+        "<h1>405</h1><p>this address takes a form post or a page request</p>");
     }
 
     // Everything below needs a session.
@@ -249,7 +283,15 @@ int handle(int conn, str request) {
     // that page cannot do is read this token out of a page it is not allowed
     // to see.
     str sid = http_cookie(request, "sid");
-    if (str_eq(method, "POST") == 1) {
+    // A write is a POST, and it is refused BEFORE the token is checked and
+    // before anything is written -- so changing the method cannot get past
+    // either. It used to check the token only when the method was literally
+    // POST, while every route below matched on the path alone.
+    if (is_write_path(path) == 1) {
+        if (str_eq(method, "POST") == 0) {
+            return http_respond(conn, 405, "text/html; charset=utf-8",
+            "<h1>405</h1><p>this address only takes a form post</p>");
+        }
         if (str_eq(http_form_value(body, "_csrf"), csrf_for(sid)) == 0) {
             return http_respond(conn, 403, "text/html; charset=utf-8",
             "<h1>403</h1><p>this form did not come from here</p>");
@@ -288,15 +330,20 @@ int serve(int conn) {
         http_close(conn);
         return 1;
     }
-    // A GET takes a shared lock, so pages are served in parallel; anything
+    // A page takes a shared lock, so reads are served in parallel; anything
     // that can write takes the exclusive one. Taking the exclusive lock for
     // everything was correct and serialised every read behind every other
     // read, which showed up as concurrent throughput below sequential.
+    //
+    // The ROUTE answers this, not the method string -- see writes_data. Asking
+    // the method meant a write sent as a GET ran under the reader's lock,
+    // beside other writers, and the lost-update guard cannot see a writer it
+    // shares a lock with.
     int lock = -1;
-    if (str_eq(http_method(request), "GET") == 1) {
-        lock = lock_shared("data/.lock");
-    } else {
+    if (writes_data(request) == 1) {
         lock = lock_exclusive("data/.lock");
+    } else {
+        lock = lock_shared("data/.lock");
     }
     load_all();
     int status = handle(conn, request);

@@ -1507,7 +1507,7 @@ standard library modules; money is kept as whole minor units rather than as a
 float, because a float cannot hold 0.10 exactly. `ast`, `lex`, `test` and
 `repair` still go through Python.
 
-Fifteen blind pilots have been run: a fresh evaluator given a clean checkout,
+Sixteen blind pilots have been run: a fresh evaluator given a clean checkout,
 no history, and one question — could your team adopt this? Every round found
 something, most rounds found something that destroys data, and every finding
 is fixed with a test that names the round that found it. Round 13 found nine
@@ -1519,7 +1519,12 @@ sharpest point any round has: a repair aimed at the symptom a report showed,
 rather than at the question behind it, leaves the same bug one line over.
 Round 15 made the same point one level up — that patching a hole each time
 one is found is a deny-list, not a type system — and the repair for it is a
-test that makes the lists agree by force rather than by diligence. That is the honest
+test that makes the lists agree by force rather than by diligence. Round 16
+made it a third time, in the plainest words yet: four of its findings were
+one design gap wearing four hats, because the bounds check written for lists
+in round 15 had never been extended to text or to tensors. The repair is the
+rule rather than the four places — every indexed read refuses rather than
+reading memory it does not own — and it is written down as that. That is the honest
 summary: the language is getting harder to break, and it is still being
 broken. The roadmap below is exhaustive about the rest rather than quiet
 about it.
@@ -1562,7 +1567,7 @@ judgement says.
 | Every error code means what the taxonomy says it means | `json_diag_diff.py` compares classification and remediation, not just the code |
 | Repair never guesses when it should refuse | `self_repair.py`; `E009` and an ambiguous column both refuse and exit non-zero |
 | A repair that fails leaves the files untouched | `self_repair.py` restores on every unresolved loop |
-| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 114 generated files identical. **This is an agreement check, not a proof of correctness.** A mistake made the same way in both passes it cleanly: the truncated-row bug was in both, and this row stayed green while `load` dropped data |
+| The two compilers agree, byte for byte | `lexer_diff`, `parser_diff`, `typecheck_diff`, `codegen_diff` — 128 generated files identical. **This is an agreement check, not a proof of correctness.** A mistake made the same way in both passes it cleanly: the truncated-row bug was in both, and this row stayed green while `load` dropped data |
 | The compiler builds itself, and the result builds itself | `fixpoint.py` |
 | It installs and runs on a machine that has never seen it | `clean_checkout.py`, `journey_install.py`, and a macOS job that is a genuinely clean machine |
 | Every example in the documentation compiles | `doc_examples.py` on every commit |
@@ -1577,7 +1582,7 @@ judgement says.
 
 | Condition | What is missing |
 |---|---|
-| A developer who has never seen Strata gets through a first project without a stopper | **Two consecutive pilot rounds with no data loss and no silently wrong answer.** Twelve rounds have been run and the counter is at zero: the twelfth found a file the loader refuses that a save could still destroy, and a stale migration that dropped a column. Both are fixed, with tests. One clean round is not the bar, because one clean round is luck. |
+| A developer who has never seen Strata gets through a first project without a stopper | **Two consecutive pilot rounds with no data loss and no silently wrong answer.** Sixteen rounds have been run and the counter is still at zero. The character of the findings has shifted — rounds 13 and 14 were largely data loss, rounds 15 and 16 largely soundness holes that a checker should have caught — but the count has not fallen: nine, ten, ten, eleven. Round 16's four largest findings were one gap wearing four hats, which is the third round running to say that a repair was aimed at the symptom rather than at the rule behind it. One clean round would not be the bar either, because one clean round is luck. |
 | Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
 | A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
 

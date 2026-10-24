@@ -320,6 +320,37 @@ static strata_float strata_str_to_float_checked(strata_str s) {
  * belongs here: there is no way for an application to forget it, and no
  * escape function for it to call wrongly. Both quote characters are escaped
  * so the same helper is correct inside an attribute. */
+static strata_str strata_html_escape(strata_str s);
+
+/* A value going into a style attribute.
+ *
+ * HTML-escaping alone was not enough. Quotes and angle brackets were escaped,
+ * so there was no breaking out of the attribute -- but a SEMICOLON in a
+ * computed value ends one CSS declaration and starts another, so
+ * `color = "red; position:absolute"` injected a second rule into the
+ * element's style. If a computed property ever carries data from outside,
+ * the page's layout is whoever supplied it. Found by a blind evaluator,
+ * round 16.
+ *
+ * A CSS value cannot legitimately contain `;`, `{` or `}`, so they are
+ * dropped rather than escaped -- there is nothing to escape them TO. The
+ * result is then HTML-escaped as before.
+ */
+static strata_str strata_css_value(strata_str s) {
+    if (!s) return (strata_str)"";
+    size_t n = strlen(s);
+    char* clean = (char*)strata_scratch_alloc(n + 1);
+    if (!clean) return (strata_str)"";
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == ';' || c == '{' || c == '}') continue;
+        clean[w++] = c;
+    }
+    clean[w] = '\0';
+    return strata_html_escape((strata_str)clean);
+}
+
 static strata_str strata_html_escape(strata_str s) {
     if (!s) return "";
     size_t n = 0;
@@ -602,6 +633,50 @@ static strata_int strata_len(void* list) {
  * index rather than a pointer keeps the generated C the same shape for every
  * element type.
  */
+/* The length of a string, remembered for the string most recently asked
+ * about.
+ *
+ * Bounds-checking `s[i]` needs the length, and strlen is O(n) -- the lexer
+ * indexes its source buffer once per character, so a scan per access would
+ * make lexing quadratic and the compiler unusable. One entry is enough,
+ * because the pattern that matters walks a single string.
+ *
+ * The cache is VERIFIED before it is trusted: the remembered length is only
+ * used when the byte there is still the terminator. A pointer freed and
+ * reused by a different string therefore cannot cause a FALSE REFUSAL of
+ * valid code -- the worst it can do is miss a refusal, which is the
+ * direction to fail in if one has to be chosen.
+ */
+static strata_str __strata_slen_for = NULL;
+static strata_int __strata_slen_was = 0;
+static strata_int strata_strlen_cached(strata_str s) {
+    if (!s) return 0;
+    if (s == __strata_slen_for && s[__strata_slen_was] == '\0') {
+        return __strata_slen_was;
+    }
+    __strata_slen_for = s;
+    __strata_slen_was = (strata_int)strlen(s);
+    return __strata_slen_was;
+}
+
+/* One byte of a string, checked.
+ *
+ * `s[99]` on a five-character string returned whatever byte sat past the end
+ * -- 255, exit 0, no error -- and `s[-5]` read before the buffer. A large
+ * index segfaulted. The list repair had been written and this was left out,
+ * which is the third round running that a repair was found to be partial.
+ * Found by a blind evaluator, round 16.
+ */
+static strata_int strata_str_at(strata_str s, strata_int i) {
+    strata_int n = strata_strlen_cached(s);
+    if (!s || i < 0 || i >= n) {
+        strata_error_set("index %lld is outside text of %lld byte(s)",
+                         (long long)i, (long long)n);
+        return 0;
+    }
+    return (strata_int)(unsigned char)s[i];
+}
+
 static strata_int strata_bounds(void* list, strata_int i) {
     strata_int n = strata_len(list);
     if (!list || i < 0 || i >= n) {
@@ -724,6 +799,14 @@ static double* strata_tensor(strata_int n) {
     raw[0] = n;
     return (double*)(void*)(raw + 1);
 }
+/* A tensor's allocation starts one word before its data, so freeing the
+ * pointer the program holds hands the allocator an address it never gave
+ * out. Two hidden layers was enough to reach it: munmap_chunk(), invalid
+ * pointer, mid-run. Anything that frees a tensor goes through here. */
+static void strata_tensor_free(double* t) {
+    if (!t) return;
+    free((void*)(((strata_int*)(void*)t) - 1));
+}
 static strata_int strata_tensor_len(double* t) {
     if (!t) return 0;
     return ((strata_int*)(void*)t)[-1];
@@ -766,12 +849,25 @@ static double* strata_predict(void* model, double* input) {
     double* owned = NULL;
     if (!m->weights) {
         /* untrained: zeros, not garbage */
-        return (double*)calloc((size_t)m->cols_out, sizeof(double));
+        return strata_tensor(m->cols_out);
+    }
+    /* The model's first layer says how many values it reads. If the tensor
+       handed in holds fewer, the answer used to be computed from whatever
+       followed it in the heap, silently and with exit 0. */
+    if (m->nlayers > 0) {
+        if (strata_tensor_len(input) < m->dims[0]) {
+            strata_error_set("this model reads %lld value(s) and the tensor "
+                             "given to it holds %lld",
+                             (long long)m->dims[0],
+                             (long long)strata_tensor_len(input));
+            return strata_tensor(m->cols_out);
+        }
     }
     size_t off = 0;
     for (int l = 0; l < m->nlayers; l++) {
         int ci = m->dims[l], co = m->dims[l + 1];
-        double* out = (double*)calloc((size_t)co, sizeof(double));
+        double* out = strata_tensor(co);
+        if (!out) break;
         for (int j = 0; j < co; j++) {
             double acc = m->weights[off + (size_t)ci * co + j];   /* bias */
             for (int i = 0; i < ci; i++)
@@ -779,7 +875,7 @@ static double* strata_predict(void* model, double* input) {
             out[j] = strata_activate(acc, m->acts[l]);
         }
         off += (size_t)ci * co + co;
-        if (owned) free(owned);
+        strata_tensor_free(owned);
         owned = out;
         cur = out;
     }
@@ -821,8 +917,31 @@ static void strata_set_message(strata_str m) { __strata_current_message = m; }
 
 /* Element-wise tensor addition. Plain scalar loops — the C compiler may
    vectorise them, but Strata emits no SIMD intrinsics of its own. */
+/* Both of these used to trust a length they were handed -- a declared shape
+ * for predict, an argument for add -- over the one the tensor actually
+ * carries, so each read and wrote past the end in silence with exit 0. Found
+ * by a blind evaluator, round 16. The stored length is the truth; a caller
+ * asking for more is refused rather than served from whatever is next in the
+ * heap. */
+static strata_int strata_tensor_fit(double* t, strata_int want, const char* what) {
+    strata_int have = strata_tensor_len(t);
+    if (!t) {
+        strata_error_set("%s was given no tensor", what);
+        return 0;
+    }
+    if (want > have) {
+        strata_error_set("%s wants %lld value(s) and the tensor holds %lld",
+                         what, (long long)want, (long long)have);
+        return have;
+    }
+    return want;
+}
+
 static double* strata_tensor_add(double* a, double* b, strata_int n) {
-    double* r = (double*)calloc((size_t)n, sizeof(double));
+    n = strata_tensor_fit(a, n, "adding two tensors");
+    n = strata_tensor_fit(b, n, "adding two tensors");
+    double* r = strata_tensor(n);
+    if (!r) return NULL;
     for (strata_int i = 0; i < n; i++) r[i] = a[i] + b[i];
     return r;
 }
@@ -1185,12 +1304,26 @@ static void strata_unpoison(const char* table) {
     }
 }
 
+/* Whether a read has been refused since this was last asked.
+ *
+ * A `scan` has no return value for a caller to test, so a refused one used
+ * to stop at the damaged row and let the program carry on with a partial
+ * total. This is what the generated scan asks before letting that happen.
+ * Asking clears it, so one refusal stops one scan. */
+static int __strata_read_refused = 0;
+static int strata_scan_refused(void) {
+    int was = __strata_read_refused;
+    __strata_read_refused = 0;
+    return was;
+}
+
 static void strata_load_refuse(const char* table, const char* path,
                                const char* why) {
     fprintf(stderr, "[STRATA LOAD] %s: refusing to read '%s' — %s\n",
             table, path, why);
     strata_error_set("%s: refused to read '%s' — %s", table, path, why);
     strata_poison(table);
+    __strata_read_refused = 1;
 }
 
 /* A number read from a stored row, or a refusal.

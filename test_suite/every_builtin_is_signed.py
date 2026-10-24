@@ -134,6 +134,29 @@ def main():
         ok("and the signatures themselves are identical",
            not disagree, "; ".join(disagree[:6]))
 
+    # 4. And the GENERATOR's return-type table agrees with the signatures.
+    #
+    # A third list. strata_activate was declared `float` in the signatures
+    # and missing here, so str() of it had nothing to dispatch on and used
+    # the integer converter -- 0.7 printed as 0. Found by a blind evaluator,
+    # round 16.
+    from bootstrap.stage0 import BUILTIN_RETURNS
+    c_of = {"int": "strata_int", "float": "strata_float", "str": "strata_str"}
+    gen_missing, gen_wrong = [], []
+    for name, (rt, _args) in sorted(PRELUDE_SIGNATURES.items()):
+        if rt is None:
+            continue
+        want = c_of[rt]
+        got = BUILTIN_RETURNS.get(name)
+        if got is None:
+            gen_missing.append(f"{name} (should be {want})")
+        elif got != want:
+            gen_wrong.append(f"{name}: generator says {got}, signature says {want}")
+    ok("every signed builtin has a return type in the generator too",
+       not gen_missing, "; ".join(gen_missing))
+    ok("and the generator and the signatures agree on what it is",
+       not gen_wrong, "; ".join(gen_wrong))
+
     print("=" * 64)
     if failures:
         for f in failures:

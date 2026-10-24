@@ -77,6 +77,20 @@ BUILTIN_RETURNS = {
     "strata_tensor": "double*", "strata_predict": "double*",
     "strata_tensor_add": "double*",
     "strata_tensor_get": "strata_float", "strata_tensor_set": "void",
+    # A THIRD list that has to agree with the other two.
+    #
+    # strata_activate was missing from here while being declared `float` in
+    # PRELUDE_SIGNATURES, so `str(strata_activate(0.7, 0))` had no type to
+    # dispatch on, fell back to the integer converter, and printed 0 for 0.7
+    # -- while assigning it to a float first printed 0.7. Found by a blind
+    # evaluator, round 16.
+    #
+    # test_suite/every_builtin_is_signed.py now checks this table against
+    # PRELUDE_SIGNATURES as well, so a builtin cannot be given a type in one
+    # place and left without one here.
+    "strata_activate": "strata_float", "strata_dup": "strata_str",
+    "strata_read_field": "strata_int", "strata_read_header": "strata_int",
+    "strata_weight_count": "strata_int",
 }
 
 
@@ -467,6 +481,26 @@ int main(int argc, char** argv) {
         Emitted after the struct so the row type is complete."""
         self.emit_raw(f"static {name}** {name}__rows = NULL;")
         self.emit_raw(f"static strata_int {name}__count = 0;")
+        # The row handed back when a list of these is indexed out of range.
+        #
+        # A null pointer was handed back instead, and the next `row.column`
+        # dereferenced it. Its text columns are "" rather than NULL for the
+        # same reason the loader sets them that way: nothing that reads a row
+        # should have to ask whether its text exists. One shared row is
+        # enough -- the error flag is set before it is ever returned, so the
+        # program is on its way to exit 65 and is not going to write to it.
+        self.emit_raw(f"static {name} {name}__nil_row;")
+        self.emit_raw(f"static int {name}__nil_ready = 0;")
+        self.emit_raw(f"static {name}* {name}__nil(void) {{")
+        self.emit_raw(f"    if (!{name}__nil_ready) {{")
+        self.emit_raw(f"        memset(&{name}__nil_row, 0, sizeof({name}));")
+        for fd in self.schema_fields.get(name, []):
+            if self._c_type(fd.field_type) == "strata_str":
+                self.emit_raw(f'        {name}__nil_row.{fd.name} = "";')
+        self.emit_raw(f"        {name}__nil_ready = 1;")
+        self.emit_raw("    }")
+        self.emit_raw(f"    return &{name}__nil_row;")
+        self.emit_raw("}")
         self.emit_raw(f"static strata_int {name}__cap = 0;")
         # Which file this table was last read from, and that file's identity at
         # the time. `load` uses them to skip work it has already done.
@@ -1933,6 +1967,30 @@ int main(int argc, char** argv) {
             out.append((p.name, p.value))
         return out
 
+    def _element_ctype(self, list_expr, param_names):
+        """The C type of one element of that list, or None."""
+        base = self._expr_ctype(list_expr, param_names)
+        if base and base.endswith("*"):
+            return base[:-1]
+        return None
+
+    def _safe_zero(self, elem_ctype):
+        """A value of that type that a program can go on to use.
+
+        Not merely zero bits: a list of text hands back the empty string
+        rather than NULL, and a list of rows hands back a zeroed row of its
+        own type rather than a null pointer, because the error path still has
+        to survive whatever the program does next. The error flag is already
+        set by then, so the program exits 65 regardless; what this prevents is
+        a crash before it gets there.
+        """
+        if elem_ctype == "strata_str":
+            return '(strata_str)""'
+        if elem_ctype and elem_ctype.endswith("*"):
+            row = elem_ctype[:-1]
+            return f"{row}__nil()"
+        return "(__typeof__(*_bl)){0}"
+
     def _computed_css(self, el):
         """CSS properties whose value is an expression rather than a literal.
 
@@ -1966,10 +2024,22 @@ int main(int argc, char** argv) {
             piece = piece.replace("%", "%%").replace("\x00", "%s")
             n = piece.count("%s")
             gen = self._gen_expr(value, [])
-            args = ", ".join([f"strata_html_escape({gen})"] * n)
             sep = "" if first else ";"
             first = False
+            # The value is worked out ONCE into a temporary and then used as
+            # many times as the spec needs it. `padding_x` is padding-left
+            # and padding-right, and spelling the expression out twice meant
+            # an asymmetric box and a side effect that ran twice -- found by
+            # a blind evaluator, round 16, in the repair that had just made
+            # these live. The temporary is also where the value is made safe
+            # for a style attribute; see strata_css_value.
+            args = ", ".join(["_cv"] * n)
+            self.emit("{")
+            self.indent += 1
+            self.emit(f"strata_str _cv = strata_css_value({gen});")
             self.emit(f'fprintf(_out,"{sep}{piece}", {args});')
+            self.indent -= 1
+            self.emit("}")
 
     def _gen_element(self, el):
         tag = self.HTML_TAG.get(el.tag, "div")
@@ -1998,8 +2068,19 @@ int main(int argc, char** argv) {
                 self.emit('fprintf(_out,"' + style + '>");')
             return
         if el.tag == "window":
-            title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
-            self.emit('fprintf(_out,"<title>' + self._fmt_lit(title) + '</title>");')
+            # A title that is not a literal used to be thrown away and
+            # replaced with the word "window" -- check passed, build passed,
+            # exit 0, and the page carried the wrong title. The repair that
+            # made computed properties live did not reach the window's own
+            # label. Found by a blind evaluator, round 16.
+            if el.label is not None and not isinstance(el.label, StrLiteral):
+                self.emit('fprintf(_out,"<title>");')
+                self.emit('fprintf(_out,"%s",strata_html_escape('
+                          + self._gen_expr(el.label, []) + '));')
+                self.emit('fprintf(_out,"</title>");')
+            else:
+                title = el.label.value if isinstance(el.label, StrLiteral) else el.tag
+                self.emit('fprintf(_out,"<title>' + self._fmt_lit(title) + '</title>");')
             self.emit('fprintf(_out,"<body' + attrs + style + '>");')
             for c in el.children:
                 self._gen_layout_node(c)
@@ -2268,6 +2349,25 @@ int main(int argc, char** argv) {
         self.scan_row_vars.pop(node.var, None)
         self.emit(f"{node.table}__scan_free(&_srow);")
         self.emit("fclose(_sf);")
+        self.indent -= 1
+        self.emit("}")
+        # A scan that was REFUSED must not look like a scan that found
+        # nothing.
+        #
+        # It stopped at the damaged row, set the error flag, and the program
+        # carried straight on -- so a total accumulated during the scan was
+        # partial, and whatever came next acted on it. Exit 65 caught that
+        # for a batch job and did nothing at all for a service, which never
+        # exits. Found by a blind evaluator, round 16.
+        #
+        # A scan has no return value for a caller to test, which is exactly
+        # why it has to stop here: there is nothing to hand back and nothing
+        # to check. The message has already been printed by the refusal
+        # itself; this is the stop.
+        self.emit("if (strata_scan_refused()) {")
+        self.indent += 1
+        self.emit('fprintf(stderr, "[STRATA SCAN] the scan above was refused, so what follows it would be working from part of the file. Stopping.\\n");')
+        self.emit("exit(65);")
         self.indent -= 1
         self.emit("}")
         self.indent -= 1
@@ -2919,8 +3019,12 @@ int main(int argc, char** argv) {
             # character on the line came out too large. The cast makes the
             # language say what the value is instead of leaving it to the
             # machine.
+            # A string is indexed through the same check. It used to be the
+            # one access with no check at all: `s[99]` on a five-character
+            # string returned whatever byte followed it, exit 0, and `s[-5]`
+            # read before the buffer. Found by a blind evaluator, round 16.
             if self._expr_ctype(expr.target, param_names) == "strata_str":
-                return f"((strata_int)(unsigned char){target}[{index}])"
+                return f"strata_str_at({target}, {index})"
             # Every list index is checked against the length the list already
             # carries. `xs[100000000]` on a three-element list passed
             # `strata check`, built, and segfaulted; `xs[99]` printed 0.
@@ -2928,9 +3032,17 @@ int main(int argc, char** argv) {
             # zero value of the element type when it is out of range -- with
             # the error flag set, so a program that does not look still exits
             # 65 rather than carrying on with a number it invented.
+            # The value handed back when the index is out of range has to be
+            # safe to USE, not merely a zero bit pattern. `(__typeof__(*_bl)){0}`
+            # is NULL for a list of text and for a list of rows, and the very
+            # next thing a program does with either is dereference it -- so the
+            # repair that stopped `list[int]` crashing left `list[str]` and
+            # `list[Row]` segfaulting. Third round running that a repair was
+            # found to be partial. Found by a blind evaluator, round 16.
+            elem = self._element_ctype(expr.target, param_names)
             return ("({ __typeof__(" + target + ") _bl = (" + target + "); "
                     "strata_int _bi = strata_bounds((void*)_bl, (" + index + ")); "
-                    "_bi < 0 ? (__typeof__(*_bl)){0} : _bl[_bi]; })")
+                    "_bi < 0 ? " + self._safe_zero(elem) + " : _bl[_bi]; })")
         if isinstance(expr, MemberAccess):
             obj = self._gen_expr(expr.obj, param_names)
             ct = self._expr_ctype(expr.obj, param_names) or ""

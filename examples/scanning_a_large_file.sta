@@ -1,0 +1,40 @@
+// Reading a file that is too big to hold in memory.
+//
+// `load` reads a whole table into memory. For a file of a few million rows
+// that is not an option, so `scan` walks it one row at a time and never holds
+// more than one row at once.
+//
+// The important part is what happens when the file turns out to be damaged
+// half way through. A scan has no answer to hand back and nothing for the
+// caller to test, so if it simply stopped reading, the lines after it would
+// quietly be working from part of the file — a total that looks like an
+// answer but is not one. Instead the program stops there, with exit code 65.
+// This file exists so that both code generators are held to that.
+import io from std;
+
+database Reading {
+    int   sensor;
+    float value;
+}
+
+int main() {
+    // Write a small file first, so the example stands on its own.
+    if (file_exists("readings.tsv") == 0) {
+        Reading <- [sensor = 1, value = 20.5];
+        Reading <- [sensor = 2, value = 21.0];
+        Reading <- [sensor = 3, value = 19.5];
+        save Reading to "readings.tsv";
+    }
+
+    float total = 0.0;
+    int rows = 0;
+    scan Reading from "readings.tsv" as r {
+        total = total + r.value;
+        rows = rows + 1;
+    }
+    // Only reached when the whole file was read. A damaged file stops the
+    // program above this line rather than letting a partial total through.
+    print(strata_concat("rows: ", str(rows)));
+    print(strata_concat("total: ", str(total)));
+    return 0;
+}

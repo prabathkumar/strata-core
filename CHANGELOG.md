@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+### Everything round sixteen found, and one rule instead of four patches
+
+Two more blind evaluators, a clean checkout each, no history, one question:
+could a development team adopt this? Eleven findings. The sentence worth
+keeping was again not about any single one of them:
+
+> make the bounds-check repair total rather than per-type. Findings 1, 2, 6
+> and 7 are one design gap wearing four hats.
+
+Three rounds running have now said a version of the same thing: the repair
+gets applied to the shape the last report happened to show, and the shape
+one line over is left alone. Round 15 checked list indexing. Round 16 found
+that text and tensors were never checked at all. So the rule is now the
+thing that is written down, not the four places it was reached:
+
+**every indexed read refuses rather than reading memory it does not own.**
+
+  * **Text.** `s[99]` on a five-character string returned whatever byte
+    happened to follow it in memory, exit 0; `s[-5]` read before the start.
+    Both refuse now. The length is cached for the string most recently
+    measured, so walking a string one byte at a time stays a single pass
+    rather than becoming a `strlen` per character.
+  * **Tensors.** A read past the end was a segfault; a write past the end
+    was a silent change to somebody else's heap. A tensor now carries its
+    length in the word before its data, the same way a list does, so the
+    check needs no length from the caller.
+  * **A model given too short a tensor** read the values that followed it
+    and answered with confidence. `strata check` refuses that outright when
+    the shapes are known, and the runtime refuses it when the length is only
+    known while running.
+  * **Two tensors added with a length neither of them has** read and wrote
+    past both. Refused.
+
+**A refused scan no longer looks like an empty one.** `scan` walks a file
+too large to hold in memory. Over a damaged file it ran the body for the
+good rows, stopped, and let the program carry on — so a total computed from
+part of the file reached a report looking like an answer, and the error only
+surfaced at exit, which for a service that never exits means never. A scan
+hands nothing back for a caller to test, so there is nothing it could return
+instead: the program now stops at that line, says why, and exits 65.
+`examples/scanning_a_large_file.sta` exists so that both code generators are
+held to it — until this round no file in the differential corpus used `scan`
+at all, which is how the two generators went that long without being
+compared on it.
+
+**A layout property whose value carries `;` or `}` escaped its own
+declaration** and became further CSS. Dropped and escaped now.
+
+**`405 OK`.** A refusal answered with `OK` on the status line, which any log
+reader and anything scanning status lines would file as a success. Naming
+ten more status codes would only have moved the hole, so the default is
+derived from the status class: nothing outside 2xx can say OK, and the
+common codes still get their exact phrase.
+
+**A write path reached with the wrong method** was answered with a
+complaint about a missing CSRF token rather than `405`. The orders app now
+names its write paths in one place, and both the method check and the write
+lock are taken from that same answer rather than decided separately.
+
+**One fix of this round's own making, caught by this round's own tests.**
+Giving tensors a length word meant their allocation starts one word before
+the pointer the program holds, and the hidden-layer code was still freeing
+the pointer rather than the allocation. Two hidden layers was enough to
+reach it. Everything that frees a tensor goes through one function now.
+
+`test_suite/round_sixteen_stays_fixed.py` holds all of it, eighteen checks,
+and runs in CI.
+
+## Unreleased
+
 ### Everything round fifteen found, and a rule instead of another patch
 
 Two blind evaluators against the tree the demonstrator had just landed in.

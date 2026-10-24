@@ -552,6 +552,27 @@ def codegen_fail(Gen &g, str message) {
     ";
 }
 
+// A value of the list's element type that a program can go on to use.
+//
+// Not merely zero bits: a list of text hands back the empty string rather
+// than NULL, and a list of rows hands back a zeroed row of its own type
+// rather than a null pointer, because the error path still has to survive
+// whatever the program does next. The error flag is already set by then.
+str safe_zero(Gen &g, int list_p) {
+    str base = expr_ctype(&g, list_p);
+    int n = str_len(base);
+    if (n < 2) { return "(__typeof__(*_bl)){0}"; }
+    str elem = str_slice(base, 0, n - 1);
+    if (str_eq(elem, "strata_str") == 1) { return "(strata_str)\"\""; }
+    if (ends_with_star(elem) == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, str_slice(elem, 0, str_len(elem) - 1));
+        sb_append(&sb, "__nil()");
+        return sb_to_str(&sb);
+    }
+    return "(__typeof__(*_bl)){0}";
+}
+
 str gen_expr(Gen &g, int p) {
     if (p == 0) { return "0"; }
     Node e = node_at(p);
@@ -746,10 +767,14 @@ str gen_expr(Gen &g, int p) {
         // came out too large. The cast makes the language say what the value
         // is instead of leaving it to the machine.
         StringBuilder sb = sb_new();
+        // A string is indexed through the same check. It used to be the one
+        // access with no check at all: `s[99]` on a five-character string
+        // returned whatever byte followed it, exit 0, and `s[-5]` read before
+        // the buffer. Found by a blind evaluator, round 16.
         if (str_eq(expr_ctype(&g, e.c1), "strata_str") == 1) {
-            sb_append(&sb, "((strata_int)(unsigned char)");
-            sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "[");
-            sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, "])");
+            sb_append(&sb, "strata_str_at(");
+            sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, ", ");
+            sb_append(&sb, gen_expr(&g, e.c2)); sb_append(&sb, ")");
             return sb_to_str(&sb);
         }
         // Every list index is checked against the length the list already
@@ -764,7 +789,12 @@ str gen_expr(Gen &g, int p) {
         sb_append(&sb, ") _bl = ("); sb_append(&sb, lt);
         sb_append(&sb, "); strata_int _bi = strata_bounds((void*)_bl, (");
         sb_append(&sb, gen_expr(&g, e.c2));
-        sb_append(&sb, ")); _bi < 0 ? (__typeof__(*_bl)){0} : _bl[_bi]; })");
+        // The value handed back when the index is out of range has to be
+        // safe to USE, not merely a zero bit pattern -- see stage0.py. NULL
+        // for a list of text or of rows is what the next line dereferences.
+        sb_append(&sb, ")); _bi < 0 ? ");
+        sb_append(&sb, safe_zero(&g, e.c1));
+        sb_append(&sb, " : _bl[_bi]; })");
         return sb_to_str(&sb);
     }
 
@@ -2974,6 +3004,52 @@ def gen_table_storage(Gen &g, str name) {
     StringBuilder b = sb_new();
     sb_append(&b, "static strata_int "); sb_append(&b, name); sb_append(&b, "__count = 0;");
     emit_raw(&g, sb_to_str(&b));
+    // The row handed back when a list of these is indexed out of range. A
+    // null pointer was handed back instead, and the next `row.column`
+    // dereferenced it. Its text columns are "" rather than NULL for the same
+    // reason the loader sets them that way.
+    StringBuilder n0 = sb_new();
+    sb_append(&n0, "static "); sb_append(&n0, name); sb_append(&n0, " ");
+    sb_append(&n0, name); sb_append(&n0, "__nil_row;");
+    emit_raw(&g, sb_to_str(&n0));
+    StringBuilder n1 = sb_new();
+    sb_append(&n1, "static int "); sb_append(&n1, name); sb_append(&n1, "__nil_ready = 0;");
+    emit_raw(&g, sb_to_str(&n1));
+    StringBuilder n2 = sb_new();
+    sb_append(&n2, "static "); sb_append(&n2, name); sb_append(&n2, "* ");
+    sb_append(&n2, name); sb_append(&n2, "__nil(void) {");
+    emit_raw(&g, sb_to_str(&n2));
+    StringBuilder n3 = sb_new();
+    sb_append(&n3, "    if (!"); sb_append(&n3, name); sb_append(&n3, "__nil_ready) {");
+    emit_raw(&g, sb_to_str(&n3));
+    StringBuilder n4 = sb_new();
+    sb_append(&n4, "        memset(&"); sb_append(&n4, name);
+    sb_append(&n4, "__nil_row, 0, sizeof("); sb_append(&n4, name); sb_append(&n4, "));");
+    emit_raw(&g, sb_to_str(&n4));
+    str decl_p = bind_get(g.schema_decls, name);
+    if (str_len(decl_p) > 0) {
+        Node d = node_at(str_to_int(decl_p));
+        NodeVec fs = nv_at(d.v1);
+        int nf = fs.len;
+        for (int i = 0; i < nf; i = i + 1) {
+            Node f = nv_get(&fs, i);
+            if (str_eq(c_type(&g, f.c1), "strata_str") == 1) {
+                StringBuilder n5 = sb_new();
+                sb_append(&n5, "        "); sb_append(&n5, name);
+                sb_append(&n5, "__nil_row."); sb_append(&n5, f.s1);
+                sb_append(&n5, " = \"\";");
+                emit_raw(&g, sb_to_str(&n5));
+            }
+        }
+    }
+    StringBuilder n6 = sb_new();
+    sb_append(&n6, "        "); sb_append(&n6, name); sb_append(&n6, "__nil_ready = 1;");
+    emit_raw(&g, sb_to_str(&n6));
+    emit_raw(&g, "    }");
+    StringBuilder n7 = sb_new();
+    sb_append(&n7, "    return &"); sb_append(&n7, name); sb_append(&n7, "__nil_row;");
+    emit_raw(&g, sb_to_str(&n7));
+    emit_raw(&g, "}");
     StringBuilder bc = sb_new();
     sb_append(&bc, "static strata_int "); sb_append(&bc, name); sb_append(&bc, "__cap = 0;");
     emit_raw(&g, sb_to_str(&bc));
@@ -4489,19 +4565,30 @@ def emit_computed_css(Gen &g, Node el) {
             if (c == 37) { sb_append(&piece, "%%"); continue; }
             sb_append(&piece, char_from_code(c));
         }
+        // The value is worked out ONCE into a temporary and then used as
+        // many times as the spec needs it -- see stage0.py. padding_x
+        // spelled the expression out twice, so a side effect ran twice and
+        // the box came out asymmetric. The temporary is also where the value
+        // is made safe for a style attribute; see strata_css_value.
         str value = gen_expr(&g, pr.c1);
+        cg_emit(&g, "{");
+        g.indent = g.indent + 1;
+        StringBuilder cv = sb_new();
+        sb_append(&cv, "strata_str _cv = strata_css_value(");
+        sb_append(&cv, value); sb_append(&cv, ");");
+        cg_emit(&g, sb_to_str(&cv));
         StringBuilder line = sb_new();
         sb_append(&line, "fprintf(_out,\"");
         if (first == 0) { sb_append(&line, ";"); }
         sb_append(&line, sb_to_str(&piece));
         sb_append(&line, "\"");
         for (int a = 0; a < holes; a = a + 1) {
-            sb_append(&line, ", strata_html_escape(");
-            sb_append(&line, value);
-            sb_append(&line, ")");
+            sb_append(&line, ", _cv");
         }
         sb_append(&line, ");");
         cg_emit(&g, sb_to_str(&line));
+        g.indent = g.indent - 1;
+        cg_emit(&g, "}");
         first = 0;
     }
 }
@@ -4554,14 +4641,31 @@ def gen_element(Gen &g, Node el) {
     }
 
     if (str_eq(el.s1, "window") == 1) {
-        str win_title = "window";
+        // A title that is not a literal used to be thrown away and replaced
+        // with the word "window" -- see stage0.py. Found by a blind
+        // evaluator, round 16.
+        int computed_title = 0;
         if (el.c1 != 0) {
-            Node lab = node_at(el.c1);
-            if (lab.kind == 52) { win_title = lab.s1; }
+            Node lab0 = node_at(el.c1);
+            if (lab0.kind != 52) { computed_title = 1; }
         }
-        StringBuilder t = sb_new();
-        sb_append(&t, "<title>"); sb_append(&t, fmt_lit(win_title)); sb_append(&t, "</title>");
-        emit_fprintf(&g, sb_to_str(&t));
+        if (computed_title == 1) {
+            emit_fprintf(&g, "<title>");
+            StringBuilder ct = sb_new();
+            sb_append(&ct, "fprintf(_out,\"%s\",strata_html_escape(");
+            sb_append(&ct, gen_expr(&g, el.c1)); sb_append(&ct, "));");
+            cg_emit(&g, sb_to_str(&ct));
+            emit_fprintf(&g, "</title>");
+        } else {
+            str win_title = "window";
+            if (el.c1 != 0) {
+                Node lab = node_at(el.c1);
+                if (lab.kind == 52) { win_title = lab.s1; }
+            }
+            StringBuilder t = sb_new();
+            sb_append(&t, "<title>"); sb_append(&t, fmt_lit(win_title)); sb_append(&t, "</title>");
+            emit_fprintf(&g, sb_to_str(&t));
+        }
         StringBuilder b = sb_new();
         sb_append(&b, "<body"); sb_append(&b, attrs); sb_append(&b, style);
         sb_append(&b, ">");
@@ -5017,6 +5121,14 @@ def gen_scan(Gen &g, Node node) {
     sb_append(&fr, node.s1); sb_append(&fr, "__scan_free(&_srow);");
     cg_emit(&g, sb_to_str(&fr));
     cg_emit(&g, "fclose(_sf);");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    // A refused scan must stop the program, not leave it carrying on with a
+    // partial total. Mirrors bootstrap/stage0.py _gen_scan. Round 16.
+    cg_emit(&g, "if (strata_scan_refused()) {");
+    g.indent = g.indent + 1;
+    cg_emit(&g, "fprintf(stderr, \"[STRATA SCAN] the scan above was refused, so what follows it would be working from part of the file. Stopping.\\n\");");
+    cg_emit(&g, "exit(65);");
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
     g.indent = g.indent - 1;

@@ -69,7 +69,8 @@ def check_codes(name, source, expect=None, reject=None, files=None):
         shutil.rmtree(d, ignore_errors=True)
 
 
-def compile_run_in(name, source, expected, files=None, runs=1):
+def compile_run_in(name, source, expected, files=None, runs=1,
+                   exit_code=None):
     """Compile and run in a scratch directory, optionally seeding files first.
 
     Persistence and migration can only be checked by writing a file with one
@@ -91,7 +92,19 @@ def compile_run_in(name, source, expected, files=None, runs=1):
                 print(f"  FAIL  {name} — compile: {r.stderr[-200:]}"); FAIL += 1; return
             r2 = subprocess.run([exe], capture_output=True, text=True, timeout=5, cwd=d)
             outs.append((r2.stdout + r2.stderr).strip())
+            last_code = r2.returncode
         got = "\n".join(o for o in outs if o)
+        if exit_code is not None:
+            # A program that stops on purpose prints its reason and then the
+            # unchecked-error epilogue, which has its own test. What matters
+            # here is the reason, and the code the program leaves behind.
+            if got.startswith(expected.strip()) and last_code == exit_code:
+                print(f"  PASS  {name} — exit {last_code}"); PASS += 1
+            else:
+                print(f"  FAIL  {name} — wanted exit {exit_code} and a message "
+                      f"starting {expected[:60]!r}; got exit {last_code} and "
+                      f"{got[:200]!r}"); FAIL += 1
+            return
         if got == expected.strip():
             print(f"  PASS  {name} — {got.splitlines()[-1] if got else '(no output)'!r}"); PASS += 1
         else:
@@ -455,14 +468,24 @@ compile_run_in("scan_leaves_the_table_in_memory_alone",
     [_SCAN_W, 'import io from std;\ndatabase S { int id; str who; float amt; }\n'
      'int main() { scan S from "s.tsv" as r { } print(str(strata_len(S <- [id > 0]))); return 0; }'],
     "saved\n0")
-compile_run_in("scan_of_a_missing_file_says_so",
+# A refused scan stops the program where it stands. It used to leave the
+# counter at 0 and let the lines after it run, which is how a total computed
+# from none of the file, or part of it, reached a report looking like an
+# answer. A scan hands nothing back for a caller to test, so there is nothing
+# it could have returned instead. Found by a blind evaluator, round 16.
+compile_run_in("scan_of_a_missing_file_stops_the_program",
     ['import io from std;\ndatabase S { int id; }\n'
-     'int main() { int n = 0; scan S from "nope.tsv" as r { n = n + 1; } print(str(n)); if (had_error() == 1) { clear_error(); } if (had_error() == 1) { clear_error(); } return 0; }'],
-    "0\n[STRATA LOAD] S: refusing to read 'nope.tsv' — there is no such file")
+     'int main() { int n = 0; scan S from "nope.tsv" as r { n = n + 1; } print("UNREACHED"); return 0; }'],
+    "[STRATA LOAD] S: refusing to read 'nope.tsv' — there is no such file\n"
+    "[STRATA SCAN] the scan above was refused, so what follows it would be "
+    "working from part of the file. Stopping.", exit_code=65)
 compile_run_in("scan_refuses_another_tables_file",
     [_SCAN_W, 'import io from std;\ndatabase Other { int id; str who; float amt; }\n'
-     'int main() { int n = 0; scan Other from "s.tsv" as r { n = n + 1; } print(str(n)); if (had_error() == 1) { clear_error(); } if (had_error() == 1) { clear_error(); } return 0; }'],
-    "saved\n0\n[STRATA LOAD] Other: refusing to read 's.tsv' — it was saved from 'S', not this table")
+     'int main() { int n = 0; scan Other from "s.tsv" as r { n = n + 1; } print("UNREACHED"); return 0; }'],
+    "saved\n[STRATA LOAD] Other: refusing to read 's.tsv' — it was saved from "
+    "'S', not this table\n[STRATA SCAN] the scan above was refused, so what "
+    "follows it would be working from part of the file. Stopping.",
+    exit_code=65)
 test("scan_of_an_undeclared_table_is_e004",
      'int main() { scan Ghost from "x.tsv" as r { } return 0; }', "E004")
 
