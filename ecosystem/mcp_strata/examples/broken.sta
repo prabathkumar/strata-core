@@ -1,0 +1,22 @@
+// A file that does not type-check, on purpose.
+//
+// test_server.sh points strata_check at it. A test that only ever asks
+// about files that compile never finds out whether diagnostics come back at
+// all, and this server's whole job is the ones that do not.
+//
+// It is expected to produce E009 (an insert that does not name every
+// column) and E004 (a column that does not exist). Keep both.
+
+import io from std;
+
+database Item {
+    int id;
+    str name;
+}
+
+int main() {
+    Item <- [id = 1];
+    list[Item] found = Item <- [nope > 0];
+    print(str(count(found)));
+    return 0;
+}

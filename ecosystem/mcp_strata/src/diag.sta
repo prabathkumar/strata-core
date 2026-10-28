@@ -1,0 +1,243 @@
+// Turning what the compiler said into something an agent can act on.
+//
+// `strata check --json` already answers in JSON, with a code, a position, a
+// message, a hint and a remediation strategy. What it does not carry is the
+// taxonomy: the classification and the strategy the language's authors wrote
+// for a machine, which live in ERROR_TAXONOMY.json and are the reason a code
+// is worth more than its message.
+//
+// WHY BOTH REMEDIATION STRATEGIES COME BACK
+//
+// The compiler prints a `remediation_strategy` of its own, and for some codes
+// it is not the one in the taxonomy file. E000 is the plain case: the
+// compiler says "correct the token sequence so it matches the grammar", the
+// taxonomy says "do not attempt any other repair until the file parses".
+// Both are returned, under names that say which is which. An agent handed one
+// of two disagreeing answers, with nothing saying there was another, is worse
+// off than one handed both.
+
+import io      from std;
+import str     from std;
+import mem     from std;
+import json    from std;
+import sys     from app;
+import paths   from app;
+import jsonval from app;
+import text    from app;
+
+str taxonomy_path(str root) {
+    return path_join(root, "ERROR_TAXONOMY.json");
+}
+
+// One field of one code, exactly as it is spelled in the file.
+//
+// The slice is returned with its JSON escaping intact so it can be put
+// straight back into a reply inside quotes. Decoding it and re-encoding it
+// would be a round trip through two readers that need not agree, and this
+// file has none to decode: it is checked by `strata test` that the taxonomy
+// carries no backslash.
+str tax_field(str taxonomy, str code, str field) {
+    if (str_len(taxonomy) == 0) { return ""; }
+    int at = json_index_of_key(taxonomy, code, 0);
+    if (at < 0) { return ""; }
+    return json_string_field_from(taxonomy, field, at);
+}
+
+int tax_knows(str taxonomy, str code) {
+    if (str_len(taxonomy) == 0) { return 0; }
+    if (json_index_of_key(taxonomy, code, 0) < 0) { return 0; }
+    return 1;
+}
+
+// A slice taken out of the taxonomy, put back between quotes untouched.
+str quoted_as_is(str raw) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "\"");
+    sb_append(&sb, raw);
+    sb_append(&sb, "\"");
+    return sb_to_str(&sb);
+}
+
+// One diagnostic, enriched, as a JSON object.
+//
+// `fallback_file` is the file that was asked about. The parse stage omits the
+// per-diagnostic `file`, and a diagnostic with no file is one an agent cannot
+// open.
+// `scratch_prefix` and `real_prefix` undo a throwaway copy. A diagnostic
+// naming /tmp/strata-mcp-ab12/payables/src/main.sta is true and useless: the
+// agent has to open the file the user has. It is done HERE rather than on
+// the finished text because `relative_file` is worked out from the path, and
+// a path rewritten afterwards leaves a relative_file that is still absolute.
+str diag_object(str taxonomy, int dn, str fallback_file, str root,
+str scratch_prefix, str real_prefix) {
+    str code = jv_member_text(dn, "code");
+    str file = jv_member_text(dn, "file");
+    if (str_len(file) == 0) { file = fallback_file; }
+    str absolute = file;
+    if (str_len(file) > 0) {
+        if (file[0] != 47) { absolute = path_join(root, file); }
+    }
+    if (str_len(scratch_prefix) > 0) {
+        absolute = str_replace_all(absolute, scratch_prefix, real_prefix);
+    }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_str("code", code));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("file", absolute));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("relative_file", path_relative(root, absolute)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("line", jv_member_int(dn, "line", 0)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("column", jv_member_int(dn, "column", 0)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("message", jv_member_text(dn, "message")));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("hint", jv_member_text(dn, "hint")));
+
+    int known = tax_knows(taxonomy, code);
+    str classification = tax_field(taxonomy, code, "classification");
+    str severity = tax_field(taxonomy, code, "severity");
+    if (known == 0) {
+        classification = jv_member_text(dn, "classification");
+        severity = jv_member_text(dn, "severity");
+    }
+    sb_append(&sb, ",");
+    if (known == 1) {
+        sb_append(&sb, kv_raw("classification", quoted_as_is(classification)));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("severity", quoted_as_is(severity)));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("taxonomy_diagnostic",
+        quoted_as_is(tax_field(taxonomy, code, "diagnostic"))));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("ai_remediation_strategy",
+        quoted_as_is(tax_field(taxonomy, code,
+        "ai_remediation_strategy"))));
+    } else {
+        sb_append(&sb, kv_str("classification", classification));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("severity", severity));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("taxonomy_diagnostic", "null"));
+        sb_append(&sb, ",");
+        // With nothing in the taxonomy to offer, the compiler's own strategy
+        // is the best answer there is -- saying nothing would be worse.
+        sb_append(&sb, kv_str("ai_remediation_strategy",
+        jv_member_text(dn, "remediation_strategy")));
+    }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("compiler_remediation_strategy",
+    jv_member_text(dn, "remediation_strategy")));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_bool("taxonomy_known", known));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// Every diagnostic in a parsed `--json` payload, as a JSON array.
+str diags_array(str taxonomy, int payload, str fallback_file, str root) {
+    return diags_array_from(taxonomy, payload, fallback_file, root, "", "");
+}
+
+str diags_array_from(str taxonomy, int payload, str fallback_file, str root,
+str scratch_prefix, str real_prefix) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "[");
+    int arr = jv_member(payload, "diagnostics");
+    int first = 1;
+    if (arr >= 0) {
+        list[JsonNode] kids = JsonNode <- [parent == arr];
+        for K in kids {
+            if (first == 0) { sb_append(&sb, ","); }
+            first = 0;
+            sb_append(&sb, diag_object(taxonomy, K.id, fallback_file, root,
+            scratch_prefix, real_prefix));
+        }
+    }
+    sb_append(&sb, "]");
+    return sb_to_str(&sb);
+}
+
+int diags_count(int payload) {
+    int arr = jv_member(payload, "diagnostics");
+    if (arr < 0) { return 0; }
+    return jv_child_count(arr);
+}
+
+// Was the payload itself JSON? The toolchain promises JSON on stdout with
+// `--json`, and a tool that returns half an answer when it does not is worse
+// than one that says it has none -- the agent cannot tell the difference.
+int payload_ok(int payload) {
+    int m = jv_member(payload, "ok");
+    if (jv_kind(m) == JV_TRUE) { return 1; }
+    return 0;
+}
+
+verify "a compiler payload is read, and the taxonomy is laid over it" {
+    str taxonomy = "{\"taxonomy\": {\"E004\": {\"classification\": \"Database Schema Selector Violation\", \"severity\": \"CRITICAL_HALT\", \"diagnostic\": \"what it means\", \"ai_remediation_strategy\": \"what to do\"}}}";
+    int ok = 1;
+    int payload = jv_parse("{\"file\": \"src/main.sta\", \"stage\": \"typecheck\", \"ok\": false, \"error_count\": 1, \"diagnostics\": [{\"code\": \"E004\", \"file\": \"src/main.sta\", \"line\": 5, \"column\": 9, \"message\": \"Column 'nope' does not exist in 'Item'\", \"hint\": \"Valid columns: ['id']\", \"remediation_strategy\": \"compiler says this\"}]}", &ok);
+    assert ok == 1;
+    assert payload_ok(payload) == 0;
+    assert diags_count(payload) == 1;
+
+    str arr = diags_array(taxonomy, payload, "fallback.sta", "/root");
+    // The position and the text come from the compiler.
+    assert str_index_of(arr, "\"line\":5") >= 0;
+    assert str_index_of(arr, "\"column\":9") >= 0;
+    assert str_index_of(arr, "\"code\":\"E004\"") >= 0;
+    // The file is made absolute against the checkout, and the relative form
+    // is kept beside it because that is what a developer reads.
+    assert str_index_of(arr, "\"file\":\"/root/src/main.sta\"") >= 0;
+    assert str_index_of(arr, "\"relative_file\":\"src/main.sta\"") >= 0;
+    // The classification and strategy come from the taxonomy.
+    assert str_index_of(arr, "Database Schema Selector Violation") >= 0;
+    assert str_index_of(arr, "\"ai_remediation_strategy\":\"what to do\"") >= 0;
+    // And the compiler's own strategy is kept, because the two disagree for
+    // some codes and an agent handed one of them silently is worse off.
+    assert str_index_of(arr, "\"compiler_remediation_strategy\":\"compiler says this\"") >= 0;
+    assert str_index_of(arr, "\"taxonomy_known\":true") >= 0;
+    // A quote inside a compiler message has to survive into the reply.
+    assert str_index_of(arr, "Column 'nope'") >= 0;
+
+    // A diagnostic about a throwaway copy is reported against the file the
+    // caller actually has, including its relative form -- a relative_file
+    // that is still a /tmp path is the bug this argument pair exists for.
+    payload = jv_parse("{\"diagnostics\": [{\"code\": \"E004\", \"file\": \"/tmp/scratch-99/payables/src/main.sta\", \"line\": 3, \"column\": 1, \"message\": \"m\"}]}", &ok);
+    str moved = diags_array_from(taxonomy, payload, "f.sta", "/root",
+    "/tmp/scratch-99/payables", "/root/apps/payables");
+    assert str_index_of(moved, "\"file\":\"/root/apps/payables/src/main.sta\"") >= 0;
+    assert str_index_of(moved, "\"relative_file\":\"apps/payables/src/main.sta\"") >= 0;
+    assert str_index_of(moved, "/tmp/scratch-99") < 0;
+}
+
+verify "a code the taxonomy has never heard of still comes back usable" {
+    str taxonomy = "{\"taxonomy\": {\"E004\": {\"severity\": \"CRITICAL_HALT\"}}}";
+    int ok = 1;
+    int payload = jv_parse("{\"diagnostics\": [{\"code\": \"E099\", \"classification\": \"Something New\", \"severity\": \"CRITICAL_HALT\", \"message\": \"m\", \"line\": 1, \"column\": 1, \"remediation_strategy\": \"the compiler's own\"}]}", &ok);
+    assert ok == 1;
+    str arr = diags_array(taxonomy, payload, "f.sta", "/root");
+    assert str_index_of(arr, "\"taxonomy_known\":false") >= 0;
+    assert str_index_of(arr, "\"classification\":\"Something New\"") >= 0;
+    // With nothing to look up, the compiler's strategy is offered as the one
+    // to follow rather than nothing at all.
+    assert str_index_of(arr, "\"ai_remediation_strategy\":\"the compiler's own\"") >= 0;
+    // A diagnostic with no file of its own is given the one that was asked
+    // about, because a diagnostic an agent cannot open is not actionable.
+    assert str_index_of(arr, "f.sta") >= 0;
+}
+
+verify "the shipped taxonomy carries no escaped character" {
+    // The enrichment above puts a taxonomy slice back into a reply between
+    // quotes without re-escaping it, which is correct exactly as long as the
+    // file holds no backslash. This is the check that keeps that true: if
+    // somebody adds a quoted phrase to a remediation strategy, this fails
+    // here rather than producing a broken reply at run time.
+    str text = file_read("ERROR_TAXONOMY.json");
+    if (str_len(text) > 0) {
+        assert str_index_of(text, "\\") < 0;
+    }
+}

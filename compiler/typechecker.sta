@@ -2113,7 +2113,14 @@ def validate_query_order(TC &tc, Node q, str schema, int line, int col) {
         sb_append(&sb, "' is not a column of '");
         sb_append(&sb, schema);
         sb_append(&sb, "'");
-        emit_hint(&tc, "E003", sb_to_str(&sb), line, col, hint_quoted("Order by one of: ", sym_names_repr(s.fields), ""));
+        // E004, not E003. A column that does not exist is a schema selector
+        // violation wherever it is written, and the taxonomy is what an AI
+        // agent acts on: E003 is "heterogeneous entries leaked into a
+        // homogeneous list", whose remediation is to strip values out of
+        // list literals. An agent repairing a renamed column would have
+        // followed that advice into a file with no list in it. Mirrors
+        // typechecker.py. Found while building the MCP server, round 17.
+        emit_hint(&tc, "E004", sb_to_str(&sb), line, col, hint_quoted("Order by one of: ", sym_names_repr(s.fields), ""));
         return;
     }
     Sym f = sym_at(found);

@@ -294,8 +294,17 @@ jobs:
 
     # The bridge the phone shells call has to keep compiling. It has no main,
     # so this proves the compiler still emits a linkable object.
+    # `strata deps` first, because on a CLEAN checkout the phone app's
+    # dependency on apps/orders is not linked yet and nothing it declares is
+    # visible. This step never ran on a clean tree -- every machine it was
+    # written on had run `strata deps` at some point -- so it was green here
+    # and red on a fresh clone for as long as it has existed. It is also
+    # what FOR_DEVELOPERS.md tells a developer to do, so the step now does
+    # what the documentation says rather than what a warm working copy
+    # happens to allow. Round 17.
     - name: Phone Bridge Compiles
       run: |
+        bin/strata deps apps/orders_mobile
         bin/strata build apps/orders_mobile/src/host.sta \
           -o apps/orders_mobile/build/host
         test -f apps/orders_mobile/build/host.o
@@ -502,6 +511,16 @@ jobs:
     - name: The MCP Server Answers An Agent
       run: python3 ecosystem/mcp/test_server.py
 
+    # The same component written in the language it is about -- 3,700 lines
+    # of Strata including a JSON reader and writer, because std/json.sta
+    # reads a known shape rather than an arbitrary document. The script
+    # builds the server, runs its verify blocks, then starts it and speaks
+    # JSON-RPC to it on stdin exactly as an AI client does, including three
+    # shapes of path escape and a rename against apps/payables which it
+    # checksums before and after. No Python at run time.
+    - name: The MCP Server Written In Strata Answers An Agent
+      run: bash ecosystem/mcp_strata/test_server.sh
+
     - name: No Unbacked Claims
       run: |
         fail=0
@@ -672,8 +691,13 @@ jobs:
         python3 test_suite/scratch_is_constant_memory.py || \
           echo "::warning::no /usr/bin/time -v on macOS; memory claims are proven on Linux only"
 
+    # `strata deps` first -- same reason as the Linux job's Phone Bridge
+    # step. This machine is a genuinely clean checkout every time, which is
+    # why this job has been red here while green on every development
+    # machine. Round 17.
     - name: The Phone Bridge Builds For iOS
       run: |
+        bin/strata deps apps/orders_mobile
         bin/strata build apps/orders_mobile/src/host.sta \
           -o apps/orders_mobile/build/host
         test -f apps/orders_mobile/build/host.o

@@ -1,0 +1,357 @@
+// Deciding whether a caller may have what it asked for.
+//
+// Everything this server is asked to do names a path, and the thing on the
+// other end of the protocol is a program rather than a person. "../../.ssh/
+// id_rsa" is an ordinary-looking string to a program, and so is a symbolic
+// link inside the tree that points at /etc. Both are refused here, before
+// any file is opened and long before any argument is built.
+//
+// The rule is one sentence: a path is resolved first and checked second. A
+// check done before resolution is a check on the spelling, and the spelling
+// is what the caller controls.
+
+import io   from std;
+import str  from std;
+import mem  from std;
+import sys  from app;
+
+// Is `child` at or underneath `parent`? Both must already be resolved.
+//
+// The separator is part of the test on purpose: /a/bb starts with /a/b as
+// text and is not underneath it, and a check written with str_starts_with
+// alone lets a sibling directory through whenever its name begins with the
+// right letters.
+int path_within(str parent, str child) {
+    if (str_eq(parent, child) == 1) { return 1; }
+    int pn = str_len(parent);
+    if (pn == 0) { return 0; }
+    if (str_starts_with(child, parent) == 0) { return 0; }
+    if (str_len(child) <= pn) { return 0; }
+    // A parent that already ends in a separator -- "/" -- has no extra one.
+    if (parent[pn - 1] == 47) { return 1; }
+    if (child[pn] == 47) { return 1; }
+    return 0;
+}
+
+// A name the language would accept as an identifier: a letter or underscore,
+// then letters, digits and underscores. Table, column and new-name arguments
+// are held to this before a file is read, so nothing with a quote, a slash
+// or a newline in it ever reaches a regular expression or a file path.
+int is_identifier(str name) {
+    int n = str_len(name);
+    if (n == 0) { return 0; }
+    int c = name[0];
+    int first_ok = 0;
+    if (c == 95) { first_ok = 1; }
+    if (c >= 65) { if (c <= 90) { first_ok = 1; } }
+    if (c >= 97) { if (c <= 122) { first_ok = 1; } }
+    if (first_ok == 0) { return 0; }
+    for (int i = 1; i < n; i = i + 1) {
+        int d = name[i];
+        int ok = 0;
+        if (d == 95) { ok = 1; }
+        if (d >= 48) { if (d <= 57)  { ok = 1; } }
+        if (d >= 65) { if (d <= 90)  { ok = 1; } }
+        if (d >= 97) { if (d <= 122) { ok = 1; } }
+        if (ok == 0) { return 0; }
+    }
+    return 1;
+}
+
+// An error code: letters and digits, like E004. Looser than an identifier
+// because a code may start with a digit, and tighter than a path because it
+// is only ever used as a key.
+int is_error_code(str code) {
+    int n = str_len(code);
+    if (n == 0) { return 0; }
+    if (n > 16) { return 0; }
+    for (int i = 0; i < n; i = i + 1) {
+        int d = code[i];
+        int ok = 0;
+        if (d == 95) { ok = 1; }
+        if (d >= 48) { if (d <= 57)  { ok = 1; } }
+        if (d >= 65) { if (d <= 90)  { ok = 1; } }
+        if (d >= 97) { if (d <= 122) { ok = 1; } }
+        if (ok == 0) { return 0; }
+    }
+    return 1;
+}
+
+// A path with `.` and `..` segments worked out and repeated separators
+// removed, without asking the file system anything.
+//
+// This exists for the error message rather than for the check. A path that
+// does not exist cannot be resolved by the file system at all, so without
+// this `../../etc/passwd` would be refused for being absent -- which is
+// true, unhelpful, and would become false if somebody created it.
+str path_normalize(str p) {
+    int n = str_len(p);
+    int absolute = 0;
+    if (n > 0) { if (p[0] == 47) { absolute = 1; } }
+    // Segments are kept as one string with separators, because the language
+    // has no growable list to keep them in. Dropping the last one is then a
+    // matter of cutting at the last separator.
+    StringBuilder out = sb_new();
+    int i = 0;
+    while (i < n) {
+        while (i < n) {
+            if (p[i] != 47) { break; }
+            i = i + 1;
+        }
+        int start = i;
+        while (i < n) {
+            if (p[i] == 47) { break; }
+            i = i + 1;
+        }
+        if (i == start) { continue; }
+        str seg = str_slice(p, start, i);
+        if (str_eq(seg, ".") == 1) { continue; }
+        if (str_eq(seg, "..") == 1) {
+            str so_far = sb_to_str(&out);
+            int cut = last_separator(so_far);
+            StringBuilder fresh = sb_new();
+            if (cut > 0) { sb_append(&fresh, str_slice(so_far, 0, cut)); }
+            else if (cut < 0) {
+                // Nothing left to climb. Above an absolute root is the root;
+                // above a relative path it is a `..` that has to be kept.
+                if (absolute == 0) { sb_append(&fresh, ".."); }
+            }
+            out = fresh;
+            continue;
+        }
+        str so_far = sb_to_str(&out);
+        StringBuilder fresh = sb_new();
+        sb_append(&fresh, so_far);
+        if (str_len(so_far) > 0) { sb_append(&fresh, "/"); }
+        sb_append(&fresh, seg);
+        out = fresh;
+    }
+    str body = sb_to_str(&out);
+    if (absolute == 1) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "/");
+        sb_append(&sb, body);
+        return sb_to_str(&sb);
+    }
+    if (str_len(body) == 0) { return "."; }
+    return body;
+}
+
+int last_separator(str p) {
+    int n = str_len(p);
+    if (n == 0) { return 0 - 1; }
+    for (int i = n - 1; i >= 0; i = i - 1) {
+        if (p[i] == 47) { return i; }
+    }
+    return 0;
+}
+
+// Resolve a caller's path against `base` and refuse anything that leaves it.
+//
+// Returns the resolved path, or "" with `why` saying what was wrong. The
+// caller is expected to turn `why` into a tool result the agent can read,
+// rather than into a protocol error it cannot act on.
+str safe_path(str base, str candidate, str &why) {
+    if (str_len(candidate) == 0) {
+        why = "a path is required";
+        return "";
+    }
+    str root = sys_realpath(base);
+    if (str_len(root) == 0) {
+        why = "the directory this server was pointed at does not exist";
+        return "";
+    }
+    // Joined against the RESOLVED base, never the spelling of it: a base
+    // given as "." would otherwise make every relative path come out
+    // relative too, and a relative path is never inside an absolute root.
+    str joined = candidate;
+    if (candidate[0] != 47) { joined = path_join(root, candidate); }
+    // The spelling is checked first, so a path that climbs out of the tree
+    // is refused for climbing out whether or not it happens to exist.
+    if (path_within(path_normalize(root), path_normalize(joined)) == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'");
+        sb_append(&sb, candidate);
+        sb_append(&sb, "' resolves outside ");
+        sb_append(&sb, root);
+        sb_append(&sb, " and will not be used");
+        why = sb_to_str(&sb);
+        return "";
+    }
+    str resolved = sys_realpath(joined);
+    if (str_len(resolved) == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'");
+        sb_append(&sb, candidate);
+        sb_append(&sb, "' does not exist");
+        why = sb_to_str(&sb);
+        return "";
+    }
+    // And again on what the file system says it is, which is what catches a
+    // symbolic link inside the tree pointing out of it.
+    if (path_within(root, resolved) == 0) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "'");
+        sb_append(&sb, candidate);
+        sb_append(&sb, "' resolves outside ");
+        sb_append(&sb, root);
+        sb_append(&sb, " and will not be used");
+        why = sb_to_str(&sb);
+        return "";
+    }
+    why = "";
+    return resolved;
+}
+
+// The nearest directory at or above `path` that holds a Strata.toml, or "".
+//
+// The toolchain resolves `import ... from app` against the directory it is
+// run in, so checking a file from anywhere else is a question about a
+// different program than the one that was asked about.
+str project_of(str path, str root) {
+    str d = path;
+    if (sys_is_dir(d) == 0) { d = path_parent(d); }
+    while (path_within(root, d) == 1) {
+        if (sys_is_file(path_join(d, "Strata.toml")) == 1) { return d; }
+        str up = path_parent(d);
+        if (str_eq(up, d) == 1) { return ""; }
+        d = up;
+    }
+    return "";
+}
+
+// One `key = "value"` out of a Strata.toml. Not a TOML parser: the two keys
+// this server needs are `main` and `output`, and a parser nobody else uses
+// is a parser nobody else tests.
+str toml_value(str toml_path, str key) {
+    str text = file_read(toml_path);
+    int n = str_len(text);
+    int i = 0;
+    int line_start = 0;
+    while (i <= n) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int is_break = at_end;
+        if (at_end == 0) { if (text[i] == 10) { is_break = 1; } }
+        if (is_break == 1) {
+            str line = str_slice(text, line_start, i);
+            int hash = str_index_of(line, "#");
+            if (hash >= 0) { line = str_slice(line, 0, hash); }
+            int eq = str_index_of(line, "=");
+            if (eq > 0) {
+                str name = str_trim_spaces(str_slice(line, 0, eq));
+                if (str_eq(name, key) == 1) {
+                    str value = str_trim_spaces(str_slice(line, eq + 1, str_len(line)));
+                    int vn = str_len(value);
+                    if (vn >= 2) {
+                        if (value[0] == 34) {
+                            if (value[vn - 1] == 34) {
+                                return str_slice(value, 1, vn - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            line_start = i + 1;
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// Spaces and tabs off both ends. std/str has no trim, and every reader of a
+// configuration file needs one.
+str str_trim_spaces(str value) {
+    int n = str_len(value);
+    int a = 0;
+    while (a < n) {
+        int c = value[a];
+        if (c == 32) { a = a + 1; continue; }
+        if (c == 9)  { a = a + 1; continue; }
+        if (c == 13) { a = a + 1; continue; }
+        break;
+    }
+    int b = n;
+    while (b > a) {
+        int c = value[b - 1];
+        if (c == 32) { b = b - 1; continue; }
+        if (c == 9)  { b = b - 1; continue; }
+        if (c == 13) { b = b - 1; continue; }
+        break;
+    }
+    return str_slice(value, a, b);
+}
+
+verify "a path is worked out without asking the file system" {
+    assert str_eq(path_normalize("/a/b/../c"), "/a/c") == 1;
+    assert str_eq(path_normalize("/a/./b//c/"), "/a/b/c") == 1;
+    assert str_eq(path_normalize("/a/b/../../.."), "/") == 1;
+    assert str_eq(path_normalize("/a/../../etc/passwd"), "/etc/passwd") == 1;
+    assert str_eq(path_normalize("a/b/../c"), "a/c") == 1;
+    assert str_eq(path_normalize("../x"), "../x") == 1;
+    assert str_eq(path_normalize("."), ".") == 1;
+    assert str_eq(path_normalize("/"), "/") == 1;
+}
+
+verify "a path underneath is allowed and a sibling that looks like it is not" {
+    assert path_within("/a/b", "/a/b") == 1;
+    assert path_within("/a/b", "/a/b/c") == 1;
+    assert path_within("/a/b", "/a/b/c/d.sta") == 1;
+    assert path_within("/a/b", "/a/bb") == 0;
+    assert path_within("/a/b", "/a") == 0;
+    assert path_within("/a/b", "/etc/passwd") == 0;
+    assert path_within("/", "/etc/passwd") == 1;
+}
+
+verify "the three paths an attacker reaches for first are refused" {
+    str why = "";
+    // /tmp exists, so this is refused for leaving the base rather than for
+    // being absent -- which is the refusal that has to work.
+    str got = safe_path("/usr", "/tmp", &why);
+    assert str_len(got) == 0;
+    assert str_index_of(why, "resolves outside") >= 0;
+
+    got = safe_path("/usr", "../tmp", &why);
+    assert str_len(got) == 0;
+    assert str_index_of(why, "resolves outside") >= 0;
+
+    // It does not exist, and it is still refused for the right reason: a
+    // path that climbs out of the tree is out whether it is there or not.
+    got = safe_path("/usr", "../../etc/passwd-not-a-real-file", &why);
+    assert str_len(got) == 0;
+    assert str_index_of(why, "resolves outside") >= 0;
+
+    // A path that stays inside comes back resolved.
+    got = safe_path("/usr", ".", &why);
+    assert str_eq(got, "/usr") == 1;
+    // A base given relatively still resolves, because the join happens
+    // against what the base resolves to.
+    got = safe_path("/usr/..", "usr", &why);
+    assert str_eq(got, "/usr") == 1;
+    assert str_len(why) == 0;
+
+    // An empty path is a refusal, not a silent "the base, then".
+    got = safe_path("/usr", "", &why);
+    assert str_len(got) == 0;
+}
+
+verify "only a plain identifier is accepted as a table or column" {
+    assert is_identifier("Bill") == 1;
+    assert is_identifier("unit_price") == 1;
+    assert is_identifier("_x9") == 1;
+    assert is_identifier("9lives") == 0;
+    assert is_identifier("") == 0;
+    assert is_identifier("a b") == 0;
+    assert is_identifier("a;rm -rf /") == 0;
+    assert is_identifier("a\"b") == 0;
+    assert is_identifier("a/b") == 0;
+    assert is_error_code("E004") == 1;
+    assert is_error_code("E004;x") == 0;
+    assert is_error_code("") == 0;
+}
+
+verify "a configuration key is read without a TOML parser" {
+    assert str_eq(str_trim_spaces("  main  "), "main") == 1;
+    assert str_eq(str_trim_spaces(""), "") == 1;
+    assert str_eq(str_trim_spaces("\tx\t"), "x") == 1;
+}

@@ -1,0 +1,425 @@
+// An MCP server for the Strata toolchain, written in Strata.
+//
+//   mcp_strata [--root /path/to/strata/checkout]
+//
+// JSON-RPC 2.0 over newline-delimited JSON on standard input and output.
+// There is no SDK, because there is no package manager to take one from --
+// and the protocol a tools-only server needs is one method name and one
+// envelope, which is short enough to write out.
+//
+// WHY THIS EXISTS WHEN ecosystem/mcp ALREADY DOES
+//
+// The Python server works and is the reference. This one is the same seven
+// questions answered by a program written in the language the server is
+// about. An ecosystem component in another language is a quiet admission
+// that the language cannot carry its own tooling, and the only way to find
+// out whether it can is to write the thing.
+//
+// WHAT IT EXPOSES
+//
+//   strata_check          type-check a file, structured diagnostics
+//   strata_taxonomy       the error taxonomy, whole or one code
+//   strata_build          compile, diagnostics plus exit status
+//   strata_run            build and run, exit status and both streams
+//   strata_schema         the `database` blocks: tables, columns, types
+//   strata_rename_impact  rename a column in a copy, report every tier
+//
+// `strata_test` is in the Python server and not here; README.md says why.
+
+import io      from std;
+import str     from std;
+import mem     from std;
+import json    from std;
+import cli     from std;
+import sys     from app;
+import text    from app;
+import paths   from app;
+import jsonval from app;
+import blocks  from app;
+import diag    from app;
+import tools   from app;
+import rename  from app;
+
+const str PROTOCOL_VERSION = "2025-06-18";
+const str SERVER_NAME      = "strata-sta";
+const str SERVER_VERSION   = "0.1.0";
+
+// ── the wire ─────────────────────────────────────────────────────────────
+
+def send(str message) {
+    print_raw(message);
+    print_raw("\n");
+    flush_stdout();
+}
+
+def send_error(str id_raw, int code, str message) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"jsonrpc\":\"2.0\",");
+    sb_append(&sb, kv_raw("id", id_raw));
+    sb_append(&sb, ",\"error\":{");
+    sb_append(&sb, kv_int("code", code));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("message", message));
+    sb_append(&sb, "}}");
+    send(sb_to_str(&sb));
+}
+
+def send_result(str id_raw, str result) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"jsonrpc\":\"2.0\",");
+    sb_append(&sb, kv_raw("id", id_raw));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("result", result));
+    sb_append(&sb, "}");
+    send(sb_to_str(&sb));
+}
+
+// A tool's answer. It goes back as `content` for a client that shows text to
+// a person and as `structuredContent` for one that reads it, and the two are
+// the same document so they cannot disagree.
+def send_tool_result(str id_raw, str result, int is_error) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"content\":[{\"type\":\"text\",");
+    sb_append(&sb, kv_str("text", result));
+    sb_append(&sb, "}],");
+    sb_append(&sb, kv_raw("structuredContent", result));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_bool("isError", is_error));
+    sb_append(&sb, "}");
+    send_result(id_raw, sb_to_str(&sb));
+}
+
+// ── the catalogue ────────────────────────────────────────────────────────
+
+str prop(str name, str type_name, str description) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, json_str(name));
+    sb_append(&sb, ":{");
+    sb_append(&sb, kv_str("type", type_name));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("description", description));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+str schema_of(str properties, str required) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"type\":\"object\",\"properties\":{");
+    sb_append(&sb, properties);
+    sb_append(&sb, "},\"required\":[");
+    sb_append(&sb, required);
+    sb_append(&sb, "]}");
+    return sb_to_str(&sb);
+}
+
+str tool_entry(str name, str description, str schema) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_str("name", name));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("description", description));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("inputSchema", schema));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+str path_description() {
+    return "A path to a .sta file or a project directory. Relative paths are read against the Strata checkout this server was pointed at. A path that resolves outside it is refused.";
+}
+
+str catalogue() {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"tools\":[");
+
+    sb_append(&sb, tool_entry("strata_check",
+    "Type-check a Strata file, or a project's entry point, and return every diagnostic as structured JSON: code, file, line, column, message, hint, and the classification and remediation strategy for that code from ERROR_TAXONOMY.json. Read-only; writes nothing. This is the tool to reach for first when something does not build.",
+    schema_of(prop("path", "string", path_description()), "\"path\"")));
+    sb_append(&sb, ",");
+
+    sb_append(&sb, tool_entry("strata_taxonomy",
+    "Return the Strata error taxonomy: every code with its classification, severity, what it means and the remediation strategy written for a machine to follow. Pass `code` for one entry. Use it to reason about a code you have not seen before.",
+    schema_of(prop("code", "string", "An error code such as E004."), "")));
+    sb_append(&sb, ",");
+
+    StringBuilder build_props = sb_new();
+    sb_append(&build_props, prop("path", "string", path_description()));
+    sb_append(&build_props, ",");
+    sb_append(&build_props, prop("out", "string",
+    "A name for the binary. Only the file name is used; the directory is chosen by the server."));
+    sb_append(&build_props, ",");
+    sb_append(&build_props, prop("workspace", "string",
+    "\"scratch\" (the default) builds a throwaway copy under /tmp; \"project\" builds in place."));
+    sb_append(&sb, tool_entry("strata_build",
+    "Compile a Strata file or project. Returns exit status, the stage it reached, structured diagnostics and the path to the binary. By default it builds a throwaway copy under /tmp, because the compiler writes a generated .c file beside every source it reads; pass workspace=\"project\" to build in place.",
+    schema_of(sb_to_str(&build_props), "\"path\"")));
+    sb_append(&sb, ",");
+
+    StringBuilder run_props = sb_new();
+    sb_append(&run_props, prop("path", "string", path_description()));
+    sb_append(&run_props, ",");
+    sb_append(&run_props, prop("workspace", "string",
+    "\"scratch\" (the default) or \"project\"."));
+    sb_append(&run_props, ",\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},");
+    sb_append(&run_props, kv_str("description",
+    "argv for the program, passed as a list and never through a shell. At most six, and none of them may be empty."));
+    sb_append(&run_props, "}");
+    sb_append(&sb, tool_entry("strata_run",
+    "Build and run a Strata program, returning exit status, stdout and stderr separately. Runs against a throwaway copy by default, so anything the program writes is discarded; pass workspace=\"project\" to run against the real data files.",
+    schema_of(sb_to_str(&run_props), "\"path\"")));
+    sb_append(&sb, ",");
+
+    sb_append(&sb, tool_entry("strata_schema",
+    "Read every `database` block in a project and return the tables, their columns and each column's declared type, with the file and line the declaration sits on. Use this before changing data: in Strata the schema is the single description every other tier is checked against.",
+    schema_of(prop("project_dir", "string", path_description()),
+    "\"project_dir\"")));
+    sb_append(&sb, ",");
+
+    StringBuilder rename_props = sb_new();
+    sb_append(&rename_props, prop("project_dir", "string", path_description()));
+    sb_append(&rename_props, ",");
+    sb_append(&rename_props, prop("table", "string",
+    "The `database` block's name, e.g. Bill."));
+    sb_append(&rename_props, ",");
+    sb_append(&rename_props, prop("column", "string", "The column to rename."));
+    sb_append(&rename_props, ",");
+    sb_append(&rename_props, prop("new_name", "string", "The name to give it."));
+    sb_append(&sb, tool_entry("strata_rename_impact",
+    "Rename one column in a COPY of a project under /tmp, re-check everything, and return every place that stopped building: the file, the line, the tier (data / rules / web / report / phone / test / program) and the diagnostic. The caller's project is never modified. This answers 'what would this change break?' before the change is made.",
+    schema_of(sb_to_str(&rename_props),
+    "\"project_dir\",\"table\",\"column\",\"new_name\"")));
+
+    sb_append(&sb, "]}");
+    return sb_to_str(&sb);
+}
+
+str capabilities(str asked_version) {
+    str version = PROTOCOL_VERSION;
+    if (str_len(asked_version) > 0) { version = asked_version; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_str("protocolVersion", version));
+    sb_append(&sb, ",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{");
+    sb_append(&sb, kv_str("name", SERVER_NAME));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("version", SERVER_VERSION));
+    sb_append(&sb, "},");
+    sb_append(&sb, kv_str("instructions",
+    "Tools for the Strata compiler. Diagnostics come back structured, with the taxonomy's classification and remediation strategy attached, so you never need to parse compiler prose. strata_rename_impact answers 'what would this schema change break?' without making the change."));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// ── dispatch ─────────────────────────────────────────────────────────────
+
+// One element of an array of strings, or "". Anything that is not a string
+// is treated as absent rather than coerced, because an argument list with a
+// number silently turned into text is a program run with the wrong argv.
+str array_text(int arr, int index) {
+    int item = jv_array_at(arr, index);
+    if (jv_kind(item) != JV_STRING) { return ""; }
+    return jv_text(item);
+}
+
+def handle(str root, str scratch, str body) {
+    int ok = 1;
+    int msg = jv_parse(body, &ok);
+    if (ok == 0) {
+        send_error("null", 0 - 32700, "parse error");
+        return;
+    }
+    if (jv_kind(msg) != JV_OBJECT) {
+        // A JSON-RPC batch is a top-level array. MCP's 2025-06-18 revision
+        // removed batching, so refusing one is the current protocol rather
+        // than a gap -- and saying so is better than answering half of it.
+        send_error("null", 0 - 32600,
+        "a request must be a JSON object; batches are not supported");
+        return;
+    }
+
+    str method = jv_member_text(msg, "method");
+    int id_node = jv_member(msg, "id");
+    int has_id = 0;
+    if (id_node >= 0) {
+        if (jv_kind(id_node) != JV_NULL) { has_id = 1; }
+    }
+    str id_raw = jv_raw(id_node);
+
+    // A notification has no id and must get no answer. Replying to one is a
+    // protocol violation that some clients treat as a fatal desync, which is
+    // why `notifications/initialized` -- which every client sends -- has to
+    // be met with silence rather than with a "method not found".
+    if (has_id == 0) { return; }
+
+    if (str_eq(method, "initialize") == 1) {
+        int params = jv_member(msg, "params");
+        send_result(id_raw, capabilities(jv_member_text(params, "protocolVersion")));
+        return;
+    }
+    if (str_eq(method, "ping") == 1) {
+        send_result(id_raw, "{}");
+        return;
+    }
+    if (str_eq(method, "tools/list") == 1) {
+        send_result(id_raw, catalogue());
+        return;
+    }
+    if (str_eq(method, "tools/call") == 1) {
+        int params = jv_member(msg, "params");
+        str name = jv_member_text(params, "name");
+        int args = jv_member(params, "arguments");
+
+        // Every argument is read out HERE, before a tool runs. A tool parses
+        // the compiler's JSON with the same parser, and the parser holds one
+        // document at a time -- so the request's tree is gone the moment the
+        // first one does. The strings read out of it survive, because
+        // `delete` unlinks a row without freeing what it held.
+        str a_path      = jv_member_text(args, "path");
+        str a_project   = jv_member_text(args, "project_dir");
+        str a_code      = jv_member_text(args, "code");
+        str a_out       = jv_member_text(args, "out");
+        str a_workspace = jv_member_text(args, "workspace");
+        str a_table     = jv_member_text(args, "table");
+        str a_column    = jv_member_text(args, "column");
+        str a_new_name  = jv_member_text(args, "new_name");
+        int argv = jv_member(args, "args");
+        str g1 = array_text(argv, 0);
+        str g2 = array_text(argv, 1);
+        str g3 = array_text(argv, 2);
+        str g4 = array_text(argv, 3);
+        str g5 = array_text(argv, 4);
+        str g6 = array_text(argv, 5);
+        int too_many = 0;
+        if (jv_child_count(argv) > 6) { too_many = 1; }
+
+        int bad = 0;
+        str result = "";
+        if (str_eq(name, "strata_check") == 1) {
+            result = tool_check(root, scratch, a_path, &bad);
+        }
+        else if (str_eq(name, "strata_taxonomy") == 1) {
+            result = tool_taxonomy(root, a_code, &bad);
+        }
+        else if (str_eq(name, "strata_build") == 1) {
+            result = tool_build(root, scratch, a_path, a_out, a_workspace, &bad);
+        }
+        else if (str_eq(name, "strata_run") == 1) {
+            if (too_many == 1) {
+                bad = 1;
+                result = err_json("at most six arguments can be passed to the program");
+            } else {
+                result = tool_run(root, scratch, a_path, a_workspace,
+                g1, g2, g3, g4, g5, g6, &bad);
+            }
+        }
+        else if (str_eq(name, "strata_schema") == 1) {
+            result = tool_schema(root, scratch, a_project, &bad);
+        }
+        else if (str_eq(name, "strata_rename_impact") == 1) {
+            result = tool_rename_impact(root, scratch, a_project, a_table,
+            a_column, a_new_name, &bad);
+        }
+        else {
+            // An unknown tool is an answer, not a protocol error: the agent
+            // asked a reasonable question and can act on being told the name
+            // is wrong. A -32601 here would tell it the request was
+            // malformed, which it was not.
+            bad = 1;
+            StringBuilder e = sb_new();
+            sb_append(&e, "no tool called '");
+            sb_append(&e, str_truncate(name, 80));
+            sb_append(&e, "'");
+            result = err_json(sb_to_str(&e));
+        }
+        send_tool_result(id_raw, result, bad);
+        return;
+    }
+
+    StringBuilder unknown = sb_new();
+    sb_append(&unknown, "method not found: ");
+    sb_append(&unknown, str_truncate(method, 80));
+    send_error(id_raw, 0 - 32601, sb_to_str(&unknown));
+}
+
+// ── starting up ──────────────────────────────────────────────────────────
+
+// The top of a Strata checkout: the directory holding the toolchain.
+//
+// Both markers are required. `bin/strata` alone would match a half-copied
+// tree, and the taxonomy is what makes a diagnostic worth more than its
+// text, so a tree without it is not one this server can serve.
+str find_root(str start) {
+    if (str_len(start) == 0) { return ""; }
+    str d = sys_realpath(start);
+    while (str_len(d) > 0) {
+        if (sys_is_file(path_join(d, "bin/strata")) == 1) {
+            if (sys_is_file(path_join(d, "ERROR_TAXONOMY.json")) == 1) { return d; }
+        }
+        str up = path_parent(d);
+        if (str_eq(up, d) == 1) { return ""; }
+        d = up;
+    }
+    return "";
+}
+
+int main() {
+    str asked = flag_value("--root");
+    str root = "";
+    if (str_len(asked) > 0) {
+        // A --root that is not a checkout is refused rather than quietly
+        // replaced by one found somewhere else. Serving a different tree
+        // than the one named is the kind of wrong answer nobody checks for.
+        root = find_root(asked);
+        if (str_len(root) == 0) {
+            // stderr, not stdout: stdout is the protocol channel and a word
+            // of English on it desynchronises every client at once.
+            eprint("strata-mcp: --root names no Strata checkout (looked for bin/strata and ERROR_TAXONOMY.json at or above it)");
+            return 2;
+        }
+    } else {
+        root = find_root(sys_getenv("STRATA_ROOT"));
+        if (str_len(root) == 0) { root = find_root(path_parent(sys_self_path())); }
+        if (str_len(root) == 0) { root = find_root("."); }
+        if (str_len(root) == 0) {
+            eprint("strata-mcp: no Strata checkout found (looked for bin/strata and ERROR_TAXONOMY.json). Pass --root.");
+            return 2;
+        }
+    }
+
+    // The toolchain on this machine finds OpenSSL through a pkg-config
+    // directory that is not on the default search path, and a client starts
+    // this server with whatever environment it has. Setting it only when it
+    // is unset leaves a deliberate one alone.
+    if (str_len(sys_getenv("PKG_CONFIG_PATH")) == 0) {
+        StringBuilder guess = sb_new();
+        sb_append(&guess, sys_getenv("HOME"));
+        sb_append(&guess, "/osslshim/pkgconfig");
+        if (sys_is_dir(sb_to_str(&guess)) == 1) {
+            sys_setenv("PKG_CONFIG_PATH", sb_to_str(&guess));
+        }
+    }
+
+    str scratch = sys_mkdtemp("strata-mcp-io");
+    if (str_len(scratch) == 0) {
+        eprint("strata-mcp: could not make a working directory under /tmp");
+        return 2;
+    }
+
+    if (has_flag("--self-test") == 1) {
+        // A way to see the server answer without speaking the protocol, and
+        // what test_server.sh uses to prove the binary starts at all.
+        print(catalogue());
+        sys_remove_tree(scratch);
+        return 0;
+    }
+
+    while (1) {
+        StringBuilder line = sb_new();
+        if (read_stdin_line(&line) == 0) { break; }
+        str body = str_trim_spaces(sb_to_str(&line));
+        if (str_len(body) == 0) { continue; }
+        handle(root, scratch, body);
+    }
+    sys_remove_tree(scratch);
+    return 0;
+}

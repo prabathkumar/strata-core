@@ -1,0 +1,752 @@
+// The tools, as functions that answer in JSON.
+//
+// Each one returns the text of a JSON object and sets `is_error` when it
+// could not do what was asked. That distinction is the protocol's: a tool
+// that failed answers through the RESULT, with `isError` set, because the
+// agent is meant to read the reason and act on it. A JSON-RPC error means
+// the request itself was malformed and there is nothing in it to learn from.
+//
+// Two rules run through all of them.
+//
+// A caller cannot name a path outside the checkout this server was pointed
+// at. `safe_path` resolves first and checks second, so a symbolic link
+// inside the tree that points out of it is caught rather than followed.
+//
+// The caller's own files are never written. `strata check` writes nothing
+// and runs where it stands. `strata build` and `strata run` write a
+// generated .c file beside every source they read, so they work on a
+// throwaway copy unless the caller asks for otherwise -- an agent exploring
+// a codebase should not leave ten files behind in it.
+
+import io      from std;
+import str     from std;
+import mem     from std;
+import json    from std;
+import sys     from app;
+import text    from app;
+import paths   from app;
+import jsonval from app;
+import blocks  from app;
+import diag    from app;
+
+// How long the toolchain is given. A build of a whole project with its
+// dependencies is the slow case; past this the child is killed by its own
+// alarm and comes back as 142 rather than hanging the server forever.
+const int TOOL_TIMEOUT = 300;
+
+str strata_bin(str root) { return path_join(root, "bin/strata"); }
+
+str err_json(str message) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", 0));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("error", message));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// Run the toolchain and bring both streams back separately.
+//
+// Separately matters: the compiler's progress chatter and its diagnostics
+// go to different places, and a server that merges them has to guess which
+// is which.
+int toolchain(str root, str scratch, str a1, str a2, str a3, str a4, str a5,
+str cwd, str &out_text, str &err_text) {
+    str out_path = path_join(scratch, "stdout.txt");
+    str err_path = path_join(scratch, "stderr.txt");
+    int rc = proc_run(strata_bin(root), a1, a2, a3, a4, a5, "",
+    cwd, out_path, err_path, TOOL_TIMEOUT);
+    out_text = file_read(out_path);
+    err_text = file_read(err_path);
+    return rc;
+}
+
+str json_or_nothing(str out_text, str err_text, int rc) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "the toolchain did not answer in JSON (exit ");
+    sb_append(&sb, str(rc));
+    sb_append(&sb, "); stdout=");
+    sb_append(&sb, str_truncate(out_text, 300));
+    sb_append(&sb, " stderr=");
+    sb_append(&sb, str_truncate(err_text, 300));
+    return sb_to_str(&sb);
+}
+
+// The project a path belongs to and the file to hand the compiler.
+//
+// A directory means the project's entry point, read from its Strata.toml. A
+// file means itself, checked from the project that holds it -- the toolchain
+// resolves `import ... from app` against the directory it runs in, so the
+// answer depends on getting this right.
+int resolve_target(str root, str asked, str &proj, str &main_file, str &why) {
+    str p = safe_path(root, asked, &why);
+    if (str_len(p) == 0) { return 0; }
+    if (sys_is_dir(p) == 1) {
+        proj = p;
+        str rel = toml_value(path_join(p, "Strata.toml"), "main");
+        if (str_len(rel) == 0) { rel = "src/main.sta"; }
+        main_file = safe_path(p, rel, &why);
+        if (str_len(main_file) == 0) { return 0; }
+        return 1;
+    }
+    main_file = p;
+    proj = project_of(p, root);
+    if (str_len(proj) == 0) { proj = path_parent(p); }
+    return 1;
+}
+
+// A file the compiler generated or a dependency symlink, rather than source
+// somebody wrote. Walking into these reports the same file twice under two
+// names, once through the project that owns it and once through the copy.
+int is_ignorable(str file_path) {
+    if (str_index_of(file_path, "/build/") >= 0) { return 1; }
+    if (str_index_of(file_path, "/.strata/") >= 0) { return 1; }
+    if (str_index_of(file_path, "/_to_delete/") >= 0) { return 1; }
+    if (str_index_of(file_path, "/__pycache__/") >= 0) { return 1; }
+    if (str_index_of(file_path, "/.git/") >= 0) { return 1; }
+    return 0;
+}
+
+str last_nonempty_line(str content) {
+    int lines = line_count(content);
+    for (int i = lines; i >= 1; i = i - 1) {
+        str l = str_trim_spaces(line_at(content, i));
+        if (str_len(l) > 0) { return l; }
+    }
+    return "";
+}
+
+// ── 1. check ─────────────────────────────────────────────────────────────
+
+str tool_check(str root, str scratch, str asked, int &is_error) {
+    str proj = "";
+    str target = "";
+    str why = "";
+    if (resolve_target(root, asked, &proj, &target, &why) == 0) {
+        is_error = 1;
+        return err_json(why);
+    }
+    str out_text = "";
+    str err_text = "";
+    int rc = toolchain(root, scratch, "check", target, "--json", "", "", proj,
+    &out_text, &err_text);
+    int ok = 1;
+    int payload = jv_parse(out_text, &ok);
+    if (ok == 0) {
+        is_error = 1;
+        return err_json(json_or_nothing(out_text, err_text, rc));
+    }
+    str taxonomy = file_read(taxonomy_path(root));
+    int clean = payload_ok(payload);
+    if (rc != 0) { clean = 0; }
+    // A file with diagnostics in it comes back with isError set, the way the
+    // Python server answers, so a client that switches on isError behaves
+    // the same against either.
+    is_error = 1 - clean;
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", clean));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("file", target));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("relative_file", path_relative(root, target)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("project", proj));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("stage", jv_member_text(payload, "stage")));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("exit_code", rc));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("error_count",
+    jv_member_int(payload, "error_count", diags_count(payload))));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("advisory_count",
+    jv_member_int(payload, "advisory_count", 0)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("diagnostics",
+    diags_array(taxonomy, payload, target, root)));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// ── 2. taxonomy ──────────────────────────────────────────────────────────
+
+str tool_taxonomy(str root, str code, int &is_error) {
+    str text_of_file = file_read(taxonomy_path(root));
+    if (str_len(text_of_file) == 0) {
+        is_error = 1;
+        return err_json("ERROR_TAXONOMY.json could not be read");
+    }
+    str version = json_string_field(text_of_file, "version");
+    str authority = json_string_field(text_of_file, "standard_authority");
+    // Flattened to one line: the file is pretty-printed and the wire is one
+    // message per line.
+    str whole = json_minify(jraw_value_of(text_of_file, "taxonomy", 0));
+
+    if (str_len(code) > 0) {
+        if (is_error_code(code) == 0) {
+            is_error = 1;
+            StringBuilder e = sb_new();
+            sb_append(&e, "'");
+            sb_append(&e, str_truncate(code, 40));
+            sb_append(&e, "' is not an error code");
+            return err_json(sb_to_str(&e));
+        }
+        int at = json_index_of_key(whole, code, 0);
+        str entry = "";
+        if (at >= 0) { entry = jraw_value_of(whole, code, 0); }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "{");
+        if (str_len(entry) == 0) {
+            // Not an error: an agent asking about a code that does not exist
+            // has asked a sensible question and deserves the list of ones
+            // that do, rather than a refusal.
+            sb_append(&sb, kv_bool("ok", 0));
+            sb_append(&sb, ",");
+            sb_append(&sb, kv_str("code", code));
+            sb_append(&sb, ",");
+            sb_append(&sb, kv_bool("known", 0));
+            sb_append(&sb, ",");
+            sb_append(&sb, kv_raw("known_codes", jraw_member_names(whole)));
+            sb_append(&sb, "}");
+            is_error = 1;
+            return sb_to_str(&sb);
+        }
+        sb_append(&sb, kv_bool("ok", 1));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("code", code));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_bool("known", 1));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("entry", entry));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("version", version));
+        sb_append(&sb, "}");
+        return sb_to_str(&sb);
+    }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", 1));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("version", version));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("standard_authority", authority));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("code_count", jraw_member_count(whole)));
+    sb_append(&sb, ",");
+    // Handed back as it is written in the file rather than parsed and
+    // rebuilt: the file is already JSON and already right.
+    sb_append(&sb, kv_raw("taxonomy", whole));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// ── scratch copies ───────────────────────────────────────────────────────
+
+// Does `toml_text` name `me` as a dependency with a path?
+int depends_on_project(str toml_text, str me) {
+    int lines = line_count(toml_text);
+    for (int i = 1; i <= lines; i = i + 1) {
+        str l = str_trim_spaces(line_at(toml_text, i));
+        if (str_starts_with(l, me) == 0) { continue; }
+        int after = str_len(me);
+        if (str_len(l) <= after) { continue; }
+        if (is_word_byte(l[after]) == 1) { continue; }
+        if (str_index_of(l, "=") < 0) { continue; }
+        if (str_index_of(l, "path") < 0) { continue; }
+        return 1;
+    }
+    return 0;
+}
+
+// Generated output and resolved dependencies, taken out of a copy so the
+// copy is rebuilt from its own sources rather than from the original's.
+def clean_copy(str dir) {
+    sys_remove_tree(path_join(dir, ".strata"));
+    sys_remove_tree(path_join(dir, "build"));
+}
+
+// Copy a project, and any sibling that depends on it, into a fresh /tmp
+// directory. Returns that directory, or "".
+//
+// The sibling matters more than it looks. The phone tier of apps/payables is
+// a SEPARATE project that takes the schema as a dependency, so a copy of
+// apps/payables alone would report a schema change as breaking five tiers
+// and quietly miss the sixth -- which is the exact failure this language
+// exists to prevent, reproduced by the tool meant to demonstrate it.
+str scratch_copy(str root, str scratch, str proj, str &work, str &names) {
+    str tmp = sys_mkdtemp("strata-mcp");
+    if (str_len(tmp) == 0) { return ""; }
+    str base = path_base(proj);
+    work = path_join(tmp, base);
+    if (sys_copy_tree(proj, work) != 0) {
+        sys_remove_tree(tmp);
+        return "";
+    }
+    clean_copy(work);
+    names = base;
+
+    str parent = path_parent(proj);
+    str dirs = sys_find_dirs(parent, path_join(scratch, "dirs.txt"));
+    int lines = line_count(dirs);
+    for (int i = 1; i <= lines; i = i + 1) {
+        str d = str_trim_spaces(line_at(dirs, i));
+        if (str_len(d) == 0) { continue; }
+        if (str_eq(d, parent) == 1) { continue; }
+        if (str_eq(d, proj) == 1) { continue; }
+        str toml = path_join(d, "Strata.toml");
+        if (sys_is_file(toml) == 0) { continue; }
+        if (depends_on_project(file_read(toml), base) == 0) { continue; }
+        str dst = path_join(tmp, path_base(d));
+        if (sys_copy_tree(d, dst) != 0) { continue; }
+        clean_copy(dst);
+        // The copy's dependency links have to be made again inside the copy,
+        // or it resolves the schema back to the original and the rename this
+        // server just applied is invisible to it.
+        str o = "";
+        str e = "";
+        toolchain(root, scratch, "deps", "", "", "", "", dst, &o, &e);
+        StringBuilder sb = sb_new();
+        sb_append(&sb, names);
+        sb_append(&sb, "\n");
+        sb_append(&sb, path_base(d));
+        names = sb_to_str(&sb);
+    }
+    return tmp;
+}
+
+// ── 3. build ─────────────────────────────────────────────────────────────
+
+str tool_build(str root, str scratch, str asked, str out_name, str workspace,
+int &is_error) {
+    str proj = "";
+    str main_file = "";
+    str why = "";
+    if (resolve_target(root, asked, &proj, &main_file, &why) == 0) {
+        is_error = 1;
+        return err_json(why);
+    }
+    int in_project = 0;
+    if (str_eq(workspace, "project") == 1) { in_project = 1; }
+    else if (str_len(workspace) > 0) {
+        if (str_eq(workspace, "scratch") == 0) {
+            is_error = 1;
+            return err_json("workspace must be \"scratch\" or \"project\"");
+        }
+    }
+    if (str_len(out_name) > 0) {
+        if (str_index_of(out_name, "/") >= 0) {
+            is_error = 1;
+            return err_json("out must be a file name, not a path");
+        }
+    }
+
+    str work = proj;
+    str target = main_file;
+    str tmp = "";
+    str names = "";
+    str note = "";
+    str out_path = "";
+
+    if (in_project == 1) {
+        out_path = path_join(proj, "build");
+        if (str_len(out_name) > 0) { out_path = path_join(out_path, out_name); }
+        else { out_path = path_join(out_path, path_base(proj)); }
+        note = "built in place: a generated .c file was written beside every source the compiler read";
+    } else {
+        names = "";
+        tmp = scratch_copy(root, scratch, proj, &work, &names);
+        if (str_len(tmp) == 0) {
+            is_error = 1;
+            return err_json("the project could not be copied to /tmp");
+        }
+        target = path_join(work, path_relative(proj, main_file));
+        // The binary lands outside the copy, because a build whose output is
+        // deleted with the workspace has not finished.
+        out_path = path_join(tmp, "output");
+        if (str_len(out_name) > 0) { out_path = path_join(out_path, out_name); }
+        else { out_path = path_join(out_path, path_base(proj)); }
+        note = "built in a throwaway copy of the project; `out` was used as a file name only, and the binary is the path in `output`. The caller's project was not written to";
+    }
+
+    // The linker's complaint about a directory that is not there reads like
+    // a permissions problem, so the directory is made first.
+    sys_make_dir(path_parent(out_path));
+
+    str o = "";
+    str e = "";
+    int rc = toolchain(root, scratch, "build", target, "-o", out_path, "--json",
+    work, &o, &e);
+    // The binary is asked about before anything is thrown away.
+    int built = sys_is_file(out_path);
+
+    int ok = 1;
+    int payload = jv_parse(o, &ok);
+    if (ok == 0) {
+        // The build driver prints progress rather than JSON when --json is
+        // not among its arguments, so this is where that shows up.
+        payload = 0 - 1;
+    }
+    str taxonomy = file_read(taxonomy_path(root));
+    str diags = "[]";
+    str stage = "";
+    int errors = 0;
+    int advisories = 0;
+    str from_prefix = "";
+    str to_prefix = "";
+    if (in_project == 0) { from_prefix = work; to_prefix = proj; }
+    if (payload >= 0) {
+        diags = diags_array_from(taxonomy, payload, target, root,
+        from_prefix, to_prefix);
+        stage = jv_member_text(payload, "stage");
+        errors = jv_member_int(payload, "error_count", 0);
+        advisories = jv_member_int(payload, "advisory_count", 0);
+    }
+
+    int clean = 0;
+    if (rc == 0) { if (built == 1) { clean = 1; } }
+    is_error = 1 - clean;
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", clean));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("project", proj));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("file", main_file));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("relative_file", path_relative(root, main_file)));
+    sb_append(&sb, ",");
+    if (in_project == 1) { sb_append(&sb, kv_str("workspace", "project")); }
+    else { sb_append(&sb, kv_str("workspace", "scratch")); }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("stage", stage));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("exit_code", rc));
+    sb_append(&sb, ",");
+    if (payload >= 0) { sb_append(&sb, kv_str("stdout", "")); }
+    else { sb_append(&sb, kv_str("stdout", str_replace_all(o, work, proj))); }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("stderr", str_replace_all(e, work, proj)));
+    sb_append(&sb, ",");
+    if (built == 1) { sb_append(&sb, kv_str("output", out_path)); }
+    else { sb_append(&sb, kv_raw("output", "null")); }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_bool("output_exists", built));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("error_count", errors));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("advisory_count", advisories));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("diagnostics", diags));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("note", note));
+    sb_append(&sb, "}");
+
+    // The sources go; the binary named in `output` does not, because a
+    // caller asked where it is and the answer has to still be true.
+    if (str_len(tmp) > 0) { sys_remove_tree(work); }
+    if (clean == 0) { if (str_len(tmp) > 0) { sys_remove_tree(tmp); } }
+    return sb_to_str(&sb);
+}
+
+// ── 4. run ───────────────────────────────────────────────────────────────
+
+// Build, then run the binary, keeping the two apart.
+//
+// `strata run` compiles and executes in one go and prints the compiler's
+// progress on the same stream as the program's own output, so a caller
+// reading stdout gets "[Strata Stage 0] Compiling..." mixed into the answer.
+// Here the build happens first and the binary is executed on its own, which
+// is why `stdout` below is the program's and nothing else.
+//
+// The arguments go to the program as argv through execvp and are never
+// joined into a line, so a value containing a semicolon is an argument
+// containing a semicolon. An empty argument cannot be passed: an empty
+// string is how the end of the list is marked.
+str tool_run(str root, str scratch, str asked, str workspace,
+str g1, str g2, str g3, str g4, str g5, str g6, int &is_error) {
+    str proj = "";
+    str main_file = "";
+    str why = "";
+    if (resolve_target(root, asked, &proj, &main_file, &why) == 0) {
+        is_error = 1;
+        return err_json(why);
+    }
+    int in_project = 0;
+    if (str_eq(workspace, "project") == 1) { in_project = 1; }
+    else if (str_len(workspace) > 0) {
+        if (str_eq(workspace, "scratch") == 0) {
+            is_error = 1;
+            return err_json("workspace must be \"scratch\" or \"project\"");
+        }
+    }
+
+    str work = proj;
+    str target = main_file;
+    str tmp = "";
+    str names = "";
+    if (in_project == 0) {
+        tmp = scratch_copy(root, scratch, proj, &work, &names);
+        if (str_len(tmp) == 0) {
+            is_error = 1;
+            return err_json("the project could not be copied to /tmp");
+        }
+        target = path_join(work, path_relative(proj, main_file));
+    }
+
+    str binary = path_join(scratch, "program");
+    str o = "";
+    str e = "";
+    int rc = toolchain(root, scratch, "build", target, "-o", binary, "--json",
+    work, &o, &e);
+    int built = sys_is_file(binary);
+    str taxonomy = file_read(taxonomy_path(root));
+
+    if (built == 0) {
+        int ok = 1;
+        int payload = jv_parse(o, &ok);
+        str diags = "[]";
+        int errors = 0;
+        str from_prefix = "";
+        str to_prefix = "";
+        if (in_project == 0) { from_prefix = work; to_prefix = proj; }
+        if (ok == 1) {
+            diags = diags_array_from(taxonomy, payload, target, root,
+            from_prefix, to_prefix);
+            errors = jv_member_int(payload, "error_count", 0);
+        }
+        StringBuilder sb = sb_new();
+        sb_append(&sb, "{");
+        sb_append(&sb, kv_bool("ok", 0));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("phase", "build"));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("project", proj));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("file", main_file));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("relative_file", path_relative(root, main_file)));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_int("exit_code", rc));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("stdout", ""));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("stderr", str_replace_all(e, work, proj)));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_int("error_count", errors));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("diagnostics", diags));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("note", "the program was never run, because it did not build"));
+        sb_append(&sb, "}");
+        if (str_len(tmp) > 0) { sys_remove_tree(tmp); }
+        is_error = 1;
+        return sb_to_str(&sb);
+    }
+
+    str run_out = path_join(scratch, "program-stdout.txt");
+    str run_err = path_join(scratch, "program-stderr.txt");
+    int prc = proc_run(binary, g1, g2, g3, g4, g5, g6, work, run_out, run_err,
+    TOOL_TIMEOUT);
+    str pout = file_read(run_out);
+    str perr = file_read(run_err);
+
+    StringBuilder args = sb_new();
+    sb_append(&args, "[");
+    int first = 1;
+    if (str_len(g1) > 0) { sb_append(&args, json_str(g1)); first = 0; }
+    if (str_len(g2) > 0) { json_next(&args, 1 - first); sb_append(&args, json_str(g2)); first = 0; }
+    if (str_len(g3) > 0) { json_next(&args, 1 - first); sb_append(&args, json_str(g3)); first = 0; }
+    if (str_len(g4) > 0) { json_next(&args, 1 - first); sb_append(&args, json_str(g4)); first = 0; }
+    if (str_len(g5) > 0) { json_next(&args, 1 - first); sb_append(&args, json_str(g5)); first = 0; }
+    if (str_len(g6) > 0) { json_next(&args, 1 - first); sb_append(&args, json_str(g6)); first = 0; }
+    sb_append(&args, "]");
+
+    int clean = 0;
+    if (prc == 0) { clean = 1; }
+    is_error = 1 - clean;
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", clean));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("phase", "run"));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("project", proj));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("file", main_file));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("relative_file", path_relative(root, main_file)));
+    sb_append(&sb, ",");
+    if (in_project == 1) { sb_append(&sb, kv_str("workspace", "project")); }
+    else { sb_append(&sb, kv_str("workspace", "scratch")); }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("args", sb_to_str(&args)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("exit_code", prc));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("stdout", str_replace_all(pout, work, proj)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("stderr", str_replace_all(perr, work, proj)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("diagnostics", "[]"));
+    sb_append(&sb, ",");
+    if (in_project == 1) {
+        sb_append(&sb, kv_str("note", "run in place against the caller's own data files"));
+    } else {
+        sb_append(&sb, kv_str("note", "run in a throwaway copy: anything the program wrote to a data file was discarded. Pass workspace=\"project\" to run against the real data"));
+    }
+    sb_append(&sb, "}");
+    if (str_len(tmp) > 0) { sys_remove_tree(tmp); }
+    return sb_to_str(&sb);
+}
+
+// ── 5. schema ────────────────────────────────────────────────────────────
+
+// The line a column is declared on, inside its own block, or 0.
+//
+// `strata ast` carries no line numbers, so this is found by reading the
+// text. A line that could not be found comes back as 0 rather than as a
+// guess; the names and the types are the compiler's own reading and are
+// exact.
+int column_line(str src, int from_line, int to_line, str column) {
+    if (from_line < 1) { return 0; }
+    for (int n = from_line; n <= to_line; n = n + 1) {
+        if (declares_column(line_at(src, n), column) == 1) { return n; }
+    }
+    return 0;
+}
+
+str tool_schema(str root, str scratch, str asked, int &is_error) {
+    str why = "";
+    str proj = safe_path(root, asked, &why);
+    if (str_len(proj) == 0) {
+        is_error = 1;
+        return err_json(why);
+    }
+    if (sys_is_dir(proj) == 0) {
+        is_error = 1;
+        StringBuilder e = sb_new();
+        sb_append(&e, "'");
+        sb_append(&e, asked);
+        sb_append(&e, "' is not a directory");
+        return err_json(sb_to_str(&e));
+    }
+
+    str files = sys_find_files(proj, ".sta", path_join(scratch, "files.txt"));
+    int total = line_count(files);
+
+    StringBuilder tables = sb_new();
+    StringBuilder bad = sb_new();
+    sb_append(&tables, "[");
+    sb_append(&bad, "[");
+    int table_count = 0;
+    int bad_count = 0;
+
+    for (int i = 1; i <= total; i = i + 1) {
+        str f = str_trim_spaces(line_at(files, i));
+        if (str_len(f) == 0) { continue; }
+        if (is_ignorable(f) == 1) { continue; }
+
+        str o = "";
+        str e = "";
+        int rc = toolchain(root, scratch, "ast", f, "", "", "", proj, &o, &e);
+        int ok = 1;
+        int unit = 0 - 1;
+        if (rc == 0) { unit = jv_parse(o, &ok); }
+        else { ok = 0; }
+        if (ok == 0) {
+            // `strata ast` prints a Python traceback rather than a
+            // diagnostic when a file does not parse, so there is nothing
+            // structured to salvage. The file is named rather than silently
+            // skipped, and `strata_check` on it gives the real E000.
+            str reason = last_nonempty_line(e);
+            if (str_len(reason) == 0) { reason = last_nonempty_line(o); }
+            if (str_len(reason) == 0) { reason = "strata ast did not answer in JSON"; }
+            if (bad_count > 0) { sb_append(&bad, ","); }
+            bad_count = bad_count + 1;
+            sb_append(&bad, "{");
+            sb_append(&bad, kv_str("file", f));
+            sb_append(&bad, ",");
+            sb_append(&bad, kv_str("relative_file", path_relative(root, f)));
+            sb_append(&bad, ",");
+            sb_append(&bad, kv_str("reason", reason));
+            sb_append(&bad, "}");
+            continue;
+        }
+
+        int decls = jv_member(unit, "declarations");
+        if (decls < 0) { continue; }
+        int how_many = jv_child_count(decls);
+        if (how_many == 0) { continue; }
+
+        str src = file_read(f);
+        scan_blocks(f, src);
+
+        for (int d = 0; d < how_many; d = d + 1) {
+            int decl = jv_array_at(decls, d);
+            if (str_eq(jv_member_text(decl, "node"), "DatabaseDecl") == 0) {
+                continue;
+            }
+            str table = jv_member_text(decl, "name");
+            int start = database_start(f, table);
+            int stop = database_end(f, table);
+
+            StringBuilder cols = sb_new();
+            sb_append(&cols, "[");
+            int fields = jv_member(decl, "fields");
+            int fn = jv_child_count(fields);
+            for (int c = 0; c < fn; c = c + 1) {
+                int fld = jv_array_at(fields, c);
+                str cname = jv_member_text(fld, "name");
+                str ctype = jv_member_text(jv_member(fld, "type"), "name");
+                int at = column_line(src, start, stop, cname);
+                if (c > 0) { sb_append(&cols, ","); }
+                sb_append(&cols, "{");
+                sb_append(&cols, kv_str("name", cname));
+                sb_append(&cols, ",");
+                sb_append(&cols, kv_str("type", ctype));
+                sb_append(&cols, ",");
+                if (at > 0) { sb_append(&cols, kv_int("line", at)); }
+                else { sb_append(&cols, kv_raw("line", "null")); }
+                sb_append(&cols, "}");
+            }
+            sb_append(&cols, "]");
+
+            if (table_count > 0) { sb_append(&tables, ","); }
+            table_count = table_count + 1;
+            sb_append(&tables, "{");
+            sb_append(&tables, kv_str("table", table));
+            sb_append(&tables, ",");
+            sb_append(&tables, kv_str("file", f));
+            sb_append(&tables, ",");
+            sb_append(&tables, kv_str("relative_file", path_relative(root, f)));
+            sb_append(&tables, ",");
+            if (start > 0) { sb_append(&tables, kv_int("line", start)); }
+            else { sb_append(&tables, kv_raw("line", "null")); }
+            sb_append(&tables, ",");
+            sb_append(&tables, kv_raw("columns", sb_to_str(&cols)));
+            sb_append(&tables, "}");
+        }
+    }
+    sb_append(&tables, "]");
+    sb_append(&bad, "]");
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", 1));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("project", proj));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("table_count", table_count));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("tables", sb_to_str(&tables)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("unreadable_files", sb_to_str(&bad)));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}

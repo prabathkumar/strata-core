@@ -1,0 +1,302 @@
+// Which block of a file a line sits in.
+//
+// `strata ast` prints a compilation unit with no line numbers in it, and the
+// line number is the entire reason this exists: it is what turns "views.sta
+// is broken" into "the page is broken". So the blocks are found by reading
+// the text, counting braces with comments and string literals skipped.
+//
+// It is not a parser and does not need to be. The only question it answers
+// is: for a line the compiler has already pointed at, which top-level block
+// holds it? A file the compiler rejected outright never gets this far.
+//
+// The spans are kept in a table because the language has no map to keep them
+// in, and a table is reached by a query, which is the same shape a lookup
+// would have been.
+
+import io   from std;
+import str  from std;
+import mem  from std;
+import text from app;
+
+database SrcBlock {
+    int id;
+    str file;
+    str kind;
+    str name;
+    int start_line;
+    int end_line;
+}
+
+int is_block_keyword(str word) {
+    if (str_eq(word, "database") == 1) { return 1; }
+    if (str_eq(word, "layout")   == 1) { return 1; }
+    if (str_eq(word, "report")   == 1) { return 1; }
+    if (str_eq(word, "verify")   == 1) { return 1; }
+    if (str_eq(word, "screen")   == 1) { return 1; }
+    if (str_eq(word, "model")    == 1) { return 1; }
+    if (str_eq(word, "foreign")  == 1) { return 1; }
+    if (str_eq(word, "migrate")  == 1) { return 1; }
+    return 0;
+}
+
+// The tier a block belongs to, or "" for a block that is not a tier of its
+// own. The names are the ones the Python server uses, so the two answer the
+// same way about the same file.
+str tier_of_kind(str kind) {
+    if (str_eq(kind, "database") == 1) { return "data"; }
+    if (str_eq(kind, "layout")   == 1) { return "web"; }
+    if (str_eq(kind, "report")   == 1) { return "report"; }
+    if (str_eq(kind, "verify")   == 1) { return "test"; }
+    if (str_eq(kind, "screen")   == 1) { return "phone"; }
+    if (str_eq(kind, "model")    == 1) { return "rules"; }
+    return "";
+}
+
+// The name after a block keyword: either a quoted title -- `verify "..."` --
+// or an identifier.
+str name_after(str src, int at, int n) {
+    int i = text_skip_blanks(src, at);
+    if (i >= n) { return ""; }
+    if (src[i] == 34) {
+        int j = i + 1;
+        while (j < n) {
+            if (src[j] == 34) { return str_slice(src, i + 1, j); }
+            j = j + 1;
+        }
+        return "";
+    }
+    int j = i;
+    while (j < n) {
+        if (is_word_byte(src[j]) == 0) { break; }
+        j = j + 1;
+    }
+    return str_slice(src, i, j);
+}
+
+int text_skip_blanks(str s, int i) {
+    int n = str_len(s);
+    while (i < n) {
+        int c = s[i];
+        if (c == 32) { i = i + 1; continue; }
+        if (c == 9)  { i = i + 1; continue; }
+        return i;
+    }
+    return n;
+}
+
+// Record every top-level block in one file. Anything already recorded for
+// that file is replaced, so re-reading a file after it changed does not
+// leave the old spans behind.
+def scan_blocks(str file_path, str src) {
+    delete SrcBlock <- [file == file_path];
+    int next = count(SrcBlock <- [id > 0 - 1]);
+    int n = str_len(src);
+    int i = 0;
+    int line = 1;
+    int depth = 0;
+    int at_line_start = 1;
+    int pending = 0;
+    str pend_kind = "";
+    str pend_name = "";
+    int pend_line = 0;
+
+    while (i < n) {
+        int c = src[i];
+        if (c == 10) { line = line + 1; i = i + 1; at_line_start = 1; continue; }
+        if (c == 32) { i = i + 1; continue; }
+        if (c == 9)  { i = i + 1; continue; }
+        if (c == 13) { i = i + 1; continue; }
+
+        if (c == 47) {
+            if (i + 1 < n) {
+                if (src[i + 1] == 47) {
+                    while (i < n) {
+                        if (src[i] == 10) { break; }
+                        i = i + 1;
+                    }
+                    continue;
+                }
+                if (src[i + 1] == 42) {
+                    i = i + 2;
+                    while (i + 1 < n) {
+                        if (src[i] == 10) { line = line + 1; }
+                        if (src[i] == 42) {
+                            if (src[i + 1] == 47) { i = i + 2; break; }
+                        }
+                        i = i + 1;
+                    }
+                    at_line_start = 0;
+                    continue;
+                }
+            }
+        }
+
+        if (c == 34) {
+            i = i + 1;
+            while (i < n) {
+                if (src[i] == 92) { i = i + 2; continue; }
+                if (src[i] == 34) { i = i + 1; break; }
+                if (src[i] == 10) { line = line + 1; }
+                i = i + 1;
+            }
+            at_line_start = 0;
+            continue;
+        }
+
+        if (c == 123) { depth = depth + 1; i = i + 1; at_line_start = 0; continue; }
+        if (c == 125) {
+            depth = depth - 1;
+            if (pending == 1) {
+                if (depth == 0) {
+                    SrcBlock <- [id = next, file = file_path, kind = pend_kind,
+                    name = pend_name, start_line = pend_line,
+                    end_line = line];
+                    next = next + 1;
+                    pending = 0;
+                }
+            }
+            i = i + 1;
+            at_line_start = 0;
+            continue;
+        }
+
+        if (at_line_start == 1) {
+            if (depth == 0) {
+                if (is_word_byte(c) == 1) {
+                    int j = i;
+                    while (j < n) {
+                        if (is_word_byte(src[j]) == 0) { break; }
+                        j = j + 1;
+                    }
+                    str word = str_slice(src, i, j);
+                    if (is_block_keyword(word) == 1) {
+                        pending = 1;
+                        pend_kind = word;
+                        pend_line = line;
+                        pend_name = name_after(src, j, n);
+                    }
+                    i = j;
+                    at_line_start = 0;
+                    continue;
+                }
+            }
+        }
+        i = i + 1;
+        at_line_start = 0;
+    }
+}
+
+// The first line of a `database <table>` block in `file_path`, or 0. The
+// block must have been scanned first.
+int database_start(str file_path, str table) {
+    list[SrcBlock] rows = SrcBlock <- [file == file_path];
+    for B in rows {
+        if (str_eq(B.kind, "database") == 1) {
+            if (str_eq(B.name, table) == 1) { return B.start_line; }
+        }
+    }
+    return 0;
+}
+
+int database_end(str file_path, str table) {
+    list[SrcBlock] rows = SrcBlock <- [file == file_path];
+    for B in rows {
+        if (str_eq(B.kind, "database") == 1) {
+            if (str_eq(B.name, table) == 1) { return B.end_line; }
+        }
+    }
+    return 0;
+}
+
+// Does this file import the phone tier's module?
+int imports_ui(str src) {
+    int at = str_index_of(src, "import ui");
+    if (at < 0) { return 0; }
+    // `ui` has to be the whole module name: `import uix from std` is not it.
+    int after = at + 9;
+    if (after < str_len(src)) {
+        if (is_word_byte(src[after]) == 1) { return 0; }
+    }
+    return 1;
+}
+
+// Which tier a diagnostic belongs to, and what that judgement was made from.
+//
+// The evidence is not decoration. This is read off the shape of the file
+// rather than from anything the compiler said, so whoever reads the answer
+// should be able to see what it was made from and disagree with it.
+str tier_for(str file_path, int line, int file_imports_ui, int is_entry_point,
+str &evidence) {
+    list[SrcBlock] rows = SrcBlock <- [file == file_path];
+    for B in rows {
+        if (B.end_line > 0) {
+            if (B.start_line <= line) {
+                if (line <= B.end_line) {
+                    str tier = tier_of_kind(B.kind);
+                    if (str_len(tier) > 0) {
+                        StringBuilder sb = sb_new();
+                        sb_append(&sb, "line ");
+                        sb_append(&sb, str(line));
+                        sb_append(&sb, " is inside the `");
+                        sb_append(&sb, B.kind);
+                        if (str_len(B.name) > 0) {
+                            sb_append(&sb, " ");
+                            sb_append(&sb, B.name);
+                        }
+                        sb_append(&sb, "` block");
+                        evidence = sb_to_str(&sb);
+                        return tier;
+                    }
+                }
+            }
+        }
+    }
+    if (file_imports_ui == 1) {
+        evidence = "the file imports `ui`, which is the phone and screen tier";
+        return "phone";
+    }
+    if (is_entry_point == 1) {
+        evidence = "the file is the project's entry point in Strata.toml";
+        return "program";
+    }
+    evidence = "ordinary program code, outside any block";
+    return "rules";
+}
+
+verify "blocks are found with comments and strings skipped" {
+    str src = "// database Fake {\nimport io from std;\n\ndatabase Bill {\n    int id;\n    int amount;\n}\n\n/* database AlsoFake {\n } */\n\nlayout Page() {\n    text \"a } brace in a string\";\n}\n\nverify \"a name with spaces\" {\n    assert 1 == 1;\n}\n";
+    scan_blocks("sample.sta", src);
+    assert count(SrcBlock <- [file == "sample.sta"]) == 3;
+    // The commented-out blocks are not blocks, the brace inside the string
+    // literal does not close the layout, and the verify's title is its name.
+    assert database_start("sample.sta", "Bill") == 4;
+    assert database_end("sample.sta", "Bill") == 7;
+    assert database_start("sample.sta", "Fake") == 0;
+    assert database_start("sample.sta", "AlsoFake") == 0;
+
+    str why = "";
+    assert str_eq(tier_for("sample.sta", 6, 0, 0, &why), "data") == 1;
+    assert str_index_of(why, "database Bill") >= 0;
+    assert str_eq(tier_for("sample.sta", 13, 0, 0, &why), "web") == 1;
+    assert str_eq(tier_for("sample.sta", 16, 0, 0, &why), "test") == 1;
+}
+
+verify "a line in no block is judged from the file" {
+    str src = "import io from std;\n\nint main() {\n    return 0;\n}\n";
+    scan_blocks("plain.sta", src);
+    str why = "";
+    assert str_eq(tier_for("plain.sta", 4, 0, 1, &why), "program") == 1;
+    assert str_index_of(why, "entry point") >= 0;
+    assert str_eq(tier_for("plain.sta", 4, 0, 0, &why), "rules") == 1;
+    assert str_eq(tier_for("plain.sta", 4, 1, 0, &why), "phone") == 1;
+    assert imports_ui("import ui from std;\n") == 1;
+    assert imports_ui("import uix from std;\n") == 0;
+    assert imports_ui("import io from std;\n") == 0;
+}
+
+verify "re-reading a file replaces its spans rather than adding to them" {
+    str src = "database A {\n int id;\n}\n";
+    scan_blocks("again.sta", src);
+    scan_blocks("again.sta", src);
+    assert count(SrcBlock <- [file == "again.sta"]) == 1;
+}

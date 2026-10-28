@@ -1,0 +1,290 @@
+// The operating system, reached without a shell.
+//
+// std/os.sta has `run` and `capture`, and both hand a string to /bin/sh. This
+// server takes paths from whoever is driving it, so a string that reaches a
+// shell is a string that can mean something other than a path. Everything
+// here runs a program directly: the arguments go to the kernel as a list and
+// come out the other side as exactly the same list, so a semicolon in an
+// argument is a semicolon in an argument.
+//
+// The second reason this file exists is that the two output streams have to
+// stay apart. `capture` merges them, and a server that cannot tell a
+// compiler's diagnostics from its progress chatter has to guess.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+// Run a program and wait for it. Up to six arguments; an empty one ends the
+// list, which is how a caller says "no more" without the language having a
+// growable one.
+//
+// `cwd` is where the program runs. It matters more than it looks: the Strata
+// toolchain resolves `import ... from app` against the current directory, so
+// checking a file from the wrong place reports a different program.
+//
+// Returns the exit status. A program killed by a signal comes back as 128
+// plus the signal, so the alarm below shows up as 142 rather than as a
+// success.
+int proc_run(str prog, str a1, str a2, str a3, str a4, str a5, str a6,
+str cwd, str out_path, str err_path, int seconds) {
+    native "
+    char* _argv[8];
+    int _n = 0;
+    _argv[_n++] = (char*)$prog;
+    if ($a1[0]) _argv[_n++] = (char*)$a1;
+    if ($a2[0]) _argv[_n++] = (char*)$a2;
+    if ($a3[0]) _argv[_n++] = (char*)$a3;
+    if ($a4[0]) _argv[_n++] = (char*)$a4;
+    if ($a5[0]) _argv[_n++] = (char*)$a5;
+    if ($a6[0]) _argv[_n++] = (char*)$a6;
+    _argv[_n] = NULL;
+    pid_t _pid = fork();
+    if (_pid < 0) return (int64_t)-1;
+    if (_pid == 0) {
+        if ($cwd[0]) { if (chdir($cwd) != 0) _exit(126); }
+        if ($out_path[0]) { if (!freopen($out_path, \"w\", stdout)) _exit(126); }
+        if ($err_path[0]) { if (!freopen($err_path, \"w\", stderr)) _exit(126); }
+        /* The alarm survives the exec, so the limit is on the program that
+         * actually runs rather than on the moment before it starts. */
+        if ($seconds > 0) alarm((unsigned)$seconds);
+        execvp(_argv[0], _argv);
+        _exit(127);
+    }
+    int _st = 0;
+    waitpid(_pid, &_st, 0);
+    if (WIFEXITED(_st)) return (int64_t)WEXITSTATUS(_st);
+    return (int64_t)(128 + WTERMSIG(_st));
+    ";
+}
+
+// One line of standard input, appended to `sb`, without its line break.
+// Returns 1 when a line was read and 0 at end of input.
+//
+// std/io's read_line answers "" for both an empty line and the end of the
+// stream, and it reads at most 4096 bytes. A server has to be able to tell a
+// client that has gone away from one that sent a blank line, and a
+// tools/call carrying a long argument is not bounded by 4096.
+int read_stdin_line(StringBuilder &sb) {
+    native "
+    static char* _buf = NULL; static size_t _cap = 0;
+    ssize_t _n = getline(&_buf, &_cap, stdin);
+    if (_n < 0) return 0;
+    while (_n > 0) {
+        char _last = _buf[_n - 1];
+        if (_last != '\\n') { if (_last != '\\r') break; }
+        _buf[--_n] = 0;
+    }
+    size_t _tl = (size_t)_n;
+    while ($sb->length + (int64_t)_tl + 1 > $sb->capacity) {
+        $sb->capacity *= 2;
+        $sb->buf_ptr = (int64_t)(uintptr_t)realloc((void*)(uintptr_t)$sb->buf_ptr,
+                                                   (size_t)$sb->capacity);
+    }
+    memcpy((char*)(uintptr_t)$sb->buf_ptr + $sb->length, _buf, _tl);
+    ((char*)(uintptr_t)$sb->buf_ptr)[$sb->length + _tl] = 0;
+    $sb->length += (int64_t)_tl;
+    return 1;
+    ";
+}
+
+// Standard output is the protocol channel, so every reply has to leave the
+// process before the next one is read.
+def flush_stdout() {
+    native "fflush(stdout);";
+}
+
+// This program's own path. The server is started with an unpredictable
+// working directory, so walking up from the binary is the only way it can
+// find the checkout it belongs to without being told.
+str sys_self_path() {
+    native "
+    char _b[4096];
+    ssize_t _n = readlink(\"/proc/self/exe\", _b, sizeof(_b) - 1);
+    if (_n <= 0) return \"\";
+    _b[_n] = 0;
+    return strata_dup(_b);
+    ";
+}
+
+// The real path of something that exists, with symlinks followed and `..`
+// resolved. "" when it does not exist.
+//
+// Resolving BEFORE a containment check is the whole point: a symlink inside
+// the tree that points outside it is caught here rather than followed later.
+str sys_realpath(str path) {
+    native "
+    char _b[4096];
+    if (!realpath($path, _b)) return \"\";
+    return strata_dup(_b);
+    ";
+}
+
+// A new empty directory under /tmp, named after `label`. "" if it could not
+// be made. The caller owns it and is expected to remove it.
+str sys_mkdtemp(str label) {
+    native "
+    char _t[512];
+    snprintf(_t, sizeof(_t), \"/tmp/%s-XXXXXX\", $label);
+    if (!mkdtemp(_t)) return \"\";
+    return strata_dup(_t);
+    ";
+}
+
+// Set a variable in this process's environment, so every program started
+// afterwards inherits it.
+def sys_setenv(str name, str value) {
+    native "setenv($name, $value, 1);";
+}
+
+str sys_getenv(str name) {
+    native "const char* _v = getenv($name); return _v ? strata_dup(_v) : \"\";";
+}
+
+int sys_is_dir(str path) {
+    native "
+    struct stat _st;
+    if (stat($path, &_st) != 0) return 0;
+    return S_ISDIR(_st.st_mode) ? 1 : 0;
+    ";
+}
+
+// Create `path` and any missing parent. 1 when the directory is there
+// afterwards, whether or not this call is what made it.
+//
+// std/os.sta has make_dir and this does not use it, for the same reason
+// nothing here uses std/os at all: that module's `run` and `capture` hand a
+// string to /bin/sh, and a server taking paths from a caller is better off
+// not linking a shell in the first place.
+int sys_make_dir(str path) {
+    native "
+    const char* _p = $path;
+    size_t _n = strlen(_p);
+    if (_n == 0) return 1;
+    char* _w = (char*)malloc(_n + 1);
+    if (!_w) return 0;
+    strcpy(_w, _p);
+    for (size_t _i = 1; _i <= _n; _i++) {
+        if (_w[_i] == '/' || _w[_i] == 0) {
+            char _save = _w[_i];
+            _w[_i] = 0;
+            if (mkdir(_w, 0755) != 0 && errno != EEXIST) { free(_w); return 0; }
+            _w[_i] = _save;
+        }
+    }
+    free(_w);
+    return 1;
+    ";
+}
+
+int sys_is_file(str path) {
+    native "
+    struct stat _st;
+    if (stat($path, &_st) != 0) return 0;
+    return S_ISREG(_st.st_mode) ? 1 : 0;
+    ";
+}
+
+// Join two path pieces with one separator between them.
+str path_join(str a, str b) {
+    if (str_len(a) == 0) { return b; }
+    if (str_len(b) == 0) { return a; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, a);
+    if (a[str_len(a) - 1] != 47) { sb_append(&sb, "/"); }
+    sb_append(&sb, b);
+    return sb_to_str(&sb);
+}
+
+// The last component of a path: /a/b/c -> c.
+str path_base(str p) {
+    int n = str_len(p);
+    int i = n - 1;
+    while (i >= 0) {
+        if (p[i] == 47) { return str_slice(p, i + 1, n); }
+        i = i - 1;
+    }
+    return p;
+}
+
+// Everything before the last component. "." when there is none.
+str path_parent(str p) {
+    int n = str_len(p);
+    int i = n - 1;
+    while (i >= 0) {
+        if (p[i] == 47) {
+            if (i == 0) { return "/"; }
+            return str_slice(p, 0, i);
+        }
+        i = i - 1;
+    }
+    return ".";
+}
+
+// `child` with `parent` and the separator taken off the front. `child` itself
+// when it is not underneath.
+str path_relative(str parent, str child) {
+    int pn = str_len(parent);
+    if (pn == 0) { return child; }
+    if (str_starts_with(child, parent) == 0) { return child; }
+    int cn = str_len(child);
+    if (cn == pn) { return "."; }
+    if (child[pn] != 47) { return child; }
+    return str_slice(child, pn + 1, cn);
+}
+
+// ── Whole directories ────────────────────────────────────────────────────
+//
+// These shell out to `find`, `cp` and `rm` as programs rather than as shell
+// lines. Walking a directory in Strata would need `opendir` and a `struct
+// dirent`, and a `native` block cannot carry an `#include`, so the struct
+// would have to be re-declared by hand against whatever libc is on the
+// machine. Running the tool that already does it is the smaller risk.
+
+// Every file under `dir` whose name ends in `suffix`, one per line.
+// `scratch` is a file this may overwrite.
+str sys_find_files(str dir, str suffix, str scratch) {
+    StringBuilder pat = sb_new();
+    sb_append(&pat, "*");
+    sb_append(&pat, suffix);
+    int rc = proc_run("find", dir, "-name", sb_to_str(&pat), "-type", "f", "",
+    "", scratch, "", 60);
+    if (rc != 0) { return ""; }
+    return file_read(scratch);
+}
+
+// Every directory directly under `dir`, one per line, `dir` itself included.
+str sys_find_dirs(str dir, str scratch) {
+    int rc = proc_run("find", dir, "-maxdepth", "1", "-type", "d", "",
+    "", scratch, "", 60);
+    if (rc != 0) { return ""; }
+    return file_read(scratch);
+}
+
+// Copy a directory tree. `-a` keeps symlinks as symlinks, which matters
+// because a project's .strata/deps is a symlink farm and following it would
+// copy another project into this one under a second name.
+int sys_copy_tree(str src, str dst) {
+    return proc_run("cp", "-a", src, dst, "", "", "", "", "", "", 120);
+}
+
+// Remove a tree this server made. The guard is not politeness: this is the
+// one call here that destroys something, and the only trees it ever has any
+// business destroying are the scratch copies it made under /tmp.
+int sys_remove_tree(str path) {
+    if (str_starts_with(path, "/tmp/") == 0) { return 1; }
+    if (str_len(path) < 6) { return 1; }
+    return proc_run("rm", "-rf", path, "", "", "", "", "", "", "", 60);
+}
+
+verify "paths are taken apart the way a file system takes them apart" {
+    assert str_eq(path_join("/a/b", "c"), "/a/b/c") == 1;
+    assert str_eq(path_join("/a/b/", "c"), "/a/b/c") == 1;
+    assert str_eq(path_base("/a/b/c.sta"), "c.sta") == 1;
+    assert str_eq(path_base("c.sta"), "c.sta") == 1;
+    assert str_eq(path_parent("/a/b/c.sta"), "/a/b") == 1;
+    assert str_eq(path_parent("c.sta"), ".") == 1;
+    assert str_eq(path_relative("/a/b", "/a/b/c/d.sta"), "c/d.sta") == 1;
+    // A sibling whose name merely starts the same way is not underneath.
+    assert str_eq(path_relative("/a/b", "/a/bb/d.sta"), "/a/bb/d.sta") == 1;
+}

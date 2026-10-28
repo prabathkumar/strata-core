@@ -1089,7 +1089,15 @@ class TypeChecker:
         name = q.order_by
         if name not in cols:
             near = ", ".join(sorted(cols)) or "none"
-            self._error("E003",
+            # E004, not E003. A column that does not exist is a schema
+            # selector violation wherever it is written, and the taxonomy is
+            # what an AI agent acts on: E003 is "heterogeneous entries leaked
+            # into a homogeneous list", whose remediation is to strip values
+            # out of list literals. An agent repairing a renamed column would
+            # have followed that advice into a file with no list in it. The
+            # code has to match the mistake, not the expression the mistake
+            # was found inside. Found while building the MCP server, round 17.
+            self._error("E004",
                 f"'{name}' is not a column of '{src}'",
                 line, col,
                 f"Hint: order by one of: {near}")

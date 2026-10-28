@@ -1,0 +1,436 @@
+// What would this rename break?
+//
+// This is the tool that shows what the language is for. One line is changed
+// -- the column's declaration in its `database` block -- in a COPY of the
+// project under /tmp, and then everything is re-checked. Everything that
+// comes back is a consequence the compiler found rather than a change that
+// was made, and the caller's own files are never written.
+//
+// The copy includes any sibling project that depends on this one, because
+// the phone tier of apps/payables is a separate project that takes the
+// schema as a dependency. A tool that only looked inside the directory it
+// was given would report five tiers out of six and look right doing it.
+
+import io      from std;
+import str     from std;
+import mem     from std;
+import json    from std;
+import sys     from app;
+import text    from app;
+import paths   from app;
+import jsonval from app;
+import blocks  from app;
+import diag    from app;
+import tools   from app;
+
+// One thing that stopped compiling. A table, because the language has no
+// growable list and because what is wanted at the end -- every impact, in
+// file and line order, counted by tier -- is three queries over a table.
+database Impact {
+    int id;
+    str project;
+    str file;
+    int line;
+    int col;
+    str code;
+    str message;
+    str hint;
+    str classification;
+    str severity;
+    str strategy;
+    str tier;
+    str evidence;
+}
+
+// Files whose blocks have already been read, so a file with no blocks in it
+// is not read again for every diagnostic that lands in it.
+database ScannedFile {
+    str file;
+}
+
+// Is this diagnostic already recorded? The compiler is asked about every
+// file in the project, and a file that imports the schema reports the
+// schema's own errors as well as its own, so the same diagnostic arrives
+// more than once.
+int already_have(str file_path, int at_line, int at_col, str code, str message) {
+    list[Impact] rows = Impact <- [line == at_line];
+    for R in rows {
+        if (str_eq(R.file, file_path) == 0) { continue; }
+        if (R.col != at_col) { continue; }
+        if (str_eq(R.code, code) == 0) { continue; }
+        if (str_eq(R.message, message) == 0) { continue; }
+        return 1;
+    }
+    return 0;
+}
+
+// The tiers, in the order they are reported. Fixed rather than collected,
+// so the answer does not depend on which one happened to break first.
+str tier_name(int i) {
+    if (i == 0) { return "data"; }
+    if (i == 1) { return "phone"; }
+    if (i == 2) { return "program"; }
+    if (i == 3) { return "report"; }
+    if (i == 4) { return "rules"; }
+    if (i == 5) { return "test"; }
+    return "web";
+}
+
+// Change the one line that declares `column`, in the copy. Returns the line
+// number, with `found_in` set to the file; 0 when the column is not there,
+// and -1 when the table already has a column called `new_name`.
+int apply_rename(str root, str scratch, str work, str table, str column,
+str new_name, str &found_in) {
+    str files = sys_find_files(work, ".sta", path_join(scratch, "files.txt"));
+    int total = line_count(files);
+    for (int i = 1; i <= total; i = i + 1) {
+        str f = str_trim_spaces(line_at(files, i));
+        if (str_len(f) == 0) { continue; }
+        if (is_ignorable(f) == 1) { continue; }
+        str src = file_read(f);
+        scan_blocks(f, src);
+        int start = database_start(f, table);
+        if (start == 0) { continue; }
+        int stop = database_end(f, table);
+        for (int n = start; n <= stop; n = n + 1) {
+            if (declares_column(line_at(src, n), new_name) == 1) {
+                found_in = f;
+                return 0 - 1;
+            }
+        }
+        for (int n = start; n <= stop; n = n + 1) {
+            str l = line_at(src, n);
+            if (declares_column(l, column) == 0) { continue; }
+            int at = word_index(l, column);
+            StringBuilder fresh = sb_new();
+            sb_append(&fresh, str_slice(l, 0, at));
+            sb_append(&fresh, new_name);
+            sb_append(&fresh, str_slice(l, at + str_len(column), str_len(l)));
+            file_write(f, replace_line(src, n, sb_to_str(&fresh)));
+            found_in = f;
+            return n;
+        }
+    }
+    return 0;
+}
+
+// Check every file of every copied project and record what broke.
+def collect_impacts(str root, str scratch, str tmp, str names, str taxonomy,
+int &files_checked) {
+    int projects = line_count(names);
+    for (int p = 1; p <= projects; p = p + 1) {
+        str name = str_trim_spaces(line_at(names, p));
+        if (str_len(name) == 0) { continue; }
+        str project_dir = path_join(tmp, name);
+        str files = sys_find_files(project_dir, ".sta",
+        path_join(scratch, "files.txt"));
+        str entry_rel = toml_value(path_join(project_dir, "Strata.toml"), "main");
+        str entry = "";
+        if (str_len(entry_rel) > 0) { entry = path_join(project_dir, entry_rel); }
+
+        int total = line_count(files);
+        for (int i = 1; i <= total; i = i + 1) {
+            str f = str_trim_spaces(line_at(files, i));
+            if (str_len(f) == 0) { continue; }
+            if (is_ignorable(f) == 1) { continue; }
+            files_checked = files_checked + 1;
+
+            str o = "";
+            str e = "";
+            toolchain(root, scratch, "check", f, "--json", "", "", project_dir,
+            &o, &e);
+            int ok = 1;
+            int payload = jv_parse(o, &ok);
+            if (ok == 0) { continue; }
+            int arr = jv_member(payload, "diagnostics");
+            if (arr < 0) { continue; }
+            int how_many = jv_child_count(arr);
+            for (int d = 0; d < how_many; d = d + 1) {
+                int dn = jv_array_at(arr, d);
+                str where = jv_member_text(dn, "file");
+                if (str_len(where) == 0) { where = f; }
+                if (where[0] != 47) { where = path_join(project_dir, where); }
+                str code = jv_member_text(dn, "code");
+                str message = jv_member_text(dn, "message");
+                int at_line = jv_member_int(dn, "line", 0);
+                int at_col = jv_member_int(dn, "column", 0);
+                if (already_have(where, at_line, at_col, code, message) == 1) {
+                    continue;
+                }
+
+                if (count(ScannedFile <- [file == where]) == 0) {
+                    ScannedFile <- [file = where];
+                    scan_blocks(where, file_read(where));
+                }
+                int is_entry = 0;
+                if (str_eq(where, entry) == 1) { is_entry = 1; }
+                str evidence = "";
+                str tier = tier_for(where, at_line,
+                imports_ui(file_read(where)), is_entry,
+                &evidence);
+
+                // Stored ready to be written back out. A value taken from the
+                // taxonomy is already escaped the way JSON wants it and goes
+                // back between quotes untouched; one taken from the compiler
+                // has been decoded and has to be escaped again. Deciding
+                // that here means the writer below does not have to know
+                // which kind it is holding.
+                str classification = quoted_as_is(tax_field(taxonomy, code, "classification"));
+                str severity = quoted_as_is(tax_field(taxonomy, code, "severity"));
+                str strategy = quoted_as_is(tax_field(taxonomy, code, "ai_remediation_strategy"));
+                if (tax_knows(taxonomy, code) == 0) {
+                    classification = json_str(jv_member_text(dn, "classification"));
+                    severity = json_str(jv_member_text(dn, "severity"));
+                    strategy = json_str(jv_member_text(dn, "remediation_strategy"));
+                }
+
+                Impact <- [id = count(Impact <- [id > 0 - 1]),
+                project = name,
+                file = where,
+                line = at_line,
+                col = at_col,
+                code = code,
+                message = message,
+                hint = jv_member_text(dn, "hint"),
+                classification = classification,
+                severity = severity,
+                strategy = strategy,
+                tier = tier,
+                evidence = evidence];
+            }
+        }
+    }
+}
+
+str tool_rename_impact(str root, str scratch, str asked, str table, str column,
+str new_name, int &is_error) {
+    // The names are checked before any path is touched and before any file
+    // is opened. Anything that is not a plain identifier is refused here,
+    // so nothing with a quote, a slash or a newline in it ever reaches a
+    // file path or a search.
+    if (is_identifier(table) == 0) {
+        is_error = 1;
+        return err_json("table must be a plain identifier");
+    }
+    if (is_identifier(column) == 0) {
+        is_error = 1;
+        return err_json("column must be a plain identifier");
+    }
+    if (is_identifier(new_name) == 0) {
+        is_error = 1;
+        return err_json("new_name must be a plain identifier");
+    }
+    if (str_eq(column, new_name) == 1) {
+        is_error = 1;
+        return err_json("the new name is the old name");
+    }
+
+    str why = "";
+    str proj = safe_path(root, asked, &why);
+    if (str_len(proj) == 0) { is_error = 1; return err_json(why); }
+    if (sys_is_dir(proj) == 0) {
+        is_error = 1;
+        return err_json("project_dir must be a directory");
+    }
+
+    delete Impact <- [id > 0 - 1];
+    delete ScannedFile <- [file > ""];
+
+    str work = "";
+    str names = "";
+    str tmp = scratch_copy(root, scratch, proj, &work, &names);
+    if (str_len(tmp) == 0) {
+        is_error = 1;
+        return err_json("the project could not be copied to /tmp");
+    }
+
+    str decl_file = "";
+    int decl_line = apply_rename(root, scratch, work, table, column, new_name,
+    &decl_file);
+    if (decl_line < 0) {
+        sys_remove_tree(tmp);
+        is_error = 1;
+        StringBuilder e = sb_new();
+        sb_append(&e, "'");
+        sb_append(&e, table);
+        sb_append(&e, "' already has a column called '");
+        sb_append(&e, new_name);
+        sb_append(&e, "'");
+        return err_json(sb_to_str(&e));
+    }
+    if (decl_line == 0) {
+        sys_remove_tree(tmp);
+        is_error = 1;
+        StringBuilder e = sb_new();
+        sb_append(&e, "no column '");
+        sb_append(&e, column);
+        sb_append(&e, "' declared in `database ");
+        sb_append(&e, table);
+        sb_append(&e, "` anywhere in ");
+        sb_append(&e, path_base(proj));
+        return err_json(sb_to_str(&e));
+    }
+
+    str taxonomy = file_read(taxonomy_path(root));
+    int files_checked = 0;
+    collect_impacts(root, scratch, tmp, names, taxonomy, &files_checked);
+
+    // A path in the copy, named as the path the caller actually has. The
+    // copy keeps each project under its own name beside its siblings,
+    // exactly as they sit in the real tree, so this is a substitution rather
+    // than a guess -- an agent handed a /tmp path would open a file that no
+    // longer exists.
+    str real_parent = path_parent(proj);
+
+    StringBuilder impacts = sb_new();
+    sb_append(&impacts, "[");
+    int written = 0;
+    list[Impact] ordered = Impact <- [id > 0 - 1] by file;
+    str last_file = "";
+    for I in ordered {
+        if (str_eq(I.file, last_file) == 1) { continue; }
+        last_file = I.file;
+        str shown = path_relative(root,
+        str_replace_all(I.file, tmp, real_parent));
+        list[Impact] same = Impact <- [file == last_file] by line;
+        for J in same {
+            if (written > 0) { sb_append(&impacts, ","); }
+            written = written + 1;
+            sb_append(&impacts, "{");
+            sb_append(&impacts, kv_str("tier", J.tier));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("tier_evidence", J.evidence));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("project", J.project));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("file", shown));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_int("line", J.line));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_int("column", J.col));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("code", J.code));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("message", J.message));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_str("hint", J.hint));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_raw("classification", J.classification));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_raw("severity", J.severity));
+            sb_append(&impacts, ",");
+            sb_append(&impacts, kv_raw("ai_remediation_strategy", J.strategy));
+            sb_append(&impacts, "}");
+        }
+    }
+    sb_append(&impacts, "]");
+
+    StringBuilder broken = sb_new();
+    StringBuilder touched = sb_new();
+    StringBuilder by_tier = sb_new();
+    sb_append(&broken, "[");
+    sb_append(&touched, "[");
+    sb_append(&by_tier, "{");
+    int broken_count = 0;
+    int touched_count = 0;
+    for (int t = 0; t < 7; t = t + 1) {
+        str name = tier_name(t);
+        int n = count(Impact <- [tier == name]);
+        // The declaration's own tier is touched whether or not anything in
+        // it broke: renaming a column cannot make its own declaration fail
+        // to compile, and a report that left `data` out would read as though
+        // the change were somewhere else.
+        int touched_here = 0;
+        if (n > 0) { touched_here = 1; }
+        if (str_eq(name, "data") == 1) { touched_here = 1; }
+        if (n > 0) {
+            if (broken_count > 0) { sb_append(&broken, ","); }
+            broken_count = broken_count + 1;
+            sb_append(&broken, json_str(name));
+        }
+        if (touched_here == 1) {
+            if (touched_count > 0) {
+                sb_append(&touched, ",");
+                sb_append(&by_tier, ",");
+            }
+            touched_count = touched_count + 1;
+            sb_append(&touched, json_str(name));
+            sb_append(&by_tier, kv_int(name, n));
+        }
+    }
+    sb_append(&broken, "]");
+    sb_append(&touched, "]");
+    sb_append(&by_tier, "}");
+
+    StringBuilder checked = sb_new();
+    sb_append(&checked, "[");
+    int projects = line_count(names);
+    for (int p = 1; p <= projects; p = p + 1) {
+        str name = str_trim_spaces(line_at(names, p));
+        if (str_len(name) == 0) { continue; }
+        if (p > 1) { sb_append(&checked, ","); }
+        sb_append(&checked, json_str(name));
+    }
+    sb_append(&checked, "]");
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", 1));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("project", proj));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("table", table));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("column", column));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("new_name", new_name));
+    sb_append(&sb, ",");
+    sb_append(&sb, "\"declaration\":{");
+    sb_append(&sb, kv_str("tier", "data"));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("file", path_relative(root,
+    str_replace_all(decl_file, tmp, real_parent))));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("line", decl_line));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("note", "the one line that was changed"));
+    sb_append(&sb, "},");
+    sb_append(&sb, kv_raw("projects_checked", sb_to_str(&checked)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("files_checked", files_checked));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("impact_count", written));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("tiers_broken", sb_to_str(&broken)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("tiers_touched", sb_to_str(&touched)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("impacts_by_tier", sb_to_str(&by_tier)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("impacts", sb_to_str(&impacts)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("note", "applied to a copy under /tmp and discarded; the caller's project was not modified"));
+    sb_append(&sb, "}");
+
+    sys_remove_tree(tmp);
+    return sb_to_str(&sb);
+}
+
+verify "a rename is refused before anything is copied when the names are wrong" {
+    int bad = 0;
+    // The checkout root is not known inside a verify block, so these are the
+    // refusals that happen before any path is touched.
+    str out = tool_rename_impact(".", "/tmp", ".", "Bill", "amount", "amount", &bad);
+    assert bad == 1;
+    assert str_index_of(out, "the new name is the old name") >= 0;
+
+    bad = 0;
+    out = tool_rename_impact(".", "/tmp", ".", "Bill", "amount", "a;rm -rf /", &bad);
+    assert bad == 1;
+    assert str_index_of(out, "plain identifier") >= 0;
+
+    bad = 0;
+    out = tool_rename_impact(".", "/tmp", ".", "../etc", "amount", "gross", &bad);
+    assert bad == 1;
+    assert str_index_of(out, "plain identifier") >= 0;
+}

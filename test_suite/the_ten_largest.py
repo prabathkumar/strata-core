@@ -168,13 +168,21 @@ def main():
        lines(out) == ["delta 300", "charlie 900"], out)
 
     # 7. A column that is not there. Both compilers, same code, same message.
+    #
+    # E004, not E003. This asserted E003 until round 17, when building an
+    # MCP server showed what that costs a machine: the taxonomy's E003 is
+    # "heterogeneous entries leaked into a homogeneous list", and its
+    # remediation is to strip values out of list literals. An agent repairing
+    # a renamed column would have followed that into a file with no list in
+    # it. The code has to match the mistake, not the kind of expression the
+    # mistake happened to be found inside.
     bad = program('    show(Invoice <- [id > 0] by total);')
     cout, crc = check(bad)
-    ok("an unknown column is E003 from the self-hosted checker",
-       crc != 0 and "E003" in cout and "'total' is not a column" in cout, cout)
+    ok("an unknown column is E004 from the self-hosted checker",
+       crc != 0 and "E004" in cout and "'total' is not a column" in cout, cout)
     bout, brc = run(bad, "build")
     ok("and the Python oracle says the same thing",
-       brc != 0 and "E003" in bout and "'total' is not a column" in bout, bout)
+       brc != 0 and "E004" in bout and "'total' is not a column" in bout, bout)
     ok("and the hint names the columns that do exist",
        "amount" in cout and "who" in cout, cout)
 
@@ -200,7 +208,7 @@ def main():
                  "    show(Invoice <- [id > 0] by amount);\n    return 0;\n}\n")
     cout, crc = check(renamed)
     ok("renaming the column breaks the query that ordered by it",
-       crc != 0 and "E003" in cout, cout)
+       crc != 0 and "E004" in cout, cout)
     ok("and it says which column is gone",
        "'amount'" in cout, cout)
 

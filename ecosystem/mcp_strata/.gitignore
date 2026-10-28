@@ -1,0 +1,5 @@
+# The compiler writes a .c file beside every .sta it reads, and a binary into
+# build/. Neither is source.
+build/
+src/*.c
+examples/*.c

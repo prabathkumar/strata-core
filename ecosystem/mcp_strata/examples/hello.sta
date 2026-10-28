@@ -1,0 +1,14 @@
+// A program that builds, runs, prints and exits 0.
+//
+// test_server.sh uses it for strata_build and strata_run: a build tool that
+// is only ever tested against something broken has not been shown to work.
+
+import io  from std;
+import cli from std;
+
+int main() {
+    print("hello from strata");
+    int n = arg_count();
+    if (n > 1) { print(arg(1)); }
+    return 0;
+}

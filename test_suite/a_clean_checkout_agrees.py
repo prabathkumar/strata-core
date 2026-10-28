@@ -22,6 +22,7 @@ nothing this one does not also say about a clean one.
 Run: python3 test_suite/a_clean_checkout_agrees.py
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,42 @@ def main():
         tail = [l for l in out.splitlines() if l.strip()][-6:]
         for l in tail:
             print("  " + l)
+        # The second half: a step that TOUCHES a project with a path
+        # dependency must link it first. Two steps did not, and both were
+        # green on every development machine and red on a fresh clone for as
+        # long as they had existed, because every machine they were written
+        # on had run `strata deps` at some point. This reads the workflow and
+        # insists, rather than waiting for the next person to notice.
+        wf = os.path.join(ROOT, ".github", "workflows", "build-check.yml")
+        if os.path.isfile(wf):
+            text = open(wf).read()
+            steps = re.split(r"\n    - name: ", text)
+            bad = []
+            for st in steps[1:]:
+                title = st.splitlines()[0].strip()
+                for proj in ("apps/orders_mobile", "apps/payables_mobile"):
+                    if proj not in st:
+                        continue
+                    # A step that only runs a test script is fine: the script
+                    # is responsible for its own scratch tree.
+                    if f"strata deps {proj}" in st:
+                        continue
+                    if "bin/strata" not in st:
+                        continue
+                    bad.append(f"{title} uses {proj} without linking it")
+            if bad:
+                print()
+                for b in bad:
+                    print("  FAIL  " + b)
+                print()
+                print("=" * 62)
+                print("  A CI step would fail on a fresh clone. FAIL")
+                print("  Add `bin/strata deps <project>` before it, which is")
+                print("  what FOR_DEVELOPERS.md tells a developer to do.")
+                return 1
+            print("  every CI step that touches a project with a path "
+                  "dependency links it first")
+
         print()
         print("=" * 62)
         if r.returncode == 0:

@@ -1,0 +1,221 @@
+// String work the standard library does not have.
+//
+// std/str.sta builds strings and joins them; std/mem.sta slices, compares
+// and searches. What is missing is everything that treats a string as a
+// document: replacing every occurrence of something, and reaching a line by
+// its number. Both are needed here -- the first to rewrite a /tmp path back
+// into the caller's own, the second to change one line of a source file --
+// and neither belongs in this server's own vocabulary.
+
+import io  from std;
+import str from std;
+import mem from std;
+
+// Every occurrence of `needle` replaced by `with_text`. An empty needle is
+// returned unchanged rather than looping forever.
+//
+// `from` would have been the obvious name for the first of those and it is a
+// reserved word, so it cannot be a parameter.
+str str_replace_all(str text, str needle, str with_text) {
+    int fn = str_len(needle);
+    if (fn == 0) { return text; }
+    int n = str_len(text);
+    StringBuilder sb = sb_new();
+    int i = 0;
+    while (i < n) {
+        int at = str_index_of(str_slice(text, i, n), needle);
+        if (at < 0) {
+            sb_append(&sb, str_slice(text, i, n));
+            return sb_to_str(&sb);
+        }
+        sb_append(&sb, str_slice(text, i, i + at));
+        sb_append(&sb, with_text);
+        i = i + at + fn;
+    }
+    return sb_to_str(&sb);
+}
+
+// How many lines the text has, counting the last one whether or not it ends
+// in a line break.
+int line_count(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0; }
+    int lines = 1;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) { lines = lines + 1; }
+    }
+    if (text[n - 1] == 10) { lines = lines - 1; }
+    return lines;
+}
+
+// Line `want`, counting from 1, without its line break. "" past the end.
+str line_at(str text, int want) {
+    if (want < 1) { return ""; }
+    int n = str_len(text);
+    int line = 1;
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (line == want) { return str_slice(text, start, i); }
+            line = line + 1;
+            start = i + 1;
+        }
+    }
+    if (line == want) { return str_slice(text, start, n); }
+    return "";
+}
+
+// The text with line `want` replaced. The text is returned unchanged when
+// there is no such line, because a rewrite that silently appends is worse
+// than one that does nothing.
+str replace_line(str text, int want, str replacement) {
+    if (want < 1) { return text; }
+    int n = str_len(text);
+    int line = 1;
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (line == want) {
+                StringBuilder sb = sb_new();
+                sb_append(&sb, str_slice(text, 0, start));
+                sb_append(&sb, replacement);
+                sb_append(&sb, str_slice(text, i, n));
+                return sb_to_str(&sb);
+            }
+            line = line + 1;
+            start = i + 1;
+        }
+    }
+    if (line == want) {
+        StringBuilder sb = sb_new();
+        sb_append(&sb, str_slice(text, 0, start));
+        sb_append(&sb, replacement);
+        return sb_to_str(&sb);
+    }
+    return text;
+}
+
+// Is `word` in `line` as a whole word -- not as part of a longer name?
+// `amount` must not match `amount_paid`, or a rename would change a column
+// that was never asked about.
+int has_word(str line, str word) {
+    // `return word_index(...) >= 0;` does not compile: a comparison is a
+    // `bool` and a `bool` is not an `int`, with no conversion between them.
+    if (word_index(line, word) >= 0) { return 1; }
+    return 0;
+}
+
+// Where `word` starts in `line` as a whole word, or -1.
+int word_index(str line, str word) {
+    int wn = str_len(word);
+    int n = str_len(line);
+    if (wn == 0) { return 0 - 1; }
+    int seek = 0;
+    while (seek <= n - wn) {
+        int at = str_index_of(str_slice(line, seek, n), word);
+        if (at < 0) { return 0 - 1; }
+        int here = seek + at;
+        int left_ok = 1;
+        if (here > 0) { if (is_word_byte(line[here - 1]) == 1) { left_ok = 0; } }
+        int right_ok = 1;
+        if (here + wn < n) {
+            if (is_word_byte(line[here + wn]) == 1) { right_ok = 0; }
+        }
+        if (left_ok == 1) { if (right_ok == 1) { return here; } }
+        seek = here + 1;
+    }
+    return 0 - 1;
+}
+
+int is_word_byte(int c) {
+    if (c == 95) { return 1; }
+    if (c >= 48) { if (c <= 57)  { return 1; } }
+    if (c >= 65) { if (c <= 90)  { return 1; } }
+    if (c >= 97) { if (c <= 122) { return 1; } }
+    return 0;
+}
+
+// Is this line the declaration of `column` inside a `database` block?
+//
+// The shape is `<type> <name>;` and nothing else, which is deliberately
+// stricter than "the name as a word, then a semicolon". That looser test
+// also matches `total = total + r.amount;`, and a rename that rewrote a line
+// like that would be changing code rather than reporting on it.
+int declares_column(str line, str column) {
+    int n = str_len(line);
+    int i = skip_blanks(line, 0);
+    int type_end = i;
+    while (type_end < n) {
+        if (is_word_byte(line[type_end]) == 0) { break; }
+        type_end = type_end + 1;
+    }
+    if (type_end == i) { return 0; }
+    int name_start = skip_blanks(line, type_end);
+    // A type and a name with nothing between them is one word, not two.
+    if (name_start == type_end) { return 0; }
+    int name_end = name_start;
+    while (name_end < n) {
+        if (is_word_byte(line[name_end]) == 0) { break; }
+        name_end = name_end + 1;
+    }
+    if (str_eq(str_slice(line, name_start, name_end), column) == 0) { return 0; }
+    int after = skip_blanks(line, name_end);
+    if (after >= n) { return 0; }
+    if (line[after] == 59) { return 1; }
+    return 0;
+}
+
+// The first index at or after `i` that is not a space or a tab.
+int skip_blanks(str line, int i) {
+    int n = str_len(line);
+    while (i < n) {
+        int c = line[i];
+        if (c == 32) { i = i + 1; continue; }
+        if (c == 9)  { i = i + 1; continue; }
+        return i;
+    }
+    return n;
+}
+
+verify "replacing every occurrence leaves nothing of the old text" {
+    assert str_eq(str_replace_all("/tmp/x/a /tmp/x/b", "/tmp/x", "/real"),
+    "/real/a /real/b") == 1;
+    assert str_eq(str_replace_all("abc", "z", "y"), "abc") == 1;
+    assert str_eq(str_replace_all("abc", "", "y"), "abc") == 1;
+    assert str_eq(str_replace_all("aaa", "a", "aa"), "aaaaaa") == 1;
+}
+
+verify "a line is reached by its number and put back by its number" {
+    str doc = "one\ntwo\nthree";
+    assert line_count(doc) == 3;
+    assert line_count("one\n") == 1;
+    assert line_count("") == 0;
+    assert str_eq(line_at(doc, 1), "one") == 1;
+    assert str_eq(line_at(doc, 2), "two") == 1;
+    assert str_eq(line_at(doc, 3), "three") == 1;
+    assert str_eq(line_at(doc, 4), "") == 1;
+    assert str_eq(replace_line(doc, 2, "TWO"), "one\nTWO\nthree") == 1;
+    assert str_eq(replace_line(doc, 3, "THREE"), "one\ntwo\nTHREE") == 1;
+    // No such line: unchanged, rather than appended to.
+    assert str_eq(replace_line(doc, 9, "X"), doc) == 1;
+}
+
+verify "a whole word is not part of a longer one" {
+    assert has_word("    int amount;", "amount") == 1;
+    assert has_word("    int amount_paid;", "amount") == 0;
+    assert has_word("    int gross_amount;", "amount") == 0;
+    assert has_word("sum(rows.amount)", "amount") == 1;
+    assert word_index("    int amount;", "amount") == 8;
+
+    // Only the declaration shape counts as a declaration.
+    assert declares_column("    int amount;", "amount") == 1;
+    assert declares_column("    int amount ;", "amount") == 1;
+    assert declares_column("    float  amount;", "amount") == 1;
+    assert declares_column("    int amount_paid;", "amount") == 0;
+    assert declares_column("    int gross;", "amount") == 0;
+    // The loose version of this test -- the name as a word, then a
+    // semicolon -- says yes to the next two, and rewriting either of them
+    // would be changing code rather than reporting on it.
+    assert declares_column("    total = total + r.amount;", "amount") == 0;
+    assert declares_column("    amount;", "amount") == 0;
+}

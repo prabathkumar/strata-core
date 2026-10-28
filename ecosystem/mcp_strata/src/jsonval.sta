@@ -1,0 +1,706 @@
+// Reading JSON.
+//
+// std/json.sta writes JSON and reads a document whose shape is already known
+// -- find a key, read the string after it. That is right for a taxonomy file
+// and wrong for a request that arrived over a wire, because the question
+// "is this JSON at all?" has to be answerable before anything is read out of
+// it. JSON-RPC says a document that does not parse is error -32700, and a
+// positional reader cannot tell a malformed document from one missing a
+// field.
+//
+// So this is a real parser. It is strict: anything left over after the value
+// is a failure, an unterminated string is a failure, and `tru` is a failure.
+//
+// WHERE THE TREE LIVES
+//
+// The language has no map and no growable list, so the parsed document is
+// held in a table. That is not a workaround so much as the one growable
+// collection the language has, and a row reached by its id is the same shape
+// as a pointer into an arena. One document is held at a time: parsing clears
+// the table, which is right for a server that answers one request at a time
+// and would be wrong for anything that had to hold two.
+
+import io   from std;
+import str  from std;
+import mem  from std;
+import json from std;
+
+// 1 object, 2 array, 3 string, 4 number, 5 true, 6 false, 7 null.
+// 0 means "no such node", which is what every accessor answers for -1.
+database JsonNode {
+    int id;
+    int kind;
+    str key;
+    str text;
+    int num;
+    int parent;
+}
+
+const int JV_OBJECT = 1;
+const int JV_ARRAY  = 2;
+const int JV_STRING = 3;
+const int JV_NUMBER = 4;
+const int JV_TRUE   = 5;
+const int JV_FALSE  = 6;
+const int JV_NULL   = 7;
+
+// How deep a document may nest. A parser that recurses once per level will
+// run out of C stack on a document built to make it, and a crash is a worse
+// answer than a refusal.
+const int JV_MAX_DEPTH = 64;
+
+// ── reading ──────────────────────────────────────────────────────────────
+
+def jv_ws(str t, int &i) {
+    int n = str_len(t);
+    while (i < n) {
+        int c = t[i];
+        if (c == 32) { i = i + 1; continue; }
+        if (c == 9)  { i = i + 1; continue; }
+        if (c == 10) { i = i + 1; continue; }
+        if (c == 13) { i = i + 1; continue; }
+        return;
+    }
+}
+
+int jv_hex(int c) {
+    if (c >= 48) { if (c <= 57)  { return c - 48; } }
+    if (c >= 97) { if (c <= 102) { return c - 87; } }
+    if (c >= 65) { if (c <= 70)  { return c - 55; } }
+    return 0 - 1;
+}
+
+// A string literal starting at the opening quote, with its escapes decoded
+// and \uXXXX written back as UTF-8. `ok` goes to 0 on anything malformed.
+str jv_string(str t, int &i, int &ok) {
+    int n = str_len(t);
+    if (i >= n) { ok = 0; return ""; }
+    if (t[i] != 34) { ok = 0; return ""; }
+    i = i + 1;
+    StringBuilder out = sb_new();
+    while (i < n) {
+        int c = t[i];
+        if (c == 34) { i = i + 1; return sb_to_str(&out); }
+        if (c == 92) {
+            i = i + 1;
+            if (i >= n) { ok = 0; return ""; }
+            int e = t[i];
+            if (e == 110)      { sb_append(&out, char_from_code(10)); }
+            else if (e == 116) { sb_append(&out, char_from_code(9)); }
+            else if (e == 114) { sb_append(&out, char_from_code(13)); }
+            else if (e == 98)  { sb_append(&out, char_from_code(8)); }
+            else if (e == 102) { sb_append(&out, char_from_code(12)); }
+            else if (e == 34)  { sb_append(&out, char_from_code(34)); }
+            else if (e == 92)  { sb_append(&out, char_from_code(92)); }
+            else if (e == 47)  { sb_append(&out, char_from_code(47)); }
+            else if (e == 117) {
+                int v = 0;
+                for (int h = 1; h <= 4; h = h + 1) {
+                    if (i + h >= n) { ok = 0; return ""; }
+                    int d = jv_hex(t[i + h]);
+                    if (d < 0) { ok = 0; return ""; }
+                    v = v * 16 + d;
+                }
+                i = i + 4;
+                // A surrogate half is passed through as the replacement
+                // character rather than guessed at: pairing them needs the
+                // next escape and nothing in this protocol sends one.
+                if (v >= 55296) { if (v < 57344) { v = 65533; } }
+                if (v < 128) { sb_append(&out, char_from_code(v)); }
+                else if (v < 2048) {
+                    sb_append(&out, char_from_code(192 + v / 64));
+                    sb_append(&out, char_from_code(128 + v % 64));
+                }
+                else if (v < 65536) {
+                    sb_append(&out, char_from_code(224 + v / 4096));
+                    sb_append(&out, char_from_code(128 + (v / 64) % 64));
+                    sb_append(&out, char_from_code(128 + v % 64));
+                }
+                else {
+                    sb_append(&out, char_from_code(240 + v / 262144));
+                    sb_append(&out, char_from_code(128 + (v / 4096) % 64));
+                    sb_append(&out, char_from_code(128 + (v / 64) % 64));
+                    sb_append(&out, char_from_code(128 + v % 64));
+                }
+            }
+            else { ok = 0; return ""; }
+            i = i + 1;
+            continue;
+        }
+        // A raw control character inside a string is invalid JSON. Letting
+        // it through would mean this parser accepts documents a client's
+        // own parser would reject, and the two must agree.
+        if (c >= 0) { if (c < 32) { ok = 0; return ""; } }
+        sb_append(&out, char_from_code(c));
+        i = i + 1;
+    }
+    ok = 0;
+    return "";
+}
+
+// The literal text of a number, left as text so the exact spelling survives
+// into a reply. `value` gets the whole-number part, which is all this
+// protocol ever needs from one.
+str jv_number(str t, int &i, int &value, int &ok) {
+    int n = str_len(t);
+    int start = i;
+    int neg = 0;
+    if (i < n) { if (t[i] == 45) { neg = 1; i = i + 1; } }
+    int digits = 0;
+    int whole = 0;
+    while (i < n) {
+        int c = t[i];
+        if (c < 48) { break; }
+        if (c > 57) { break; }
+        whole = whole * 10 + (c - 48);
+        digits = digits + 1;
+        i = i + 1;
+    }
+    if (digits == 0) { ok = 0; return ""; }
+    if (i < n) {
+        if (t[i] == 46) {
+            i = i + 1;
+            int after = 0;
+            while (i < n) {
+                int c = t[i];
+                if (c < 48) { break; }
+                if (c > 57) { break; }
+                after = after + 1;
+                i = i + 1;
+            }
+            if (after == 0) { ok = 0; return ""; }
+        }
+    }
+    if (i < n) {
+        int is_exponent = 0;
+        if (t[i] == 101) { is_exponent = 1; }
+        if (t[i] == 69)  { is_exponent = 1; }
+        if (is_exponent == 1) {
+            i = i + 1;
+            if (i < n) {
+                if (t[i] == 43) { i = i + 1; }
+                else if (t[i] == 45) { i = i + 1; }
+            }
+            int exp_digits = 0;
+            while (i < n) {
+                int c = t[i];
+                if (c < 48) { break; }
+                if (c > 57) { break; }
+                exp_digits = exp_digits + 1;
+                i = i + 1;
+            }
+            if (exp_digits == 0) { ok = 0; return ""; }
+        }
+    }
+    if (neg == 1) { value = 0 - whole; }
+    else { value = whole; }
+    return str_slice(t, start, i);
+}
+
+// A whole object or array body, from just after the opening bracket.
+def jv_children(str t, int &i, int &next, int me, int is_object, int depth, int &ok) {
+    int n = str_len(t);
+    int closing = 93;
+    if (is_object == 1) { closing = 125; }
+    jv_ws(t, &i);
+    if (i < n) {
+        if (t[i] == closing) { i = i + 1; return; }
+    }
+    while (1) {
+        jv_ws(t, &i);
+        str member = "";
+        if (is_object == 1) {
+            member = jv_string(t, &i, &ok);
+            if (ok == 0) { return; }
+            jv_ws(t, &i);
+            if (i >= n) { ok = 0; return; }
+            if (t[i] != 58) { ok = 0; return; }
+            i = i + 1;
+        }
+        jv_value(t, &i, &next, me, member, depth + 1, &ok);
+        if (ok == 0) { return; }
+        jv_ws(t, &i);
+        if (i >= n) { ok = 0; return; }
+        if (t[i] == 44) { i = i + 1; continue; }
+        if (t[i] == closing) { i = i + 1; return; }
+        ok = 0;
+        return;
+    }
+}
+
+// One value. Returns the id of the node it made, or -1 when `ok` went to 0.
+int jv_value(str t, int &i, int &next, int parent, str key, int depth, int &ok) {
+    if (depth > JV_MAX_DEPTH) { ok = 0; return 0 - 1; }
+    jv_ws(t, &i);
+    int n = str_len(t);
+    if (i >= n) { ok = 0; return 0 - 1; }
+    int c = t[i];
+    int me = next;
+    next = next + 1;
+
+    if (c == 123) {
+        JsonNode <- [id = me, kind = JV_OBJECT, key = key, text = "", num = 0,
+        parent = parent];
+        i = i + 1;
+        jv_children(t, &i, &next, me, 1, depth, &ok);
+        return me;
+    }
+    if (c == 91) {
+        JsonNode <- [id = me, kind = JV_ARRAY, key = key, text = "", num = 0,
+        parent = parent];
+        i = i + 1;
+        jv_children(t, &i, &next, me, 0, depth, &ok);
+        return me;
+    }
+    if (c == 34) {
+        str v = jv_string(t, &i, &ok);
+        if (ok == 0) { return 0 - 1; }
+        JsonNode <- [id = me, kind = JV_STRING, key = key, text = v, num = 0,
+        parent = parent];
+        return me;
+    }
+    if (str_starts_with(str_slice(t, i, n), "true") == 1) {
+        i = i + 4;
+        JsonNode <- [id = me, kind = JV_TRUE, key = key, text = "true", num = 1,
+        parent = parent];
+        return me;
+    }
+    if (str_starts_with(str_slice(t, i, n), "false") == 1) {
+        i = i + 5;
+        JsonNode <- [id = me, kind = JV_FALSE, key = key, text = "false", num = 0,
+        parent = parent];
+        return me;
+    }
+    if (str_starts_with(str_slice(t, i, n), "null") == 1) {
+        i = i + 4;
+        JsonNode <- [id = me, kind = JV_NULL, key = key, text = "null", num = 0,
+        parent = parent];
+        return me;
+    }
+    if (c == 45) {
+        int v = 0;
+        str raw = jv_number(t, &i, &v, &ok);
+        if (ok == 0) { return 0 - 1; }
+        JsonNode <- [id = me, kind = JV_NUMBER, key = key, text = raw, num = v,
+        parent = parent];
+        return me;
+    }
+    if (c >= 48) {
+        if (c <= 57) {
+            int v = 0;
+            str raw = jv_number(t, &i, &v, &ok);
+            if (ok == 0) { return 0 - 1; }
+            JsonNode <- [id = me, kind = JV_NUMBER, key = key, text = raw,
+            num = v, parent = parent];
+            return me;
+        }
+    }
+    ok = 0;
+    return 0 - 1;
+}
+
+// Parse a whole document. Returns the root node's id, or -1. `ok` is 0 when
+// the text was not JSON, which is the only thing that should ever produce a
+// -32700 on the wire.
+int jv_parse(str t, int &ok) {
+    delete JsonNode <- [id > 0 - 1];
+    ok = 1;
+    int i = 0;
+    int next = 0;
+    int root = jv_value(t, &i, &next, 0 - 1, "", 0, &ok);
+    if (ok == 0) { return 0 - 1; }
+    jv_ws(t, &i);
+    // Trailing text means the document was not one value, and a parser that
+    // ignores it accepts `{} garbage` as an object.
+    if (i != str_len(t)) { ok = 0; return 0 - 1; }
+    return root;
+}
+
+// ── looking at what was parsed ───────────────────────────────────────────
+
+int jv_kind(int nid) {
+    if (nid < 0) { return 0; }
+    list[JsonNode] rows = JsonNode <- [id == nid];
+    for R in rows { return R.kind; }
+    return 0;
+}
+
+str jv_text(int nid) {
+    if (nid < 0) { return ""; }
+    list[JsonNode] rows = JsonNode <- [id == nid];
+    for R in rows { return R.text; }
+    return "";
+}
+
+int jv_int(int nid) {
+    if (nid < 0) { return 0; }
+    list[JsonNode] rows = JsonNode <- [id == nid];
+    for R in rows { return R.num; }
+    return 0;
+}
+
+// The member `name` of an object, or -1. A query takes one condition, so the
+// children are fetched by parent and the name is matched here.
+int jv_member(int nid, str name) {
+    if (nid < 0) { return 0 - 1; }
+    list[JsonNode] rows = JsonNode <- [parent == nid];
+    for R in rows {
+        if (str_eq(R.key, name) == 1) { return R.id; }
+    }
+    return 0 - 1;
+}
+
+// The member's string value, or "" when it is absent or is not a string.
+str jv_member_text(int nid, str name) {
+    int m = jv_member(nid, name);
+    if (jv_kind(m) != JV_STRING) { return ""; }
+    return jv_text(m);
+}
+
+int jv_member_int(int nid, str name, int fallback) {
+    int m = jv_member(nid, name);
+    if (jv_kind(m) != JV_NUMBER) { return fallback; }
+    return jv_int(m);
+}
+
+// The `index`th element of an array, counting from 0, or -1. A query gives
+// rows back in the order they were inserted, and the parser inserts them in
+// the order they appear, so counting through them is the document order.
+int jv_array_at(int nid, int index) {
+    if (nid < 0) { return 0 - 1; }
+    int seen = 0;
+    list[JsonNode] rows = JsonNode <- [parent == nid];
+    for R in rows {
+        if (seen == index) { return R.id; }
+        seen = seen + 1;
+    }
+    return 0 - 1;
+}
+
+int jv_child_count(int nid) {
+    if (nid < 0) { return 0; }
+    return count(JsonNode <- [parent == nid]);
+}
+
+// A node written back as JSON text, for echoing something through unchanged.
+// A request's `id` has to come back exactly as it was sent -- 3 and "3" are
+// different ids to a client -- so it is never read into an int and written
+// out again.
+str jv_raw(int nid) {
+    int k = jv_kind(nid);
+    if (k == JV_STRING) { return json_str(jv_text(nid)); }
+    if (k == JV_NUMBER) { return jv_text(nid); }
+    if (k == JV_TRUE)   { return "true"; }
+    if (k == JV_FALSE)  { return "false"; }
+    return "null";
+}
+
+// The member names of an object written as text, as a JSON array of
+// strings. For telling a caller which codes a file does hold when the one it
+// asked for is not among them.
+str jraw_member_names(str text) {
+    int n = str_len(text);
+    int i = 0;
+    while (i < n) {
+        if (text[i] == 123) { break; }
+        i = i + 1;
+    }
+    StringBuilder out = sb_new();
+    sb_append(&out, "[");
+    int first = 1;
+    int depth = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) {
+            int was = depth;
+            int start = i + 1;
+            i = i + 1;
+            while (i < n) {
+                if (text[i] == 92) { i = i + 2; continue; }
+                if (text[i] == 34) { break; }
+                i = i + 1;
+            }
+            int stop = i;
+            i = i + 1;
+            if (was == 1) {
+                int j = i;
+                while (j < n) {
+                    int w = text[j];
+                    if (w == 32) { j = j + 1; continue; }
+                    if (w == 10) { j = j + 1; continue; }
+                    if (w == 13) { j = j + 1; continue; }
+                    if (w == 9)  { j = j + 1; continue; }
+                    break;
+                }
+                if (j < n) {
+                    if (text[j] == 58) {
+                        if (first == 0) { sb_append(&out, ","); }
+                        first = 0;
+                        sb_append(&out, "\"");
+                        sb_append(&out, str_slice(text, start, stop));
+                        sb_append(&out, "\"");
+                    }
+                }
+            }
+            continue;
+        }
+        if (c == 123) { depth = depth + 1; }
+        else if (c == 91) { depth = depth + 1; }
+        else if (c == 125) {
+            depth = depth - 1;
+            if (depth == 0) { sb_append(&out, "]"); return sb_to_str(&out); }
+        }
+        else if (c == 93) { depth = depth - 1; }
+        i = i + 1;
+    }
+    sb_append(&out, "]");
+    return sb_to_str(&out);
+}
+
+// A JSON document with the whitespace between its tokens removed.
+//
+// ERROR_TAXONOMY.json is written for a person to read, so it is full of
+// newlines. The wire here is one message per line, and a reply that carries
+// the file's own line breaks inside it is not one message -- the client
+// reads the first fragment, fails to parse it, and desynchronises. The text
+// inside string literals is left exactly as it is.
+str json_minify(str text) {
+    int n = str_len(text);
+    StringBuilder out = sb_new();
+    int i = 0;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) {
+            int start = i;
+            i = i + 1;
+            while (i < n) {
+                if (text[i] == 92) { i = i + 2; continue; }
+                if (text[i] == 34) { i = i + 1; break; }
+                i = i + 1;
+            }
+            sb_append(&out, str_slice(text, start, i));
+            continue;
+        }
+        if (c == 32) { i = i + 1; continue; }
+        if (c == 9)  { i = i + 1; continue; }
+        if (c == 10) { i = i + 1; continue; }
+        if (c == 13) { i = i + 1; continue; }
+        sb_append(&out, char_from_code(c));
+        i = i + 1;
+    }
+    return sb_to_str(&out);
+}
+
+// ── writing ──────────────────────────────────────────────────────────────
+
+// `"name": "value"`, with the value escaped.
+str kv_str(str name, str value) {
+    return json_field(name, json_str(value));
+}
+
+// `"name": value`, with the value already JSON -- a number, an object, an
+// array, or a literal.
+str kv_raw(str name, str value) {
+    return json_field(name, value);
+}
+
+str kv_int(str name, int value) {
+    return json_field(name, str(value));
+}
+
+str kv_bool(str name, int value) {
+    if (value == 1) { return json_field(name, "true"); }
+    return json_field(name, "false");
+}
+
+// ── a document kept as text ──────────────────────────────────────────────
+//
+// The taxonomy is handed back to a caller exactly as it is written in
+// ERROR_TAXONOMY.json rather than parsed and rebuilt. Round-tripping it
+// through this parser and a writer would mean the answer depends on two
+// pieces of code agreeing, when the file is already JSON and already right.
+// These three find a span of it without reading it into anything.
+
+// The index just past the value starting at `at`, which must be a `{` or a
+// `[`. Quotes and their escapes are skipped so a brace inside a string does
+// not close the object. -1 when the value never closes.
+int jraw_span_end(str text, int at) {
+    int n = str_len(text);
+    if (at < 0) { return 0 - 1; }
+    if (at >= n) { return 0 - 1; }
+    int opener = text[at];
+    int closer = 125;
+    if (opener == 91) { closer = 93; }
+    int depth = 0;
+    int i = at;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) {
+            i = i + 1;
+            while (i < n) {
+                if (text[i] == 92) { i = i + 2; continue; }
+                if (text[i] == 34) { i = i + 1; break; }
+                i = i + 1;
+            }
+            continue;
+        }
+        if (c == opener) { depth = depth + 1; }
+        else if (c == closer) {
+            depth = depth - 1;
+            if (depth == 0) { return i + 1; }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The raw text of the object or array that field `name` holds, searching
+// from `start_at`. "" when the field is absent or holds something else.
+str jraw_value_of(str text, str name, int start_at) {
+    int at = json_index_of_key(text, name, start_at);
+    if (at < 0) { return ""; }
+    int n = str_len(text);
+    int i = at;
+    while (i < n) {
+        int c = text[i];
+        if (c == 123) { break; }
+        if (c == 91)  { break; }
+        if (c == 58)  { i = i + 1; continue; }
+        if (c == 32)  { i = i + 1; continue; }
+        if (c == 10)  { i = i + 1; continue; }
+        if (c == 13)  { i = i + 1; continue; }
+        if (c == 9)   { i = i + 1; continue; }
+        return "";
+    }
+    int end = jraw_span_end(text, i);
+    if (end < 0) { return ""; }
+    return str_slice(text, i, end);
+}
+
+// How many members an object written as text has at its own top level.
+int jraw_member_count(str text) {
+    int n = str_len(text);
+    int i = 0;
+    while (i < n) {
+        if (text[i] == 123) { break; }
+        i = i + 1;
+    }
+    if (i >= n) { return 0; }
+    int depth = 0;
+    int members = 0;
+    i = i;
+    while (i < n) {
+        int c = text[i];
+        if (c == 34) {
+            int was = depth;
+            i = i + 1;
+            while (i < n) {
+                if (text[i] == 92) { i = i + 2; continue; }
+                if (text[i] == 34) { i = i + 1; break; }
+                i = i + 1;
+            }
+            // A string at depth 1 with a colon after it is a member name of
+            // the object being counted. Without the colon test the member's
+            // own string VALUE is counted as a second member.
+            if (was == 1) {
+                int j = i;
+                while (j < n) {
+                    int w = text[j];
+                    if (w == 32) { j = j + 1; continue; }
+                    if (w == 10) { j = j + 1; continue; }
+                    if (w == 13) { j = j + 1; continue; }
+                    if (w == 9)  { j = j + 1; continue; }
+                    break;
+                }
+                if (j < n) { if (text[j] == 58) { members = members + 1; } }
+            }
+            continue;
+        }
+        if (c == 123) { depth = depth + 1; }
+        else if (c == 91) { depth = depth + 1; }
+        else if (c == 125) {
+            depth = depth - 1;
+            if (depth == 0) { return members; }
+        }
+        else if (c == 93) { depth = depth - 1; }
+        i = i + 1;
+    }
+    return members;
+}
+
+verify "a document that is JSON is read, and one that is not is refused" {
+    int ok = 1;
+    int root = jv_parse("{\"a\": 1, \"b\": \"two\", \"c\": [1, 2, 3]}", &ok);
+    assert ok == 1;
+    assert jv_kind(root) == JV_OBJECT;
+    assert jv_member_int(root, "a", 0 - 1) == 1;
+    assert str_eq(jv_member_text(root, "b"), "two") == 1;
+    assert jv_kind(jv_member(root, "c")) == JV_ARRAY;
+    assert jv_child_count(jv_member(root, "c")) == 3;
+    assert jv_int(jv_array_at(jv_member(root, "c"), 0)) == 1;
+    assert jv_int(jv_array_at(jv_member(root, "c"), 2)) == 3;
+    assert jv_array_at(jv_member(root, "c"), 3) < 0;
+    assert jv_member(root, "missing") < 0;
+
+    // Each of these is a document a client's own parser would reject, so
+    // this one has to reject it too or the two sides disagree about what
+    // arrived.
+    jv_parse("{", &ok);              assert ok == 0;
+    jv_parse("{\"a\": }", &ok);      assert ok == 0;
+    jv_parse("{} trailing", &ok);    assert ok == 0;
+    jv_parse("tru", &ok);            assert ok == 0;
+    jv_parse("\"unterminated", &ok); assert ok == 0;
+    jv_parse("[1, 2,]", &ok);        assert ok == 0;
+    jv_parse("", &ok);               assert ok == 0;
+}
+
+verify "escapes survive the trip in both directions" {
+    int ok = 1;
+    int root = jv_parse("{\"s\": \"a\\nb\\t\\\"c\\\"\", \"u\": \"\\u00e9\\u2014\"}", &ok);
+    assert ok == 1;
+    assert str_eq(jv_member_text(root, "s"), "a\nb\t\"c\"") == 1;
+    // é is e-acute, two bytes in UTF-8; — is an em dash, three.
+    assert str_len(jv_member_text(root, "u")) == 5;
+    assert str_chars(jv_member_text(root, "u")) == 2;
+    // What comes out can be fed back in.
+    str again = json_str(jv_member_text(root, "s"));
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{\"s\": ");
+    sb_append(&sb, again);
+    sb_append(&sb, "}");
+    int r2 = jv_parse(sb_to_str(&sb), &ok);
+    assert ok == 1;
+    assert str_eq(jv_member_text(r2, "s"), "a\nb\t\"c\"") == 1;
+}
+
+verify "a span of a document is found without reading the document" {
+    str doc = "{\"version\": \"1.2.0\", \"taxonomy\": {\"E000\": {\"severity\": \"CRITICAL_HALT\"}, \"E004\": {\"severity\": \"CRITICAL_HALT\", \"note\": \"a } brace in a string\"}}}";
+    str tax = jraw_value_of(doc, "taxonomy", 0);
+    assert str_starts_with(tax, "{\"E000\"") == 1;
+    // The brace inside the string literal must not end the object early.
+    assert str_index_of(tax, "a } brace in a string") >= 0;
+    assert jraw_member_count(tax) == 2;
+    int at = json_index_of_key(doc, "E004", 0);
+    str one = jraw_value_of(doc, "E004", 0);
+    assert str_index_of(one, "CRITICAL_HALT") >= 0;
+    assert jraw_member_count(one) == 2;
+    assert str_eq(jraw_value_of(doc, "version", 0), "") == 1;
+    assert str_eq(jraw_value_of(doc, "absent", 0), "") == 1;
+    assert str_eq(jraw_member_names(tax), "[\"E000\",\"E004\"]") == 1;
+
+    // A pretty-printed document has to come back as one line, or a reply
+    // carrying it is read by the client as several broken ones.
+    str pretty = "{\n  \"a\": 1,\n  \"b\": \"keep  these   spaces\"\n}";
+    assert str_eq(json_minify(pretty), "{\"a\":1,\"b\":\"keep  these   spaces\"}") == 1;
+    assert str_index_of(json_minify(pretty), "\n") < 0;
+}
+
+verify "an id is echoed in the shape it arrived in" {
+    int ok = 1;
+    int root = jv_parse("{\"id\": 7}", &ok);
+    assert str_eq(jv_raw(jv_member(root, "id")), "7") == 1;
+    root = jv_parse("{\"id\": \"7\"}", &ok);
+    assert str_eq(jv_raw(jv_member(root, "id")), "\"7\"") == 1;
+    root = jv_parse("{\"other\": 1}", &ok);
+    assert str_eq(jv_raw(jv_member(root, "id")), "null") == 1;
+}
