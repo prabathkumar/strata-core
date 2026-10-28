@@ -1507,7 +1507,7 @@ standard library modules; money is kept as whole minor units rather than as a
 float, because a float cannot hold 0.10 exactly. `ast`, `lex`, `test` and
 `repair` still go through Python.
 
-Sixteen blind pilots have been run: a fresh evaluator given a clean checkout,
+Seventeen blind pilots have been run: a fresh evaluator given a clean checkout,
 no history, and one question — could your team adopt this? Every round found
 something, most rounds found something that destroys data, and every finding
 is fixed with a test that names the round that found it. Round 13 found nine
@@ -1582,7 +1582,7 @@ judgement says.
 
 | Condition | What is missing |
 |---|---|
-| A developer who has never seen Strata gets through a first project without a stopper | **Two consecutive pilot rounds with no data loss and no silently wrong answer.** Sixteen rounds have been run and the counter is still at zero. The character of the findings has shifted — rounds 13 and 14 were largely data loss, rounds 15 and 16 largely soundness holes that a checker should have caught — but the count has not fallen: nine, ten, ten, eleven. Round 16's four largest findings were one gap wearing four hats, which is the third round running to say that a repair was aimed at the symptom rather than at the rule behind it. One clean round would not be the bar either, because one clean round is luck. |
+| A developer who has never seen Strata gets through a first project without a stopper | **Two consecutive pilot rounds with no data loss and no silently wrong answer.** Seventeen rounds have been run and the counter is still at zero. Round 17 is the first where both evaluators answered the adoption question with a straight no, and it moved the bar further away rather than closer: `<` on a text column compared memory addresses, so a date range filter matched no row and exited 0, and two of the three write statements wrote a row with an over-long column blanked while the third refused the whole write. The character of the findings has shifted — rounds 13 and 14 were largely data loss, rounds 15 and 16 largely soundness holes that a checker should have caught — but the count has not fallen: nine, ten, ten, eleven. Round 16's four largest findings were one gap wearing four hats, which is the third round running to say that a repair was aimed at the symptom rather than at the rule behind it. One clean round would not be the bar either, because one clean round is luck. |
 | Somebody other than the author has built something with it | Nobody has. This is the one that cannot be bought with engineering. |
 | A library can be found and added without reading this repository | No index and no `strata add`. See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md); designed, not built. |
 

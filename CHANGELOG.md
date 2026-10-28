@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+### Round seventeen, part two: the rest of it
+
+**A `save` whose `load` was forgotten wiped the file.** The staleness guard
+only fired when the table had been read from that path; a save to a file the
+program never read was waved straight through. Three rows became one, no
+error flag, exit 0. The file cannot tell a deliberate replacement from a
+forgotten read, so it refuses and names both possibilities. A first save to a
+path that does not exist, or holds only a header, is untouched by this.
+
+**Whole-number arithmetic overflowed silently.** Every other arithmetic
+hazard is caught -- divide by zero, modulo zero, an aggregate over nothing,
+an index past the end, a number too large for its column -- and plain `+`,
+`-` and `*` on `int` were the exception. The inconsistency is the real
+problem: a reader who has seen the other five caught will reasonably assume
+this one is too, and a running total that silently turns negative is exactly
+the wrong answer this project exists to prevent. The check is the processor's
+own overflow flag, so it costs a jump that is never taken.
+
+One of the three was still wrong after the first repair, and it is worth
+recording why: `+` returned from an earlier branch -- the one that handles
+joining text -- so the repair, written against the branch the report showed,
+missed it. The regression test checks all three operators because of that.
+
+**`::` from text shorter than the record read memory it does not own.** The
+specification is clear that `::` is a pointer recast rather than a
+conversion, but `some_text :: Header` on a one-character string handed back a
+pointer to three bytes and the program read a whole record through it: two
+confident garbage numbers and a segfault on the third field, with `strata
+check` reporting nothing. Round 16 made every indexed read refuse rather than
+read memory it does not own; this is that rule wearing a fifth hat. A cast
+from text is now checked against the length the text carries.
+
+**A date far from 1970 produced a corrupt string with exit 0.** Twelve
+functions in `std/time.sta` called `gmtime_r` and used its struct without
+checking it. The reported cause was the NULL return; the actual cause turned
+out to be one step further on -- `gmtime_r` succeeds for the year 1095164828
+and the formatting then truncates, which is how `1095164828-10-`, a date
+string with no day in it, reached a caller. So the rule is the range rather
+than the buffer: a year outside four digits is not a date these functions can
+write down, and they say so. All twelve call sites go through one function,
+so there is no thirteenth to forget.
+
+`test_suite/round_seventeen_stays_fixed.py` holds all of round 17, twenty-seven
+checks, and runs in CI. Four of them are structural rather than behavioural:
+they check that the single row-writing gate still exists and that both code
+generators still go through it, because a change that restored a second write
+path would pass every behavioural test in the file on the day it was made and
+fail a month later.
+
+## Unreleased
+
 ### The CI failure that only a fresh clone could see
 
 `strata check` is implemented twice -- once in Python as the oracle, once in

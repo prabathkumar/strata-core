@@ -383,7 +383,14 @@ int main(int argc, char** argv) {
             ct = self._c_type(decl.const_type)
             self.const_types[decl.name] = ct
             self.var_types[decl.name] = ct
+            # A file-scope initialiser must be a constant expression in C,
+            # so the checked-arithmetic helpers below cannot appear in one.
+            # A constant that overflows is a source mistake the C compiler
+            # warns about at the point it is written; a running total that
+            # overflows is the thing worth catching.
+            self.in_const = True
             value = self._gen_expr(decl.value, [])
+            self.in_const = False
             qualifier = "static const " if ct != "strata_str" else "static "
             self.emit_raw(f"{qualifier}{ct} {cname(decl.name)} = {value};")
             return
@@ -701,6 +708,26 @@ int main(int argc, char** argv) {
         self.emit_raw(f"        if (strata_file_stamp(path) != {name}__stamp) {{")
         self.emit_raw(f'            strata_save_refuse("{name}", path,')
         self.emit_raw('                "it changed after this program read it, so another run has written to it. Saving now would replace that work with rows that never saw it. Read it again, and redo the change");')
+        self.emit_raw("            return 0;")
+        self.emit_raw("        }")
+        self.emit_raw("    }")
+        # The guard above only fires when this table WAS read from this path.
+        # A save to a file the program never read was waved straight through:
+        # a forgotten `load` turned a three-row file into a one-row file, no
+        # error flag, exit 0, and the two rows that were there are gone. The
+        # file cannot tell a deliberate replacement from a forgotten read, so
+        # this refuses and says which of the two it is asking about. An empty
+        # or absent file is a first save and is not touched by this. Found by
+        # a blind evaluator, round 17.
+        self.emit_raw(f"    if (!({name}__from && strcmp({name}__from, path) "
+                      f"== 0)) {{")
+        self.emit_raw("        if (strata_file_has_rows(path)) {")
+        self.emit_raw(f'            strata_save_refuse("{name}", path,')
+        self.emit_raw('                "this program never read it, so the rows '
+                      'in memory do not account for the rows in the file. Load '
+                      'it first and save the result, or write to a different '
+                      'path. If replacing it really is the intention, remove '
+                      'the file first");')
         self.emit_raw("            return 0;")
         self.emit_raw("        }")
         self.emit_raw("    }")
@@ -2973,7 +3000,13 @@ int main(int argc, char** argv) {
             if expr.op == "+":
                 if lt == "strata_str" or rt == "strata_str":
                     return f"strata_concat({l},{r})"
-                return f"({l} + {r})"
+                # Falls through to the checked-arithmetic branch below for
+                # whole numbers. It used to return here, which is why `+`
+                # was the one operator of the three that still wrapped
+                # silently after the overflow repair -- the repair was
+                # written against the branch the report happened to show.
+                if lt == "strata_float" or rt == "strata_float":
+                    return f"({l} + {r})"
             # Comparing two strings with C's == compares POINTERS. It looks
             # right whenever both sides are literals in the same binary, and
             # silently fails the moment one side was read from a file or built
@@ -3007,6 +3040,18 @@ int main(int argc, char** argv) {
                 return f"strata_div_int({l},{r})"
             if expr.op == "%" and not nonzero_lit:
                 return f"strata_mod_int({l},{r})"
+            # Whole-number overflow wrapped silently while every arithmetic
+            # hazard beside it was caught: 9223372036854775807 + 1 printed a
+            # large negative number, no flag, exit 0. See strata_add_int in
+            # the runtime preamble for why the inconsistency is the real
+            # problem. Found by both blind evaluators, round 17.
+            if (expr.op in ("+", "-", "*")
+                    and lt != "strata_float" and rt != "strata_float"
+                    and lt != "strata_str" and rt != "strata_str"
+                    and not getattr(self, "in_const", False)):
+                checked = {"+": "strata_add_int", "-": "strata_sub_int",
+                           "*": "strata_mul_int"}[expr.op]
+                return f"{checked}({l},{r})"
             return f"({l} {expr.op} {r})"
         if isinstance(expr, UnaryExpr):
             return f"({expr.op}{self._gen_expr(expr.operand, param_names)})"
@@ -3034,7 +3079,18 @@ int main(int argc, char** argv) {
                       f"(line {getattr(expr, 'line', '?')})\n"
                       f"Hint: Declared record types: {known}", file=sys.stderr)
                 sys.exit(1)
-            return f"(({expr.target_type}*)({self._gen_expr(expr.source, param_names)}))"
+            src = self._gen_expr(expr.source, param_names)
+            # A cast FROM TEXT is checked against the length the text
+            # carries: `some_text :: Header` on a one-character string used
+            # to hand back a pointer to three bytes and the program read a
+            # whole record through it. See strata_cast_from_text in the
+            # runtime preamble. A cast from anything else has no length to
+            # check against and is unchanged.
+            if self._expr_ctype(expr.source, param_names) == "strata_str":
+                return (f"(({expr.target_type}*)strata_cast_from_text({src}, "
+                        f"sizeof({expr.target_type}), "
+                        f'"{expr.target_type}"))')
+            return f"(({expr.target_type}*)({src}))"
         if isinstance(expr, PredictExpr):
             return f"strata_predict(&{expr.model}_instance,{self._gen_expr(expr.arg, param_names)})"
         if isinstance(expr, ListLiteral):

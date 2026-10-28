@@ -68,7 +68,7 @@ int date_of(int year, int month, int day) {
     if (_s == (time_t)-1) return -1;
     /* timegm normalises out of range values instead of refusing them, so the
      * date is read back and compared with what was asked for. */
-    struct tm _b; gmtime_r(&_s, &_b);
+    struct tm _b; strata_gmtime((int64_t)_s, &_b);
     if (_b.tm_year != (int)$year - 1900) return -1;
     if (_b.tm_mon  != (int)$month - 1)   return -1;
     if (_b.tm_mday != (int)$day)         return -1;
@@ -95,7 +95,7 @@ int date_is_valid(int year, int month, int day) {
     _t.tm_hour = 12;
     time_t _s = timegm(&_t);
     if (_s == (time_t)-1) return 0;
-    struct tm _b; gmtime_r(&_s, &_b);
+    struct tm _b; strata_gmtime((int64_t)_s, &_b);
     if (_b.tm_year + 1900 != (int)$year) return 0;
     if (_b.tm_mon + 1 != (int)$month) return 0;
     if (_b.tm_mday != (int)$day) return 0;
@@ -124,22 +124,22 @@ int moment_of(int year, int month, int day, int hour, int minute, int second) {
 // ── Taking a moment apart ────────────────────────────────────────────────
 
 int year_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_year+1900;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_year+1900;";
 }
 int month_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_mon+1;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_mon+1;";
 }
 int day_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_mday;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_mday;";
 }
 int hour_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_hour;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_hour;";
 }
 int minute_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_min;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_min;";
 }
 int second_of(int moment) {
-    native "time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b); return (int64_t)_b.tm_sec;";
+    native "time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b); return (int64_t)_b.tm_sec;";
 }
 
 // Monday is 1 and Sunday is 7, which is the ISO convention and the one a
@@ -147,7 +147,7 @@ int second_of(int moment) {
 // cost more than one report its Monday.
 int weekday_of(int moment) {
     native "
-    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b);
     int _w = _b.tm_wday; if (_w == 0) _w = 7;
     return (int64_t)_w;
     ";
@@ -159,7 +159,7 @@ int weekday_of(int moment) {
 // written this way and no other.
 str date_text(int moment) {
     native "
-    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b);
     char _o[16]; strftime(_o, sizeof(_o), \"%Y-%m-%d\", &_b);
     return strata_dup(_o);
     ";
@@ -168,7 +168,7 @@ str date_text(int moment) {
 // YYYY-MM-DD HH:MM:SS, UTC.
 str moment_text(int moment) {
     native "
-    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b);
     char _o[32]; strftime(_o, sizeof(_o), \"%Y-%m-%d %H:%M:%S\", &_b);
     return strata_dup(_o);
     ";
@@ -258,7 +258,7 @@ int days_between(int from_moment, int to_moment) {
 
 int start_of_day(int moment) {
     native "
-    time_t _s=(time_t)$moment; struct tm _b; gmtime_r(&_s,&_b);
+    time_t _s=(time_t)$moment; struct tm _b; strata_gmtime((int64_t)_s,&_b);
     _b.tm_hour=0; _b.tm_min=0; _b.tm_sec=0;
     return (int64_t)timegm(&_b);
     ";

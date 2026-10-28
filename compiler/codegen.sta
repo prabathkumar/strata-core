@@ -67,6 +67,11 @@ database Gen {
     int drops;
     int retypes;
     int indent;
+    // Set while a file-scope constant's initialiser is being generated. A
+    // C initialiser at file scope must be a constant expression, so the
+    // checked-arithmetic helpers cannot appear in one. Mirrors in_const in
+    // stage0.py.
+    int in_const;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
     // Bind list: variable -> table, for the row of a scan or a rewrite ONLY.
@@ -630,9 +635,15 @@ str gen_expr(Gen &g, int p) {
                 sb_append(&sb, ")");
                 return sb_to_str(&sb);
             }
-            sb_append(&sb, "("); sb_append(&sb, l);
-            sb_append(&sb, " + "); sb_append(&sb, r); sb_append(&sb, ")");
-            return sb_to_str(&sb);
+            // Falls through to the checked-arithmetic branch below for
+            // whole numbers. It used to return here, which is why `+` was
+            // the one operator of the three that still wrapped silently
+            // after the overflow repair. Mirrors stage0.py.
+            if (str_eq(lt, "strata_float") + str_eq(rt, "strata_float") > 0) {
+                sb_append(&sb, "("); sb_append(&sb, l);
+                sb_append(&sb, " + "); sb_append(&sb, r); sb_append(&sb, ")");
+                return sb_to_str(&sb);
+            }
         }
         // Comparing two strings with C's == compares POINTERS. It looks right
         // whenever both sides are literals in the same binary, and silently
@@ -696,6 +707,36 @@ str gen_expr(Gen &g, int p) {
             sb_append(&sb, ")");
             return sb_to_str(&sb);
         }
+        // Whole-number overflow wrapped silently while every arithmetic
+        // hazard beside it was caught: 9223372036854775807 + 1 printed a
+        // large negative number, no flag, exit 0. See strata_add_int in the
+        // runtime preamble for why the inconsistency is the real problem.
+        // Mirrors stage0.py. Round 17.
+        int arith = 0;
+        if (str_eq(e.s1, "+") == 1) { arith = 1; }
+        if (str_eq(e.s1, "-") == 1) { arith = 1; }
+        if (str_eq(e.s1, "*") == 1) { arith = 1; }
+        if (arith == 1) {
+            if (g.in_const == 1) { arith = 0; }
+        }
+        if (arith == 1) {
+            str lt3 = expr_ctype(&g, e.c1);
+            str rt3 = expr_ctype(&g, e.c2);
+            if (str_eq(lt3, "strata_float") + str_eq(rt3, "strata_float") > 0) {
+                arith = 0;
+            }
+            if (str_eq(lt3, "strata_str") + str_eq(rt3, "strata_str") > 0) {
+                arith = 0;
+            }
+        }
+        if (arith == 1) {
+            if (str_eq(e.s1, "+") == 1) { sb_append(&sb, "strata_add_int("); }
+            if (str_eq(e.s1, "-") == 1) { sb_append(&sb, "strata_sub_int("); }
+            if (str_eq(e.s1, "*") == 1) { sb_append(&sb, "strata_mul_int("); }
+            sb_append(&sb, l); sb_append(&sb, ","); sb_append(&sb, r);
+            sb_append(&sb, ")");
+            return sb_to_str(&sb);
+        }
         sb_append(&sb, "("); sb_append(&sb, l); sb_append(&sb, " ");
         sb_append(&sb, e.s1); sb_append(&sb, " "); sb_append(&sb, r);
         sb_append(&sb, ")");
@@ -723,9 +764,24 @@ str gen_expr(Gen &g, int p) {
     }
 
     if (k == 44) {
+        str csrc = gen_expr(&g, e.c1);
         StringBuilder sb = sb_new();
+        // A cast FROM TEXT is checked against the length the text carries:
+        // `some_text :: Header` on a one-character string used to hand back
+        // a pointer to three bytes and the program read a whole record
+        // through it. See strata_cast_from_text in the runtime preamble.
+        // A cast from anything else has no length to check against and is
+        // unchanged. Mirrors stage0.py. Round 17.
+        if (str_eq(expr_ctype(&g, e.c1), "strata_str") == 1) {
+            sb_append(&sb, "(("); sb_append(&sb, e.s1);
+            sb_append(&sb, "*)strata_cast_from_text("); sb_append(&sb, csrc);
+            sb_append(&sb, ", sizeof("); sb_append(&sb, e.s1);
+            sb_append(&sb, "), \""); sb_append(&sb, e.s1);
+            sb_append(&sb, "\"))");
+            return sb_to_str(&sb);
+        }
         sb_append(&sb, "(("); sb_append(&sb, e.s1); sb_append(&sb, "*)(");
-        sb_append(&sb, gen_expr(&g, e.c1)); sb_append(&sb, "))");
+        sb_append(&sb, csrc); sb_append(&sb, "))");
         return sb_to_str(&sb);
     }
 
@@ -2587,6 +2643,28 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     emit_raw(&g, "            return 0;");
     emit_raw(&g, "        }");
     emit_raw(&g, "    }");
+    // The staleness guard above only fires when this table WAS read from
+    // this path. A save to a file the program never read was waved straight
+    // through: a forgotten `load` turned a three-row file into a one-row
+    // file, no error flag, exit 0, and the two rows that were there are
+    // gone. The file cannot tell a deliberate replacement from a forgotten
+    // read, so this refuses and says which of the two it is asking about.
+    // An empty or absent file is a first save and is not touched by this.
+    // Mirrors stage0.py. Round 17.
+    StringBuilder nr = sb_new();
+    sb_append(&nr, "    if (!("); sb_append(&nr, name);
+    sb_append(&nr, "__from && strcmp("); sb_append(&nr, name);
+    sb_append(&nr, "__from, path) == 0)) {");
+    emit_raw(&g, sb_to_str(&nr));
+    emit_raw(&g, "        if (strata_file_has_rows(path)) {");
+    StringBuilder nr2 = sb_new();
+    sb_append(&nr2, "            strata_save_refuse(\""); sb_append(&nr2, name);
+    sb_append(&nr2, "\", path,");
+    emit_raw(&g, sb_to_str(&nr2));
+    emit_raw(&g, "                \"this program never read it, so the rows in memory do not account for the rows in the file. Load it first and save the result, or write to a different path. If replacing it really is the intention, remove the file first\");");
+    emit_raw(&g, "            return 0;");
+    emit_raw(&g, "        }");
+    emit_raw(&g, "    }");
     // What the commit below compares against.
     emit_raw(&g, "    int64_t _expect = 0;");
     StringBuilder mg5 = sb_new();
@@ -3142,7 +3220,9 @@ def gen_decl(Gen &g, Node d) {
         str ct = c_type(&g, d.c1);
         g.const_types = bind_cons(d.s1, ct, g.const_types);
         g.var_types = bind_cons(d.s1, ct, g.var_types);
+        g.in_const = 1;
         str value = gen_expr(&g, d.c2);
+        g.in_const = 0;
         StringBuilder cb = sb_new();
         if (str_eq(ct, "strata_str") == 1) { sb_append(&cb, "static "); }
         else { sb_append(&cb, "static const "); }

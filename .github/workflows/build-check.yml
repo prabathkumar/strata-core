@@ -143,6 +143,16 @@ jobs:
     - name: Round Sixteen Stays Fixed
       run: python3 test_suite/round_sixteen_stays_fixed.py
 
+    # Round 17 was the first round both evaluators answered with a straight
+    # no. Its worst finding was that `<` on text compared ADDRESSES, so a
+    # date range filter matched no row and exited 0; its most useful was
+    # that three hand-written write emitters each re-implemented a subset
+    # of the rules about what may be stored, which is why `append` and
+    # `rewrite` wrote a row with an over-long column blanked while `save`
+    # refused the whole write.
+    - name: Round Seventeen Stays Fixed
+      run: python3 test_suite/round_seventeen_stays_fixed.py
+
     # The demonstrator. Sixty-six CI steps prove the compiler works; they do
     # not show anybody what the language is FOR. apps/payables is the
     # smallest system that still touches every tier -- a supplier file in,

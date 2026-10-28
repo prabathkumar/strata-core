@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+/* strata_gmtime, which every date function in std/time.sta goes through. */
+#include <time.h>
 
 typedef int64_t   strata_int;
 typedef double    strata_float;
@@ -378,6 +380,87 @@ static strata_str strata_html_escape(strata_str s) {
     *w = '\0';
     return (strata_str)out;
 }
+/* Whole-number arithmetic that notices when the answer does not fit.
+ *
+ * Every other arithmetic hazard in this language is caught and flagged --
+ * divide by zero, modulo zero, an aggregate over nothing, an index past the
+ * end, a number too large for its column. Plain `+`, `-` and `*` on `int`
+ * were the exception: 9223372036854775807 + 1 printed
+ * -9223372036854775808, no flag, exit 0. The inconsistency is the real
+ * problem. A reader who has seen the other five caught will reasonably
+ * assume this one is too, and a running total that silently turns negative
+ * is the kind of wrong answer this project exists to prevent.
+ *
+ * __builtin_*_overflow is understood by both gcc and clang and compiles to
+ * the processor's own overflow flag -- a conditional jump that is never
+ * taken, not arithmetic. Found by both blind evaluators, round 17. */
+static strata_int strata_add_int(strata_int a, strata_int b) {
+    strata_int r;
+    if (__builtin_add_overflow(a, b, &r)) {
+        strata_error_set("%lld + %lld is too large to hold in a whole number",
+                         (long long)a, (long long)b);
+        return 0;
+    }
+    return r;
+}
+static strata_int strata_sub_int(strata_int a, strata_int b) {
+    strata_int r;
+    if (__builtin_sub_overflow(a, b, &r)) {
+        strata_error_set("%lld - %lld is too large to hold in a whole number",
+                         (long long)a, (long long)b);
+        return 0;
+    }
+    return r;
+}
+static strata_int strata_mul_int(strata_int a, strata_int b) {
+    strata_int r;
+    if (__builtin_mul_overflow(a, b, &r)) {
+        strata_error_set("%lld * %lld is too large to hold in a whole number",
+                         (long long)a, (long long)b);
+        return 0;
+    }
+    return r;
+}
+
+/* Breaking a moment into a date, and saying so when it cannot be done.
+ *
+ * gmtime_r returns NULL for a moment whose year does not fit in an int, and
+ * leaves the struct it was given untouched. Twelve functions in std/time.sta
+ * called it and used the struct regardless, so a day count far enough out --
+ * reachable from a number in a supplier file -- produced a date built from
+ * whatever was on the stack: "1095164828-10-" with no error flag and exit 0,
+ * and a string with a byte that is not valid UTF-8 at the extremes. Writing
+ * that into a record makes it the record.
+ *
+ * One function rather than twelve checks, so there is no thirteenth call
+ * site to forget. The struct is zeroed on refusal, which reads as the
+ * beginning of 1900 -- wrong, but deterministic, and the error flag beside
+ * it says not to trust it. Found by a blind evaluator, round 17. */
+static int strata_gmtime(strata_int moment, struct tm* out) {
+    time_t s = (time_t)moment;
+    memset(out, 0, sizeof(*out));
+    if (!gmtime_r(&s, out)) {
+        memset(out, 0, sizeof(*out));
+        strata_error_set("%lld is too far from 1970 to be a date",
+                         (long long)moment);
+        return 0;
+    }
+    /* A year outside four digits is not a date any of these functions can
+     * write down. gmtime_r itself succeeds for year 1095164828 and the
+     * formatting below then truncates, which is how "1095164828-10-" --
+     * a date string with no day in it, and at the extremes a byte that is
+     * not valid UTF-8 -- reached a caller with no error flag and exit 0.
+     * The range is the rule, not the buffer size. */
+    if (out->tm_year + 1900 < 1 || out->tm_year + 1900 > 9999) {
+        strata_int y = (strata_int)out->tm_year + 1900;
+        memset(out, 0, sizeof(*out));
+        strata_error_set("%lld is the year %lld, which is not a date this "
+                         "can write down", (long long)moment, (long long)y);
+        return 0;
+    }
+    return 1;
+}
+
 static strata_int strata_div_int(strata_int a, strata_int b) {
     if (b == 0) {
         strata_error_set("divided %lld by zero", (long long)a);
@@ -688,6 +771,34 @@ static strata_int strata_str_at(strata_str s, strata_int i) {
     }
     return (strata_int)(unsigned char)s[i];
 }
+
+/* A `::` cast from text, with the one check that makes it safe to read.
+ *
+ * `::` is a pointer recast rather than a conversion, which the specification
+ * says plainly -- but `some_text :: Header` on a one-character string
+ * returned a pointer to three bytes and the program then read a whole
+ * record through it: two confident garbage numbers and a segfault on the
+ * third field, with `strata check` reporting nothing. Round 16 made every
+ * indexed read refuse rather than read memory it does not own; the cast is
+ * that same rule wearing a fifth hat. Found by a blind evaluator, round 17.
+ *
+ * A refused cast answers a pointer to zeroed memory rather than NULL, so a
+ * program that ignores the error reads zeroes instead of dying -- the same
+ * bargain every other refusal in this runtime strikes. */
+static char __strata_cast_zero[4096];
+static void* strata_cast_from_text(strata_str s, strata_int want,
+                                   const char* what) {
+    strata_int have = s ? strata_strlen_cached(s) : 0;
+    if (!s || have < want) {
+        strata_error_set("cannot read a '%s' of %lld byte(s) out of text "
+                         "holding %lld", what, (long long)want,
+                         (long long)have);
+        memset(__strata_cast_zero, 0, sizeof(__strata_cast_zero));
+        return (void*)__strata_cast_zero;
+    }
+    return (void*)s;
+}
+
 
 static strata_int strata_bounds(void* list, strata_int i) {
     strata_int n = strata_len(list);
@@ -1378,6 +1489,26 @@ static int strata_error_exit_code(int wanted) {
  *
  * Returns 1 when the file is in place, 0 when somebody else wrote first, and
  * -1 when the rename itself failed. */
+/* Whether a stored file already holds rows. A file that does not exist, is
+ * empty, or holds only its schema header is a first save and nothing is at
+ * risk. Used by `save` to tell a first write from a replacement of work this
+ * program never looked at. */
+static int strata_file_has_rows(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    char line[4096];
+    int lines = 0;
+    while (fgets(line, sizeof(line), f)) {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (*p == '\0') continue;
+        lines++;
+        if (lines > 1) { fclose(f); return 1; }
+    }
+    fclose(f);
+    return 0;
+}
+
 static int strata_commit(const char* path, const char* tmp, int64_t expected) {
     size_t n = strlen(path) + 24;
     char* lock = (char*)malloc(n);
