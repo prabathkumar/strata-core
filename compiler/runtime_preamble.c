@@ -649,6 +649,18 @@ static strata_int strata_len(void* list) {
  */
 static strata_str __strata_slen_for = NULL;
 static strata_int __strata_slen_was = 0;
+/* Every comparison between two pieces of text goes through here, not just
+ * the two that were noticed first. `==` and `!=` were special-cased long
+ * ago; `<`, `>`, `<=` and `>=` were left as C comparisons, which compare
+ * ADDRESSES. A string read from a file always sat above a literal, so
+ * `[due < "2026-07-01"]` matched no row and `>` matched every row, exit 0,
+ * `strata check` clean. Found by a blind evaluator, round 17. A missing
+ * string counts as empty rather than crashing. */
+static int strata_strcmp(strata_str a, strata_str b) {
+    if (!a) a = (strata_str)"";
+    if (!b) b = (strata_str)"";
+    return strcmp(a, b);
+}
 static strata_int strata_strlen_cached(strata_str s) {
     if (!s) return 0;
     if (s == __strata_slen_for && s[__strata_slen_was] == '\0') {
@@ -968,6 +980,9 @@ static void strata_error_set(const char* fmt, ...);
  * "stored" -- memory and disk disagreed and nothing said so. The writer reads
  * this before it puts the new file in place. */
 static int strata_write_failed = 0;
+/* The scratch a row is built in before anything decides to keep it. */
+static char* __strata_row_buf = NULL;
+static size_t __strata_row_len = 0;
 static void strata_write_escaped(FILE* f, strata_str s) {
     if (!s) return;
     size_t n = 0;
@@ -1061,6 +1076,98 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
    whose type changed is a refusal rather than a silent misread. Without the
    header, adding a column to a `database` block silently corrupted every row
    in every file already on disk. */
+/* ONE PLACE THAT DECIDES WHETHER A ROW MAY BE WRITTEN.
+ *
+ * `save` checked strata_write_failed before putting its new file in place,
+ * so an over-long value refused the whole write and said so. `append` and
+ * `rewrite` are separate emitters that re-implemented a subset of the same
+ * rules: they printed the identical refusal, set the identical flag, and
+ * then wrote the row anyway with that column EMPTY. The file stayed
+ * structurally valid, so a later read returned the blanked row with no
+ * error at all -- the stored value was simply gone. Round 17 found both,
+ * and the test suite's own docstring listed this behaviour as fixed,
+ * because it had been fixed for one of the three write paths.
+ *
+ * A test per write statement cannot keep three hand-written emitters in
+ * step. So a row is now built in memory and handed to strata_row_commit,
+ * which is the only thing that can put bytes in a data file. An emitter
+ * that forgets a rule does not get a quieter bug; it gets no row written.
+ *
+ * open_memstream is POSIX 2008: Linux and macOS both have it. */
+static FILE* strata_row_open(void) {
+    strata_write_failed = 0;
+    return open_memstream(&__strata_row_buf, &__strata_row_len);
+}
+/* Returns 1 when the row was written, 0 when it was refused. The error has
+ * already been set by whatever refused it. */
+static int strata_row_commit(FILE* row, FILE* dest, strata_int ncols,
+                             strata_int want_cols, const char* table,
+                             const char* path) {
+    int wrote = 0;
+    if (!row) {
+        strata_error_set("%s: could not build a row for '%s'", table, path);
+        return 0;
+    }
+    fclose(row);
+    if (ncols != want_cols) {
+        /* A row with the wrong number of columns makes the whole file
+         * unreadable, or -- worse -- readable as different data. */
+        strata_error_set("%s: refusing to write a row of %lld column(s) to "
+                         "'%s'; this table has %lld",
+                         table, (long long)ncols, path, (long long)want_cols);
+        strata_write_failed = 1;
+    }
+    if (!strata_write_failed && dest && __strata_row_buf) {
+        /* One row, one flush, under a lock held for the duration.
+         *
+         * `append` was plain buffered stdio with no lock at all, so two
+         * processes writing the same file flushed 4096-byte chunks that cut
+         * rows in half and interleaved. Two writers put 31 corrupt rows in
+         * 6000; three writers with larger rows put 581 bad rows in 1200.
+         * Some of the damage made the whole file unreadable; the rest read
+         * back as valid rows holding wrong values. And the architecture the
+         * documentation recommends -- one worker process per request, plus
+         * `append` to write a file larger than memory -- is exactly that
+         * combination. Found by a blind evaluator, round 17.
+         *
+         * The lock is a POSIX advisory write lock on the destination, which
+         * the kernel releases if the process dies, so a killed job cannot
+         * wedge every run afterwards the way a lock FILE can. */
+        int _fd = fileno(dest);
+        struct flock _fl;
+        int _locked = 0;
+        if (_fd >= 0) {
+            memset(&_fl, 0, sizeof(_fl));
+            _fl.l_type = F_WRLCK;
+            _fl.l_whence = SEEK_SET;
+            _fl.l_start = 0;
+            _fl.l_len = 0;
+            _locked = (fcntl(_fd, F_SETLKW, &_fl) == 0);
+        }
+        wrote = fwrite(__strata_row_buf, 1, __strata_row_len, dest)
+                == __strata_row_len;
+        if (wrote && fflush(dest) != 0) wrote = 0;
+        if (_locked) {
+            _fl.l_type = F_UNLCK;
+            fcntl(_fd, F_SETLK, &_fl);
+        }
+        if (!wrote) {
+            strata_error_set("%s: could not write a row to '%s': %s",
+                             table, path, strerror(errno));
+        }
+    }
+    if (!wrote && !strata_write_failed) strata_write_failed = 1;
+    free(__strata_row_buf);
+    __strata_row_buf = NULL;
+    __strata_row_len = 0;
+    if (!wrote) {
+        fprintf(stderr, "[STRATA WRITE] %s: the row above was not written to "
+                        "'%s'. Nothing partial was left in the file.\n",
+                table, path);
+    }
+    return wrote;
+}
+
 #define STRATA_MAX_COLS 64
 #define STRATA_NAME_CAP 64
 
@@ -1215,6 +1322,33 @@ static void strata_error_epilogue(void) {
 __attribute__((constructor))
 static void strata_install_error_epilogue(void) {
     atexit(strata_error_epilogue);
+}
+
+/* The same check, for a process that leaves without running atexit handlers.
+ *
+ * A request is served in a forked child that ends with _exit, which does not
+ * run atexit -- deliberately, so the child does not flush buffers it
+ * inherited a copy of. The consequence nobody had noticed: the whole
+ * unchecked-error net was installed with atexit, so no request ever reached
+ * it. A handler whose load was refused answered confident zeroes with HTTP
+ * 200, and the refusal went to a log nobody reads. For a service, which
+ * never exits, "the error surfaces at exit" meant never. Found by a blind
+ * evaluator, round 17.
+ *
+ * Returns the code the caller should leave with: 65 when an error was never
+ * checked, otherwise the code it asked for. */
+static int strata_error_exit_code(int wanted) {
+    if (!strata_err_pending) return wanted;
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[strata] this request finished with an error nobody checked:\n"
+        "         %s\n"
+        "         %lld error(s) were reported while serving it. Call\n"
+        "         had_error() and clear_error() in the handler, or read the\n"
+        "         messages above. Leaving with 65 so this is not mistaken\n"
+        "         for success.\n", strata_err_msg, strata_err_count);
+    fflush(stderr);
+    return 65;
 }
 
 /* Putting a finished file in place, without losing somebody else's work.

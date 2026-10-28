@@ -585,6 +585,7 @@ repair agent. The full taxonomy is `ERROR_TAXONOMY.json`.
 | `E010` | Column Type Mismatch | A value written to, or compared against, a column of another type |
 | `E011` | Unresolved Symbol | A name used that is defined nowhere: no variable, no function, no import that provides it |
 | `E012` | Call Contract Breach | A call with the wrong number of arguments, an argument whose type the signature does not allow, or a by-reference parameter passed by value (or the reverse) |
+| `E013` | Stored Table Exceeds A Format Limit | A `database` block declares more columns than a stored table can be read back with. The writer had no such limit, so a wider table saved cleanly and every later read refused it, blaming a value in row 1 rather than the column count |
 
 ## 8. What the language does not have
 

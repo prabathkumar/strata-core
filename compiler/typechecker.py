@@ -25,6 +25,11 @@ from compiler.parser import (
     PrimitiveType, ListType, TensorType,
 )
 
+# Mirrors STRATA_MAX_COLS in compiler/runtime_preamble.c. The two must
+# agree: this is the checker's copy of a limit the reader enforces.
+STRATA_MAX_COLS = 64
+
+
 @dataclass
 class StrataError:
     code: str; message: str; line: int; col: int; hint: str = ""
@@ -693,6 +698,20 @@ class TypeChecker:
                         f"Give it a value of type '{declared}', or declare it "
                         f"as '{actual}'")
             elif isinstance(d, DatabaseDecl):
+                # The stored-table format reads back at most STRATA_MAX_COLS
+                # columns; the writer had no such limit, so a wider table
+                # saved cleanly and every later read refused it -- blaming a
+                # value in row 1 rather than the column count, which is a
+                # long way from the real cause. The number of columns is
+                # known right here, so it is refused here. Found by a blind
+                # evaluator, round 17.
+                if len(d.fields) > STRATA_MAX_COLS:
+                    self._error("E013",
+                        f"Table '{d.name}' declares {len(d.fields)} columns; "
+                        f"a stored table holds at most {STRATA_MAX_COLS}",
+                        getattr(d, "line", 0), getattr(d, "col", 0),
+                        f"Split '{d.name}' into two related tables. A wider "
+                        f"file can be written but can never be read back")
                 self.schemas[d.name]={f.name:self._resolve_type(f.field_type) for f in d.fields}
                 self.global_scope.define(d.name, SType(d.name))
             elif isinstance(d, ProtocolDecl):

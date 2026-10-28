@@ -1077,18 +1077,32 @@ int main(int argc, char** argv) {
         so it needs this; keeping it in one place is also what stops the two
         writers drifting into producing subtly different files.
         """
-        self.emit_raw(f"static void {name}__write_row(FILE* f, const {name}* r) {{")
+        # Returns 1 when the row was written. It used to return nothing and
+        # write whatever it managed: a value too long to store printed a
+        # refusal and the row went out with that column EMPTY, which a later
+        # read returned with no error at all. The row is built in memory and
+        # only strata_row_commit may put it in the file. See the runtime
+        # preamble.
+        self.emit_raw(f"static int {name}__write_row(FILE* f, const {name}* r, "
+                      f"const char* path) {{")
+        self.emit_raw("    FILE* _rw = strata_row_open();")
+        self.emit_raw("    strata_int _rn = 0;")
+        self.emit_raw("    if (_rw) {")
         for i, fd in enumerate(fields):
             ct = self._c_type(fd.field_type)
             if i:
-                self.emit_raw("    fputc(0x09, f);")
+                self.emit_raw("    fputc(0x09, _rw);")
+            self.emit_raw("    _rn = _rn + 1;")
             if ct == "strata_str":
-                self.emit_raw(f"    strata_write_escaped(f, r->{fd.name});")
+                self.emit_raw(f"    strata_write_escaped(_rw, r->{fd.name});")
             elif ct == "strata_float":
-                self.emit_raw(f'    fprintf(f, "%.17g", (double)r->{fd.name});')
+                self.emit_raw(f'    fprintf(_rw, "%.17g", (double)r->{fd.name});')
             else:
-                self.emit_raw(f'    fprintf(f, "%lld", (long long)r->{fd.name});')
-        self.emit_raw("    fputc(0x0a, f);")
+                self.emit_raw(f'    fprintf(_rw, "%lld", (long long)r->{fd.name});')
+        self.emit_raw("    fputc(0x0a, _rw);")
+        self.emit_raw("    }")
+        self.emit_raw(f"    return strata_row_commit(_rw, f, _rn, {len(fields)}, "
+                      f'"{name}", path);')
         self.emit_raw("}")
 
     def _gen_rename_guard(self, name, fields, indent, fail,
@@ -2223,7 +2237,14 @@ int main(int argc, char** argv) {
         for st in node.body:
             self._gen_stmt(st, param_names)
         self.emit(f"_wnext{d}:;")
-        self.emit(f"if (!_wdrop{d}) {t}__write_row(_ww{d}, &_wrow{d});")
+        # A row that could not be written must not simply be dropped: the
+        # renamed file would then be the table, minus that row, silently.
+        self.emit(f"if (!_wdrop{d}) {{")
+        self.indent += 1
+        self.emit(f"if (!{t}__write_row(_ww{d}, &_wrow{d}, {path})) "
+                  f"{{ _wst{d} = -1; break; }}")
+        self.indent -= 1
+        self.emit("}")
         self.indent -= 1
         self.emit("}")
         self.scan_row_vars.pop(node.var, None)
@@ -2275,21 +2296,36 @@ int main(int argc, char** argv) {
         self.emit(f"FILE* _pf = {node.target}__append_open({_c_string(node.path)});")
         self.emit("if (_pf) {")
         self.indent += 1
+        # The row is built in memory and handed to strata_row_commit, which
+        # is the only thing that may put bytes in a data file. Writing the
+        # fields straight at _pf is what let an over-long value be refused
+        # and the row written anyway with that column blank. See
+        # strata_row_commit in the runtime preamble.
+        self.emit("FILE* _rw = strata_row_open();")
+        self.emit("strata_int _rn = 0;")
+        self.emit("if (_rw) {")
+        self.indent += 1
         for i, fd in enumerate(fields):
             if i:
-                self.emit("fputc(0x09, _pf);")
+                self.emit("fputc(0x09, _rw);")
+            self.emit("_rn = _rn + 1;")
             expr = given.get(fd.name)
             if expr is None:
                 continue
             value = self._gen_expr(expr, param_names)
             ct = self._c_type(fd.field_type)
             if ct == "strata_str":
-                self.emit(f"strata_write_escaped(_pf, {value});")
+                self.emit(f"strata_write_escaped(_rw, {value});")
             elif ct == "strata_float":
-                self.emit(f'fprintf(_pf, "%.17g", (double)({value}));')
+                self.emit(f'fprintf(_rw, "%.17g", (double)({value}));')
             else:
-                self.emit(f'fprintf(_pf, "%lld", (long long)({value}));')
-        self.emit("fputc(0x0a, _pf);")
+                self.emit(f'fprintf(_rw, "%lld", (long long)({value}));')
+        self.emit("fputc(0x0a, _rw);")
+        self.indent -= 1
+        self.emit("}")
+        self.emit(f"strata_row_commit(_rw, _pf, _rn, {len(fields)}, "
+                  f'"{node.target}", {_c_string(node.path)});')
+        self.emit("fflush(_pf);")
         self.indent -= 1
         self.emit("}")
         self.indent -= 1
@@ -2943,9 +2979,18 @@ int main(int argc, char** argv) {
             # silently fails the moment one side was read from a file or built
             # at runtime: `status == "OPEN"` matched every row before a save
             # and no row after a load.
-            if expr.op in ("==", "!=") and "strata_str" in (lt, rt):
-                eq = f"(strcmp({l},{r}) == 0)"
-                return eq if expr.op == "==" else f"(!{eq})"
+            # Ordering is the same mistake one operator over, and it
+            # survived until round 17 because only the two that had been
+            # noticed were ever fixed. `<` on two strings compared
+            # ADDRESSES: a string read from a file always sat above a
+            # literal, so `[due < "2026-07-01"]` matched no row and `>`
+            # matched every row -- exit 0, check clean, and `by due asc`
+            # sorted the same column correctly, which is what made it
+            # believable. Every comparison operator on text now goes through
+            # one function, so there is no seventh operator to forget.
+            if (expr.op in ("==", "!=", "<", ">", "<=", ">=")
+                    and "strata_str" in (lt, rt)):
+                return f"(strata_strcmp({l},{r}) {expr.op} 0)"
             # Division by zero. An integer one is a processor trap: the
             # program died with no message and nothing the developer wrote in
             # the traceback. A float one gave inf, which travels through every

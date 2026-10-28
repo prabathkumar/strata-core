@@ -80,6 +80,12 @@
       "severity": "CRITICAL_HALT",
       "diagnostic": "A call does not match the function's signature: the wrong number of arguments, or an argument of the wrong type. The function's declaration is the contract, and this call does not keep it.",
       "ai_remediation_strategy": "Read the function's declaration and make the call match it , supply the missing argument, remove the extra one, or convert the argument to the declared type. Do not change the function's signature to fit one caller unless every other caller is changed with it."
+    },
+    "E013": {
+      "classification": "Stored Table Exceeds A Format Limit",
+      "severity": "ERROR",
+      "diagnostic": "A `database` block declares more columns than the stored-table format can read back. The writer had no such limit, so the table saved cleanly and every later read refused it, blaming a value in row 1 rather than the column count. The limit is knowable when the declaration is read, so it is refused here instead of after the data is written.",
+      "ai_remediation_strategy": "Split the table into two related tables, or reduce the number of columns to the stated maximum. Do not work around it by writing the file another way: nothing can read a file with more columns than the format allows."
     }
   }
 }

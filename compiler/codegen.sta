@@ -639,16 +639,28 @@ str gen_expr(Gen &g, int p) {
         // fails the moment one side was read from a file or built at runtime:
         // `status == "OPEN"` matched every row before a save and no row after
         // a load.
-        int is_eq = str_eq(e.s1, "==");
-        int is_ne = str_eq(e.s1, "!=");
-        if (is_eq + is_ne > 0) {
+        // Ordering is the same mistake one operator over, and it survived
+        // until round 17 because only the two that had been noticed were
+        // ever fixed. `<` on two strings compared ADDRESSES: a string read
+        // from a file always sat above a literal, so `[due < "2026-07-01"]`
+        // matched no row and `>` matched every row -- exit 0, check clean,
+        // and `by due asc` sorted the same column correctly, which is what
+        // made it believable. Every comparison operator on text now goes
+        // through one function, so there is no seventh operator to forget.
+        int is_cmp = 0;
+        if (str_eq(e.s1, "==") == 1) { is_cmp = 1; }
+        if (str_eq(e.s1, "!=") == 1) { is_cmp = 1; }
+        if (str_eq(e.s1, "<") == 1) { is_cmp = 1; }
+        if (str_eq(e.s1, ">") == 1) { is_cmp = 1; }
+        if (str_eq(e.s1, "<=") == 1) { is_cmp = 1; }
+        if (str_eq(e.s1, ">=") == 1) { is_cmp = 1; }
+        if (is_cmp == 1) {
             str lt = expr_ctype(&g, e.c1);
             str rt = expr_ctype(&g, e.c2);
             if (str_eq(lt, "strata_str") + str_eq(rt, "strata_str") > 0) {
-                if (is_ne == 1) { sb_append(&sb, "(!"); }
-                sb_append(&sb, "(strcmp("); sb_append(&sb, l);
-                sb_append(&sb, ","); sb_append(&sb, r); sb_append(&sb, ") == 0)");
-                if (is_ne == 1) { sb_append(&sb, ")"); }
+                sb_append(&sb, "(strata_strcmp("); sb_append(&sb, l);
+                sb_append(&sb, ","); sb_append(&sb, r); sb_append(&sb, ") ");
+                sb_append(&sb, e.s1); sb_append(&sb, " 0)");
                 return sb_to_str(&sb);
             }
         }
@@ -1908,31 +1920,46 @@ def gen_table_write_row(Gen &g, str name, int fields_vec) {
     NodeVec fs = nv_at(fields_vec);
     int n = fs.len;
     StringBuilder h = sb_new();
-    sb_append(&h, "static void "); sb_append(&h, name);
+    // Returns 1 when the row was written. It used to return nothing and
+    // write whatever it managed: a value too long to store printed a refusal
+    // and the row went out with that column EMPTY, which a later read
+    // returned with no error at all. The row is built in memory and only
+    // strata_row_commit may put it in the file. Mirrors stage0.py.
+    sb_append(&h, "static int "); sb_append(&h, name);
     sb_append(&h, "__write_row(FILE* f, const "); sb_append(&h, name);
-    sb_append(&h, "* r) {");
+    sb_append(&h, "* r, const char* path) {");
     emit_raw(&g, sb_to_str(&h));
+    emit_raw(&g, "    FILE* _rw = strata_row_open();");
+    emit_raw(&g, "    strata_int _rn = 0;");
+    emit_raw(&g, "    if (_rw) {");
     for (int i = 0; i < n; i = i + 1) {
         Node fd = nv_get(&fs, i);
-        if (i > 0) { emit_raw(&g, "    fputc(0x09, f);"); }
+        if (i > 0) { emit_raw(&g, "    fputc(0x09, _rw);"); }
+        emit_raw(&g, "    _rn = _rn + 1;");
         str ct = c_type(&g, fd.c1);
         StringBuilder w = sb_new();
         if (str_eq(ct, "strata_str") == 1) {
-            sb_append(&w, "    strata_write_escaped(f, r->");
+            sb_append(&w, "    strata_write_escaped(_rw, r->");
             sb_append(&w, fd.s1); sb_append(&w, ");");
         }
         if (str_eq(ct, "strata_str") == 0) {
             if (str_eq(ct, "strata_float") == 1) {
-                sb_append(&w, "    fprintf(f, \"%.17g\", (double)r->");
+                sb_append(&w, "    fprintf(_rw, \"%.17g\", (double)r->");
             }
             if (str_eq(ct, "strata_float") == 0) {
-                sb_append(&w, "    fprintf(f, \"%lld\", (long long)r->");
+                sb_append(&w, "    fprintf(_rw, \"%lld\", (long long)r->");
             }
             sb_append(&w, fd.s1); sb_append(&w, ");");
         }
         emit_raw(&g, sb_to_str(&w));
     }
-    emit_raw(&g, "    fputc(0x0a, f);");
+    emit_raw(&g, "    fputc(0x0a, _rw);");
+    emit_raw(&g, "    }");
+    StringBuilder rc = sb_new();
+    sb_append(&rc, "    return strata_row_commit(_rw, f, _rn, ");
+    sb_append(&rc, str(n)); sb_append(&rc, ", \""); sb_append(&rc, name);
+    sb_append(&rc, "\", path);");
+    emit_raw(&g, sb_to_str(&rc));
     emit_raw(&g, "}");
 }
 
@@ -4944,11 +4971,21 @@ def gen_rewrite(Gen &g, Node node) {
     StringBuilder b5 = sb_new();
     sb_append(&b5, "_wnext"); sb_append(&b5, d); sb_append(&b5, ":;");
     cg_emit(&g, sb_to_str(&b5));
+    // A row that could not be written must not simply be dropped: the
+    // renamed file would then be the table, minus that row, silently.
     StringBuilder b6 = sb_new();
-    sb_append(&b6, "if (!_wdrop"); sb_append(&b6, d); sb_append(&b6, ") ");
-    sb_append(&b6, t); sb_append(&b6, "__write_row(_ww"); sb_append(&b6, d);
-    sb_append(&b6, ", &_wrow"); sb_append(&b6, d); sb_append(&b6, ");");
+    sb_append(&b6, "if (!_wdrop"); sb_append(&b6, d); sb_append(&b6, ") {");
     cg_emit(&g, sb_to_str(&b6));
+    g.indent = g.indent + 1;
+    StringBuilder b7 = sb_new();
+    sb_append(&b7, "if (!"); sb_append(&b7, t);
+    sb_append(&b7, "__write_row(_ww"); sb_append(&b7, d);
+    sb_append(&b7, ", &_wrow"); sb_append(&b7, d); sb_append(&b7, ", ");
+    sb_append(&b7, path); sb_append(&b7, ")) { _wst"); sb_append(&b7, d);
+    sb_append(&b7, " = -1; break; }");
+    cg_emit(&g, sb_to_str(&b7));
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
     StringBuilder c0 = sb_new();
@@ -5028,9 +5065,18 @@ def gen_append(Gen &g, Node st) {
     cg_emit(&g, sb_to_str(&op));
     cg_emit(&g, "if (_pf) {");
     g.indent = g.indent + 1;
+    // The row is built in memory and handed to strata_row_commit, which is
+    // the only thing that may put bytes in a data file. Writing the fields
+    // straight at _pf is what let an over-long value be refused and the row
+    // written anyway with that column blank. Mirrors stage0.py.
+    cg_emit(&g, "FILE* _rw = strata_row_open();");
+    cg_emit(&g, "strata_int _rn = 0;");
+    cg_emit(&g, "if (_rw) {");
+    g.indent = g.indent + 1;
     for (int i = 0; i < nf; i = i + 1) {
         Node fd = nv_get(&fs, i);
-        if (i > 0) { cg_emit(&g, "fputc(0x09, _pf);"); }
+        if (i > 0) { cg_emit(&g, "fputc(0x09, _rw);"); }
+        cg_emit(&g, "_rn = _rn + 1;");
         int found = 0;
         for (int j = 0; j < np; j = j + 1) {
             Node pair = nv_get(&pairs, j);
@@ -5041,16 +5087,16 @@ def gen_append(Gen &g, Node st) {
                     str value = gen_expr(&g, pair.c1);
                     StringBuilder w = sb_new();
                     if (str_eq(ct, "strata_str") == 1) {
-                        sb_append(&w, "strata_write_escaped(_pf, ");
+                        sb_append(&w, "strata_write_escaped(_rw, ");
                         sb_append(&w, value);
                         sb_append(&w, ");");
                     }
                     if (str_eq(ct, "strata_str") == 0) {
                         if (str_eq(ct, "strata_float") == 1) {
-                            sb_append(&w, "fprintf(_pf, \"%.17g\", (double)(");
+                            sb_append(&w, "fprintf(_rw, \"%.17g\", (double)(");
                         }
                         if (str_eq(ct, "strata_float") == 0) {
-                            sb_append(&w, "fprintf(_pf, \"%lld\", (long long)(");
+                            sb_append(&w, "fprintf(_rw, \"%lld\", (long long)(");
                         }
                         sb_append(&w, value);
                         sb_append(&w, "));");
@@ -5060,7 +5106,15 @@ def gen_append(Gen &g, Node st) {
             }
         }
     }
-    cg_emit(&g, "fputc(0x0a, _pf);");
+    cg_emit(&g, "fputc(0x0a, _rw);");
+    g.indent = g.indent - 1;
+    cg_emit(&g, "}");
+    StringBuilder rc = sb_new();
+    sb_append(&rc, "strata_row_commit(_rw, _pf, _rn, "); sb_append(&rc, str(nf));
+    sb_append(&rc, ", \""); sb_append(&rc, st.s1); sb_append(&rc, "\", ");
+    sb_append(&rc, sb_to_str(&ps)); sb_append(&rc, ");");
+    cg_emit(&g, sb_to_str(&rc));
+    cg_emit(&g, "fflush(_pf);");
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
     g.indent = g.indent - 1;

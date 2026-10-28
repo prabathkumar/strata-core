@@ -567,6 +567,21 @@ cmd_test() {
             echo "      import main from app;"
             return 0 ;;
     esac
+    # An explicit directory is searched RECURSIVELY, and its files are
+    # compiled from the enclosing project root when there is one so that
+    # `import x from app` resolves. It used to mean `find -maxdepth 1` with
+    # no project root at all, and a Strata project has no .sta at its root --
+    # so `strata test .`, the obvious spelling in a CI step, found nothing,
+    # printed a success line and exited 0, while `strata test` with no
+    # argument in the same directory ran every block. Found by a blind
+    # evaluator, round 17. The scope stays the directory the caller named:
+    # promoting it to the project root would quietly test more than was
+    # asked for.
+    local explicit=""
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+        explicit=1
+        base="$( cd "$dir" 2>/dev/null && find_project )" || base=""
+    fi
     if [ -z "$dir" ]; then
         local proj; proj="$(find_project)" || true
         if [ -n "$proj" ]; then
@@ -591,7 +606,8 @@ cmd_test() {
                         -not -path '*_to_delete*' | sort)
     else
         while IFS= read -r line; do files+=("$line"); done < <(
-            find "$dir" -maxdepth 1 -name '*.sta' | sort)
+            find "$dir" -name '*.sta' -not -path '*/build/*' \
+                        -not -path '*_to_delete*' | sort)
     fi
     for sta in "${files[@]}"; do
         [ -f "$sta" ] || continue
@@ -629,7 +645,18 @@ cmd_test() {
     # "0 passed, 0 failed" and exit 0 -- green CI on a tree `strata build`
     # refuses. Checked after the blocks have run, so a real failure is still
     # the first thing reported.
-    if [ -n "$base" ]; then
+    # The does-this-project-compile check belongs to a run whose scope IS the
+    # project: `strata test` with no argument, or an explicit directory that
+    # is the project root. An explicit subdirectory is a narrower request and
+    # does not get to claim anything about the tree around it.
+    local scope_is_project=""
+    if [ -z "$explicit" ]; then scope_is_project=1; fi
+    if [ -n "$explicit" ] && [ -n "$base" ]; then
+        if [ "$( cd "$dir" && pwd -P )" = "$( cd "$base" && pwd -P )" ]; then
+            scope_is_project=1
+        fi
+    fi
+    if [ -n "$base" ] && [ -n "$scope_is_project" ]; then
         local chk
         if ! chk="$( cd "$base" && cmd_check_project_quietly )"; then
             echo "  BUILD FAIL: the project does not compile"
@@ -638,14 +665,18 @@ cmd_test() {
                  "not build."
             exit 1
         fi
-        if [ "$p" -eq 0 ] && [ "$f" -eq 0 ]; then
-            echo "[Strata Test] no verify blocks were found, so nothing was" \
-                 "tested."
-            echo "              A test file holds 'verify \"name\" { ... }'." \
-                 "Exiting non-zero so an"
-            echo "              empty run is not mistaken for a passing one."
-            exit 1
-        fi
+    fi
+    # An empty run is not a passing run, whether or not a project was found.
+    # This guard used to sit inside the project branch, so an explicit
+    # directory that found nothing still exited 0. TUTORIAL.md has always
+    # said otherwise.
+    if [ "$p" -eq 0 ] && [ "$f" -eq 0 ]; then
+        echo "[Strata Test] no verify blocks were found, so nothing was" \
+             "tested."
+        echo "              A test file holds 'verify \"name\" { ... }'." \
+             "Exiting non-zero so an"
+        echo "              empty run is not mistaken for a passing one."
+        exit 1
     fi
 }
 

@@ -801,6 +801,25 @@ def register_decls(TC &tc, Node unit) {
     int nd = decls.len;
     for (int i = 0; i < nd; i = i + 1) {
         Node d = nv_get(&decls, i);
+        // The stored-table format reads back at most STRATA_MAX_COLS columns;
+        // the writer had no such limit, so a wider table saved cleanly and
+        // every later read refused it -- blaming a value in row 1 rather than
+        // the column count. The number of columns is known right here, so it
+        // is refused here. Mirrors typechecker.py. Round 17.
+        if (d.kind == 3) {
+            NodeVec dfs = nv_at(d.v1);
+            if (dfs.len > 64) {
+                StringBuilder cm = sb_new();
+                sb_append(&cm, "Table '"); sb_append(&cm, d.s1);
+                sb_append(&cm, "' declares "); sb_append(&cm, str(dfs.len));
+                sb_append(&cm, " columns; a stored table holds at most 64");
+                StringBuilder ch = sb_new();
+                sb_append(&ch, "Split '"); sb_append(&ch, d.s1);
+                sb_append(&ch, "' into two related tables. A wider file can be written but can never be read back");
+                emit_hint(&tc, "E013", sb_to_str(&cm), d.line, d.col,
+                sb_to_str(&ch));
+            }
+        }
         if (d.kind == 3) { tc.schemas = schema_cons(d.s1, fields_of(d), tc.schemas); }
         if (d.kind == 4) { tc.schemas = schema_cons(d.s1, fields_of(d), tc.schemas); }
         if (d.kind == 5) {

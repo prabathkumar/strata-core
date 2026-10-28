@@ -273,8 +273,13 @@ int http_set_timeout(int conn, int seconds) {
 int http_fork() { native "return (int64_t)fork();"; }
 
 // The child leaves without running the parent's exit handlers or flushing
-// buffers it inherited a copy of.
-int http_exit(int code) { native "_exit((int)$code); return 0;"; }
+// buffers it inherited a copy of. It does still check, here, whether this
+// request reported an error nobody looked at -- the whole net is installed
+// with atexit, which _exit does not run, so for a service it had never once
+// fired. See strata_error_exit_code in the runtime preamble.
+int http_exit(int code) {
+    native "_exit(strata_error_exit_code((int)$code)); return 0;";
+}
 
 // The children share nothing but the filesystem. A handler that reads,
 // changes and saves a table must hold this across all three, or two requests
@@ -338,6 +343,20 @@ str http_method(str request) {
 
 int http_respond(int conn, int status, str content_type, str body) {
     native "
+    /* A success cannot be sent while an error nobody checked is still
+     * outstanding. This is the exit-65 rule, which a service never reached:
+     * the rule is installed with atexit and a request leaves by _exit, so a
+     * handler whose load was refused answered 'out 0, overdue 0' with HTTP
+     * 200 and the refusal went to a log nobody reads. The reply becomes a
+     * 500 and the reason is printed. A handler that examined the error and
+     * called clear_error() has nothing pending here, so a deliberate
+     * recovery is unaffected. Found by a blind evaluator, round 17. */
+    if (strata_err_pending && $status >= 200 && $status < 300) {
+        fprintf(stderr, \"[STRATA HTTP] refusing to answer %lld while an error nobody checked is outstanding: %s\\n\", (long long)$status, strata_err_msg);
+        $status = 500;
+        $content_type = \"text/plain; charset=utf-8\";
+        $body = \"This request reported an error the handler did not check, so the answer it would have given cannot be trusted. The reason is in the server log.\\n\";
+    }
     /* The default is derived from the status class, not left at \"OK\".
      * A status with no entry in the table below used to answer \"405 OK\",
      * which reads as a success to anything scanning the status line and to
