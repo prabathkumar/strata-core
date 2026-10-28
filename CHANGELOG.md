@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### The CI failure that only a fresh clone could see
+
+`strata check` is implemented twice -- once in Python as the oracle, once in
+Strata itself -- and a differential compares them over the whole tree on every
+commit. It was green on every machine the compiler is developed on and red on
+GitHub, and the entire difference was one directory: `.strata/deps`.
+
+Once a developer has run `strata deps` even once, the phone app resolves, the
+unfetched-dependency path is never taken, and the two checkers are never
+compared on it. On a fresh clone it is the FIRST path taken, and there they
+disagreed by twenty-five diagnostics: the self-hosted checker was still giving
+the advice round 14 had already replaced in the oracle -- "has no local
+checkout", which tells a developer nothing -- instead of naming `strata deps`
+and the manifest entry. A blind evaluator had reported exactly this from a
+clean checkout in round 17 and it had been read as a documentation gap.
+
+Both now say the same thing. Both also stop printing the cascade around it:
+nothing a dependency declares is visible until it is fetched, so every name it
+would have provided reads as undefined and every expression built from one
+reads as the wrong type. A freshly cloned phone app reported twenty-six
+errors, twenty-five of them noise, with the one that mattered buried in the
+middle.
+
+`test_suite/a_clean_checkout_agrees.py` runs the existing comparison inside a
+copy of the tree with no `.strata` anywhere, so a green result in a working
+tree can no longer say less than a clean one. That is the actual repair: the
+bug was not that the two checkers disagreed, it was that the test could not
+see the state in which they did.
+
+### The first ecosystem component: an MCP server
+
+`ecosystem/mcp/` lets an AI agent talk to the compiler and get answers as data
+rather than prose. Seven tools: `strata_check`, `strata_build`, `strata_run`,
+`strata_schema`, `strata_test`, `strata_taxonomy`, and `strata_rename_impact`
+-- which applies a column rename to a scratch copy and reports every place it
+broke, with the tier each break belongs to and the evidence for that
+judgement. Against `apps/payables` it names all six tiers, including the phone,
+which is a separate project reached through a path dependency.
+
+Standard library only, no dependencies: making `pip install` a precondition
+for trying the compiler is a worse trade than eighty lines of JSON-RPC.
+Nothing it does writes to the caller's files, and its test hashes the two
+sample applications before and after to prove it.
+
+## Unreleased
+
 ### Everything round sixteen found, and one rule instead of four patches
 
 Two more blind evaluators, a clean checkout each, no history, one question:

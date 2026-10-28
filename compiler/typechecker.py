@@ -1707,7 +1707,23 @@ class TypeChecker:
             return SType("tensor",is_tensor=True,tensor_rows=node.rows,tensor_cols=node.cols,dtype=node.dtype)
         return T_VOID
 
+    # Codes that are consequences of an unfetched dependency rather than
+    # mistakes in the file. Nothing a dependency declares is visible until
+    # `strata deps` has run, so every name it would have provided reads as
+    # undefined and every expression built from one reads as the wrong type.
+    # A freshly cloned phone app reported twenty-six errors, twenty-five of
+    # them noise, with the one that mattered buried in the middle. Round 14
+    # gave the real one a hint naming `strata deps`; round 17 found that the
+    # cascade around it was still being printed, and that the self-hosted
+    # checker and this one did not even agree on how much of it to print.
+    # Suppressed here, so both say the same single thing: fetch the
+    # dependency, then look again.
+    _CASCADE_AFTER_UNFETCHED = frozenset(("E011", "E002", "E003"))
+
     def _error(self,code,message,line,col,hint=""):
+        if (self.unfetched_dependencies
+                and code in self._CASCADE_AFTER_UNFETCHED):
+            return
         self.errors.append(StrataError(code,message,line,col,hint,
                                        self.current_file))
 

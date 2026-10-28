@@ -325,6 +325,15 @@ jobs:
     - name: strata check Is Unchanged And Needs No Python
       run: python3 test_suite/check_cli_diff.py
 
+    # The same comparison, in a copy of the tree with no fetched
+    # dependencies. The step above was green on every machine the compiler is
+    # developed on and red here, and the whole difference was one directory:
+    # once `strata deps` has been run even once, the unfetched-dependency
+    # path is never taken and the two checkers are never compared on it. On a
+    # fresh clone it is the first path taken. Round 17.
+    - name: A Clean Checkout Agrees
+      run: python3 test_suite/a_clean_checkout_agrees.py
+
     # Two projects sharing a library, from an empty directory: declare,
     # resolve, build against it, change the library and see the change.
     - name: A Project Can Depend On Another Project
@@ -474,6 +483,15 @@ jobs:
     #
     # This is the gate that stops them coming back. Each pattern names
     # something that was removed because nothing ran it.
+    # The ecosystem's first component, tested the way it is used: the test
+    # starts server.py as a subprocess and speaks JSON-RPC to it on stdin,
+    # exactly as an AI client does. It also hashes apps/payables and
+    # apps/orders before and after and fails if either moved -- a tool an
+    # agent points at a repository must not quietly write to it. Standard
+    # library only, so there is nothing to install.
+    - name: The MCP Server Answers An Agent
+      run: python3 ecosystem/mcp/test_server.py
+
     - name: No Unbacked Claims
       run: |
         fail=0

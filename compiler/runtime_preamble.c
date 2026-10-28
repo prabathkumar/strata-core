@@ -1094,6 +1094,17 @@ static int strata_read_field(FILE* f, char* buf, int cap) {
  * that forgets a rule does not get a quieter bug; it gets no row written.
  *
  * open_memstream is POSIX 2008: Linux and macOS both have it. */
+/* Declared here as well as in <stdio.h>.
+ *
+ * It is POSIX 2008 and both Linux and macOS have it, but whether the header
+ * DECLARES it depends on the feature-test macros in force, and this file is
+ * compiled with -Wno-implicit-function-declaration. Without a declaration
+ * the call would be assumed to return int, that int would be assigned to a
+ * FILE*, and -Werror=int-conversion would stop the build -- on one platform
+ * and not the other, which is the worst shape of failure to debug. A second
+ * declaration identical to the header's is legal and costs nothing. */
+FILE* open_memstream(char** bufp, size_t* sizep);
+
 static FILE* strata_row_open(void) {
     strata_write_failed = 0;
     return open_memstream(&__strata_row_buf, &__strata_row_len);

@@ -614,7 +614,29 @@ def check_migration(TC &tc, Node d) {
     }
 }
 
+// Codes that are consequences of an unfetched dependency rather than
+// mistakes in the file. Nothing a dependency declares is visible until
+// `strata deps` has run, so every name it would have provided reads as
+// undefined and every expression built from one reads as the wrong type. A
+// freshly cloned phone app reported a page of errors, nearly all of them
+// noise, with the one that mattered buried in the middle -- and the two
+// checkers did not even agree on how much of the cascade to print, which
+// only showed on a clean checkout. Mirrors _CASCADE_AFTER_UNFETCHED in
+// typechecker.py. Found by a blind evaluator, round 17.
+int cascade_after_unfetched(str code) {
+    if (str_eq(code, "E011") == 1) { return 1; }
+    if (str_eq(code, "E002") == 1) { return 1; }
+    if (str_eq(code, "E003") == 1) { return 1; }
+    return 0;
+}
+
 def emit_hint(TC &tc, str code, str msg, int line, int col, str hint) {
+    if (cascade_after_unfetched(code) == 1) {
+        if (str_len(tc.src_dir) > 0) {
+            str packed = unfetched_dependencies(str_concat(tc.src_dir, "/x.sta"));
+            if (str_len(packed) > 1) { return; }
+        }
+    }
     StringBuilder sb = sb_new();
     sb_append(&sb, code);
     sb_append(&sb, " ");
@@ -705,13 +727,47 @@ def report_unresolved_imports(TC &tc, Node unit, str root, str src_dir) {
                 emit_hint(&tc, "E011", sb_to_str(&am), imp.line, imp.col, sb_to_str(&ah));
             }
             if (str_eq(imp.s2, "app") == 0) {
-                StringBuilder sb = sb_new();
-                sb_append(&sb, "'");
-                sb_append(&sb, imp.s1);
-                sb_append(&sb, "' from '");
-                sb_append(&sb, imp.s2);
-                sb_append(&sb, "' has no local checkout");
-                emit_hint(&tc, "E007", sb_to_str(&sb), imp.line, imp.col, "Its symbols must be provided at link time, and nothing it declares is checked here — including calls into it");
+                // A DECLARED dependency that has not been fetched is not an
+                // external module somebody will supply at link time -- it is
+                // one `strata deps` away, and saying so is the difference
+                // between a second and an afternoon. The Python checker has
+                // said this since round 14; this one still said "no local
+                // checkout", so on a FRESHLY CLONED project the phone app
+                // reported nineteen errors whose hint advised declaring the
+                // table locally -- precisely the duplicate schema the
+                // round-13 repair removed. It only showed on a clean
+                // checkout, which is why it survived: every machine that had
+                // ever run `strata deps` saw the two checkers agree. Found
+                // by a blind evaluator, round 17.
+                str packed = ",";
+                if (str_len(src_dir) > 0) {
+                    packed = unfetched_dependencies(str_concat(src_dir, "/x.sta"));
+                }
+                str needle = str_concat(",", str_concat(imp.s2, ","));
+                int declared = 0;
+                if (str_index_of(packed, needle) >= 0) { declared = 1; }
+                if (declared == 1) {
+                    StringBuilder dm = sb_new();
+                    sb_append(&dm, "'"); sb_append(&dm, imp.s1);
+                    sb_append(&dm, "' comes from the dependency '");
+                    sb_append(&dm, imp.s2);
+                    sb_append(&dm, "', which has not been fetched");
+                    StringBuilder dh = sb_new();
+                    sb_append(&dh, "Run 'strata deps' in this project. Strata.toml declares '");
+                    sb_append(&dh, imp.s2);
+                    sb_append(&dh, "' and nothing has put it in .strata/deps/ yet, so nothing it declares is checked here — including the tables it declares. Do not declare them again locally; that is the copy this import exists to avoid");
+                    emit_hint(&tc, "E007", sb_to_str(&dm), imp.line, imp.col,
+                    sb_to_str(&dh));
+                }
+                if (declared == 0) {
+                    StringBuilder sb = sb_new();
+                    sb_append(&sb, "'");
+                    sb_append(&sb, imp.s1);
+                    sb_append(&sb, "' from '");
+                    sb_append(&sb, imp.s2);
+                    sb_append(&sb, "' has no local checkout");
+                    emit_hint(&tc, "E007", sb_to_str(&sb), imp.line, imp.col, "Its symbols must be provided at link time, and nothing it declares is checked here — including calls into it");
+                }
             }
         }
     }
