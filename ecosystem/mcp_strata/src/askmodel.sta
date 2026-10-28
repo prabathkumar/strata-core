@@ -1,0 +1,576 @@
+// Asking a language model about a diagnostic, from inside the server that
+// produced it.
+//
+// The rest of this server lets a model drive the compiler. This is the other
+// direction: it lets the compiler's own tooling consult a model, and the one
+// question worth consulting a model about is a diagnostic nobody has managed
+// to read yet.
+//
+// WHY THIS IS NOT A WRAPPER AROUND llm_ask
+//
+// A wrapper would take a prompt and send it, and an agent that already has a
+// model does not need this server to reach another one. What it cannot do
+// from outside is assemble the prompt: that needs `strata check` to have been
+// run, ERROR_TAXONOMY.json to have been read, and the right few lines of the
+// right file to have been found. All three are already here. So the tool
+// takes a FILE and a question, runs the check itself, and the prompt that
+// goes out carries the diagnostic, the taxonomy's own remediation strategy
+// for that code, the compiler's own (which for some codes disagrees) and the
+// source either side of the line. The model is asked the question somebody
+// would ask a colleague who could see the screen.
+//
+// THE KEY
+//
+// It comes from the environment and from nowhere else. It is not a tool
+// argument -- a key in an argument is a key in the agent's transcript -- it
+// is never written to a file, and it is taken back out of any message on the
+// way to the caller. std/llm.sta already refuses to put it in an error and
+// has its own checks saying so; the scrub here is a second lock on the same
+// door, because this door opens onto a transcript.
+//
+// WHAT IS NOT TESTED
+//
+// Everything up to the socket is tested and the test is in test_server.sh.
+// The call itself is not: there is no key on the machine this was written on.
+// STRATA_LLM_DRY_RUN=1 assembles the prompt and hands it back instead of
+// sending it, which is what those tests drive.
+
+import io      from std;
+import str     from std;
+import mem     from std;
+import json    from std;
+import llm     from std;
+import fetch   from std;
+import sys     from app;
+import text    from app;
+import paths   from app;
+import jsonval from app;
+import diag    from app;
+import tools   from app;
+
+// Where the call goes when nothing says otherwise.
+//
+// A default naming somebody's paid service would be two wrong things at once:
+// a bill the operator never agreed to, and a key meant for one provider sent
+// to another the first time the variable is forgotten. A model server on this
+// machine is the one address where being wrong costs nothing -- nothing
+// leaves the machine, and std/llm's own guard allows a key over plain HTTP to
+// this host and to no other. Port 11434 is where the usual local server
+// listens; anything else is a one-line change to the variable.
+const str DEFAULT_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions";
+
+const str KEY_VAR   = "STRATA_LLM_KEY";
+const str URL_VAR   = "STRATA_LLM_URL";
+const str MODEL_VAR = "STRATA_LLM_MODEL";
+const str DRY_VAR   = "STRATA_LLM_DRY_RUN";
+
+// The most prompt this will build. A model paid by the token is somebody's
+// money, and a file with four hundred diagnostics in it is a file to fix at
+// the first one rather than a prompt to send.
+const int PROMPT_CAP = 24000;
+
+// How many diagnostics are described in full. Everything past this is
+// counted and listed by code but not expanded, because a diagnostic after a
+// cascade is usually a consequence of an earlier one and sending twelve
+// copies of the same mistake buys nothing.
+const int MAX_DIAGS = 8;
+
+// Lines either side of the one the compiler pointed at.
+const int WINDOW = 4;
+
+// ── the environment ──────────────────────────────────────────────────────
+
+// Is this a rehearsal? Any value but "" and "0" means yes.
+//
+// This exists so the prompt can be looked at. A tool whose only observable
+// behaviour is a network call to a service nobody has credentials for is a
+// tool nobody can test, and an untested prompt is a prompt that is wrong.
+int dry_run_wanted() {
+    str v = sys_getenv(DRY_VAR);
+    if (str_len(v) == 0) { return 0; }
+    if (str_eq(v, "0") == 1) { return 0; }
+    return 1;
+}
+
+str endpoint_in_use() {
+    str v = sys_getenv(URL_VAR);
+    if (str_len(v) == 0) { return DEFAULT_ENDPOINT; }
+    return v;
+}
+
+// `message` with the key taken out of it, if it ever got in.
+//
+// The length guard is not politeness: replacing a two-character key would
+// scribble over ordinary words in the message and make the reason unreadable,
+// which is a worse outcome than the one being guarded against.
+str without_key(str message, str key) {
+    if (str_len(key) < 8) { return message; }
+    return str_replace_all(message, key, "[redacted]");
+}
+
+// ── the prompt ───────────────────────────────────────────────────────────
+
+// What the model is told about the language before it is told about the file.
+//
+// Everything in here is a rule a reader cannot guess from the source in front
+// of them and will get wrong if they assume the usual thing: the compiler
+// refuses rather than converting, there are no exceptions, and an insert
+// naming four of five columns is a mistake rather than a shorthand. A model
+// that does not know these proposes a repair that compiles somewhere else.
+str system_prompt() {
+    return "You are reading diagnostics from the Strata compiler. Strata is statically typed and its compiler refuses rather than guesses, so a diagnostic is a refusal to carry on and not a warning.\n\nRules that hold everywhere in this language, and that you will get wrong if you assume otherwise:\n- Every diagnostic has a code, and the project's ERROR_TAXONOMY.json says what the language's authors want done about that code. You are given that strategy below. Follow it. Where the compiler's own suggested strategy differs, you are given both and should say which one you took and why.\n- An insert must name every column of its table. A missing column is a mistake, not a default.\n- There are no exceptions. A failure sets an error flag that the program reads with had_error() and clears with clear_error().\n- A whole number is accepted where a decimal is wanted and widens silently. A decimal is never accepted where a whole number is wanted, and there is no cast from one to the other.\n- Text is bytes: str_len counts bytes, and an index is a byte.\n- A query is a scan over a declared table. There are no joins, no indexes and no GROUP BY.\n- Renaming a column in a database block is expected to break every line that reads it. That is the language working, not a problem to suppress.\n\nAnswer with: the smallest change that removes the diagnostic, written as the replacement for the lines you were shown; then one sentence saying why that is the right change rather than the one that merely silences it. If the lines you were shown are not enough to be sure, say exactly what else you need. Do not invent syntax you have not seen in the source given to you.";
+}
+
+// The few lines around the one the compiler pointed at, with that line
+// marked. A diagnostic without its source is a sentence about a file the
+// reader cannot see.
+str source_window(str src, int line, str rel) {
+    int total = line_count(src);
+    if (total == 0) { return "    (the source could not be read)\n"; }
+    // `from` would be the obvious name and it is a reserved word, the same
+    // trap str_replace_all in text.sta walked into.
+    int first = line - WINDOW;
+    if (first < 1) { first = 1; }
+    int last = line + WINDOW;
+    if (last > total) { last = total; }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "    ");
+    sb_append(&sb, rel);
+    sb_append(&sb, ", lines ");
+    sb_append(&sb, str(first));
+    sb_append(&sb, " to ");
+    sb_append(&sb, str(last));
+    sb_append(&sb, ":\n");
+    for (int i = first; i <= last; i = i + 1) {
+        if (i == line) { sb_append(&sb, "    > "); }
+        else { sb_append(&sb, "      "); }
+        sb_append(&sb, str(i));
+        sb_append(&sb, " | ");
+        sb_append(&sb, line_at(src, i));
+        sb_append(&sb, "\n");
+    }
+    return sb_to_str(&sb);
+}
+
+// One taxonomy entry as prose rather than as JSON.
+//
+// The fields come out of the file with their JSON escaping intact, which is
+// correct to put back between quotes and would be wrong to put into a prompt
+// -- except that `strata test` checks the shipped taxonomy carries no
+// backslash, so the two are the same text. That check is in diag.sta and is
+// what makes this safe.
+str taxonomy_prose(str taxonomy, str code, str indent) {
+    StringBuilder sb = sb_new();
+    if (tax_knows(taxonomy, code) == 0) {
+        sb_append(&sb, indent);
+        sb_append(&sb, "this code is not in ERROR_TAXONOMY.json, so there is no agreed strategy for it\n");
+        return sb_to_str(&sb);
+    }
+    sb_append(&sb, indent);
+    sb_append(&sb, "classification: ");
+    sb_append(&sb, tax_field(taxonomy, code, "classification"));
+    sb_append(&sb, " (severity ");
+    sb_append(&sb, tax_field(taxonomy, code, "severity"));
+    sb_append(&sb, ")\n");
+    sb_append(&sb, indent);
+    sb_append(&sb, "what this code means: ");
+    sb_append(&sb, tax_field(taxonomy, code, "diagnostic"));
+    sb_append(&sb, "\n");
+    sb_append(&sb, indent);
+    sb_append(&sb, "what the taxonomy says to do: ");
+    sb_append(&sb, tax_field(taxonomy, code, "ai_remediation_strategy"));
+    sb_append(&sb, "\n");
+    return sb_to_str(&sb);
+}
+
+// Every diagnostic in a parsed `--json` payload, written out for a reader.
+//
+// `total` comes back as the number there were and `codes` as a JSON array of
+// their codes, because the caller reports both and must not have to walk the
+// tree a second time -- by the time it could, the tree is gone.
+str diag_section(str taxonomy, int payload, str src, str rel, int &total,
+str &codes) {
+    StringBuilder sb = sb_new();
+    StringBuilder cs = sb_new();
+    sb_append(&cs, "[");
+    int n = 0;
+    int shown = 0;
+    int arr = jv_member(payload, "diagnostics");
+    if (arr >= 0) {
+        list[JsonNode] kids = JsonNode <- [parent == arr];
+        for K in kids {
+            int dn = K.id;
+            str code = jv_member_text(dn, "code");
+            if (n > 0) { sb_append(&cs, ","); }
+            sb_append(&cs, json_str(code));
+            n = n + 1;
+            if (shown < MAX_DIAGS) {
+                shown = shown + 1;
+                int line = jv_member_int(dn, "line", 0);
+                int col = jv_member_int(dn, "column", 0);
+                sb_append(&sb, "\n[");
+                sb_append(&sb, str(shown));
+                sb_append(&sb, "] ");
+                sb_append(&sb, code);
+                sb_append(&sb, " at line ");
+                sb_append(&sb, str(line));
+                sb_append(&sb, ", column ");
+                sb_append(&sb, str(col));
+                sb_append(&sb, "\n    what the compiler said: ");
+                sb_append(&sb, jv_member_text(dn, "message"));
+                sb_append(&sb, "\n");
+                str hint = jv_member_text(dn, "hint");
+                if (str_len(hint) > 0) {
+                    sb_append(&sb, "    the compiler's hint: ");
+                    sb_append(&sb, hint);
+                    sb_append(&sb, "\n");
+                }
+                sb_append(&sb, taxonomy_prose(taxonomy, code, "    "));
+                // Both strategies go in because for some codes they
+                // disagree, and a model handed one of two disagreeing answers
+                // with nothing saying there was another will follow it
+                // confidently. Where they AGREE, saying so once is better
+                // than printing the same paragraph twice: a prompt that
+                // repeats itself reads as two sources of evidence when there
+                // is one.
+                str own = jv_member_text(dn, "remediation_strategy");
+                if (str_len(own) > 0) {
+                    str agreed = tax_field(taxonomy, code,
+                    "ai_remediation_strategy");
+                    if (str_eq(own, agreed) == 1) {
+                        sb_append(&sb, "    the compiler says the same\n");
+                    } else {
+                        sb_append(&sb, "    what the compiler itself says to do, which is NOT what the taxonomy says: ");
+                        sb_append(&sb, own);
+                        sb_append(&sb, "\n");
+                    }
+                }
+                if (line > 0) { sb_append(&sb, source_window(src, line, rel)); }
+            }
+        }
+    }
+    sb_append(&cs, "]");
+    total = n;
+    codes = sb_to_str(&cs);
+    return sb_to_str(&sb);
+}
+
+// ── the tool ─────────────────────────────────────────────────────────────
+
+str tool_ask_model(str root, str scratch, str asked_path, str code,
+str question, int &is_error) {
+    if (str_len(question) == 0) {
+        is_error = 1;
+        return err_json("a question is required: say what the model should do with this file or this code");
+    }
+
+    str url = endpoint_in_use();
+    str model_name = sys_getenv(MODEL_VAR);
+    str key = sys_getenv(KEY_VAR);
+    int dry = dry_run_wanted();
+
+    if (str_len(model_name) == 0) {
+        is_error = 1;
+        return err_json("STRATA_LLM_MODEL is not set, so there is no model to ask. Set it in the environment of the process that starts this server. There is no default: a default model is a bill nobody agreed to.");
+    }
+    // A dry run needs no credential, which is the point of it: the prompt can
+    // be read and argued with on a machine that has no key at all.
+    if (dry == 0) {
+        if (str_len(key) == 0) {
+            is_error = 1;
+            return err_json("STRATA_LLM_KEY is not set, so this tool has no credential and will not invent one. Set it in the environment of the process that starts this server. It is never a tool argument and is never written to a file. Set STRATA_LLM_DRY_RUN=1 to assemble the prompt and get it back without calling anything.");
+        }
+    }
+
+    str file_abs = "";
+    str rel = "";
+    str context = "";
+    str codes = "[]";
+    int diag_total = 0;
+    int checked = 0;
+
+    if (str_len(asked_path) > 0) {
+        str proj = "";
+        str target = "";
+        str why = "";
+        if (resolve_target(root, asked_path, &proj, &target, &why) == 0) {
+            is_error = 1;
+            return err_json(why);
+        }
+        file_abs = target;
+        rel = path_relative(root, target);
+        str out_text = "";
+        str err_text = "";
+        int rc = toolchain(root, scratch, "check", target, "--json", "", "",
+        proj, &out_text, &err_text);
+        int ok = 1;
+        int payload = jv_parse(out_text, &ok);
+        if (ok == 0) {
+            is_error = 1;
+            return err_json(json_or_nothing(out_text, err_text, rc));
+        }
+        // Everything is read out of the tree HERE. The parser holds one
+        // document at a time, and the taxonomy below is read as text rather
+        // than parsed for the same reason.
+        str taxonomy = file_read(taxonomy_path(root));
+        str src = file_read(target);
+        context = diag_section(taxonomy, payload, src, rel, &diag_total,
+        &codes);
+        checked = 1;
+    }
+
+    str code_note = "";
+    if (str_len(code) > 0) {
+        if (is_error_code(code) == 0) {
+            is_error = 1;
+            StringBuilder e = sb_new();
+            sb_append(&e, "'");
+            sb_append(&e, str_truncate(code, 40));
+            sb_append(&e, "' is not an error code");
+            return err_json(sb_to_str(&e));
+        }
+        str taxonomy = file_read(taxonomy_path(root));
+        StringBuilder cn = sb_new();
+        sb_append(&cn, "\nThe error code asked about: ");
+        sb_append(&cn, code);
+        sb_append(&cn, "\n");
+        sb_append(&cn, taxonomy_prose(taxonomy, code, "    "));
+        code_note = sb_to_str(&cn);
+    }
+
+    if (checked == 0) {
+        if (str_len(code_note) == 0) {
+            // Neither a file nor a code: there is nothing here the server
+            // knows that the caller did not, so it would be a worse client
+            // for a model than the agent already has.
+            is_error = 1;
+            return err_json("give this tool a `path`, a `code`, or both. With neither, the prompt would carry nothing the caller does not already have, and the agent asking has a model of its own.");
+        }
+    }
+
+    StringBuilder up = sb_new();
+    sb_append(&up, "Question: ");
+    sb_append(&up, question);
+    sb_append(&up, "\n");
+    if (checked == 1) {
+        sb_append(&up, "\nFile, as `strata check` reads it: ");
+        sb_append(&up, rel);
+        sb_append(&up, "\nDiagnostics: ");
+        sb_append(&up, str(diag_total));
+        if (diag_total > MAX_DIAGS) {
+            sb_append(&up, " (the first ");
+            sb_append(&up, str(MAX_DIAGS));
+            sb_append(&up, " are set out below; the rest are counted and not expanded, because a diagnostic after a cascade is usually a consequence of an earlier one)");
+        }
+        sb_append(&up, "\n");
+        if (diag_total == 0) {
+            sb_append(&up, "\nThe file type-checks. There is no diagnostic to repair, so answer the question about the file as it stands.\n");
+        }
+        sb_append(&up, context);
+    }
+    if (str_len(code_note) > 0) { sb_append(&up, code_note); }
+
+    str user_prompt = sb_to_str(&up);
+    int full_bytes = str_len(user_prompt);
+    int was_cut = 0;
+    if (full_bytes > PROMPT_CAP) {
+        was_cut = 1;
+        StringBuilder cut = sb_new();
+        sb_append(&cut, str_truncate(user_prompt, PROMPT_CAP));
+        sb_append(&cut, "\n[cut here: the prompt was longer than this tool will send. Fix the first diagnostic and ask again.]");
+        user_prompt = sb_to_str(&cut);
+    }
+
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "{");
+    sb_append(&sb, kv_bool("ok", 1));
+    sb_append(&sb, ",");
+    if (dry == 1) { sb_append(&sb, kv_str("mode", "dry_run")); }
+    else { sb_append(&sb, kv_str("mode", "live")); }
+    sb_append(&sb, ",");
+    // The endpoint is reported because a caller has to be able to see where
+    // its prompt went. It goes through the same scrub as an error message,
+    // for the one shape nobody expects: a key put in the URL itself.
+    sb_append(&sb, kv_str("endpoint", without_key(url, key)));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("model", model_name));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("key_variable", KEY_VAR));
+    sb_append(&sb, ",");
+    // Whether it is set, never what it is. A caller debugging a refusal needs
+    // the first and has no business with the second.
+    if (str_len(key) > 0) { sb_append(&sb, kv_bool("key_is_set", 1)); }
+    else { sb_append(&sb, kv_bool("key_is_set", 0)); }
+    sb_append(&sb, ",");
+    if (checked == 1) {
+        sb_append(&sb, kv_str("file", file_abs));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("relative_file", rel));
+    } else {
+        sb_append(&sb, kv_raw("file", "null"));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("relative_file", "null"));
+    }
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("diagnostic_count", diag_total));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_raw("codes", codes));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_int("prompt_bytes", full_bytes));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_bool("prompt_was_cut", was_cut));
+    sb_append(&sb, ",");
+
+    if (dry == 1) {
+        // The whole prompt, both halves, so it can be read rather than
+        // guessed at. No key is in either half: the key is a header.
+        sb_append(&sb, kv_str("system_prompt", system_prompt()));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("user_prompt", user_prompt));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_raw("answer", "null"));
+        sb_append(&sb, ",");
+        sb_append(&sb, kv_str("note",
+        "STRATA_LLM_DRY_RUN is set, so nothing was sent. This is the prompt that would have gone to the endpoint named above."));
+        sb_append(&sb, "}");
+        return sb_to_str(&sb);
+    }
+
+    str answer = llm_ask_at(url, model_name, key, system_prompt(),
+    user_prompt, 0);
+    if (had_error() == 1) {
+        // The flag has to be cleared or the server exits 65 at the end of a
+        // session in which one call failed and was reported properly.
+        str why = without_key(last_error(), key);
+        clear_error();
+        is_error = 1;
+        return err_json(why);
+    }
+
+    sb_append(&sb, kv_str("answer", answer));
+    sb_append(&sb, ",");
+    sb_append(&sb, kv_str("note",
+    "This is a model's text and nothing has checked it. Run strata_check on whatever you change before you believe it."));
+    sb_append(&sb, "}");
+    return sb_to_str(&sb);
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "the key is taken out of a message, and short text is left alone" {
+    assert str_eq(without_key("sent with sk-abcdefghij here", "sk-abcdefghij"),
+    "sent with [redacted] here") == 1;
+    // Too short to replace safely: scribbling over every "ab" in a sentence
+    // destroys the reason the message exists.
+    assert str_eq(without_key("a readable reason", "ab"), "a readable reason") == 1;
+    assert str_eq(without_key("nothing to find", "sk-abcdefghij"), "nothing to find") == 1;
+    // An empty key must not turn into a replacement of every empty string.
+    assert str_eq(without_key("unchanged", ""), "unchanged") == 1;
+}
+
+verify "the prompt carries the rules a reader cannot guess" {
+    str s = system_prompt();
+    assert str_index_of(s, "ERROR_TAXONOMY.json") >= 0;
+    assert str_index_of(s, "must name every column") >= 0;
+    assert str_index_of(s, "no exceptions") >= 0;
+    assert str_index_of(s, "clear_error()") >= 0;
+    // And it must not contain the name of any variable holding a credential,
+    // because the system prompt is the one part of this that is a constant
+    // and would be wrong in every call if it did.
+    assert str_index_of(s, "STRATA_LLM_KEY") < 0;
+}
+
+verify "a source window marks the line and stops at both ends of the file" {
+    str src = "one\ntwo\nthree\nfour\nfive";
+    str w = source_window(src, 1, "f.sta");
+    assert str_index_of(w, "lines 1 to 5") >= 0;
+    assert str_index_of(w, "> 1 | one") >= 0;
+    assert str_index_of(w, "  5 | five") >= 0;
+
+    w = source_window(src, 5, "f.sta");
+    assert str_index_of(w, "lines 1 to 5") >= 0;
+    assert str_index_of(w, "> 5 | five") >= 0;
+
+    // A file with nothing in it is said to be unreadable rather than
+    // rendered as an empty window that looks like evidence.
+    assert str_index_of(source_window("", 3, "f.sta"), "could not be read") >= 0;
+}
+
+verify "a taxonomy entry becomes prose, and an unknown code says so" {
+    str taxonomy = "{\"taxonomy\": {\"E004\": {\"classification\": \"Database Schema Selector Violation\", \"severity\": \"CRITICAL_HALT\", \"diagnostic\": \"what it means\", \"ai_remediation_strategy\": \"what to do\"}}}";
+    str p = taxonomy_prose(taxonomy, "E004", "    ");
+    assert str_index_of(p, "Database Schema Selector Violation") >= 0;
+    assert str_index_of(p, "severity CRITICAL_HALT") >= 0;
+    assert str_index_of(p, "what the taxonomy says to do: what to do") >= 0;
+
+    str u = taxonomy_prose(taxonomy, "E999", "    ");
+    assert str_index_of(u, "not in ERROR_TAXONOMY.json") >= 0;
+    assert str_index_of(u, "severity") < 0;
+}
+
+verify "every diagnostic reaches the prompt with both strategies and its source" {
+    str taxonomy = "{\"taxonomy\": {\"E004\": {\"classification\": \"Database Schema Selector Violation\", \"severity\": \"CRITICAL_HALT\", \"diagnostic\": \"what it means\", \"ai_remediation_strategy\": \"the taxonomy answer\"}}}";
+    int ok = 1;
+    int payload = jv_parse("{\"diagnostics\": [{\"code\": \"E004\", \"line\": 3, \"column\": 9, \"message\": \"Column 'nope' does not exist in 'Item'\", \"hint\": \"Valid columns: ['id']\", \"remediation_strategy\": \"the compiler answer\"}]}", &ok);
+    assert ok == 1;
+    int total = 0;
+    str codes = "";
+    str s = diag_section(taxonomy, payload, "a\nb\nc\nd\ne", "x.sta", &total,
+    &codes);
+    assert total == 1;
+    assert str_eq(codes, "[\"E004\"]") == 1;
+    assert str_index_of(s, "E004 at line 3, column 9") >= 0;
+    assert str_index_of(s, "Column 'nope'") >= 0;
+    assert str_index_of(s, "Valid columns") >= 0;
+    // Both strategies, because for some codes they disagree, and the
+    // disagreement is named rather than left for the reader to spot.
+    assert str_index_of(s, "the taxonomy answer") >= 0;
+    assert str_index_of(s, "the compiler answer") >= 0;
+    assert str_index_of(s, "NOT what the taxonomy says") >= 0;
+    // And the line the compiler pointed at, marked.
+    assert str_index_of(s, "> 3 | c") >= 0;
+}
+
+verify "two strategies that agree are said once, not printed twice" {
+    str taxonomy = "{\"taxonomy\": {\"E009\": {\"classification\": \"Incomplete Insert\", \"severity\": \"CRITICAL_HALT\", \"diagnostic\": \"means\", \"ai_remediation_strategy\": \"name every column\"}}}";
+    int ok = 1;
+    int payload = jv_parse("{\"diagnostics\": [{\"code\": \"E009\", \"line\": 1, \"column\": 1, \"message\": \"m\", \"remediation_strategy\": \"name every column\"}]}", &ok);
+    assert ok == 1;
+    int total = 0;
+    str codes = "";
+    str s = diag_section(taxonomy, payload, "x", "x.sta", &total, &codes);
+    assert str_index_of(s, "the compiler says the same") >= 0;
+    // Once, not twice: the sentence appears in the taxonomy line and
+    // nowhere else.
+    assert str_index_of(s, "name every column") >= 0;
+    assert str_index_of(str_slice(s, str_index_of(s, "name every column") + 17, str_len(s)), "name every column") < 0;
+}
+
+verify "a file past the cap is counted whole and described in part" {
+    int ok = 1;
+    int payload = jv_parse("{\"diagnostics\": [{\"code\":\"E001\",\"line\":1,\"message\":\"m\"},{\"code\":\"E002\",\"line\":1,\"message\":\"m\"},{\"code\":\"E003\",\"line\":1,\"message\":\"m\"},{\"code\":\"E004\",\"line\":1,\"message\":\"m\"},{\"code\":\"E009\",\"line\":1,\"message\":\"m\"},{\"code\":\"E010\",\"line\":1,\"message\":\"m\"},{\"code\":\"E011\",\"line\":1,\"message\":\"m\"},{\"code\":\"E012\",\"line\":1,\"message\":\"m\"},{\"code\":\"E013\",\"line\":1,\"message\":\"m\"}]}", &ok);
+    assert ok == 1;
+    int total = 0;
+    str codes = "";
+    str s = diag_section("", payload, "a", "x.sta", &total, &codes);
+    // All nine are counted and all nine codes are reported ...
+    assert total == 9;
+    assert str_index_of(codes, "E013") >= 0;
+    // ... and only the first eight are written out in full.
+    assert str_index_of(s, "[8] E012") >= 0;
+    assert str_index_of(s, "[9] ") < 0;
+}
+
+verify "a dry run is anything but unset and zero" {
+    // Nothing sets the variable in a test, so this is the only branch that
+    // can be checked from inside: the default is a real call, not a
+    // rehearsal, because a tool that quietly never calls anything would look
+    // like it was working.
+    assert dry_run_wanted() == 0;
+    assert str_eq(endpoint_in_use(), DEFAULT_ENDPOINT) == 1;
+    // The default endpoint is on this machine. std/llm refuses to send a key
+    // over plain HTTP anywhere else, so a default pointing off the machine
+    // would be a tool that refused its own default.
+    assert is_this_machine(fetch_host_of(DEFAULT_ENDPOINT)) == 1;
+}

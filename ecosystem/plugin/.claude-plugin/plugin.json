@@ -1,0 +1,35 @@
+{
+  "name": "strata-toolchain",
+  "displayName": "Strata toolchain",
+  "version": "0.1.0",
+  "description": "The Strata compiler as tools an agent can call: structured diagnostics with the error taxonomy attached, the schema of a project, and what a column rename would break before it is made.",
+  "author": {
+    "name": "Strata Core"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["strata", "compiler", "mcp", "diagnostics", "schema"],
+  "userConfig": {
+    "strata_root": {
+      "type": "directory",
+      "title": "Strata checkout",
+      "description": "The absolute path of the Strata checkout to serve. It must hold both bin/strata and ERROR_TAXONOMY.json; a directory with only one of them is a half-copied tree and is refused. One checkout per session: this is fixed when the server starts.",
+      "required": true
+    },
+    "strata_llm_model": {
+      "type": "string",
+      "title": "Model name for strata_ask_model",
+      "description": "Passed through untouched to the endpoint below. Leave empty and strata_ask_model refuses rather than picking one, because a default model is a bill nobody agreed to. Every other tool works without it."
+    },
+    "strata_llm_url": {
+      "type": "string",
+      "title": "Chat-completions endpoint for strata_ask_model",
+      "description": "Any service that speaks the chat-completions shape. Leave empty for http://127.0.0.1:11434/v1/chat/completions, a model server on this machine, so that forgetting this sends nothing anywhere."
+    },
+    "strata_llm_key": {
+      "type": "string",
+      "title": "API key for strata_ask_model",
+      "description": "Held in this machine's credential store and handed to the server as an environment variable. It is never a tool argument, never written to a file, and never appears in a tool result. Leave empty and strata_ask_model refuses with a message naming it; nothing else is affected.",
+      "sensitive": true
+    }
+  }
+}

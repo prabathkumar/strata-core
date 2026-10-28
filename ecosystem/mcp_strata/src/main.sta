@@ -23,6 +23,7 @@
 //   strata_run            build and run, exit status and both streams
 //   strata_schema         the `database` blocks: tables, columns, types
 //   strata_rename_impact  rename a column in a copy, report every tier
+//   strata_ask_model      ask a language model about a diagnostic
 //
 // `strata_test` is in the Python server and not here; README.md says why.
 
@@ -39,14 +40,23 @@ import blocks  from app;
 import diag    from app;
 import tools   from app;
 import rename  from app;
+import askmodel from app;
 
 const str PROTOCOL_VERSION = "2025-06-18";
 const str SERVER_NAME      = "strata-sta";
-const str SERVER_VERSION   = "0.1.0";
+const str SERVER_VERSION   = "0.2.0";
 
 // ── the wire ─────────────────────────────────────────────────────────────
 
-def send(str message) {
+// One message, one line, flushed.
+//
+// It is `send_line` rather than `send` because the generated C has no
+// namespace: a Strata function becomes a C function of the same name, and
+// once std/fetch is linked in -- which std/llm needs -- <sys/socket.h> is
+// included and libc's own `send` is already declared. The collision shows up
+// as a C error about conflicting types, a long way from the Strata line that
+// caused it.
+def send_line(str message) {
     print_raw(message);
     print_raw("\n");
     flush_stdout();
@@ -61,7 +71,7 @@ def send_error(str id_raw, int code, str message) {
     sb_append(&sb, ",");
     sb_append(&sb, kv_str("message", message));
     sb_append(&sb, "}}");
-    send(sb_to_str(&sb));
+    send_line(sb_to_str(&sb));
 }
 
 def send_result(str id_raw, str result) {
@@ -71,7 +81,7 @@ def send_result(str id_raw, str result) {
     sb_append(&sb, ",");
     sb_append(&sb, kv_raw("result", result));
     sb_append(&sb, "}");
-    send(sb_to_str(&sb));
+    send_line(sb_to_str(&sb));
 }
 
 // A tool's answer. It goes back as `content` for a client that shows text to
@@ -188,6 +198,20 @@ str catalogue() {
     "Rename one column in a COPY of a project under /tmp, re-check everything, and return every place that stopped building: the file, the line, the tier (data / rules / web / report / phone / test / program) and the diagnostic. The caller's project is never modified. This answers 'what would this change break?' before the change is made.",
     schema_of(sb_to_str(&rename_props),
     "\"project_dir\",\"table\",\"column\",\"new_name\"")));
+    sb_append(&sb, ",");
+
+    StringBuilder ask_props = sb_new();
+    sb_append(&ask_props, prop("question", "string",
+    "What the model should do: explain this diagnostic, propose the smallest repair, say which of two disagreeing strategies applies."));
+    sb_append(&ask_props, ",");
+    sb_append(&ask_props, prop("path", "string",
+    "Optional. A .sta file or a project. The server runs strata check on it and puts every diagnostic, its taxonomy entry, the compiler's own strategy and the source lines around it into the prompt."));
+    sb_append(&ask_props, ",");
+    sb_append(&ask_props, prop("code", "string",
+    "Optional. An error code such as E004, whose taxonomy entry is added to the prompt. Give a path, a code, or both."));
+    sb_append(&sb, tool_entry("strata_ask_model",
+    "Ask a language model about a Strata diagnostic, with the prompt assembled here: the compiler's own output for the file, the taxonomy's classification and remediation strategy for each code, the compiler's own strategy where it differs, and the source lines around each diagnostic. The credential comes from the STRATA_LLM_KEY environment variable and is never an argument; the endpoint is STRATA_LLM_URL and defaults to a model server on this machine; the model name is STRATA_LLM_MODEL and has no default. Set STRATA_LLM_DRY_RUN=1 to get the assembled prompt back without calling anything. The answer is a model's text and nothing has checked it.",
+    schema_of(sb_to_str(&ask_props), "\"question\"")));
 
     sb_append(&sb, "]}");
     return sb_to_str(&sb);
@@ -282,6 +306,7 @@ def handle(str root, str scratch, str body) {
         str a_table     = jv_member_text(args, "table");
         str a_column    = jv_member_text(args, "column");
         str a_new_name  = jv_member_text(args, "new_name");
+        str a_question  = jv_member_text(args, "question");
         int argv = jv_member(args, "args");
         str g1 = array_text(argv, 0);
         str g2 = array_text(argv, 1);
@@ -318,6 +343,10 @@ def handle(str root, str scratch, str body) {
         else if (str_eq(name, "strata_rename_impact") == 1) {
             result = tool_rename_impact(root, scratch, a_project, a_table,
             a_column, a_new_name, &bad);
+        }
+        else if (str_eq(name, "strata_ask_model") == 1) {
+            result = tool_ask_model(root, scratch, a_path, a_code, a_question,
+            &bad);
         }
         else {
             // An unknown tool is an answer, not a protocol error: the agent

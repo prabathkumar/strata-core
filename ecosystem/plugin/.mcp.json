@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "strata": {
+      "command": "bash",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/strata-mcp.sh",
+        "${user_config.strata_root}"
+      ],
+      "env": {
+        "STRATA_ROOT": "${user_config.strata_root}",
+        "STRATA_LLM_MODEL": "${user_config.strata_llm_model}",
+        "STRATA_LLM_URL": "${user_config.strata_llm_url}",
+        "STRATA_LLM_KEY": "${user_config.strata_llm_key}"
+      }
+    }
+  }
+}

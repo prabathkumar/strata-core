@@ -45,7 +45,7 @@ running it in a terminal looks like it has hung. It has not; it is waiting
 for a client. To see it work:
 
 ```sh
-bash ecosystem/mcp_strata/test_server.sh     # 32 checks, end to end
+bash ecosystem/mcp_strata/test_server.sh     # 42 checks, end to end
 cd ecosystem/mcp_strata && ../../bin/strata test .   # the verify blocks
 ```
 
@@ -55,6 +55,12 @@ A directory counts as a checkout only when it holds **both** `bin/strata` and
 `ERROR_TAXONOMY.json` — `bin/strata` alone would match a half-copied tree, and
 a tree with no taxonomy is one where a diagnostic is worth no more than its
 text.
+
+### As a plugin
+
+`ecosystem/plugin/` packages this server as a plugin for an AI coding client,
+with the commands and the skill that go with it. That is the shorter road and
+it asks for the checkout path once instead of twice.
 
 ### Pointing Claude Code at it
 
@@ -91,10 +97,13 @@ the checkout rather than against the current directory.
 | `strata_run(path, args, workspace)` | What does it print, and what does it exit with? |
 | `strata_schema(project_dir)` | What tables are there, with what columns and types? |
 | `strata_rename_impact(project_dir, table, column, new_name)` | What would this rename break, across every tier? |
+| `strata_ask_model(question, path, code)` | What would a language model say about this diagnostic, asked properly? |
 
 The names, the arguments and the shape of every result are the Python
-server's. They are meant to be interchangeable, and on the two tools where
-that is checkable they are byte-for-byte the same answer:
+server's, for the six that exist in both. `strata_ask_model` is only here;
+the Python server has no equivalent, so the two are no longer interchangeable
+in that one direction. On the two tools where interchangeability is checkable
+they are byte-for-byte the same answer:
 
 ```
 $ strata_schema apps/payables        -> identical tables, columns and lines
@@ -138,6 +147,73 @@ dependency on this one are copied and checked too.
 The `tier` on each impact is a judgement made from the shape of the file, not
 something the compiler said, so each one carries `tier_evidence` saying what
 the judgement was made from. Argue with it when it is wrong.
+
+### `strata_ask_model`
+
+The other direction. Every other tool here lets a model drive the compiler;
+this one lets the compiler's own tooling consult a model.
+
+A wrapper around a chat endpoint would be useless, because the agent calling
+this server already has a model. What it cannot do from outside is assemble
+the prompt: that needs `strata check` to have been run, `ERROR_TAXONOMY.json`
+to have been read, and the right few lines of the right file to have been
+found. All three are already here. So the tool takes a file and a question,
+runs the check itself, and what goes out carries:
+
+- every diagnostic, with its code, line and column and the compiler's words;
+- the taxonomy's classification, what the code means, and the remediation
+  strategy written for a machine to follow;
+- the compiler's own strategy **when it differs from the taxonomy's**, named
+  as a disagreement. When the two agree it says so once rather than printing
+  the same paragraph twice, because a prompt that repeats itself reads as two
+  sources of evidence when there is one;
+- the source either side of the line, with that line marked;
+- and a system prompt carrying the rules a reader cannot guess from the
+  source in front of them: that an insert must name every column, that there
+  are no exceptions, that an `int` widens to a `float` and a `float` never
+  narrows to an `int`, that text is bytes.
+
+```
+strata_ask_model(question: "Propose the smallest repair.",
+                 path: "ecosystem/mcp_strata/examples/broken.sta")
+```
+
+Pass `code` instead of `path` to ask about an error code on its own. Pass
+both to ask about one code in one file. Pass neither and it refuses, because
+the prompt would then carry nothing the caller did not already have.
+
+**Three environment variables, and the key is only ever one of them.**
+
+| | |
+|---|---|
+| `STRATA_LLM_KEY` | The credential. Required for a real call. **Never a tool argument**, never written to a file, and taken back out of any message on the way to the caller. |
+| `STRATA_LLM_MODEL` | The model name. Required, with no default: a default model is a bill nobody agreed to. |
+| `STRATA_LLM_URL` | The endpoint. Defaults to `http://127.0.0.1:11434/v1/chat/completions` — a model server on this machine. |
+| `STRATA_LLM_DRY_RUN` | Set to anything but `0` and the prompt is assembled and handed back instead of sent. No key is needed for that. |
+
+The default endpoint is the local one on purpose. A default naming somebody's
+paid service would be two wrong things at once: a bill the operator never
+agreed to, and a key meant for one provider sent to another the first time
+the variable is forgotten. On this machine, being wrong costs nothing, and
+`std/llm.sta` allows a key over plain HTTP to this host and to no other.
+
+An unset variable is a refusal with `isError: true` that names the variable
+to set. It does not fail silently and it does not answer without a model.
+
+**The live call is not tested.** There was no key on the machine this was
+written on. Everything up to the socket is tested and in `test_server.sh`:
+that the tool is in the catalogue, that each unset variable is the right
+refusal, that the prompt is assembled out of the compiler's own diagnostics
+and the taxonomy rather than out of the file name, that a key put in the
+environment reaches neither the reply nor the prompt nor standard error, and
+that a failed call clears the error flag so the session still ends at 0.
+What no test here has seen is a service answering.
+
+**The answer is a model's text and nothing has checked it.** The result says
+so. `docs/CALLING_A_MODEL.md` describes the shape that would fix that — ask
+for JSON, load it into a declared `table`, let a renamed field be refused at
+the door — and this tool does not do it, because the useful answer to "what
+is wrong with line 19" is prose rather than a row.
 
 ### `strata_check`
 
@@ -197,8 +273,9 @@ match.
   as a tool result. Here, a failure that is anticipated is a return value and
   a failure that is not is a dead server. Nothing in the end-to-end test
   produces one, which is not the same as there being none.
-- **It is about 2.4 times as long** — 3,720 lines against 1,738 — and roughly
-  700 of those are a JSON reader that Python has in its standard library. The
+- **It is about 2.5 times as long** — 4,337 lines against 1,738, of which
+  576 are `strata_ask_model`, which the Python server does not have at all —
+  and roughly 700 are a JSON reader that Python has in its standard library. The
   speed is the same: both answer `strata_rename_impact` on `apps/payables` in
   about a second, because both spend that second inside the compiler.
 
@@ -227,6 +304,20 @@ This list is the honest one. Every item is a real gap, not a disclaimer.
   between a parse and a reply are exactly the kind it would free. So it is
   never called. A server answering thousands of requests will grow. For an
   editor session it is nothing; for a long-lived service it is a leak.
+- **`strata_ask_model` never applies anything.** It returns text. Nothing
+  here edits a file, and the model's answer has not been checked by anything
+  — not by the compiler, not by a declared table, not by this server. Run
+  `strata_check` on whatever you change before you believe it.
+- **`strata_ask_model` sends your source to whatever `STRATA_LLM_URL` names.**
+  The prompt carries the lines around each diagnostic. That is the point of
+  it, and it is also a copy of your code leaving the machine. The default
+  endpoint is local so that forgetting the variable sends nothing anywhere.
+- **No conversation.** One question, one answer. There is no follow-up, no
+  history, and no way to say "no, the other one" except by asking again.
+- **No retry and no timeout of its own.** `std/fetch.sta` gives up after 30
+  seconds; past that there is nothing to tune and nothing is tried twice. A
+  retry is a decision about money and about whether the request was safe to
+  repeat, and neither this server nor that library knows either.
 - **`strata_rename_impact` only renames.** It does not drop a column, change
   a type, rename a table, or write the `migrate` block you need before the
   stored file will load. It tells you what would break; fixing it is yours.
@@ -270,11 +361,17 @@ This list is the honest one. Every item is a real gap, not a disclaimer.
   climbs out is refused whether or not it exists; and once on what the file
   system resolves it to, which is what catches a symbolic link inside the tree
   pointing out of it. `test_server.sh` asks for all three shapes.
-- **Nothing reaches a shell.** Every subprocess is `fork` and `execvp` with an
-  argument list. This server does not import `std/os`, whose `run` and
-  `capture` hand a string to `/bin/sh` — not because they are wrong, but
-  because a program taking paths from a caller is better off not linking a
-  shell in at all.
+- **Nothing this server runs reaches a shell.** Every subprocess is `fork`
+  and `execvp` with an argument list. No code here calls `std/os`'s `run` or
+  `capture`, which hand a string to `/bin/sh`.
+
+  That sentence used to be "this server does not import `std/os`", and since
+  `strata_ask_model` it is no longer true of the binary. `std/llm.sta` imports
+  `std/os` for `env`, so `system()` is now linked into the server whether or
+  not anything calls it. Nothing does, and nothing in this directory can
+  reach it — but the property is now "no call site" rather than "not linked",
+  which is a weaker thing and worth saying rather than leaving for somebody
+  to discover with `nm`.
 - **Table, column, code and name arguments must be plain identifiers.**
   Anything else is refused before a path is resolved or a file is opened.
 - **A tool failure is a result, not a protocol error.** It comes back with
@@ -293,6 +390,7 @@ program. Point it at a checkout you trust.
 | `src/main.sta` | JSON-RPC over stdio, the tool catalogue, dispatch. Knows nothing about Strata. |
 | `src/tools.sta` | `strata_check`, `strata_taxonomy`, `strata_build`, `strata_run`, `strata_schema`. |
 | `src/rename.sta` | `strata_rename_impact`, which is big enough to live alone. |
+| `src/askmodel.sta` | `strata_ask_model`: the prompt, the environment, and the scrub that keeps the key out of every answer. |
 | `src/jsonval.sta` | A JSON reader, a JSON writer's helpers, and three functions that take a span out of a document without reading it. |
 | `src/diag.sta` | A compiler diagnostic plus what `ERROR_TAXONOMY.json` knows about its code. |
 | `src/blocks.sta` | Which top-level block a line sits in, and therefore which tier. |

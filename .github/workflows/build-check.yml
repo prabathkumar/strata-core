@@ -521,6 +521,14 @@ jobs:
     - name: The MCP Server Written In Strata Answers An Agent
       run: bash ecosystem/mcp_strata/test_server.sh
 
+    # The plugin package: the manifest JSON, every path it names, the tool
+    # names its commands claim permission for checked against the server's
+    # real catalogue, and the launcher's refusals. No AI client needed.
+    # `claude plugin validate` is the authoritative check and is not run
+    # here, because no client is installed on the runner.
+    - name: The Plugin Package Holds Together
+      run: bash ecosystem/plugin/test_plugin.sh
+
     - name: No Unbacked Claims
       run: |
         fail=0

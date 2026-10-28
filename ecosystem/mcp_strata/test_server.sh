@@ -35,6 +35,19 @@
 #     six and looks right doing it.
 #   * And the caller's own file must be byte-for-byte unchanged afterwards.
 #     The rename is applied to a copy; this is what proves it.
+#   * strata_ask_model is driven as far as the socket and no further, because
+#     there is no key on the machine this was written on. What IS checked is
+#     everything a missing key would otherwise hide: that the tool is in the
+#     catalogue, that an unset variable is a refusal naming it rather than an
+#     invented answer, that the prompt is assembled out of the compiler's own
+#     diagnostics and the taxonomy, and that a key put in the environment
+#     reaches NEITHER the reply, NOR the prompt, NOR standard error. The last
+#     one is the case worth having: a tool that leaks a credential into an
+#     agent's transcript has leaked it everywhere that transcript goes.
+#   * And a failed call must leave no error flag set. Strata exits 65 at the
+#     end of a program that recorded an error nobody cleared, so a server
+#     that reports a failed call properly and then dies at the end of the
+#     session has reported it wrongly.
 #
 # Run: bash ecosystem/mcp_strata/test_server.sh
 set -u
@@ -44,6 +57,10 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 SERVER="$HERE/build/mcp_strata"
 WORK="$(mktemp -d /tmp/mcp-strata-test-XXXXXX)"
 LINK="$HERE/examples/escape_link"
+
+# A key-shaped string that is not a key. Everything below that sets it then
+# asks whether it came back out.
+FAKE_KEY="sk-not-a-real-key-0123456789"
 
 passed=0
 failed=0
@@ -111,16 +128,21 @@ this is not json
 {"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"strata_rename_impact","arguments":{"project_dir":"apps/payables","table":"Bill","column":"amount","new_name":"a;rm -rf /"}}}
 {"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"strata_rename_impact","arguments":{"project_dir":"apps/payables","table":"Bill","column":"no_such_column","new_name":"gross"}}}
 {"jsonrpc":"2.0","id":20,"method":"ping"}
+{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"strata_ask_model","arguments":{"question":"what is wrong here","code":"E004"}}}
 EOF
 
-"$SERVER" --root "$ROOT" < "$WORK/in.jsonl" > "$WORK/out.jsonl" 2> "$WORK/err.txt"
+# With the model variables deliberately unset: the server inherits whatever
+# the developer's shell happens to hold, and a test whose answer depends on
+# that is a test that passes on one machine.
+env -u STRATA_LLM_KEY -u STRATA_LLM_MODEL -u STRATA_LLM_URL -u STRATA_LLM_DRY_RUN \
+    "$SERVER" --root "$ROOT" < "$WORK/in.jsonl" > "$WORK/out.jsonl" 2> "$WORK/err.txt"
 
 # ── the protocol ─────────────────────────────────────────────────────────
 
 lines=$(grep -c . "$WORK/out.jsonl")
 ok "one reply per request, and none for the notification" \
-   "$([ "$lines" = "21" ] && echo 0 || echo 1)" \
-   "expected 21 lines (20 ids + the parse error), got $lines"
+   "$([ "$lines" = "22" ] && echo 0 || echo 1)" \
+   "expected 22 lines (21 ids + the parse error), got $lines"
 
 reply 1 > "$WORK/r1"
 ok "initialize answers, mirroring the version the client asked for" \
@@ -132,6 +154,7 @@ ok "tools/list names every tool with an input schema" \
    "$(has "$WORK/r2" '"name":"strata_check"' && has "$WORK/r2" '"name":"strata_taxonomy"' \
       && has "$WORK/r2" '"name":"strata_build"' && has "$WORK/r2" '"name":"strata_run"' \
       && has "$WORK/r2" '"name":"strata_schema"' && has "$WORK/r2" '"name":"strata_rename_impact"' \
+      && has "$WORK/r2" '"name":"strata_ask_model"' \
       && has "$WORK/r2" '"inputSchema"' && echo 0 || echo 1)" \
    "$(cut -c1-200 "$WORK/r2")"
 
@@ -274,6 +297,124 @@ reply 19 > "$WORK/r19"
 ok "a column that is not there is said to be not there" \
    "$(has "$WORK/r19" 'no column' && has "$WORK/r19" '"isError":true' && echo 0 || echo 1)" \
    "$(cat "$WORK/r19")"
+
+# ── strata_ask_model ─────────────────────────────────────────────────────
+#
+# Every case below stops before the socket. There is no key here, so the one
+# thing that cannot be tested is whether a real service answers; everything
+# that decides WHAT would be sent, and whether the credential stays put, can
+# be and is.
+
+reply 21 > "$WORK/r21"
+ok "an unset model is a refusal that names the variable" \
+   "$(has "$WORK/r21" 'STRATA_LLM_MODEL is not set' && has "$WORK/r21" '"isError":true' \
+      && echo 0 || echo 1)" "$(cat "$WORK/r21")"
+
+# A model named and no key: the refusal has to name the variable to set and
+# say that the key is not an argument, because an agent reading it will
+# otherwise try to pass one.
+env -u STRATA_LLM_KEY -u STRATA_LLM_URL -u STRATA_LLM_DRY_RUN STRATA_LLM_MODEL=a-model \
+    bash -c 'printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"strata_ask_model\",\"arguments\":{\"question\":\"q\",\"code\":\"E004\"}}}" | "$0" --root "$1"' \
+    "$SERVER" "$ROOT" > "$WORK/nokey.out" 2> "$WORK/nokey.err"
+ok "no key set is a refusal that names the variable, not an invented answer" \
+   "$(has "$WORK/nokey.out" 'STRATA_LLM_KEY is not set' \
+      && has "$WORK/nokey.out" 'never a tool argument' \
+      && has "$WORK/nokey.out" '"isError":true' && echo 0 || echo 1)" \
+   "$(cat "$WORK/nokey.out")"
+
+# A dry run, with a key present, against the file that does not compile. This
+# is the one that proves the prompt is assembled from the compiler's own
+# answer rather than from the file name.
+env -u STRATA_LLM_URL STRATA_LLM_MODEL=a-model STRATA_LLM_KEY="$FAKE_KEY" STRATA_LLM_DRY_RUN=1 \
+    bash -c 'printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"strata_ask_model\",\"arguments\":{\"question\":\"Propose the smallest repair.\",\"path\":\"ecosystem/mcp_strata/examples/broken.sta\"}}}" | "$0" --root "$1"' \
+    "$SERVER" "$ROOT" > "$WORK/dry.out" 2> "$WORK/dry.err"
+
+ok "a dry run assembles the prompt and sends nothing" \
+   "$(has "$WORK/dry.out" '"mode":"dry_run"' && has "$WORK/dry.out" '"answer":null' \
+      && has "$WORK/dry.out" '"isError":false' \
+      && has "$WORK/dry.out" '"endpoint":"http://127.0.0.1:11434' && echo 0 || echo 1)" \
+   "$(cut -c1-400 "$WORK/dry.out")"
+
+ok "the prompt carries the compiler's diagnostics, the taxonomy and the source" \
+   "$(python3 -c "
+import json,sys
+d=json.load(open('$WORK/dry.out'))
+r=d['result']['structuredContent']
+p=r['user_prompt']
+need=[
+ # both diagnostics the broken file is meant to produce
+ 'E009 at line 18', 'E004 at line 19',
+ # the compiler's own words
+ \"Column 'nope' does not exist in 'Item'\",
+ # the taxonomy's classification and the strategy written for a machine
+ 'Database Schema Selector Violation',
+ 'Audit database table block schemas',
+ # the source, with the line the compiler pointed at marked
+ '> 19 |',
+ # and the question the caller asked
+ 'Propose the smallest repair.',
+]
+missing=[n for n in need if n not in p]
+if missing: print('missing:', missing, file=sys.stderr)
+sys.exit(1 if missing else 0)
+" && echo 0 || echo 1)" \
+   "the prompt is not made of the compiler's answer"
+
+ok "two codes are reported and the file is named, so a caller can check the prompt" \
+   "$(has "$WORK/dry.out" '"diagnostic_count":2' \
+      && has "$WORK/dry.out" '"codes":["E009","E004"]' \
+      && has "$WORK/dry.out" 'ecosystem/mcp_strata/examples/broken.sta' \
+      && has "$WORK/dry.out" '"key_is_set":true' && echo 0 || echo 1)" \
+   "$(cut -c1-400 "$WORK/dry.out")"
+
+# The case worth having. A credential that reaches a tool result reaches the
+# agent's transcript, and from there everywhere that transcript goes.
+ok "the key appears in neither the reply, nor the prompt, nor standard error" \
+   "$(! grep -qF -- "$FAKE_KEY" "$WORK/dry.out" && ! grep -qF -- "$FAKE_KEY" "$WORK/dry.err" \
+      && echo 0 || echo 1)" \
+   "the key was echoed back"
+
+# A code on its own, with no key at all: the taxonomy entry is the whole
+# prompt, and a dry run needs no credential, which is what makes it testable
+# on a machine that has none.
+env -u STRATA_LLM_URL -u STRATA_LLM_KEY STRATA_LLM_MODEL=a-model STRATA_LLM_DRY_RUN=1 \
+    bash -c 'printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"strata_ask_model\",\"arguments\":{\"question\":\"What does this mean?\",\"code\":\"E013\"}}}" | "$0" --root "$1"' \
+    "$SERVER" "$ROOT" > "$WORK/code.out" 2> "$WORK/code.err"
+ok "a code on its own gets its taxonomy entry, and needs no key to do it" \
+   "$(has "$WORK/code.out" 'Stored Table Exceeds A Format Limit' \
+      && has "$WORK/code.out" '"key_is_set":false' \
+      && has "$WORK/code.out" '"isError":false' && echo 0 || echo 1)" \
+   "$(cut -c1-300 "$WORK/code.out")"
+
+# Neither a file nor a code: there is nothing this server knows that the
+# caller does not, so it says so instead of being a worse client for a model
+# than the agent already has.
+env -u STRATA_LLM_URL STRATA_LLM_MODEL=a-model STRATA_LLM_KEY="$FAKE_KEY" STRATA_LLM_DRY_RUN=1 \
+    bash -c 'printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"strata_ask_model\",\"arguments\":{\"question\":\"q\"}}}" | "$0" --root "$1"' \
+    "$SERVER" "$ROOT" > "$WORK/bare.out" 2> "$WORK/bare.err"
+ok "a question with neither a path nor a code is refused, with a reason" \
+   "$(has "$WORK/bare.out" '"isError":true' && has "$WORK/bare.out" '`path`, a `code`, or both' \
+      && echo 0 || echo 1)" "$(cat "$WORK/bare.out")"
+
+# A real call, to a host that is not this machine, over plain HTTP. std/llm
+# refuses it; this is here to prove the refusal travels all the way back as a
+# tool result, and that the key is not quoted into it on the way.
+env -u STRATA_LLM_DRY_RUN STRATA_LLM_URL=http://localhost.supplier.example/v1/chat \
+    STRATA_LLM_MODEL=a-model STRATA_LLM_KEY="$FAKE_KEY" \
+    bash -c 'printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"strata_ask_model\",\"arguments\":{\"question\":\"q\",\"code\":\"E004\"}}}" | "$0" --root "$1"' \
+    "$SERVER" "$ROOT" > "$WORK/plain.out" 2> "$WORK/plain.err"
+plain=$?
+ok "a key is not sent over plain HTTP to a host that merely looks local" \
+   "$(has "$WORK/plain.out" 'not this machine' && has "$WORK/plain.out" '"isError":true' \
+      && ! grep -qF -- "$FAKE_KEY" "$WORK/plain.out" && ! grep -qF -- "$FAKE_KEY" "$WORK/plain.err" \
+      && echo 0 || echo 1)" "$(cat "$WORK/plain.out")"
+
+# Strata exits 65 at the end of a program that recorded an error nobody
+# cleared. A server that reports a failed call properly and then dies at the
+# end of the session has reported it wrongly.
+ok "a failed call leaves no error flag set, so the session still ends at 0" \
+   "$([ "$plain" = "0" ] && echo 0 || echo 1)" \
+   "the server exited $plain after a call that failed and was reported"
 
 # ── starting up ──────────────────────────────────────────────────────────
 
