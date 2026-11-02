@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### A comparison can be handed straight back, and six functions nobody has to
+### write again
+
+Two people wrote the first two substantial programs in this language, neither
+of them its author, and both logged the same two complaints. Neither was a
+missing feature exactly -- both were a small friction paid on every file.
+
+**A comparison is a `bool`, and `bool` would not go where an `int` was
+wanted.** So `return word_index(line, w) >= 0;` from a function returning
+`int` was a type error, and the same three lines -- `if (cond) { return 1; }
+return 0;` -- appeared about twenty times in each program. A bool is already
+0 or 1 in the generated C. It now widens to `int`, in that direction only and
+for the same reason an int widens to a float and a float never narrows to an
+int: widening cannot lose anything, and the reverse would let `if (n)`
+quietly mean `if (n != 0)` on a value somebody meant to compare. An int is
+still not a bool.
+
+(`&&` and `||` were reported missing by both and are not: they work, in
+conditions and in query filters. What was missing was this. Worth recording,
+because two careful readers inferred the wrong cause from the same symptom.)
+
+**`std/str.sta` gained the six everybody writes:** `str_trim`,
+`str_replace`, `str_line_count`, `str_line_at`, `str_trim_end_cr` and
+`str_split_first`. Each had been written by hand twice, by two different
+people, in the two programs above. None is exotic. A standard library earns
+its place by being the thing nobody has to write a third time. 28 assertions
+across five `verify` blocks, including the edge every hand-written version
+gets wrong -- `str_replace(text, "", "x")` returns the text rather than
+looping for ever, because there is no sensible answer to "replace nothing
+with something" and a hang is the worst way to say so.
+
+## Unreleased
+
 ### A Strata function may be called anything
 
 The generated C had no namespace, so a Strata function and a C library

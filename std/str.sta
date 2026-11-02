@@ -139,3 +139,170 @@ str str_join(list[str] parts, str between) {
     }
     return sb_to_str(&sb);
 }
+
+// ── The six everybody writes ─────────────────────────────────────────────────
+//
+// Each of these was written by hand, twice, by two different people writing
+// the first two substantial programs in this language -- once inside an MCP
+// server and once inside the plugin beside it. None of them is exotic, and
+// the next person would have written them a third time. A standard library
+// earns its place by being the thing nobody has to write again.
+
+// Spaces, tabs, carriage returns and newlines off both ends.
+str str_trim(str text) {
+    int n = str_len(text);
+    int start = 0;
+    while (start < n) {
+        int c = text[start];
+        int ws = 0;
+        if (c == 32) { ws = 1; }
+        if (c == 9)  { ws = 1; }
+        if (c == 13) { ws = 1; }
+        if (c == 10) { ws = 1; }
+        if (ws == 0) { break; }
+        start = start + 1;
+    }
+    int stop = n;
+    while (stop > start) {
+        int c2 = text[stop - 1];
+        int ws2 = 0;
+        if (c2 == 32) { ws2 = 1; }
+        if (c2 == 9)  { ws2 = 1; }
+        if (c2 == 13) { ws2 = 1; }
+        if (c2 == 10) { ws2 = 1; }
+        if (ws2 == 0) { break; }
+        stop = stop - 1;
+    }
+    return str_slice(text, start, stop);
+}
+
+// Every occurrence, left to right, without overlapping. An empty `what` is
+// returned unchanged rather than looping for ever: there is no sensible
+// answer to "replace nothing with something", and a hang is the worst way to
+// say so.
+str str_replace(str text, str what, str with_text) {
+    if (str_len(what) == 0) { return text; }
+    StringBuilder sb = sb_new();
+    int n = str_len(text);
+    int w = str_len(what);
+    int i = 0;
+    while (i < n) {
+        int matched = 0;
+        if (i + w <= n) {
+            if (str_eq(str_slice(text, i, i + w), what) == 1) { matched = 1; }
+        }
+        if (matched == 1) {
+            sb_append(&sb, with_text);
+            i = i + w;
+        } else {
+            sb_append(&sb, str_slice(text, i, i + 1));
+            i = i + 1;
+        }
+    }
+    return sb_to_str(&sb);
+}
+
+// How many lines the text holds. A trailing newline does not start another
+// one, so "a\nb\n" is two lines and so is "a\nb".
+int str_line_count(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0; }
+    int lines = 1;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (i + 1 < n) { lines = lines + 1; }
+        }
+    }
+    return lines;
+}
+
+// One line, counting from 1, with no line ending on it. A line number
+// outside the text gives "" rather than a refusal: a caller walking a file
+// usually wants to stop, not to handle an error.
+str str_line_at(str text, int number) {
+    if (number < 1) { return ""; }
+    int n = str_len(text);
+    int line = 1;
+    int start = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (line == number) { return str_trim_end_cr(str_slice(text, start, i)); }
+            line = line + 1;
+            start = i + 1;
+        }
+    }
+    if (line == number) { return str_trim_end_cr(str_slice(text, start, n)); }
+    return "";
+}
+
+// A Windows line ending leaves a carriage return at the end of the line the
+// reader just cut. Dropping it here means a caller never has to know which
+// kind of file it was given.
+str str_trim_end_cr(str line) {
+    int n = str_len(line);
+    if (n == 0) { return line; }
+    if (line[n - 1] == 13) { return str_slice(line, 0, n - 1); }
+    return line;
+}
+
+// The text either side of the first `sep`, as two lines in a list. The
+// separator itself is in neither. When `sep` is not there, the whole text is
+// the first piece and the second is empty -- the shape a caller wants for
+// "key = value" where the value is optional.
+list[str] str_split_first(str text, str sep) {
+    int at = str_index_of(text, sep);
+    if (at < 0) { return [text, ""]; }
+    return [str_slice(text, 0, at),
+    str_slice(text, at + str_len(sep), str_len(text))];
+}
+
+verify "text is trimmed at both ends and nowhere else" {
+    assert str_eq(str_trim("  hello  "), "hello") == 1;
+    assert str_eq(str_trim("\t\r\n x \n"), "x") == 1;
+    assert str_eq(str_trim("no spaces"), "no spaces") == 1;
+    assert str_eq(str_trim("   "), "") == 1;
+    assert str_eq(str_trim(""), "") == 1;
+    // The inside is untouched: a trim that collapsed runs would quietly
+    // change a value somebody stored.
+    assert str_eq(str_trim("  a  b  "), "a  b") == 1;
+}
+
+verify "every occurrence is replaced, and an empty needle does not hang" {
+    assert str_eq(str_replace("a-b-c", "-", "+"), "a+b+c") == 1;
+    assert str_eq(str_replace("aaa", "a", "bb"), "bbbbbb") == 1;
+    assert str_eq(str_replace("hello", "x", "y"), "hello") == 1;
+    assert str_eq(str_replace("hello", "", "x"), "hello") == 1;
+    assert str_eq(str_replace("", "a", "b"), "") == 1;
+    // The replacement is not searched again, so this terminates.
+    assert str_eq(str_replace("ab", "a", "aa"), "aab") == 1;
+}
+
+verify "a trailing newline does not start another line" {
+    assert str_line_count("a\nb\n") == 2;
+    assert str_line_count("a\nb") == 2;
+    assert str_line_count("one") == 1;
+    assert str_line_count("") == 0;
+    assert str_line_count("\n") == 1;
+}
+
+verify "a line is given without its ending, whichever kind it was" {
+    assert str_eq(str_line_at("one\ntwo\nthree", 1), "one") == 1;
+    assert str_eq(str_line_at("one\ntwo\nthree", 3), "three") == 1;
+    assert str_eq(str_line_at("one\r\ntwo", 1), "one") == 1;
+    // Outside the text is empty rather than refused: a caller walking a
+    // file wants to stop, not to handle an error.
+    assert str_eq(str_line_at("one", 9), "") == 1;
+    assert str_eq(str_line_at("one", 0), "") == 1;
+}
+
+verify "a split names the first separator only" {
+    list[str] kv = str_split_first("key = value = more", "=");
+    assert str_eq(kv[0], "key ") == 1;
+    assert str_eq(kv[1], " value = more") == 1;
+    list[str] none = str_split_first("plain", "=");
+    assert str_eq(none[0], "plain") == 1;
+    assert str_eq(none[1], "") == 1;
+    list[str] lead = str_split_first("=after", "=");
+    assert str_eq(lead[0], "") == 1;
+    assert str_eq(lead[1], "after") == 1;
+}

@@ -94,6 +94,18 @@ PRIMITIVES={"int":T_INT,"float":T_FLOAT,"str":T_STR,"void":T_VOID,"bool":T_BOOL}
 def is_compatible(declared, actual):
     if declared == actual: return True
     if declared.name == "float" and actual.name == "int": return True
+    # A comparison is a `bool`, and every predicate anybody writes wants to
+    # hand that straight back: `return word_index(line, w) >= 0;` from a
+    # function returning `int`. It was a type error, so the same three lines
+    # -- if (cond) { return 1; } return 0; -- appeared about twenty times in
+    # each of the first two substantial programs written in this language,
+    # by two different people. A bool is already 0 or 1 in the generated C.
+    #
+    # One direction only, and for the same reason int widens to float and
+    # float never narrows to int: widening cannot lose anything, and the
+    # reverse would let `if (n)` quietly mean `if (n != 0)` on a value
+    # somebody meant to compare. An int is still not a bool. Round 17.
+    if declared.name == "int" and actual.name == "bool": return True
     # `[]` has no element to infer a type from, so it arrives as list[void].
     # An empty list is a legitimate value of any list type: refusing it made
     # `str_cat([])` an error the moment calls across a module boundary began
