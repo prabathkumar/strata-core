@@ -142,6 +142,35 @@ def cname(name):
     return name + "_" if name in C_RESERVED else name
 
 
+def fname(name, user_fns):
+    """A C-safe spelling of a Strata FUNCTION name.
+
+    Every function a Strata program defines is emitted with a prefix, so it
+    cannot collide with anything the C library declares. A program with a
+    function called `send` compiled and ran until the day it imported
+    `std/fetch`, which pulls in <sys/socket.h>; after that the C compiler
+    reported conflicting types for `send` at line 10919 of a 417-kilobyte
+    generated file, naming no Strata line at all -- and `strata check` had
+    said the program was fine, which is the one thing it must never say
+    about a program that will not build.
+
+    A list of banned names was the obvious repair and the wrong one: the
+    set of symbols the emitted includes declare depends on which modules a
+    program imports, differs between platforms and libc versions, and grows
+    without anybody being told. Four review rounds in a row have said that
+    patching the instance leaves the same bug one name over. A prefix has
+    no instances to miss.
+
+    `main` keeps its name, because the C runtime looks for it by that name.
+    A `foreign` function is not in this set: it names a real C symbol and
+    must be emitted exactly as written. Found while writing the second
+    substantial program in this language, round 17.
+    """
+    if name == "main" or name not in user_fns:
+        return cname(name)
+    return "st_" + cname(name)
+
+
 # Native block variable substitution
 def subst_native(code: str, param_names: list) -> str:
     """Replace $varname with the C variable name in native blocks."""
@@ -215,6 +244,10 @@ class CodeGen:
         # is silently wrong.
         self.borrowed_scalars = set()
         self.symbol_owner = {}
+        # Every function this program defines, across the root file and every
+        # module it imports. Emitted with a prefix so none of them can
+        # collide with a C library symbol -- see fname().
+        self.user_fns = set()
         # Set while generating a query condition: a bare identifier naming a
         # column of this table resolves to the row under test.
         self.query_row_type = None
@@ -311,6 +344,7 @@ class CodeGen:
                     sys.exit(1)
                 self.symbol_owner[fn.name] = mod_name
                 emitted_fns.add(fn.name)
+                self.user_fns.add(fn.name)
                 self._forward_fn(fn)
 
             # Constants first, whatever order they were written in. A layout
@@ -372,7 +406,7 @@ int main(int argc, char** argv) {
         rt = self._c_type(fn.return_type) if fn.return_type else "void"
         if fn.kind == "def": rt = "void"
         params = ", ".join(self._c_param(p) for p in fn.params) if fn.params else "void"
-        self.emit_raw(f"{rt} {cname(fn.name)}({params});")
+        self.emit_raw(f"{rt} {fname(fn.name, self.user_fns)}({params});")
 
     def _gen_decl(self, decl):
         if isinstance(decl, ConstDecl):
@@ -1660,7 +1694,7 @@ int main(int argc, char** argv) {
         if not streams:
             self.emit_raw("    /* no stream handlers */")
         for fn in streams:
-            self.emit_raw(f'    strata_on("{fn.name}", (StrataHandler){cname(fn.name)});')
+            self.emit_raw(f'    strata_on("{fn.name}", (StrataHandler){fname(fn.name, self.user_fns)});')
         self.emit_raw("}")
 
     def _gen_test_main(self):
@@ -2571,9 +2605,9 @@ int main(int argc, char** argv) {
         # function with nothing in it is a prototype; a void one is a
         # deliberate no-op and still gets its braces.
         if not fn.body and rt != "void":
-            self.emit_raw(f"\n{rt} {cname(fn.name)}({params});")
+            self.emit_raw(f"\n{rt} {fname(fn.name, self.user_fns)}({params});")
             return
-        self.emit_raw(f"\n{rt} {cname(fn.name)}({params}) {{")
+        self.emit_raw(f"\n{rt} {fname(fn.name, self.user_fns)}({params}) {{")
         self.indent = 1
         for stmt in fn.body:
             self._gen_stmt(stmt, param_names)
@@ -3343,7 +3377,7 @@ int main(int argc, char** argv) {
         if expr.callee in ("sum", "avg", "min", "max", "count"):
             return self._gen_aggregate(expr, param_names)
         args = ", ".join(self._gen_expr(a, param_names) for a in expr.args)
-        return f"{cname(expr.callee)}({args})"
+        return f"{fname(expr.callee, self.user_fns)}({args})"
 
     def _c_type(self, t):
         if t is None: return "void"

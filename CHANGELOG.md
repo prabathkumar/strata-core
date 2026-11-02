@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### A Strata function may be called anything
+
+The generated C had no namespace, so a Strata function and a C library
+function with the same name were the same symbol. A program with a function
+called `send` compiled and ran for as long as it imported nothing that pulled
+in `<sys/socket.h>`. The day it imported `std/fetch`, the C compiler reported
+conflicting types for `send` at line 10919 of a 417-kilobyte generated file,
+naming no Strata line at all -- and `strata check` had said the program was
+fine, which is the one thing it must never say about a program that will not
+build.
+
+Found while writing the second substantial program in this language, by
+somebody who did not design it. `send` is not an exotic name.
+
+The repair is a prefix on every function a program defines, not a list of
+names to avoid. A list would have to know which symbols the emitted includes
+declare, which depends on what the program imports, differs between platforms
+and libc versions, and grows without anybody being told -- and four review
+rounds running have said that patching the instance leaves the same bug one
+name over. A prefix has no instances to miss. `main` keeps its name because
+the C runtime looks for it by that name, and a `foreign` function keeps its
+name because it names a real C symbol.
+
+`test_suite/a_name_cannot_collide_with_c.py` builds and runs a program for
+each of thirteen libc names, and then checks the rule rather than the names:
+the generated C defines nothing under a name the program wrote, except
+`main`. That last check is what covers the names nobody has thought of yet.
+
+## Unreleased
+
 ### Round seventeen, part two: the rest of it
 
 **A `save` whose `load` was forgotten wiped the file.** The staleness guard

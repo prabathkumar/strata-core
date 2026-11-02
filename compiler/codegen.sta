@@ -71,6 +71,11 @@ database Gen {
     // C initialiser at file scope must be a constant expression, so the
     // checked-arithmetic helpers cannot appear in one. Mirrors in_const in
     // stage0.py.
+    // Every function this program defines, across the root file and every
+    // module it imports. Emitted with a prefix so none of them can collide
+    // with a C library symbol -- see fname(). emitted_fns cannot be used for
+    // this because it also holds the prelude's own builtins.
+    int user_fns;
     int in_const;
     int borrowed;     // Bind list: borrowed scalar params needing deref
     int var_types;    // Bind list: variable -> C type
@@ -365,6 +370,34 @@ str cname(str w) {
         return sb_to_str(&sb);
     }
     return w;
+}
+
+// A C-safe spelling of a Strata FUNCTION name.
+//
+// Every function a Strata program defines is emitted with a prefix, so it
+// cannot collide with anything the C library declares. A program with a
+// function called `send` compiled and ran until the day it imported
+// `std/fetch`, which pulls in <sys/socket.h>; after that the C compiler
+// reported conflicting types for `send` at line 10919 of a 417-kilobyte
+// generated file, naming no Strata line at all -- and `strata check` had
+// said the program was fine, which is the one thing it must never say about
+// a program that will not build.
+//
+// A list of banned names was the obvious repair and the wrong one: the set
+// of symbols the emitted includes declare depends on which modules a program
+// imports, differs between platforms and libc versions, and grows without
+// anybody being told. A prefix has no instances to miss.
+//
+// `main` keeps its name, because the C runtime looks for it by that name. A
+// `foreign` function is not in this set: it names a real C symbol and must be
+// emitted exactly as written. Mirrors fname() in stage0.py. Round 17.
+str fname(Gen &g, str w) {
+    if (str_eq(w, "main") == 1) { return cname(w); }
+    if (bind_has(g.user_fns, w) == 0) { return cname(w); }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "st_");
+    sb_append(&sb, cname(w));
+    return sb_to_str(&sb);
 }
 
 // ── Static type of an expression, as a C type name ───────────────────────────
@@ -1017,7 +1050,7 @@ str gen_call(Gen &g, Node e) {
     }
 
     StringBuilder sb = sb_new();
-    sb_append(&sb, cname(e.s1));
+    sb_append(&sb, fname(&g, e.s1));
     sb_append(&sb, "(");
     for (int i = 0; i < n; i = i + 1) {
         if (i > 0) { sb_append(&sb, ", "); }
@@ -3432,7 +3465,7 @@ str fn_signature(Gen &g, Node fn) {
         sb_append(&params, c_param(&g, nv_get(&ps, i)));
     }
     StringBuilder sb = sb_new();
-    sb_append(&sb, rt); sb_append(&sb, " "); sb_append(&sb, cname(fn.s2));
+    sb_append(&sb, rt); sb_append(&sb, " "); sb_append(&sb, fname(&g, fn.s2));
     sb_append(&sb, "("); sb_append(&sb, sb_to_str(&params)); sb_append(&sb, ")");
     return sb_to_str(&sb);
 }
@@ -3991,7 +4024,7 @@ def emit_stream_regs(Gen &g, Node unit) {
             sb_append(&line, "    strata_on(\"");
             sb_append(&line, f.s2);
             sb_append(&line, "\", (StrataHandler)");
-            sb_append(&line, cname(f.s2));
+            sb_append(&line, fname(&g, f.s2));
             sb_append(&line, ");");
             emit_raw(&g, sb_to_str(&line));
         }
@@ -4027,6 +4060,7 @@ def emit_unit(Gen &g, Node unit, int is_root, int &emitted_decls, int &emitted_f
         Node f = nv_get(&fns, j);
         if (bind_has(emitted_fns, f.s2) == 0) {
             emitted_fns = bind_cons(f.s2, "1", emitted_fns);
+            g.user_fns = bind_cons(f.s2, "1", g.user_fns);
             nv_push(&pending_f, f);
         }
     }
