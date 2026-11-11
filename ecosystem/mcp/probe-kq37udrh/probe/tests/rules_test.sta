@@ -1,9 +1,0 @@
-import rules from app;
-
-verify "doubling a number doubles it" {
-    assert doubled(2) == 4;
-}
-
-verify "this block is meant to fail" {
-    assert doubled(2) == 5;
-}

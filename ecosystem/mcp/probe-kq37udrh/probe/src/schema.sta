@@ -1,4 +1,0 @@
-database Widget {
-    int id;
-    str name;
-}

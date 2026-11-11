@@ -3,3 +3,9 @@
 build/
 src/*.c
 examples/*.c
+
+# A symbolic link pointing out of the tree, created by test_server.sh to
+# check that a path escape is refused and removed again afterwards. It is a
+# fixture the test makes, not source -- and a link to /etc is an odd thing
+# to ship by accident.
+examples/escape_link

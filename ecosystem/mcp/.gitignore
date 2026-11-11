@@ -1,0 +1,4 @@
+# Scratch projects the server's own test builds and throws away, and
+# Python's bytecode cache. Neither is source.
+probe-*/
+__pycache__/

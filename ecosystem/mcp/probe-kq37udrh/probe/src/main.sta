@@ -1,7 +1,0 @@
-import io    from std;
-import rules from app;
-
-int main() {
-    print(str(doubled(21)));
-    return 0;
-}

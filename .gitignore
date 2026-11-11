@@ -67,3 +67,9 @@ DerivedData/
 apps/payables/data/bills.tsv
 apps/payables/data/rejected.tsv
 apps/payables/largest.md
+
+# A lock file is held for the microseconds of a save and removed again. One
+# that outlives its process is rubbish for the next run to clear up, never
+# something to commit -- and four of them reached a commit before this line
+# existed.
+*.strata-lock
