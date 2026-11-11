@@ -161,6 +161,23 @@ jobs:
     - name: A Name Cannot Collide With C
       run: python3 test_suite/a_name_cannot_collide_with_c.py
 
+    # A module that would not lex was skipped with a warning on stderr, and
+    # then every function it provided was reported as undefined -- eighty
+    # three of them from one bad escape, each advising an import the
+    # developer had already written. The machine-readable payload, whose
+    # whole purpose is that a machine never reads compiler prose, carried
+    # none of the real cause.
+    - name: A Broken Import Says So
+      run: python3 test_suite/a_broken_import_says_so.py
+
+    # `save` takes a lock file for the microseconds between checking the
+    # file and renaming over it. A lock left behind by a process somebody
+    # killed used to cost every later write the full two-second wait, twice
+    # per request -- a service that answers nothing, from one crash, with no
+    # message saying why. The file was never the lock; the process is.
+    - name: A Crash Does Not Wedge The Next Run
+      run: python3 test_suite/a_crash_does_not_wedge_the_next_run.py
+
     # The demonstrator. Sixty-six CI steps prove the compiler works; they do
     # not show anybody what the language is FOR. apps/payables is the
     # smallest system that still touches every tier -- a supplier file in,

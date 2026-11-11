@@ -32,7 +32,7 @@ def load_stage0():
 
 def python_flags(stage0, path):
     ast = stage0.parse_file(path)
-    mods, _, _, _ = stage0.resolve_imports(ast, path)
+    mods, _, _, _, _ = stage0.resolve_imports(ast, path)
     gen = stage0.CodeGen(ast, path, mods)
     gen.generate()
     return " ".join("-l" + lib for lib in dict.fromkeys(gen.link_libs))

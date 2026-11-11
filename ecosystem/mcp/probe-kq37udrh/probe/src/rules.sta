@@ -1,0 +1,5 @@
+import schema from app;
+
+int doubled(int n) {
+    return n * 2;
+}

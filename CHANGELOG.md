@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### A broken import says what it is, and a crash does not wedge the next run
+
+**A module that would not lex was reported as its consequences.** A `native`
+block holding `'\0'` is a lex error, and when that file was the one being
+compiled the compiler said so exactly, naming the line and the column. When
+it was a file somebody IMPORTED, that sentence went to standard error as a
+warning and the compiler carried on without the module -- then reported every
+function it provided as undefined, each with a hint advising an import the
+developer had already written. One bad escape produced eighty-three of those,
+and the machine-readable payload, whose entire purpose is that a machine never
+has to read compiler prose, carried none of the real cause.
+
+It is now an `E000` against the file it is in, in the payload, and the cascade
+behind it is dropped. Nothing that module declares is visible until it parses,
+so every name it would have provided reads as undefined and every expression
+built from one reads as the wrong type -- the same reasoning as an unfetched
+dependency, one level along. This is the third place that rule has been
+applied: report the cause, drop the consequences.
+
+**A lock file left by a killed process cost every later write two seconds.**
+`save` takes a lock for the microseconds between asking "has this changed
+since I read it?" and renaming the new file over it, so two runs cannot both
+pass the check and both write. The loop gives up after two seconds rather than
+blocking for ever, and the comment above it said why: a lock left behind by a
+process somebody killed must not wedge every run afterwards.
+
+It did, near enough. Killing a test server mid-request left the file behind,
+and every write afterwards paid the full two seconds -- twice per request,
+because a request takes two locks -- until a person noticed the file and
+deleted it. Past a client's timeout that is a service which answers nothing,
+from one crash, with nothing anywhere saying why. Found by doing exactly that
+by accident while running this project's own journey test.
+
+The file was never the lock; the process is. The lock file now records whose
+it is, and a run that finds one belonging to a process that no longer exists
+removes it and carries on. A file with no owner written in it yet is either a
+lock being taken in this very microsecond or rubbish from something else
+entirely -- the first is newer than two seconds and the second is not, so age
+tells them apart, and a lock genuinely being taken is still waited for rather
+than stolen.
+
+## Unreleased
+
 ### A comparison can be handed straight back, and six functions nobody has to
 ### write again
 

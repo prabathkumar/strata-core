@@ -30,7 +30,7 @@ from compiler.typechecker import TypeChecker
 f = sys.argv[1]
 try:
     ast = parse_file(f)
-    modules, _, root_unresolved, app_modules = resolve_imports(ast, f)
+    modules, _, root_unresolved, app_modules, _ = resolve_imports(ast, f)
     errs = TypeChecker(ast, filename=f,
                        modules=None if root_unresolved else modules,
                        unresolved_imports=root_unresolved,

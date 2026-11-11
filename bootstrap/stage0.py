@@ -3530,6 +3530,9 @@ def resolve_imports(ast, source_path, verbose=False):
     # can be more than one file without putting its modules in std/.
     app_root = src_dir
     modules, unresolved, seen = [], [], set()
+    # Imports that were found on disk and would not lex or parse.
+    # These used to go to stderr as a warning and nowhere else.
+    broken = []
     # The project's own modules, with their paths, so a diagnostic from one of
     # them can name the file it is in.
     app_modules = []
@@ -3558,6 +3561,16 @@ def resolve_imports(ast, source_path, verbose=False):
                     print(f"[STRATA IMPORT ERROR] '{path}' failed to parse:\n  {e}",
                           file=sys.stderr)
                     sys.exit(1)
+                # A warning on stderr and nothing in the payload. One bad
+                # escape in one imported file produced eighty-three E011s
+                # saying functions were undefined and telling the developer
+                # to import a module they had already imported -- and the
+                # real cause, a lex error naming the file and the column,
+                # went to a stream the machine-readable output exists to
+                # replace. Recorded here so the caller can report it as the
+                # diagnostic it is. Found while writing the second
+                # substantial program in this language, round 17.
+                broken.append((path, str(e)))
                 print(f"[STRATA IMPORT WARNING] skipping '{path}': {e}", file=sys.stderr)
                 continue
             walk(mod_ast)
@@ -3573,7 +3586,7 @@ def resolve_imports(ast, source_path, verbose=False):
     # point at the line rather than at the file.
     root_unresolved = [imp for imp in ast.imports
                        if _resolve_module(imp, search_root, app_root) is None]
-    return modules, unresolved, root_unresolved, app_modules
+    return modules, unresolved, root_unresolved, app_modules, broken
 
 _TAXONOMY_CACHE = None
 
@@ -3664,7 +3677,7 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
     # error naming a C symbol — invisible to --json and to the repair loop.
     # An import with no local checkout means the picture is incomplete, so the
     # checker is left lenient rather than guessing.
-    modules, unresolved, root_unresolved, app_modules = resolve_imports(
+    modules, unresolved, root_unresolved, app_modules, broken = resolve_imports(
         ast, source_path, verbose)
     try:
         from compiler.typechecker import TypeChecker
@@ -3674,6 +3687,31 @@ def compile_sta(source_path, output_path, target="native", verbose=False,
                              project_modules=app_modules).check()
     except ImportError:
         errors = []
+    # A module that would not lex or parse is reported as what it is, against
+    # the file it is in, BEFORE anything it would have provided is called
+    # undefined. The cascade behind it is dropped: nothing that module
+    # declares is visible, so every name it would have given reads as
+    # undefined and every expression built from one reads as the wrong type.
+    # One bad escape produced eighty-three of those, each advising an import
+    # the developer had already written. Round 17.
+    if broken:
+        from compiler.typechecker import StrataError
+        first = []
+        for path, why in broken:
+            text = str(why).strip().splitlines()
+            head = text[0] if text else "could not be read"
+            first.append(StrataError(
+                "E000",
+                f"'{os.path.relpath(path, os.path.dirname(os.path.abspath(source_path)) or '.')}' "
+                f"could not be read: {head}",
+                0, 0,
+                "Fix that file first. Until it parses, nothing it declares "
+                "is visible here, so every name it provides will be reported "
+                "as undefined and no other diagnostic about this file is "
+                "trustworthy.",
+                path))
+        cascade = frozenset(("E011", "E002", "E003", "E004"))
+        errors = first + [e for e in errors if e.code not in cascade]
     if json_diagnostics:
         payload = diagnostics_payload(source_path, errors, "typecheck")
         print(json.dumps(payload, indent=2))
@@ -3888,7 +3926,7 @@ def main():
         # only the root unit produces C that cannot link.
         try: ast=parse_file(args.file)
         except (LexError,ParseError) as e: print(str(e),file=sys.stderr); sys.exit(1)
-        modules, _, _, _ = resolve_imports(ast, args.file, args.verbose)
+        modules, _, _, _, _ = resolve_imports(ast, args.file, args.verbose)
         print(CodeGen(ast,args.file,modules,target=args.target).generate()); return
     compile_sta(args.file, out, target=args.target, verbose=args.verbose,
                 json_diagnostics=args.json, test_mode=args.test)

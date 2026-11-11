@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+/* kill(pid, 0), to ask whether a lock's owner is still alive. */
+#include <signal.h>
 /* strata_gmtime, which every date function in std/time.sta goes through. */
 #include <time.h>
 
@@ -1517,8 +1519,56 @@ static int strata_commit(const char* path, const char* tmp, int64_t expected) {
     int fd = -1;
     for (int i = 0; i < 2000; i++) {
         fd = open(lock, O_CREAT | O_EXCL | O_WRONLY, 0600);
-        if (fd >= 0) break;
+        if (fd >= 0) {
+            /* Whose it is, so the next run can tell a live holder from a
+             * corpse. Written and flushed before the work below, because a
+             * lock file with nothing in it is the thing being fixed. */
+            char who[32];
+            int wn = snprintf(who, sizeof(who), "%ld\n", (long)getpid());
+            if (wn > 0) {
+                ssize_t ignored = write(fd, who, (size_t)wn);
+                (void)ignored;
+            }
+            break;
+        }
         if (errno != EEXIST) break;
+        /* A lock file left behind by a process somebody killed must not cost
+         * every later write two seconds for ever. The file is not the lock;
+         * the PROCESS is. If the pid in there is gone, the lock is gone with
+         * it, so the file is removed and the loop tries again.
+         *
+         * Found by killing a test server mid-request: every write afterwards
+         * paid the full two seconds, two locks per request, until a person
+         * noticed the file and deleted it. For a service that is indefinite
+         * damage from one crash, and the comment above this loop already
+         * claimed it could not happen.
+         *
+         * A file with no pid in it is either a lock being taken RIGHT NOW,
+         * in the moment between creating it and writing to it, or rubbish
+         * left by something that is not this runtime. The first is
+         * microseconds old and the second is not, so age tells them apart.
+         * Round 17. */
+        if ((i % 200) == 100) {
+            int stale = 0;
+            FILE* held = fopen(lock, "r");
+            if (held) {
+                long owner = 0;
+                int got = fscanf(held, "%ld", &owner);
+                fclose(held);
+                if (got == 1 && owner > 0) {
+                    if (kill((pid_t)owner, 0) != 0 && errno == ESRCH) {
+                        stale = 1;
+                    }
+                } else {
+                    struct stat ls;
+                    if (stat(lock, &ls) == 0
+                            && time(NULL) - ls.st_mtime > 2) {
+                        stale = 1;
+                    }
+                }
+            }
+            if (stale) remove(lock);
+        }
         usleep(1000);
     }
     int rc = 1;
