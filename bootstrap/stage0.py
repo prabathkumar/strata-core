@@ -2282,7 +2282,22 @@ int main(int argc, char** argv) {
         self.emit(f"}} else if (_wf{d}) {{")
         self.indent += 1
         self.emit(f"char _wtmp{d}[4096];")
-        self.emit(f'snprintf(_wtmp{d}, sizeof(_wtmp{d}), "%s.strata-rewrite", {path});')
+        # One temp name per process. Two rewrites of the same file shared a
+        # single hard-coded scratch name, opened it "w" at the same moment,
+        # and wrote over each other at their own offsets -- then one renamed
+        # the torn result over the table and the original was gone. Both
+        # exited 0. `save` has used a pid-unique name for exactly this reason
+        # since the day it was written. Found by a blind evaluator, round 18.
+        self.emit(f'snprintf(_wtmp{d}, sizeof(_wtmp{d}), "%s.%ld.strata-rewrite", '
+                  f'{path}, (long)getpid());')
+        # What the table looked like before this rewrite read it. A rewrite
+        # replaces the whole file, so it is subject to the same lost-update
+        # question as a save: if somebody else wrote while we were reading,
+        # the rows we are about to put down do not account for their work.
+        # `rewrite` had no lock and no stamp -- a bare rename -- so a save
+        # that landed mid-rewrite was silently thrown away, and the saving
+        # program was told it had succeeded.
+        self.emit(f"int64_t _wstamp{d} = strata_file_stamp({path});")
         self.emit(f'FILE* _ww{d} = fopen(_wtmp{d}, "w");')
         self.emit(f"if (!_ww{d}) {{")
         self.indent += 1
@@ -2335,11 +2350,25 @@ int main(int argc, char** argv) {
         self.indent -= 1
         self.emit("} else {")
         self.indent += 1
-        # Only now does the new file become the table.
-        self.emit(f"if (rename(_wtmp{d}, {path}) != 0) {{")
+        # Only now does the new file become the table -- through the same
+        # commit `save` goes through, which holds a lock across the stamp
+        # check and the rename so the answer cannot go stale between them.
+        self.emit(f"int _wrc{d} = strata_commit({path}, _wtmp{d}, _wstamp{d});")
+        self.emit(f"if (_wrc{d} == 0) {{")
         self.indent += 1
+        self.emit(f"remove(_wtmp{d});")
+        self.emit(f'strata_save_refuse("{t}", {path}, "it changed after this '
+                  'rewrite began reading it, so another run has written to '
+                  'it. These rows do not account for that work. Read it '
+                  'again, and redo the change");')
+        self.indent -= 1
+        self.emit(f"}} else if (_wrc{d} < 0) {{")
+        self.indent += 1
+        # A failed replacement used to print and then exit 0, which is the
+        # one thing this project refuses to let any other failure do.
+        self.emit(f'strata_save_refuse("{t}", {path}, strerror(errno));')
         self.emit('fprintf(stderr, "[STRATA REWRITE] ' + t +
-                  ': could not replace \'%s\'; the new rows are in \'%s\'\\n", ' + path + ', _wtmp' + str(d) + ');')
+                  ': the new rows are in \'%s\'\\n", _wtmp' + str(d) + ');')
         self.indent -= 1
         self.emit("}")
         self.indent -= 1
@@ -3304,20 +3333,21 @@ int main(int argc, char** argv) {
             if fd is not None:
                 elem = "f" if self._c_type(fd.field_type) == "strata_float" else "i"
                 target = self._gen_expr(arg.obj, param_names)
-                call = (f"strata_agg({target}, {kind}, '{elem}', "
-                        f"(long)offsetof({row}, {arg.member}))")
-                if name == "avg" or elem == "f":
-                    return call
-                return f"((strata_int)({call}))"
+                off = f"(long)offsetof({row}, {arg.member})"
+                # A whole-number column is summed in whole numbers. Going
+                # through a double answered numbers that are not in the
+                # table. See strata_agg_int in the runtime preamble.
+                if elem == "i" and name != "avg":
+                    return f"strata_agg_int({target}, {kind}, {off})"
+                return f"strata_agg({target}, {kind}, '{elem}', {off})"
 
         # A plain list of numbers: the elements are the values.
         target = self._gen_expr(arg, param_names)
         ct = self._expr_ctype(arg, param_names) or ""
         elem = "f" if ct == "strata_float*" else "i"
-        call = f"strata_agg({target}, {kind}, '{elem}', -1)"
-        if name == "avg" or elem == "f":
-            return call
-        return f"((strata_int)({call}))"
+        if elem == "i" and name != "avg":
+            return f"strata_agg_int({target}, {kind}, -1)"
+        return f"strata_agg({target}, {kind}, '{elem}', -1)"
 
     def _order_clause(self, expr, src, tag, nvar):
         """The C that orders and trims a query's result, or "" for a query

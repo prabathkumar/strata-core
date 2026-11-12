@@ -842,6 +842,63 @@ static strata_str strata_render_end(FILE* out, char** buf) {
 /* kind: 0 sum, 1 avg, 2 min, 3 max.  elem: 'i' int, 'f' float.
    offset < 0 means the list holds the numbers directly; otherwise it holds
    row pointers and the number is at that byte offset inside each row. */
+/* The same aggregate over a whole-number column, kept in whole numbers.
+ *
+ * strata_agg accumulates into a double for every element type, so a sum, a
+ * min or a max over an `int` column went through a format that stops being
+ * exact past 2^53 and came back cast to an integer. max() answered
+ * 9007199254740992 for a table whose only value was 9007199254740993 -- a
+ * number that is not in the table, with exit 0 -- and sum() was out by three
+ * over three rows. Plain `+` on two ints has been overflow-checked since
+ * round 17; the aggregate over the same values was not, so summing past the
+ * limit answered INT64_MAX with no error at all.
+ *
+ * This matters more than it looks because FOR_DEVELOPERS.md tells people to
+ * keep money as an int of minor units, and money_largest_units() is an order
+ * of magnitude past where a double stops counting exactly. The recommended
+ * way to store money was the way to get a wrong total.
+ *
+ * avg still goes through strata_agg: an average is a decimal by nature.
+ * Found by a blind evaluator, round 18. */
+static strata_int strata_agg_int(void* list, int kind, long offset) {
+    strata_int n = strata_len(list);
+    if (n <= 0 || !list) {
+        if (kind == STRATA_AGG_MIN) {
+            strata_error_set("min of no rows: there is no smallest value");
+        } else if (kind == STRATA_AGG_MAX) {
+            strata_error_set("max of no rows: there is no largest value");
+        }
+        return 0;
+    }
+    strata_int acc = 0, best = 0;
+    int seen = 0;
+    for (strata_int i = 0; i < n; i++) {
+        const void* cell;
+        if (offset < 0) {
+            cell = (const char*)list + (size_t)i * sizeof(strata_int);
+        } else {
+            void* row = ((void**)list)[i];
+            if (!row) continue;
+            cell = (const char*)row + offset;
+        }
+        strata_int v = *(const strata_int*)cell;
+        if (kind == STRATA_AGG_SUM) {
+            strata_int r;
+            if (__builtin_add_overflow(acc, v, &r)) {
+                strata_error_set("this sum is too large to hold in a whole "
+                                 "number");
+                return 0;
+            }
+            acc = r;
+        }
+        if (!seen) { best = v; seen = 1; }
+        if (kind == STRATA_AGG_MIN) { if (v < best) best = v; }
+        if (kind == STRATA_AGG_MAX) { if (v > best) best = v; }
+    }
+    if (kind == STRATA_AGG_SUM) return acc;
+    return best;
+}
+
 static double strata_agg(void* list, int kind, char elem, long offset) {
     strata_int n = strata_len(list);
     /* No rows.

@@ -158,6 +158,15 @@ jobs:
     # imported something that pulls in <sys/socket.h>, and `strata check`
     # said the program was fine either way. A list of banned names would
     # have to know what every platform's headers declare; a prefix does not.
+    # Round 18 found four things that destroy data or answer wrongly, all
+    # of them the failure this project says it has designed out: a rewrite
+    # with no lock and no stamp, two rewrites sharing one temp name, a
+    # str_replace that deleted every accented character on its way to disk,
+    # and whole-number aggregates going through a decimal so max() answered
+    # a number that was not in the table.
+    - name: Round Eighteen Stays Fixed
+      run: python3 test_suite/round_eighteen_stays_fixed.py
+
     - name: A Name Cannot Collide With C
       run: python3 test_suite/a_name_cannot_collide_with_c.py
 

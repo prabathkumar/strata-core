@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Round eighteen: the statement next to the one that was hardened
+
+Two reviews at once. A security engineer spent a day trying to break the
+seven standard-library modules written the week before, and could not get
+past the session, CSRF, privilege or webhook-signature checks -- the first
+unqualified good news this project has had from an outsider. A language
+reviewer found four things, and every one of them is the same shape: a rule
+that was put in place on one statement and never extended to the statement
+beside it.
+
+**`rewrite` had no lock and no stamp check.** `save` compares the file it is
+about to replace against the one it read, under a lock, and refuses if
+somebody else wrote in between. `append` was given a per-row lock in round
+17. `rewrite` -- which replaces the whole file -- did a bare rename. A save
+landing mid-rewrite was silently thrown away and the saving program was told
+it had succeeded. Three runs out of three. It now goes through the same
+commit `save` does.
+
+**Two rewrites of one file shared a single temp name.** No process id in it,
+unlike `save`, which has had one since the day it was written. Both opened
+the same scratch file, wrote over each other at their own offsets, and one
+renamed the wreckage over the table: 400,000 rows became 698,012 lines, the
+original gone, both programs exiting 0. With equal-length values the damage
+was not even detectable -- a structurally valid file holding rows from two
+different runs.
+
+**A failed rewrite exited 0**, which is the one thing every other failure in
+this language is forbidden to do.
+
+**`str_replace` deleted every accented character.** It copied the text
+between matches one byte at a time, and the slice it used correctly refuses
+to cut a UTF-8 character in half -- so each multi-byte character was dropped
+and the error flag set once per byte. `"Café Düsseldorf Ltd."` came back
+`"Caf Dsseldorf Limited"`, and a program that cleared the error flag for an
+unrelated reason wrote that to disk and exited 0. Any European, Malay or
+Chinese name in a stored column. This was shipped eight days ago in this
+project's own standard library, which is the uncomfortable part: the test
+for it used ASCII.
+
+**`sum`, `min` and `max` over a whole-number column went through a decimal.**
+Past 2^53 a double stops counting exactly, so `max` answered 9007199254740992
+for a table whose only value was 9007199254740993 -- a number that is not in
+the table, exit 0 -- and a sum past the limit answered the limit with no error
+where plain `+` would have refused. `FOR_DEVELOPERS.md` tells people to keep
+money as whole minor units and quotes a maximum an order of magnitude past
+where a double gives up, so the recommended way to store money was the way to
+get a wrong total. Whole-number columns are now summed in whole numbers, with
+the same overflow check `+` has. `avg` still goes through a decimal, because
+an average is one.
+
+## Unreleased
+
 ### Seven connectors and components, and two bugs they found
 
 Seven new standard-library modules, each written in Strata and each driven

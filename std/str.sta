@@ -180,25 +180,56 @@ str str_trim(str text) {
 // returned unchanged rather than looping for ever: there is no sensible
 // answer to "replace nothing with something", and a hang is the worst way to
 // say so.
+// Whether `what` starts at byte `i` of `text`, compared byte by byte.
+//
+// Deliberately NOT written with str_slice. str_slice refuses to cut a UTF-8
+// character in half, which is right -- but it means a slice taken at a byte
+// that is halfway through a character comes back empty AND sets the error
+// flag. A comparison that walks one byte at a time would do that at nearly
+// every position of any text holding a non-ASCII character. Byte indexing is
+// bounds-checked and has no such opinion.
+int str_matches_at(str text, int i, str what) {
+    int w = str_len(what);
+    int n = str_len(text);
+    if (i + w > n) { return 0; }
+    for (int k = 0; k < w; k = k + 1) {
+        if (text[i + k] != what[k]) { return 0; }
+    }
+    return 1;
+}
+
+// Every occurrence, left to right, without overlapping. An empty `what` is
+// returned unchanged rather than looping for ever: there is no sensible
+// answer to "replace nothing with something", and a hang is the worst way to
+// say so.
+//
+// The text between matches is copied in whole RUNS, not one byte at a time.
+// Copying byte by byte went through str_slice, which refuses to cut a UTF-8
+// character in half -- so every multi-byte character was dropped and the
+// error flag was set once per byte of it. `str_replace("Caf\u00e9 D\u00fcsseldorf Ltd.",
+// "Ltd.", "Limited")` returned "Caf Dsseldorf Limited", and a program that
+// cleared the error flag for an unrelated reason wrote that to disk and
+// exited 0. Any European, Malay or Chinese name in a stored column was
+// silently mangled. Found by a blind evaluator, round 18.
 str str_replace(str text, str what, str with_text) {
     if (str_len(what) == 0) { return text; }
     StringBuilder sb = sb_new();
     int n = str_len(text);
     int w = str_len(what);
     int i = 0;
-    while (i < n) {
-        int matched = 0;
-        if (i + w <= n) {
-            if (str_eq(str_slice(text, i, i + w), what) == 1) { matched = 1; }
-        }
-        if (matched == 1) {
+    // The start of the stretch of original text not yet copied.
+    int run = 0;
+    while (i + w <= n) {
+        if (str_matches_at(text, i, what) == 1) {
+            if (i > run) { sb_append(&sb, str_slice(text, run, i)); }
             sb_append(&sb, with_text);
             i = i + w;
+            run = i;
         } else {
-            sb_append(&sb, str_slice(text, i, i + 1));
             i = i + 1;
         }
     }
+    if (run < n) { sb_append(&sb, str_slice(text, run, n)); }
     return sb_to_str(&sb);
 }
 

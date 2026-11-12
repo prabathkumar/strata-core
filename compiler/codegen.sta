@@ -315,18 +315,27 @@ str gen_aggregate(Gen &g, Node e, int kind) {
         if (str_eq(ct, "strata_float*") == 1) { elem = "f"; }
     }
 
+    // A whole-number column is summed in whole numbers. strata_agg keeps
+    // everything in a double, which stops being exact past 2^53: max()
+    // answered a number that was not in the table and sum() was out by
+    // three over three rows, both with exit 0. See strata_agg_int in the
+    // runtime preamble. kind 1 is avg, which is a decimal by nature.
+    // Mirrors stage0.py. Round 18.
+    int whole = 0;
+    if (kind != 1) { if (str_eq(elem, "f") == 0) { whole = 1; } }
+    if (whole == 1) {
+        StringBuilder ic = sb_new();
+        sb_append(&ic, "strata_agg_int("); sb_append(&ic, target);
+        sb_append(&ic, ", "); sb_append(&ic, str(kind));
+        sb_append(&ic, ", "); sb_append(&ic, offset); sb_append(&ic, ")");
+        return sb_to_str(&ic);
+    }
     StringBuilder call = sb_new();
     sb_append(&call, "strata_agg("); sb_append(&call, target);
     sb_append(&call, ", "); sb_append(&call, str(kind));
     sb_append(&call, ", '"); sb_append(&call, elem);
     sb_append(&call, "', "); sb_append(&call, offset); sb_append(&call, ")");
-
-    if (kind == 1) { return sb_to_str(&call); }
-    if (str_eq(elem, "f") == 1) { return sb_to_str(&call); }
-    StringBuilder cast = sb_new();
-    sb_append(&cast, "((strata_int)("); sb_append(&cast, sb_to_str(&call));
-    sb_append(&cast, "))");
-    return sb_to_str(&cast);
+    return sb_to_str(&call);
 }
 
 // The column type behind a projection like `rows.amount`, or "" when the
@@ -5027,9 +5036,25 @@ def gen_rewrite(Gen &g, Node node) {
     cg_emit(&g, sb_to_str(&a3));
     StringBuilder a4 = sb_new();
     sb_append(&a4, "snprintf(_wtmp"); sb_append(&a4, d); sb_append(&a4, ", sizeof(_wtmp");
-    sb_append(&a4, d); sb_append(&a4, "), \"%s.strata-rewrite\", "); sb_append(&a4, path);
-    sb_append(&a4, ");");
+    // One temp name per process. Two rewrites of the same file shared a
+    // single hard-coded scratch name, opened it "w" at the same moment and
+    // wrote over each other at their own offsets -- then one renamed the
+    // torn result over the table and the original was gone, both exiting 0.
+    // `save` has used a pid-unique name since the day it was written.
+    // Mirrors stage0.py. Round 18.
+    sb_append(&a4, d); sb_append(&a4, "), \"%s.%ld.strata-rewrite\", ");
+    sb_append(&a4, path); sb_append(&a4, ", (long)getpid());");
     cg_emit(&g, sb_to_str(&a4));
+    // What the table looked like before this rewrite read it. A rewrite
+    // replaces the whole file, so it is subject to the same lost-update
+    // question as a save -- and it had no lock and no stamp, just a bare
+    // rename, so a save landing mid-rewrite was silently thrown away and
+    // the saving program was told it had succeeded.
+    StringBuilder a4b = sb_new();
+    sb_append(&a4b, "int64_t _wstamp"); sb_append(&a4b, d);
+    sb_append(&a4b, " = strata_file_stamp("); sb_append(&a4b, path);
+    sb_append(&a4b, ");");
+    cg_emit(&g, sb_to_str(&a4b));
     StringBuilder a5 = sb_new();
     sb_append(&a5, "FILE* _ww"); sb_append(&a5, d); sb_append(&a5, " = fopen(_wtmp");
     sb_append(&a5, d); sb_append(&a5, ", \"w\");");
@@ -5138,18 +5163,43 @@ def gen_rewrite(Gen &g, Node node) {
     g.indent = g.indent - 1;
     cg_emit(&g, "} else {");
     g.indent = g.indent + 1;
-    // Only now does the new file become the table.
+    // Only now does the new file become the table -- through the same
+    // commit `save` goes through, which holds a lock across the stamp check
+    // and the rename so the answer cannot go stale between them.
     StringBuilder c2 = sb_new();
-    sb_append(&c2, "if (rename(_wtmp"); sb_append(&c2, d); sb_append(&c2, ", ");
-    sb_append(&c2, path); sb_append(&c2, ") != 0) {");
+    sb_append(&c2, "int _wrc"); sb_append(&c2, d);
+    sb_append(&c2, " = strata_commit("); sb_append(&c2, path);
+    sb_append(&c2, ", _wtmp"); sb_append(&c2, d); sb_append(&c2, ", _wstamp");
+    sb_append(&c2, d); sb_append(&c2, ");");
     cg_emit(&g, sb_to_str(&c2));
+    StringBuilder c2b = sb_new();
+    sb_append(&c2b, "if (_wrc"); sb_append(&c2b, d); sb_append(&c2b, " == 0) {");
+    cg_emit(&g, sb_to_str(&c2b));
     g.indent = g.indent + 1;
+    StringBuilder c2c = sb_new();
+    sb_append(&c2c, "remove(_wtmp"); sb_append(&c2c, d); sb_append(&c2c, ");");
+    cg_emit(&g, sb_to_str(&c2c));
+    StringBuilder c2d = sb_new();
+    sb_append(&c2d, "strata_save_refuse(\""); sb_append(&c2d, t);
+    sb_append(&c2d, "\", "); sb_append(&c2d, path);
+    sb_append(&c2d, ", \"it changed after this rewrite began reading it, so another run has written to it. These rows do not account for that work. Read it again, and redo the change\");");
+    cg_emit(&g, sb_to_str(&c2d));
+    g.indent = g.indent - 1;
+    StringBuilder c2e = sb_new();
+    sb_append(&c2e, "} else if (_wrc"); sb_append(&c2e, d); sb_append(&c2e, " < 0) {");
+    cg_emit(&g, sb_to_str(&c2e));
+    g.indent = g.indent + 1;
+    // A failed replacement used to print and then exit 0, which is the one
+    // thing this project refuses to let any other failure do.
     StringBuilder c3 = sb_new();
-    sb_append(&c3, "fprintf(stderr, \"[STRATA REWRITE] "); sb_append(&c3, t);
-    sb_append(&c3, ": could not replace '%s'; the new rows are in '%s'\\n\", ");
-    sb_append(&c3, path); sb_append(&c3, ", _wtmp"); sb_append(&c3, d);
-    sb_append(&c3, ");");
+    sb_append(&c3, "strata_save_refuse(\""); sb_append(&c3, t);
+    sb_append(&c3, "\", "); sb_append(&c3, path); sb_append(&c3, ", strerror(errno));");
     cg_emit(&g, sb_to_str(&c3));
+    StringBuilder c3b = sb_new();
+    sb_append(&c3b, "fprintf(stderr, \"[STRATA REWRITE] "); sb_append(&c3b, t);
+    sb_append(&c3b, ": the new rows are in '%s'\\n\", _wtmp"); sb_append(&c3b, d);
+    sb_append(&c3b, ");");
+    cg_emit(&g, sb_to_str(&c3b));
     g.indent = g.indent - 1;
     cg_emit(&g, "}");
     g.indent = g.indent - 1;
