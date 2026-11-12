@@ -1,0 +1,843 @@
+// STRATA STANDARD LIBRARY — std/mysql.sta
+// Talking to MySQL and MariaDB.
+//
+// WHAT IT DOES
+//
+// Connect, run a statement, run a query and read the rows back, close. Values
+// go to the server as PARAMETERS — never pasted into the SQL — for the same
+// reason `std/postgres.sta` sends them that way: a customer named O'Brien is
+// a syntax error in one and a customer in the other, and the difference
+// between those two is most of what a SQL injection is.
+//
+// HOW THIS DIFFERS FROM std/postgres.sta, AND WHY
+//
+// Importing `postgres from std` changes what `save` and `load` MEAN: the
+// compiler generates the SQL from the `database` block, so a renamed column
+// breaks the query at build time like it breaks everything else. That is the
+// compiler's doing, not libpq's — `gen_pg_save` in `compiler/codegen.sta` —
+// and there is no MySQL branch beside it.
+//
+// So this is a CLIENT, not a storage backend. `save Order to "mysql://..."`
+// does not work and is not quietly accepted; it is a file path with a colon
+// in it. What you get here is SQL you write, with parameters bound properly
+// and rows read back as text. **The compiler checks nothing inside your SQL**
+// — see docs/CONNECTORS_DATABASE.md, which spells out exactly where the
+// cross-tier check stops and what it still covers.
+//
+// HOW THE LIBRARY IS FOUND, AND WHY NOT `foreign`
+//
+// `foreign "mysql.h" link "mariadb" { }` is the obvious way to write this and
+// it cannot be used. The compiler emits a `foreign` header as an unguarded
+// `#include` and its library as an unguarded `-l`, with one hardcoded
+// exception for `openssl/`. On a machine with no MySQL client installed, a
+// module written that way does not degrade — it fails the build of every
+// program that imports it, including every program that merely imports
+// something that imports it.
+//
+// So the header is found with `__has_include` at build time and the symbols
+// with `dlopen` at run time. The effect is the contract `std/tls.sta` states
+// for OpenSSL, reached a different way:
+//
+//   - built where the client headers are installed, this is a real connector;
+//   - built where they are not, everything still compiles and
+//     `mysql_available()` is 0, and every call refuses and says why;
+//   - either way nothing is added to the link line, so importing this never
+//     breaks somebody else's build.
+//
+// The function pointers are typed with `__typeof__` of the header's own
+// declarations, so every call is checked against the real API rather than
+// against a prototype written here from memory.
+//
+// WHAT IT DOES NOT DO, AND THIS MATTERS
+//
+//   - **One statement at a time, and a query is read whole into memory.**
+//     That is the same shape as `load`: right for thousands of rows, wrong
+//     for millions. There is no cursor and no streaming.
+//   - **Every value comes back as text**, including numbers and dates, because
+//     every value is bound as text. `str_to_int` and `float()` are how you get
+//     them back; a NULL is its own answer, through `mysql_cell_is_null`.
+//   - **No transactions, no pool, no reconnect.** BEGIN and COMMIT are
+//     statements you can run; nothing here does it for you, and a connection
+//     that drops stays dropped.
+//   - **A value with a zero byte in it is refused, not truncated** — the same
+//     rule, and the same reason, as `std/redis.sta`. A BLOB column is not
+//     readable through this.
+//   - **UNBUILT AND UNTESTED.** There was no MySQL or MariaDB client library
+//     on the machine this was written on, so the branch that talks to one has
+//     never been compiled, let alone run. The refusal path has been. This is
+//     stated here and in the doc rather than left for somebody to discover.
+
+import io  from std;
+import str from std;
+
+// What `mysql_engine` is being asked to do. One native block holds all of
+// them because a block-scope `#include` can only happen once per file: the
+// second one is swallowed by the header's own include guard and its types
+// are then missing. Everything that needs a MySQL type therefore lives in
+// that one block, and everything that does not lives out here where it can
+// be read.
+const int MYSQL_OP_AVAILABLE = 0;
+const int MYSQL_OP_OPEN      = 1;
+const int MYSQL_OP_CLOSE     = 2;
+const int MYSQL_OP_PARAM     = 3;
+const int MYSQL_OP_EXEC      = 4;
+const int MYSQL_OP_QUERY     = 5;
+const int MYSQL_OP_COLUMNS   = 6;
+const int MYSQL_OP_COLNAME   = 7;
+const int MYSQL_OP_CELL      = 8;
+const int MYSQL_OP_CELLNULL  = 9;
+const int MYSQL_OP_ERROR     = 10;
+const int MYSQL_OP_FORGET    = 11;
+
+// The default port MySQL and MariaDB both listen on.
+int mysql_default_port() { return 3306; }
+
+// The most parameters one statement may carry: 64. A statement with more
+// than that is generated SQL, and generated SQL is what this exists to make
+// unnecessary.
+int mysql_param_limit() { return 64; }
+
+// ── The engine ───────────────────────────────────────────────────────────
+
+// Text out of the engine. Kept separate because it needs no MySQL type, and
+// so can live in a native block of its own.
+str mysql_text(int pointer) {
+    native "return $pointer ? (char*)(uintptr_t)$pointer : strata_dup(\"\");";
+}
+
+// Every operation that touches the client library.
+//
+// `handle` is a connection slot, `a` and `b` are the two numbers an operation
+// may need (a port, a row, a column), and `text` is the one string it may
+// need (a URL piece, a parameter, a statement). The answer is a number, or a
+// `char*` as a number for the operations that answer with text.
+//
+// -1 is always a refusal, and the reason is `MYSQL_OP_ERROR`.
+int mysql_engine(int op, int handle, int a, int b, str text) {
+    native "
+    /* The header, wherever this distribution keeps it. Debian and Ubuntu put
+     * MariaDB's under mariadb/ and MySQL's under mysql/; the tarball builds
+     * put it at the top. Asked rather than assumed, because a hardcoded path
+     * is a build that works on the machine it was written on. */
+    #if defined(__has_include)
+    #  if __has_include(<mysql.h>)
+    #    include <mysql.h>
+    #    define STRATA_MYSQL_HEADER 1
+    #  elif __has_include(<mysql/mysql.h>)
+    #    include <mysql/mysql.h>
+    #    define STRATA_MYSQL_HEADER 1
+    #  elif __has_include(<mariadb/mysql.h>)
+    #    include <mariadb/mysql.h>
+    #    define STRATA_MYSQL_HEADER 1
+    #  endif
+    #endif
+
+    #ifndef STRATA_MYSQL_HEADER
+    /* Built on a machine with no MySQL client headers. Everything refuses,
+     * and mysql_available() answers 0 so a program can say so at startup
+     * instead of at the first query. */
+    (void)$handle; (void)$a; (void)$b; (void)$text;
+    if ($op == 0) { return 0; }
+    if ($op == 10) {
+        return (int64_t)(uintptr_t)\"mysql: this binary was built on a machine with no MySQL or MariaDB client headers, so it cannot talk to one. Install libmariadb-dev (Debian, Ubuntu) or mysql-devel (Red Hat) and build again\";
+    }
+    return -1;
+    #else
+    void* dlopen(const char*, int);
+    void* dlsym(void*, const char*);
+
+    #define SLOTS 8
+    #define PARAMS 64
+    #define SAY(...) do { snprintf(_err, sizeof(_err), __VA_ARGS__); } while (0)
+    #define DROP_RESULT(S) do { \\
+        if ((S)->cell) { \\
+            for (long _i = 0; _i < (long)(S)->rows * (long)(S)->cols; _i++) free((S)->cell[_i]); \\
+            free((S)->cell); (S)->cell = (char**)0; \\
+        } \\
+        if ((S)->colname) { \\
+            for (long _i = 0; _i < (long)(S)->cols; _i++) free((S)->colname[_i]); \\
+            free((S)->colname); (S)->colname = (char**)0; \\
+        } \\
+        (S)->rows = 0; (S)->cols = 0; \\
+    } while (0)
+    #define DROP_PARAMS(S) do { \\
+        for (int _i = 0; _i < (S)->nparam; _i++) free((S)->param[_i]); \\
+        (S)->nparam = 0; \\
+    } while (0)
+
+    struct strata_my_slot {
+        MYSQL* conn;
+        char* param[PARAMS];
+        unsigned long param_len[PARAMS];
+        int nparam;
+        long rows, cols;
+        char** cell;            /* rows*cols, NULL where the column was NULL */
+        char** colname;
+    };
+    static struct strata_my_slot _slot[SLOTS];
+    static char _err[512] = \"\";
+    static void* _lib = (void*)0;
+    static int _looked = 0;
+
+    /* Typed from the header's own declarations, so a call with the wrong
+     * arguments is a compile error here exactly as it would be through a
+     * foreign block. */
+    static __typeof__(mysql_init)*                 f_init;
+    static __typeof__(mysql_real_connect)*         f_connect;
+    static __typeof__(mysql_close)*                f_close;
+    static __typeof__(mysql_error)*                f_error;
+    static __typeof__(mysql_set_character_set)*    f_charset;
+    static __typeof__(mysql_num_fields)*           f_num_fields;
+    static __typeof__(mysql_fetch_fields)*         f_fetch_fields;
+    static __typeof__(mysql_free_result)*          f_free_result;
+    static __typeof__(mysql_stmt_init)*            f_stmt_init;
+    static __typeof__(mysql_stmt_prepare)*         f_stmt_prepare;
+    static __typeof__(mysql_stmt_param_count)*     f_stmt_params;
+    static __typeof__(mysql_stmt_bind_param)*      f_stmt_bind_param;
+    static __typeof__(mysql_stmt_execute)*         f_stmt_execute;
+    static __typeof__(mysql_stmt_affected_rows)*   f_stmt_affected;
+    static __typeof__(mysql_stmt_result_metadata)* f_stmt_meta;
+    static __typeof__(mysql_stmt_bind_result)*     f_stmt_bind_result;
+    static __typeof__(mysql_stmt_store_result)*    f_stmt_store;
+    static __typeof__(mysql_stmt_num_rows)*        f_stmt_num_rows;
+    static __typeof__(mysql_stmt_fetch)*           f_stmt_fetch;
+    static __typeof__(mysql_stmt_fetch_column)*    f_stmt_fetch_column;
+    static __typeof__(mysql_stmt_close)*           f_stmt_close;
+    static __typeof__(mysql_stmt_error)*           f_stmt_error;
+
+    /* The library itself, once. Several names because the client is packaged
+     * under all of them and a program should not have to care which one the
+     * machine it landed on has. */
+    if (!_looked) {
+        static const char* _names[] = {
+            \"libmariadb.so.3\", \"libmariadb.so\",
+            \"libmysqlclient.so.21\", \"libmysqlclient.so.20\", \"libmysqlclient.so\",
+            \"libmariadb.dylib\", \"libmysqlclient.dylib\", (const char*)0
+        };
+        _looked = 1;
+        for (int _i = 0; _names[_i]; _i++) {
+            _lib = dlopen(_names[_i], 2 /* RTLD_NOW */);
+            if (_lib) break;
+        }
+        if (!_lib) {
+            SAY(\"mysql: this binary was built against the MySQL client headers, but no client library is installed to run against. Install libmariadb3 or libmysqlclient\");
+        } else {
+            f_init              = (__typeof__(f_init))dlsym(_lib, \"mysql_init\");
+            f_connect           = (__typeof__(f_connect))dlsym(_lib, \"mysql_real_connect\");
+            f_close             = (__typeof__(f_close))dlsym(_lib, \"mysql_close\");
+            f_error             = (__typeof__(f_error))dlsym(_lib, \"mysql_error\");
+            f_charset           = (__typeof__(f_charset))dlsym(_lib, \"mysql_set_character_set\");
+            f_num_fields        = (__typeof__(f_num_fields))dlsym(_lib, \"mysql_num_fields\");
+            f_fetch_fields      = (__typeof__(f_fetch_fields))dlsym(_lib, \"mysql_fetch_fields\");
+            f_free_result       = (__typeof__(f_free_result))dlsym(_lib, \"mysql_free_result\");
+            f_stmt_init         = (__typeof__(f_stmt_init))dlsym(_lib, \"mysql_stmt_init\");
+            f_stmt_prepare      = (__typeof__(f_stmt_prepare))dlsym(_lib, \"mysql_stmt_prepare\");
+            f_stmt_params       = (__typeof__(f_stmt_params))dlsym(_lib, \"mysql_stmt_param_count\");
+            f_stmt_bind_param   = (__typeof__(f_stmt_bind_param))dlsym(_lib, \"mysql_stmt_bind_param\");
+            f_stmt_execute      = (__typeof__(f_stmt_execute))dlsym(_lib, \"mysql_stmt_execute\");
+            f_stmt_affected     = (__typeof__(f_stmt_affected))dlsym(_lib, \"mysql_stmt_affected_rows\");
+            f_stmt_meta         = (__typeof__(f_stmt_meta))dlsym(_lib, \"mysql_stmt_result_metadata\");
+            f_stmt_bind_result  = (__typeof__(f_stmt_bind_result))dlsym(_lib, \"mysql_stmt_bind_result\");
+            f_stmt_store        = (__typeof__(f_stmt_store))dlsym(_lib, \"mysql_stmt_store_result\");
+            f_stmt_num_rows     = (__typeof__(f_stmt_num_rows))dlsym(_lib, \"mysql_stmt_num_rows\");
+            f_stmt_fetch        = (__typeof__(f_stmt_fetch))dlsym(_lib, \"mysql_stmt_fetch\");
+            f_stmt_fetch_column = (__typeof__(f_stmt_fetch_column))dlsym(_lib, \"mysql_stmt_fetch_column\");
+            f_stmt_close        = (__typeof__(f_stmt_close))dlsym(_lib, \"mysql_stmt_close\");
+            f_stmt_error        = (__typeof__(f_stmt_error))dlsym(_lib, \"mysql_stmt_error\");
+            /* One missing symbol means the library is not the one these
+             * headers describe. Refusing now beats a null call later. */
+            if (!f_init || !f_connect || !f_close || !f_error || !f_num_fields
+                || !f_fetch_fields || !f_free_result || !f_stmt_init
+                || !f_stmt_prepare || !f_stmt_params || !f_stmt_bind_param
+                || !f_stmt_execute || !f_stmt_affected || !f_stmt_meta
+                || !f_stmt_bind_result || !f_stmt_store || !f_stmt_num_rows
+                || !f_stmt_fetch || !f_stmt_fetch_column || !f_stmt_close
+                || !f_stmt_error) {
+                _lib = (void*)0;
+                SAY(\"mysql: the client library on this machine is missing functions these headers declare, so it is not the library they describe\");
+            }
+        }
+    }
+
+    if ($op == 0) { return _lib ? 1 : 0; }
+    if ($op == 10) { return (int64_t)(uintptr_t)_err; }
+    if (!_lib) { return -1; }
+
+    /* Every other operation names a slot. */
+    if ($op != 1) {
+        if ($handle < 0 || $handle >= SLOTS || !_slot[$handle].conn) {
+            SAY(\"mysql: there is no open connection to do that on\");
+            return -1;
+        }
+    }
+
+    if ($op == 3) {                                     /* queue a parameter */
+        struct strata_my_slot* _s = &_slot[$handle];
+        if (_s->nparam >= PARAMS) {
+            SAY(\"mysql: a statement here may carry at most %d parameters\", PARAMS);
+            return -1;
+        }
+        {
+            size_t _n = strlen($text);
+            char* _copy = (char*)malloc(_n + 1);
+            if (!_copy) { SAY(\"mysql: out of memory\"); return -1; }
+            memcpy(_copy, $text, _n + 1);
+            _s->param[_s->nparam] = _copy;
+            _s->param_len[_s->nparam] = (unsigned long)_n;
+            _s->nparam += 1;
+        }
+        return _s->nparam;
+    }
+
+    if ($op == 11) {                                 /* forget the parameters */
+        DROP_PARAMS(&_slot[$handle]);
+        return 0;
+    }
+
+    if ($op == 1) {                                             /* connect */
+        /* The four pieces were queued as parameters on slot 0's queue before
+         * this call, so a password never has to be packed into a string
+         * beside anything else. */
+        struct strata_my_slot* _q = &_slot[0];
+        if (_q->nparam != 4) {
+            SAY(\"mysql: a connection needs a host, a user, a password and a database\");
+            DROP_PARAMS(_q);
+            return -1;
+        }
+        {
+            int _free_slot = -1;
+            for (int _i = 0; _i < SLOTS; _i++) { if (!_slot[_i].conn) { _free_slot = _i; break; } }
+            if (_free_slot < 0) {
+                SAY(\"mysql: all %d connection slots are in use\", SLOTS);
+                DROP_PARAMS(_q);
+                return -1;
+            }
+            {
+                MYSQL* _c = f_init((MYSQL*)0);
+                if (!_c) { SAY(\"mysql: out of memory\"); DROP_PARAMS(_q); return -1; }
+                if (!f_connect(_c, _q->param[0], _q->param[1], _q->param[2],
+                               _q->param[3], (unsigned int)$a, (const char*)0, 0)) {
+                    SAY(\"mysql: %s\", f_error(_c));
+                    f_close(_c);
+                    DROP_PARAMS(_q);
+                    return -1;
+                }
+                /* Without this the connection's character set is whatever the
+                 * server was compiled with, and text written as UTF-8 comes
+                 * back as something else. Strata text is bytes, so nothing
+                 * downstream would notice. */
+                if (f_charset(_c, \"utf8mb4\")) {
+                    SAY(\"mysql: %s\", f_error(_c));
+                    f_close(_c);
+                    DROP_PARAMS(_q);
+                    return -1;
+                }
+                DROP_PARAMS(_q);
+                memset(&_slot[_free_slot], 0, sizeof(_slot[_free_slot]));
+                _slot[_free_slot].conn = _c;
+                return _free_slot;
+            }
+        }
+    }
+
+    {
+        struct strata_my_slot* _s = &_slot[$handle];
+
+        if ($op == 2) {                                           /* close */
+            DROP_RESULT(_s);
+            DROP_PARAMS(_s);
+            f_close(_s->conn);
+            _s->conn = (MYSQL*)0;
+            return 1;
+        }
+
+        if ($op == 6) { return _s->cols; }
+
+        if ($op == 7) {                                     /* column name */
+            if ($a < 0 || $a >= _s->cols || !_s->colname) {
+                SAY(\"mysql: there is no column %lld in the last result\", (long long)$a);
+                return 0;
+            }
+            return (int64_t)(uintptr_t)_s->colname[$a];
+        }
+
+        if ($op == 8 || $op == 9) {                                /* a cell */
+            if ($a < 0 || $a >= _s->rows || $b < 0 || $b >= _s->cols || !_s->cell) {
+                SAY(\"mysql: there is no row %lld column %lld in the last result\",
+                    (long long)$a, (long long)$b);
+                return $op == 9 ? -1 : 0;
+            }
+            {
+                char* _v = _s->cell[$a * _s->cols + $b];
+                if ($op == 9) { return _v ? 0 : 1; }
+                return (int64_t)(uintptr_t)(_v ? _v : \"\");
+            }
+        }
+
+        if ($op != 4 && $op != 5) { SAY(\"mysql: unknown operation\"); return -1; }
+
+        /* ── A statement, with its parameters bound as parameters ──────── */
+        DROP_RESULT(_s);
+        {
+            MYSQL_STMT* _st = f_stmt_init(_s->conn);
+            long _answer = -1;
+            if (!_st) { SAY(\"mysql: %s\", f_error(_s->conn)); DROP_PARAMS(_s); return -1; }
+            if (f_stmt_prepare(_st, $text, (unsigned long)strlen($text))) {
+                SAY(\"mysql: %s\", f_stmt_error(_st));
+                f_stmt_close(_st); DROP_PARAMS(_s); return -1;
+            }
+            if ((long)f_stmt_params(_st) != (long)_s->nparam) {
+                /* The count is checked rather than trusted. A statement with
+                 * two ? given one value otherwise executes with whatever the
+                 * second bind slot happened to contain. */
+                SAY(\"mysql: that statement takes %ld parameters and %d were given\",
+                    (long)f_stmt_params(_st), _s->nparam);
+                f_stmt_close(_st); DROP_PARAMS(_s); return -1;
+            }
+            if (_s->nparam > 0) {
+                MYSQL_BIND _pb[PARAMS];
+                memset(_pb, 0, sizeof(_pb));
+                for (int _i = 0; _i < _s->nparam; _i++) {
+                    /* Everything goes as text and the server casts it, which
+                     * is what std/postgres.sta does for the same reason: one
+                     * path, and the column's own type decides the meaning. */
+                    _pb[_i].buffer_type   = MYSQL_TYPE_STRING;
+                    _pb[_i].buffer        = _s->param[_i];
+                    _pb[_i].buffer_length = _s->param_len[_i];
+                    _pb[_i].length        = &_s->param_len[_i];
+                }
+                if (f_stmt_bind_param(_st, _pb)) {
+                    SAY(\"mysql: %s\", f_stmt_error(_st));
+                    f_stmt_close(_st); DROP_PARAMS(_s); return -1;
+                }
+            }
+            if (f_stmt_execute(_st)) {
+                SAY(\"mysql: %s\", f_stmt_error(_st));
+                f_stmt_close(_st); DROP_PARAMS(_s); return -1;
+            }
+            DROP_PARAMS(_s);
+
+            if ($op == 4) {                          /* a statement, not a query */
+                MYSQL_RES* _meta = f_stmt_meta(_st);
+                if (_meta) {
+                    /* A SELECT run through mysql_exec would silently do
+                     * nothing with its rows. Say so rather than answer 0. */
+                    f_free_result(_meta);
+                    SAY(\"mysql: that statement returns rows, so it is a query -- use mysql_query\");
+                    f_stmt_close(_st);
+                    return -1;
+                }
+                _answer = (long)f_stmt_affected(_st);
+                f_stmt_close(_st);
+                return _answer;
+            }
+
+            {                                                     /* a query */
+                MYSQL_RES* _meta = f_stmt_meta(_st);
+                if (!_meta) {
+                    SAY(\"mysql: that statement returns no rows, so it is not a query -- use mysql_exec\");
+                    f_stmt_close(_st);
+                    return -1;
+                }
+                {
+                    long _ncol = (long)f_num_fields(_meta);
+                    MYSQL_FIELD* _fields = f_fetch_fields(_meta);
+                    MYSQL_BIND* _rb = (MYSQL_BIND*)calloc((size_t)_ncol, sizeof(MYSQL_BIND));
+                    unsigned long* _len = (unsigned long*)calloc((size_t)_ncol, sizeof(unsigned long));
+                    __typeof__(*_rb->is_null)* _isnull =
+                        (__typeof__(*_rb->is_null)*)calloc((size_t)_ncol, sizeof(*_isnull));
+                    const char* _why = (const char*)0;
+                    long _nrow = 0;
+
+                    if (!_rb || !_len || !_isnull) { _why = \"mysql: out of memory\"; }
+
+                    if (!_why) {
+                        _s->colname = (char**)calloc((size_t)_ncol, sizeof(char*));
+                        if (!_s->colname) { _why = \"mysql: out of memory\"; }
+                    }
+                    if (!_why) {
+                        for (long _c = 0; _c < _ncol; _c++) {
+                            const char* _n = _fields[_c].name ? _fields[_c].name : \"\";
+                            size_t _ln = strlen(_n);
+                            _s->colname[_c] = (char*)malloc(_ln + 1);
+                            if (!_s->colname[_c]) { _why = \"mysql: out of memory\"; break; }
+                            memcpy(_s->colname[_c], _n, _ln + 1);
+                        }
+                        _s->cols = _ncol;
+                    }
+                    if (!_why) {
+                        /* Zero-length buffers on purpose: the fetch then
+                         * reports each value's true length instead of this
+                         * code guessing one, and the value is collected in a
+                         * second pass that knows how big it is. */
+                        for (long _c = 0; _c < _ncol; _c++) {
+                            _rb[_c].buffer_type   = MYSQL_TYPE_STRING;
+                            _rb[_c].buffer        = (void*)0;
+                            _rb[_c].buffer_length = 0;
+                            _rb[_c].length        = &_len[_c];
+                            _rb[_c].is_null       = &_isnull[_c];
+                        }
+                        if (f_stmt_bind_result(_st, _rb)) { _why = f_stmt_error(_st); }
+                    }
+                    if (!_why) {
+                        if (f_stmt_store(_st)) { _why = f_stmt_error(_st); }
+                    }
+                    if (!_why) {
+                        _nrow = (long)f_stmt_num_rows(_st);
+                        _s->rows = _nrow;
+                        if (_nrow > 0) {
+                            _s->cell = (char**)calloc((size_t)(_nrow * _ncol), sizeof(char*));
+                            if (!_s->cell) { _why = \"mysql: out of memory\"; }
+                        }
+                    }
+                    if (!_why) {
+                        for (long _r = 0; _r < _nrow && !_why; _r++) {
+                            int _rc = f_stmt_fetch(_st);
+                            if (_rc != 0 && _rc != MYSQL_DATA_TRUNCATED) {
+                                _why = _rc == MYSQL_NO_DATA
+                                     ? \"mysql: the server sent fewer rows than it said it would\"
+                                     : f_stmt_error(_st);
+                                break;
+                            }
+                            for (long _c = 0; _c < _ncol; _c++) {
+                                if (_isnull[_c]) { continue; }   /* NULL stays a null pointer */
+                                {
+                                    unsigned long _n = _len[_c];
+                                    char* _buf = (char*)malloc((size_t)_n + 1);
+                                    MYSQL_BIND _one;
+                                    if (!_buf) { _why = \"mysql: out of memory\"; break; }
+                                    memset(&_one, 0, sizeof(_one));
+                                    _one.buffer_type   = MYSQL_TYPE_STRING;
+                                    _one.buffer        = _buf;
+                                    _one.buffer_length = _n;
+                                    _one.length        = &_len[_c];
+                                    if (f_stmt_fetch_column(_st, &_one, (unsigned int)_c, 0)) {
+                                        free(_buf); _why = f_stmt_error(_st); break;
+                                    }
+                                    _buf[_n] = '\\0';
+                                    /* Strata text is a C string. A value with
+                                     * a zero byte in it would arrive looking
+                                     * like a shorter value that was stored on
+                                     * purpose. */
+                                    if (memchr(_buf, 0, (size_t)_n)) {
+                                        free(_buf);
+                                        _why = \"mysql: a value in that result has a zero byte in it, which this client cannot carry as text\";
+                                        break;
+                                    }
+                                    _s->cell[_r * _ncol + _c] = _buf;
+                                }
+                            }
+                        }
+                    }
+
+                    free(_rb); free(_len); free(_isnull);
+                    f_free_result(_meta);
+                    f_stmt_close(_st);
+                    if (_why) {
+                        SAY(\"%s\", _why);
+                        DROP_RESULT(_s);
+                        return -1;
+                    }
+                    return _nrow;
+                }
+            }
+        }
+    }
+    #endif
+    ";
+}
+
+// ── What a caller uses ───────────────────────────────────────────────────
+
+// Whether this binary can talk to MySQL at all: 1 when it was built where the
+// client headers were and a client library is here to run against.
+//
+// Worth asking at startup. The alternative is finding out at the first query,
+// which in a batch job is after the work that led up to it.
+int mysql_available() { return mysql_engine(MYSQL_OP_AVAILABLE, 0, 0, 0, ""); }
+
+// Why the last call refused.
+str mysql_last_reason() {
+    return mysql_text(mysql_engine(MYSQL_OP_ERROR, 0, 0, 0, ""));
+}
+
+def mysql_fail() { fail(mysql_last_reason()); }
+
+// ── A connection setting ─────────────────────────────────────────────────
+//
+// `mysql://user:password@host:port/database`. Pure, so every piece of it is
+// checked without a server, and separate functions because each piece is
+// something a program may want to report at startup — except the password,
+// which it should not.
+
+// A path beginning with `$` names an environment variable holding the real
+// one. The same rule `save` and `load` apply, and the same function
+// std/postgres.sta exposes, so a connection setting can be kept out of the
+// source in either.
+str mysql_resolve_env_path(str path) {
+    native "
+    if (!$path || $path[0] != '$') return $path;
+    const char* v = getenv($path + 1);
+    return (strata_str)(v ? v : \"\");
+    ";
+}
+
+int mysql_is_url(str raw) {
+    str path = mysql_resolve_env_path(raw);
+    if (str_len(path) >= 8 && str_eq(str_slice(path, 0, 8), "mysql://") == 1) { return 1; }
+    if (str_len(path) >= 10 && str_eq(str_slice(path, 0, 10), "mariadb://") == 1) { return 1; }
+    return 0;
+}
+
+// Everything after the scheme.
+str mysql_body_of(str url) {
+    int at = str_index_of(url, "://");
+    if (at < 0) { return url; }
+    return str_slice(url, at + 3, str_len(url));
+}
+
+str mysql_authority_of(str url) {
+    str rest = mysql_body_of(url);
+    int slash = str_index_of(rest, "/");
+    if (slash >= 0) { rest = str_slice(rest, 0, slash); }
+    int at = str_index_of(rest, "@");
+    if (at >= 0) { rest = str_slice(rest, at + 1, str_len(rest)); }
+    return rest;
+}
+
+str mysql_host_of(str url) {
+    str authority = mysql_authority_of(url);
+    int colon = str_index_of(authority, ":");
+    if (colon >= 0) { return str_slice(authority, 0, colon); }
+    if (str_len(authority) == 0) { return "127.0.0.1"; }
+    return authority;
+}
+
+int mysql_port_of(str url) {
+    str authority = mysql_authority_of(url);
+    int colon = str_index_of(authority, ":");
+    if (colon < 0) { return mysql_default_port(); }
+    str digits = str_slice(authority, colon + 1, str_len(authority));
+    if (str_len(digits) == 0) { return mysql_default_port(); }
+    int port = 0;
+    int n = str_len(digits);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = digits[i];
+        if (c < 48 || c > 57) { return 0 - 1; }
+        port = port * 10 + (c - 48);
+    }
+    if (port < 1 || port > 65535) { return 0 - 1; }
+    return port;
+}
+
+str mysql_credentials_of(str url) {
+    str rest = mysql_body_of(url);
+    int slash = str_index_of(rest, "/");
+    if (slash >= 0) { rest = str_slice(rest, 0, slash); }
+    int at = str_index_of(rest, "@");
+    if (at < 0) { return ""; }
+    return str_slice(rest, 0, at);
+}
+
+str mysql_user_of(str url) {
+    list[str] parts = str_split_first(mysql_credentials_of(url), ":");
+    return parts[0];
+}
+
+// Kept out of everything that prints. A password in a log is a password that
+// has leaked.
+str mysql_password_of(str url) {
+    list[str] parts = str_split_first(mysql_credentials_of(url), ":");
+    return parts[1];
+}
+
+str mysql_database_of(str url) {
+    str rest = mysql_body_of(url);
+    int slash = str_index_of(rest, "/");
+    if (slash < 0) { return ""; }
+    return str_slice(rest, slash + 1, str_len(rest));
+}
+
+// `?, ?, ?` for a statement that takes `n` values.
+//
+// Building the placeholders is the one part of a statement that may be
+// generated, because it carries no data — the values themselves still go as
+// parameters. An insert built any other way is a string with a customer's
+// name in it.
+str mysql_placeholders(int n) {
+    if (n < 1) {
+        fail("mysql: a statement needs at least one placeholder to have any");
+        return "";
+    }
+    if (n > mysql_param_limit()) {
+        fail("mysql: a statement here may carry at most 64 parameters");
+        return "";
+    }
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < n; i = i + 1) {
+        if (i > 0) { sb_append(&sb, ", "); }
+        sb_append(&sb, "?");
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Running things ───────────────────────────────────────────────────────
+
+// Open a connection from a setting. -1 and the error flag when it did not
+// happen, with the password nowhere in the reason.
+int mysql_open(str setting) {
+    str url = mysql_resolve_env_path(setting);
+    if (mysql_is_url(url) == 0) {
+        fail("mysql: a connection setting has to begin with mysql:// or mariadb://");
+        return 0 - 1;
+    }
+    if (mysql_available() == 0) {
+        mysql_fail();
+        return 0 - 1;
+    }
+    int port = mysql_port_of(url);
+    if (port < 0) {
+        fail("mysql: that URL's port is not a port number");
+        return 0 - 1;
+    }
+    str schema_name = mysql_database_of(url);
+    if (str_len(schema_name) == 0) {
+        fail("mysql: that URL names no database");
+        return 0 - 1;
+    }
+    // Queued rather than packed into one string, so a password containing a
+    // separator cannot be split in the wrong place.
+    mysql_engine(MYSQL_OP_FORGET, 0, 0, 0, "");
+    mysql_engine(MYSQL_OP_PARAM, 0, 0, 0, mysql_host_of(url));
+    mysql_engine(MYSQL_OP_PARAM, 0, 0, 0, mysql_user_of(url));
+    mysql_engine(MYSQL_OP_PARAM, 0, 0, 0, mysql_password_of(url));
+    mysql_engine(MYSQL_OP_PARAM, 0, 0, 0, schema_name);
+    int handle = mysql_engine(MYSQL_OP_OPEN, 0, port, 0, "");
+    if (handle < 0) { mysql_fail(); return 0 - 1; }
+    return handle;
+}
+
+def mysql_close_connection(int handle) {
+    mysql_engine(MYSQL_OP_CLOSE, handle, 0, 0, "");
+}
+
+// Queue one value for the next statement on this connection.
+//
+// Values are queued rather than passed with the statement because Strata has
+// no growable list to pass: the alternative is one function per arity, and
+// the day somebody needs a seventh parameter it is a language change.
+def mysql_param(int handle, str value) {
+    if (mysql_engine(MYSQL_OP_PARAM, handle, 0, 0, value) < 0) { mysql_fail(); }
+}
+
+// Throw away anything queued — for a caller that queued some values and then
+// decided not to run the statement.
+def mysql_forget_params(int handle) {
+    mysql_engine(MYSQL_OP_FORGET, handle, 0, 0, "");
+}
+
+// Run a statement that changes rows and say how many it changed. -1 and the
+// error flag when it did not run. A SELECT is refused here rather than
+// answering 0, because a SELECT that ran and discarded its rows looks exactly
+// like an UPDATE that matched nothing.
+int mysql_exec(int handle, str sql) {
+    int n = mysql_engine(MYSQL_OP_EXEC, handle, 0, 0, sql);
+    if (n < 0) { mysql_fail(); }
+    return n;
+}
+
+// Run a query and say how many rows came back. The rows stay on the
+// connection until the next statement; read them with `mysql_cell`.
+int mysql_query(int handle, str sql) {
+    int n = mysql_engine(MYSQL_OP_QUERY, handle, 0, 0, sql);
+    if (n < 0) { mysql_fail(); }
+    return n;
+}
+
+int mysql_columns(int handle) {
+    return mysql_engine(MYSQL_OP_COLUMNS, handle, 0, 0, "");
+}
+
+str mysql_column_name(int handle, int column) {
+    return mysql_text(mysql_engine(MYSQL_OP_COLNAME, handle, column, 0, ""));
+}
+
+// One value from the last query, as text. Every column comes back as text,
+// including numbers: the column's declared type is the server's business and
+// `str_to_int` is how you get a number out of it.
+str mysql_cell(int handle, int row, int column) {
+    return mysql_text(mysql_engine(MYSQL_OP_CELL, handle, row, column, ""));
+}
+
+// Whether that value was SQL NULL, which is a different thing from the empty
+// string and reads the same through `mysql_cell`.
+int mysql_cell_is_null(int handle, int row, int column) {
+    return mysql_engine(MYSQL_OP_CELLNULL, handle, row, column, "") == 1;
+}
+
+// ── What is checked without a server ─────────────────────────────────────
+//
+// Only the pure parts, which is most of what a caller gets wrong. Everything
+// below the engine boundary is unbuilt and untested — see the header.
+
+verify "a connection setting comes apart the way a connection needs it" {
+    str u = "mysql://app:s3cret@db.internal:3307/sales";
+    assert str_eq(mysql_host_of(u), "db.internal") == 1;
+    assert mysql_port_of(u) == 3307;
+    assert str_eq(mysql_user_of(u), "app") == 1;
+    assert str_eq(mysql_password_of(u), "s3cret") == 1;
+    assert str_eq(mysql_database_of(u), "sales") == 1;
+    // No port is the port everybody means.
+    assert mysql_port_of("mysql://app:pw@db/sales") == 3306;
+    assert str_eq(mysql_host_of("mysql://app:pw@db/sales"), "db") == 1;
+    // A password is optional; a user without one is not read as a password.
+    assert str_eq(mysql_user_of("mysql://app@db/sales"), "app") == 1;
+    assert str_eq(mysql_password_of("mysql://app@db/sales"), "") == 1;
+    // A password with a colon in it keeps the whole of itself.
+    assert str_eq(mysql_password_of("mysql://app:a:b@db/sales"), "a:b") == 1;
+    // and the credentials are not mistaken for the host.
+    assert str_eq(mysql_host_of("mysql://app:a:b@db/sales"), "db") == 1;
+    assert str_eq(mysql_database_of("mysql://app:pw@db"), "") == 1;
+    // Something that is not a port is -1 rather than a quietly different port.
+    assert mysql_port_of("mysql://app:pw@db:mysql/sales") == 0 - 1;
+}
+
+verify "both schemes are a database URL and nothing else is" {
+    assert mysql_is_url("mysql://app:pw@db/sales") == 1;
+    assert mysql_is_url("mariadb://app:pw@db/sales") == 1;
+    assert mysql_is_url("postgres://app:pw@db/sales") == 0;
+    assert mysql_is_url("data/orders.tsv") == 0;
+    assert mysql_is_url("") == 0;
+    // A setting kept in the environment is resolved before the question is
+    // answered, so the answer is about the real one.
+    assert mysql_is_url("$STRATA_NO_SUCH_SETTING_12345") == 0;
+}
+
+verify "placeholders are generated and values never are" {
+    assert str_eq(mysql_placeholders(1), "?") == 1;
+    assert str_eq(mysql_placeholders(3), "?, ?, ?") == 1;
+    assert str_eq(mysql_placeholders(0), "") == 1;
+    assert had_error() == 1; clear_error();
+    assert str_eq(mysql_placeholders(65), "") == 1;
+    assert had_error() == 1; clear_error();
+}
+
+verify "with no client library, every door refuses and says the same thing" {
+    // This is the whole of what can be checked on a machine with no MySQL
+    // client, and it is worth checking: the refusal is the path most people
+    // will actually meet.
+    if (mysql_available() == 0) {
+        assert str_index_of(mysql_last_reason(), "mysql:") == 0;
+        assert mysql_open("mysql://app:pw@db/sales") == 0 - 1;
+        assert had_error() == 1; clear_error();
+        assert mysql_exec(0, "DELETE FROM t") == 0 - 1;
+        assert had_error() == 1; clear_error();
+        assert mysql_query(0, "SELECT 1") == 0 - 1;
+        assert had_error() == 1; clear_error();
+    }
+    // A setting that is not a URL is refused before the library is consulted,
+    // so the reason names the real mistake rather than the missing library.
+    assert mysql_open("data/orders.tsv") == 0 - 1;
+    assert str_index_of(last_error(), "mysql://") > 0;
+    clear_error();
+}

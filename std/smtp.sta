@@ -1,0 +1,1084 @@
+// STRATA STANDARD LIBRARY — std/smtp.sta
+// Sending mail, by speaking SMTP to a mail server.
+//
+// WHAT THIS IS FOR
+//
+// The notification an enterprise program actually has to send: an invoice
+// went out, a batch finished, a reconciliation did not balance. One message,
+// one recipient, plain text, to a server that is expecting you -- your own
+// relay, or a provider's submission port. That is the whole scope.
+//
+// WHY NOT SHELL OUT TO `sendmail`
+//
+// Because it is not there. A container has no local MTA, and `/usr/sbin/
+// sendmail` on a machine that does have one is configured by somebody else
+// for something else. A program that must send mail from anywhere has to
+// speak the protocol, and the protocol is small.
+//
+// THE THING HAND-ROLLED SMTP ALWAYS GETS WRONG
+//
+// The message body is terminated by a line containing a single full stop. So
+// a body with a line of its own that BEGINS with a full stop ends the message
+// early, and everything after it is read by the server as further SMTP
+// commands. A quoted paragraph, an ASCII table, a line of leaders in a
+// contents list -- any of those. RFC 5321 calls the fix transparency: a line
+// beginning with `.` is sent with an extra `.` in front, and the receiving
+// server takes one off. `smtp_dot_stuff` is that, it is four lines, and
+// leaving it out is a truncated message that still looks like a message,
+// which is the exact failure this language exists to prevent.
+//
+// The second thing is headers. A `Subject:` carrying a carriage return is not
+// a subject -- it is a subject and then whatever header the sender fancied,
+// including a second `Bcc:`. Every address and every header value here is
+// checked for a line ending and the send is refused if one is there, because
+// there is no correct way to interpret it.
+//
+// CREDENTIALS
+//
+// The password is a parameter. It is not read from the environment here, not
+// stored, not logged, and never put into an error message -- there is no wire
+// trace in this file and that is deliberate, because a trace of an SMTP
+// session contains the base64 of the password in full. A failed login reports
+// the server's status code and nothing else.
+//
+// And the password does not leave this machine in the clear: AUTH is refused
+// on a connection that is not encrypted, unless the server is this machine.
+// The same rule std/llm.sta applies to an API key, for the same reason.
+//
+// WHAT IT DOES NOT DO
+//
+// One recipient per send -- no Cc, no Bcc, no multiple RCPT. Plain text only:
+// no attachments, no HTML, no multipart. No connection reuse: one message,
+// one connection. No queue, no retry, no bounce handling, no DKIM signing,
+// no SMTPUTF8, and no implicit TLS on port 465 -- STARTTLS on 587 or 25 is
+// what this speaks. A body line longer than 998 bytes is refused rather than
+// sent to a server that is permitted to truncate it.
+
+import io   from std;
+import str  from std;
+import time from std;
+
+foreign "sys/socket.h"  link "" { }
+foreign "netinet/in.h"  link "" { }
+foreign "netdb.h"       link "" { }
+foreign "sys/time.h"    link "" { }
+foreign "unistd.h"      link "" { }
+foreign "openssl/ssl.h" link "ssl"    { }
+foreign "openssl/err.h" link "crypto" { }
+
+// How long to wait for the server, in seconds. A mail server that accepts a
+// connection and then says nothing would otherwise hold a batch job for ever
+// with nothing in the log.
+int smtp_timeout_seconds() { return 30; }
+
+// The most a single reply may be: 64KB. A greeting banner longer than that
+// is not a greeting.
+int smtp_reply_cap() { return 65536; }
+
+// Whether this binary can speak TLS at all. 0 means STARTTLS is impossible,
+// so a server that requires it cannot be used and a password will not be
+// sent to it.
+int smtp_can_encrypt() {
+    native "
+    #ifdef STRATA_TLS
+    return 1;
+    #else
+    return 0;
+    #endif
+    ";
+}
+
+// Whether a host names this machine and nothing else.
+//
+// The whole host, compared in full, never a prefix: `localhost.supplier
+// .example` is a domain somebody else owns and happens to have named well,
+// and a prefix match hands them the password. std/llm.sta learned this the
+// hard way and the note there is worth reading; this is the same rule for the
+// same reason, and it is written out again rather than imported because a
+// mail client has no business depending on a language-model client.
+int smtp_is_this_machine(str host) {
+    if (str_eq(host, "localhost") == 1) { return 1; }
+    if (str_eq(host, "127.0.0.1") == 1) { return 1; }
+    if (str_eq(host, "::1") == 1) { return 1; }
+    if (str_eq(host, "[::1]") == 1) { return 1; }
+    return 0;
+}
+
+// ── Text that is safe to put in a message ────────────────────────────────
+
+// Whether a value can go in a header. A carriage return or a newline in an
+// address or a subject lets whoever supplied it write headers of their own --
+// a second recipient, a different reply-to, a whole second message. There is
+// no escaping that makes it safe, so the answer is to refuse.
+//
+// A NUL cannot occur in a Strata `str`, so there is nothing to check for.
+int smtp_header_safe(str value) {
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c == 13) { return 0; }
+        if (c == 10) { return 0; }
+    }
+    return 1;
+}
+
+// Whether every byte is plain ASCII. Decides whether a subject needs
+// encoding and whether the body needs a server that offers 8BITMIME.
+int smtp_is_ascii(str value) {
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        // An indexed byte comes back unsigned -- strata_str_at casts through
+        // `unsigned char` -- so a byte with the top bit set reads as 128 and
+        // above rather than as a negative number, on every platform.
+        if (value[i] > 127) { return 0; }
+    }
+    return 1;
+}
+
+// The longest line in the text, in bytes. RFC 5321 puts the limit at 998
+// octets plus the CRLF, and a server is entitled to truncate or refuse a
+// longer one -- so this is checked before sending rather than discovered
+// afterwards by the person who did not receive the end of the message.
+int smtp_longest_line(str text) {
+    int n = str_len(text);
+    int longest = 0;
+    int current = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] == 10) {
+            if (current > longest) { longest = current; }
+            current = 0;
+        } else {
+            if (text[i] != 13) { current = current + 1; }
+        }
+    }
+    if (current > longest) { longest = current; }
+    return longest;
+}
+
+// Base64, as the standard alphabet with `=` padding.
+//
+// Needed for AUTH and for a subject that is not ASCII. Written here rather
+// than borrowed because OpenSSL's encoder inserts line breaks by default and
+// the versions that do not are a moving target across releases -- whereas
+// this is twenty lines with a known answer in the test block below.
+str base64_encode(str value) {
+    native "
+    static const char* _a = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";
+    const unsigned char* _s = (const unsigned char*)$value;
+    size_t _n = strlen((const char*)_s);
+    char* _o = (char*)malloc(((_n + 2) / 3) * 4 + 1);
+    if (!_o) { strata_fail(strata_dup(\"smtp: out of memory\")); return strata_dup(\"\"); }
+    size_t _j = 0;
+    for (size_t _i = 0; _i < _n; _i += 3) {
+        unsigned int _v = _s[_i] << 16;
+        if (_i + 1 < _n) _v |= _s[_i + 1] << 8;
+        if (_i + 2 < _n) _v |= _s[_i + 2];
+        _o[_j++] = _a[(_v >> 18) & 0x3F];
+        _o[_j++] = _a[(_v >> 12) & 0x3F];
+        _o[_j++] = (_i + 1 < _n) ? _a[(_v >> 6) & 0x3F] : '=';
+        _o[_j++] = (_i + 2 < _n) ? _a[_v & 0x3F] : '=';
+    }
+    _o[_j] = 0;
+    return _o;
+    ";
+}
+
+// The argument to AUTH PLAIN: base64 of NUL, user, NUL, password.
+//
+// It has to be built in C because the three fields are separated by NUL
+// bytes, and a Strata `str` is a C string, which ends at the first one. That
+// is a real limit of the language rather than a style choice, and it is the
+// only reason this is not two lines of Strata.
+//
+// The password goes in and the base64 comes out. Neither is printed.
+str smtp_auth_plain_argument(str user, str password) {
+    native "
+    const char* _u = $user; const char* _p = $password;
+    size_t _ul = strlen(_u), _pl = strlen(_p);
+    size_t _n = 1 + _ul + 1 + _pl;
+    unsigned char* _raw = (unsigned char*)malloc(_n + 1);
+    if (!_raw) { strata_fail(strata_dup(\"smtp: out of memory\")); return strata_dup(\"\"); }
+    size_t _at = 0;
+    _raw[_at++] = 0;
+    memcpy(_raw + _at, _u, _ul); _at += _ul;
+    _raw[_at++] = 0;
+    memcpy(_raw + _at, _p, _pl); _at += _pl;
+    static const char* _a = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";
+    char* _o = (char*)malloc(((_n + 2) / 3) * 4 + 1);
+    if (!_o) { free(_raw); strata_fail(strata_dup(\"smtp: out of memory\")); return strata_dup(\"\"); }
+    size_t _j = 0;
+    for (size_t _i = 0; _i < _n; _i += 3) {
+        unsigned int _v = _raw[_i] << 16;
+        if (_i + 1 < _n) _v |= _raw[_i + 1] << 8;
+        if (_i + 2 < _n) _v |= _raw[_i + 2];
+        _o[_j++] = _a[(_v >> 18) & 0x3F];
+        _o[_j++] = _a[(_v >> 12) & 0x3F];
+        _o[_j++] = (_i + 1 < _n) ? _a[(_v >> 6) & 0x3F] : '=';
+        _o[_j++] = (_i + 2 < _n) ? _a[_v & 0x3F] : '=';
+    }
+    _o[_j] = 0;
+    /* The cleartext does not stay in memory a moment longer than it has to.
+     * memset through a volatile pointer, because a plain memset on a buffer
+     * about to be freed is exactly what an optimiser removes. */
+    { volatile unsigned char* _w = _raw; for (size_t _i = 0; _i < _n; _i++) _w[_i] = 0; }
+    free(_raw);
+    return _o;
+    ";
+}
+
+// ── Assembling the message ───────────────────────────────────────────────
+
+// A subject that is not ASCII, written the way RFC 2047 says: base64 inside
+// `=?UTF-8?B?...?=`. An ASCII subject is passed through untouched, because an
+// encoded one is harder to read in every mail client's source view and there
+// is no reason for it.
+str smtp_encode_subject(str subject) {
+    if (smtp_is_ascii(subject) == 1) { return subject; }
+    return str_cat(["=?UTF-8?B?", base64_encode(subject), "?="]);
+}
+
+// Two digits, for a date.
+str smtp_two(int value) {
+    if (value < 10) { return str_cat(["0", str(value)]); }
+    return str(value);
+}
+
+str smtp_weekday_name(int index) {
+    if (index == 1) { return "Mon"; }
+    if (index == 2) { return "Tue"; }
+    if (index == 3) { return "Wed"; }
+    if (index == 4) { return "Thu"; }
+    if (index == 5) { return "Fri"; }
+    if (index == 6) { return "Sat"; }
+    return "Sun";
+}
+
+str smtp_month_name(int index) {
+    if (index == 1)  { return "Jan"; }
+    if (index == 2)  { return "Feb"; }
+    if (index == 3)  { return "Mar"; }
+    if (index == 4)  { return "Apr"; }
+    if (index == 5)  { return "May"; }
+    if (index == 6)  { return "Jun"; }
+    if (index == 7)  { return "Jul"; }
+    if (index == 8)  { return "Aug"; }
+    if (index == 9)  { return "Sep"; }
+    if (index == 10) { return "Oct"; }
+    if (index == 11) { return "Nov"; }
+    return "Dec";
+}
+
+// A `Date:` header, RFC 5322 shape, from a moment.
+//
+// Always `+0000`, because the moment is seconds since 1970 UTC and this
+// language has no time zones. Writing a local offset here would mean
+// inventing one.
+str smtp_date_text(int moment) {
+    return str_cat([smtp_weekday_name(weekday_of(moment)), ", ",
+    smtp_two(day_of(moment)), " ",
+    smtp_month_name(month_of(moment)), " ",
+    str(year_of(moment)), " ",
+    smtp_two(hour_of(moment)), ":",
+    smtp_two(minute_of(moment)), ":",
+    smtp_two(second_of(moment)), " +0000"]);
+}
+
+// Every line ending as CRLF, whichever kind went in.
+//
+// A `str` built by a Strata program has LF line endings, and SMTP wants CRLF.
+// A server that gets a bare LF either rejects the message or passes it on to
+// a client that renders the whole body as one line.
+str smtp_crlf(str text) {
+    StringBuilder out = sb_new();
+    int n = str_len(text);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = text[i];
+        if (c == 13) { continue; }           // dropped; the LF below re-adds it
+        if (c == 10) { sb_append(&out, "\r\n"); continue; }
+        sb_append(&out, char_from_code(c));
+    }
+    return sb_to_str(&out);
+}
+
+// A line of its own beginning with `.` gets a second one.
+//
+// This is the transparency rule, and it is the single most common defect in
+// hand-written mail code. Without it:
+//
+//     Totals follow.
+//     .........  12,400
+//     Signed off by Finance
+//
+// ends at the second line. The server reads `........  12,400` as the end of
+// the message, and then tries to read `Signed off by Finance` as an SMTP
+// command. What arrives is a message that stops in the middle and looks
+// entirely ordinary.
+//
+// The text is expected to already have CRLF endings -- run `smtp_crlf` first.
+str smtp_dot_stuff(str text) {
+    StringBuilder out = sb_new();
+    int n = str_len(text);
+    int at_line_start = 1;
+    for (int i = 0; i < n; i = i + 1) {
+        int c = text[i];
+        if (at_line_start == 1) {
+            if (c == 46) { sb_append(&out, "."); }
+        }
+        sb_append(&out, char_from_code(c));
+        at_line_start = 0;
+        if (c == 10) { at_line_start = 1; }
+    }
+    return sb_to_str(&out);
+}
+
+// The whole message as the server will receive it, up to but not including
+// the terminating `.` line.
+//
+// The date is a parameter rather than a call to the clock, so that this is a
+// function with one answer and the block at the bottom of this file can check
+// it. `smtp_date_text(now())` is what a caller passes.
+str smtp_message(str sender, str recipient, str subject, str date_header, str body) {
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "From: ");    sb_append(&sb, sender);    sb_append(&sb, "\r\n");
+    sb_append(&sb, "To: ");      sb_append(&sb, recipient); sb_append(&sb, "\r\n");
+    sb_append(&sb, "Subject: "); sb_append(&sb, smtp_encode_subject(subject)); sb_append(&sb, "\r\n");
+    sb_append(&sb, "Date: ");    sb_append(&sb, date_header); sb_append(&sb, "\r\n");
+    sb_append(&sb, "MIME-Version: 1.0\r\n");
+    sb_append(&sb, "Content-Type: text/plain; charset=utf-8\r\n");
+    // 7bit and 8bit are claims about the bytes below, and a false one is how
+    // a message arrives as mojibake. Whichever is true is what is written.
+    if (smtp_is_ascii(body) == 1) {
+        sb_append(&sb, "Content-Transfer-Encoding: 7bit\r\n");
+    } else {
+        sb_append(&sb, "Content-Transfer-Encoding: 8bit\r\n");
+    }
+    sb_append(&sb, "\r\n");
+    sb_append(&sb, smtp_dot_stuff(smtp_crlf(body)));
+    // The body must end with a line ending, or the terminating `.` lands on
+    // the end of the last line of text and ends nothing.
+    int n = str_len(sb_to_str(&sb));
+    if (n >= 2) {
+        str whole = sb_to_str(&sb);
+        if (str_eq(str_slice(whole, n - 2, n), "\r\n") == 0) {
+            sb_append(&sb, "\r\n");
+        }
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Reading what the server says ─────────────────────────────────────────
+
+// Whether a reply has arrived whole.
+//
+// A reply is one or more lines. A continued line has a hyphen after the
+// code -- `250-SIZE 35882000` -- and the last has a space: `250 Ok`. A client
+// that stops at the first line sends its next command into the middle of the
+// server's answer and the session desynchronises from there, which shows up
+// as a baffling error several commands later.
+int smtp_reply_complete(str text) {
+    int n = str_len(text);
+    int start = 0;
+    int complete = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] != 10) { continue; }
+        str line = str_trim_end_cr(str_slice(text, start, i));
+        start = i + 1;
+        int len = str_len(line);
+        if (len == 3) { complete = 1; }
+        if (len > 3) {
+            if (line[3] == 32) { complete = 1; }
+            else { complete = 0; }
+        }
+    }
+    return complete;
+}
+
+// The three-digit code of a reply's final line, or -1 when there is not one.
+int smtp_reply_code(str text) {
+    int n = str_len(text);
+    int start = 0;
+    int code = 0 - 1;
+    for (int i = 0; i < n; i = i + 1) {
+        if (text[i] != 10) { continue; }
+        str line = str_trim_end_cr(str_slice(text, start, i));
+        start = i + 1;
+        if (str_len(line) < 3) { continue; }
+        int a = line[0]; int b = line[1]; int c = line[2];
+        if (a < 48 || a > 57) { continue; }
+        if (b < 48 || b > 57) { continue; }
+        if (c < 48 || c > 57) { continue; }
+        int value = (a - 48) * 100 + (b - 48) * 10 + (c - 48);
+        if (str_len(line) == 3) { code = value; }
+        else {
+            if (line[3] == 32) { code = value; }
+        }
+    }
+    return code;
+}
+
+// Whether an EHLO reply offers a capability -- STARTTLS, 8BITMIME, AUTH.
+//
+// Matched as a whole word at the start of a capability line, not as a
+// substring of the whole reply: a server whose greeting mentions "STARTTLS"
+// in prose is not a server offering it, and acting on that means sending
+// STARTTLS to a server that answers 500 and then refusing to carry on.
+int smtp_offers(str ehlo_reply, str keyword) {
+    int n = str_len(ehlo_reply);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int eol = 0;
+        if (at_end == 0) { if (ehlo_reply[i] == 10) { eol = 1; } }
+        if (eol == 0 && at_end == 0) { continue; }
+        str line = str_trim_end_cr(str_slice(ehlo_reply, start, i));
+        start = i + 1;
+        if (str_len(line) < 4) { continue; }
+        str rest = str_upper(str_slice(line, 4, str_len(line)));
+        str want = str_upper(keyword);
+        if (str_eq(rest, want) == 1) { return 1; }
+        if (str_starts_with(rest, str_cat([want, " "])) == 1) { return 1; }
+    }
+    return 0;
+}
+
+// Whether the AUTH line offers a particular mechanism. `AUTH PLAIN LOGIN
+// CRAM-MD5` offers three, and which one is used changes what is sent.
+int smtp_offers_auth(str ehlo_reply, str mechanism) {
+    int n = str_len(ehlo_reply);
+    int start = 0;
+    for (int i = 0; i <= n; i = i + 1) {
+        int at_end = 0;
+        if (i == n) { at_end = 1; }
+        int eol = 0;
+        if (at_end == 0) { if (ehlo_reply[i] == 10) { eol = 1; } }
+        if (eol == 0 && at_end == 0) { continue; }
+        str line = str_trim_end_cr(str_slice(ehlo_reply, start, i));
+        start = i + 1;
+        if (str_len(line) < 9) { continue; }
+        str rest = str_upper(str_slice(line, 4, str_len(line)));
+        if (str_starts_with(rest, "AUTH ") == 0) { continue; }
+        str list_part = str_cat([str_slice(rest, 4, str_len(rest)), " "]);
+        if (str_index_of(list_part, str_cat([" ", str_upper(mechanism), " "])) >= 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+str str_upper(str value) {
+    StringBuilder sb = sb_new();
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c >= 97) { if (c <= 122) { c = c - 32; } }
+        sb_append(&sb, char_from_code(c));
+    }
+    return sb_to_str(&sb);
+}
+
+// ── The connection ───────────────────────────────────────────────────────
+//
+// A session is an int, because that is what Strata has. It is the address of
+// a small record holding the socket and, once STARTTLS has run, the TLS
+// session as well. Nothing outside this file should do arithmetic on it.
+
+// Open a plain connection. 0 when the name does not resolve or nothing
+// answers, with the reason on the error flag.
+int smtp_open(str host, int port) {
+    native "
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct addrinfo _h; memset(&_h, 0, sizeof(_h));
+    _h.ai_family = AF_UNSPEC; _h.ai_socktype = SOCK_STREAM;
+    char _p[16]; snprintf(_p, sizeof(_p), \"%ld\", (long)$port);
+    struct addrinfo* _r = NULL;
+    if (getaddrinfo($host, _p, &_h, &_r) != 0 || !_r) {
+        { char _m[320]; snprintf(_m, sizeof(_m), \"smtp: cannot find %s\", $host); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+    int _fd = -1;
+    for (struct addrinfo* _a = _r; _a; _a = _a->ai_next) {
+        _fd = socket(_a->ai_family, _a->ai_socktype, _a->ai_protocol);
+        if (_fd < 0) continue;
+        if (connect(_fd, _a->ai_addr, _a->ai_addrlen) == 0) break;
+        close(_fd); _fd = -1;
+    }
+    freeaddrinfo(_r);
+    if (_fd < 0) {
+        { char _m[320]; snprintf(_m, sizeof(_m), \"smtp: nothing answered at %s\", $host); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+    /* A mail server that accepts the connection and then says nothing would
+     * otherwise hold this process for ever. The read simply fails instead,
+     * and the reply comes back empty, which is a refusal. */
+    { struct timeval _tv; _tv.tv_sec = 30; _tv.tv_usec = 0;
+      setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &_tv, sizeof(_tv));
+      setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &_tv, sizeof(_tv)); }
+    struct strata_smtp* _c = (struct strata_smtp*)malloc(sizeof(struct strata_smtp));
+    if (!_c) { close(_fd); strata_fail(strata_dup(\"smtp: out of memory\")); return 0; }
+    _c->fd = _fd; _c->secure = 0; _c->ctx = NULL; _c->ssl = NULL;
+    return (int64_t)(intptr_t)_c;
+    ";
+}
+
+// Whether this session has been upgraded to TLS.
+int smtp_is_encrypted(int session) {
+    native "
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_smtp* _c = (struct strata_smtp*)(intptr_t)$session;
+    if (!_c) return 0;
+    return (int64_t)_c->secure;
+    ";
+}
+
+// Turn an open plain session into a TLS one, after the server has answered
+// 220 to STARTTLS.
+//
+// The certificate is verified and checked against the host, exactly as
+// std/tls.sta does it and for the same reasons -- there is no flag here to
+// turn either off. A STARTTLS that is not verified is worse than no STARTTLS
+// at all: it looks encrypted in a log and anybody on the path can sit in the
+// middle of it.
+int smtp_start_tls(int session, str host) {
+    native "
+    #ifndef STRATA_TLS
+    strata_fail(strata_dup(\"smtp: this binary was built without OpenSSL, so it cannot start TLS\"));
+    return 0;
+    #else
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_smtp* _c = (struct strata_smtp*)(intptr_t)$session;
+    if (!_c) return 0;
+    if (_c->secure) return 1;
+    SSL_CTX* _ctx = SSL_CTX_new(TLS_client_method());
+    if (!_ctx) { strata_fail(strata_dup(\"smtp: OpenSSL would not give us a context\")); return 0; }
+    SSL_CTX_set_min_proto_version(_ctx, TLS1_2_VERSION);
+    if (SSL_CTX_set_default_verify_paths(_ctx) != 1) {
+        SSL_CTX_free(_ctx);
+        strata_fail(strata_dup(\"smtp: this machine has no trusted certificate authorities to check against\"));
+        return 0;
+    }
+    SSL_CTX_set_verify(_ctx, SSL_VERIFY_PEER, NULL);
+    SSL* _s = SSL_new(_ctx);
+    if (!_s) { SSL_CTX_free(_ctx); strata_fail(strata_dup(\"smtp: OpenSSL would not give us a session\")); return 0; }
+    SSL_set_fd(_s, _c->fd);
+    SSL_set_tlsext_host_name(_s, $host);
+    /* The separate check that the certificate is FOR this host, which is the
+     * one people leave out. */
+    SSL_set1_host(_s, $host);
+    if (SSL_connect(_s) != 1) {
+        long _v = SSL_get_verify_result(_s);
+        const char* _why = (_v == X509_V_OK) ? \"the handshake failed\" : X509_verify_cert_error_string(_v);
+        SSL_free(_s); SSL_CTX_free(_ctx);
+        { char _m[400]; snprintf(_m, sizeof(_m), \"smtp: %s refused the TLS handshake: %s\", $host, _why); strata_fail(strata_dup(_m)); }
+        return 0;
+    }
+    _c->ctx = _ctx; _c->ssl = _s; _c->secure = 1;
+    return 1;
+    #endif
+    ";
+}
+
+// Send bytes, over whichever transport this session is on.
+def smtp_write(int session, str data) {
+    native "
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_smtp* _c = (struct strata_smtp*)(intptr_t)$session;
+    if (!_c) return;
+    const char* _d = $data; size_t _n = strlen(_d), _o = 0;
+    while (_o < _n) {
+        ssize_t _w;
+        if (_c->secure) {
+    #ifdef STRATA_TLS
+            _w = (ssize_t)SSL_write(_c->ssl, _d + _o, (int)(_n - _o));
+    #else
+            _w = -1;
+    #endif
+        } else {
+            _w = write(_c->fd, _d + _o, _n - _o);
+        }
+        if (_w <= 0) break;
+        _o += (size_t)_w;
+    }
+    ";
+}
+
+// Whatever has arrived, up to 4KB, from one read. "" when the server has
+// closed or the wait ran out -- the caller distinguishes those by what it
+// has collected so far.
+str smtp_recv(int session) {
+    native "
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_smtp* _c = (struct strata_smtp*)(intptr_t)$session;
+    if (!_c) return strata_dup(\"\");
+    char _b[4097];
+    ssize_t _r;
+    if (_c->secure) {
+    #ifdef STRATA_TLS
+        _r = (ssize_t)SSL_read(_c->ssl, _b, 4096);
+    #else
+        _r = -1;
+    #endif
+    } else {
+        _r = read(_c->fd, _b, 4096);
+    }
+    if (_r <= 0) return strata_dup(\"\");
+    _b[_r] = 0;
+    return strata_dup(_b);
+    ";
+}
+
+// End the session and give everything back. Calling it on 0 is not a
+// mistake; calling it twice on the same session is.
+def smtp_close(int session) {
+    native "
+    struct strata_smtp { int fd; int secure; SSL_CTX* ctx; SSL* ssl; };
+    struct strata_smtp* _c = (struct strata_smtp*)(intptr_t)$session;
+    if (!_c) return;
+    #ifdef STRATA_TLS
+    if (_c->secure && _c->ssl) { SSL_shutdown(_c->ssl); SSL_free(_c->ssl); }
+    if (_c->ctx) SSL_CTX_free(_c->ctx);
+    #endif
+    close(_c->fd);
+    free(_c);
+    ";
+}
+
+// One whole reply, however many packets and however many lines it takes.
+// "" with the error flag set when the server said nothing, closed early, or
+// sent more than this client will hold.
+str smtp_read_reply(int session) {
+    StringBuilder sb = sb_new();
+    while (1) {
+        str chunk = smtp_recv(session);
+        if (str_len(chunk) == 0) {
+            str got = sb_to_str(&sb);
+            if (str_len(got) == 0) {
+                fail("smtp: the server said nothing, or stopped answering");
+                return "";
+            }
+            fail("smtp: the server stopped in the middle of a reply");
+            return "";
+        }
+        sb_append(&sb, chunk);
+        str got = sb_to_str(&sb);
+        if (str_len(got) > smtp_reply_cap()) {
+            fail("smtp: the server's reply is larger than this client will hold");
+            return "";
+        }
+        if (smtp_reply_complete(got) == 1) { return got; }
+    }
+    return "";
+}
+
+// A command, then the reply to it. The command never carries a line ending
+// of its own -- one is added here, so a caller cannot smuggle a second
+// command into one call.
+str smtp_command(int session, str line) {
+    if (smtp_header_safe(line) == 0) {
+        fail("smtp: refusing to send a command containing a line ending");
+        return "";
+    }
+    smtp_write(session, str_cat([line, "\r\n"]));
+    return smtp_read_reply(session);
+}
+
+// ── Sending one message ──────────────────────────────────────────────────
+
+// Connect, greet, encrypt if the server offers it, authenticate if a
+// password was given, and send one message to one recipient.
+//
+// 1 when the server accepted the message, 0 for every way of not getting
+// there, with the reason on the error flag. The reason never contains the
+// password: a failed login reports the code the server gave and the host, and
+// nothing else.
+//
+// `client_name` is what goes in the EHLO. A server may check that it is a
+// name that resolves; "localhost" is honest for a machine behind NAT and is
+// what to pass when there is nothing better.
+int smtp_send_mail(str host, int port, str client_name,
+str user, str password,
+str sender, str recipient, str subject, str body) {
+    // Everything that can be refused before a socket is opened, is.
+    if (smtp_header_safe(sender) == 0) {
+        fail("smtp: the sender address contains a line ending, which would let it write headers of its own");
+        return 0;
+    }
+    if (smtp_header_safe(recipient) == 0) {
+        fail("smtp: the recipient address contains a line ending, which would let it write headers of its own");
+        return 0;
+    }
+    if (smtp_header_safe(subject) == 0) {
+        fail("smtp: the subject contains a line ending, which would let it write headers of its own");
+        return 0;
+    }
+    if (str_len(sender) == 0 || str_len(recipient) == 0) {
+        fail("smtp: a message needs a sender and a recipient");
+        return 0;
+    }
+    if (smtp_longest_line(body) > 998) {
+        fail(str_cat(["smtp: a line of the body is ", str(smtp_longest_line(body)),
+        " bytes, and a server may truncate anything over 998 — wrap it before sending"]));
+        return 0;
+    }
+
+    int session = smtp_open(host, port);
+    if (session == 0) { return 0; }
+
+    str greeting = smtp_read_reply(session);
+    if (smtp_reply_code(greeting) != 220) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " did not greet us: ", str(smtp_reply_code(greeting))]));
+        return 0;
+    }
+
+    str ehlo = smtp_command(session, str_cat(["EHLO ", client_name]));
+    if (smtp_reply_code(ehlo) != 250) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " refused EHLO: ", str(smtp_reply_code(ehlo))]));
+        return 0;
+    }
+
+    // STARTTLS where offered -- always, not only when a password is being
+    // sent. The message itself is worth encrypting.
+    if (smtp_offers(ehlo, "STARTTLS") == 1) {
+        if (smtp_can_encrypt() == 1) {
+            str ready = smtp_command(session, "STARTTLS");
+            if (smtp_reply_code(ready) != 220) {
+                smtp_close(session);
+                fail(str_cat(["smtp: ", host, " offered STARTTLS and then refused it: ",
+                str(smtp_reply_code(ready))]));
+                return 0;
+            }
+            if (smtp_start_tls(session, host) == 0) {
+                smtp_close(session);
+                return 0;
+            }
+            // The capability list from before the handshake cannot be
+            // trusted -- it arrived in the clear and anybody on the path
+            // could have edited it, which is how a stripped AUTH line talks
+            // a client into sending a password unencrypted. RFC 3207 says to
+            // ask again, and this asks again.
+            ehlo = smtp_command(session, str_cat(["EHLO ", client_name]));
+            if (smtp_reply_code(ehlo) != 250) {
+                smtp_close(session);
+                fail(str_cat(["smtp: ", host, " refused EHLO after STARTTLS: ",
+                str(smtp_reply_code(ehlo))]));
+                return 0;
+            }
+        }
+    }
+
+    if (str_len(password) > 0) {
+        if (smtp_is_encrypted(session) == 0) {
+            if (smtp_is_this_machine(host) == 0) {
+                smtp_close(session);
+                fail(str_cat(["smtp: refusing to send a password to ", host,
+                " over an unencrypted connection"]));
+                return 0;
+            }
+        }
+        if (smtp_authenticate(session, host, ehlo, user, password) == 0) {
+            smtp_close(session);
+            return 0;
+        }
+    }
+
+    // A body that is not ASCII needs a server that says it will carry it.
+    // Sending it anyway to a server that did not offer 8BITMIME is how a
+    // message arrives with every accented letter replaced by a question
+    // mark, with nothing anywhere reporting a problem.
+    if (smtp_is_ascii(body) == 0) {
+        if (smtp_offers(ehlo, "8BITMIME") == 0) {
+            smtp_close(session);
+            fail(str_cat(["smtp: the message is not plain ASCII and ", host,
+            " does not offer 8BITMIME, so it would arrive damaged"]));
+            return 0;
+        }
+    }
+
+    str from_reply = smtp_command(session, str_cat(["MAIL FROM:<", sender, ">"]));
+    if (smtp_reply_code(from_reply) != 250) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " refused the sender: ", str(smtp_reply_code(from_reply))]));
+        return 0;
+    }
+
+    str rcpt = smtp_command(session, str_cat(["RCPT TO:<", recipient, ">"]));
+    int rcpt_code = smtp_reply_code(rcpt);
+    // 251 is "not local, will forward", which is an acceptance.
+    if (rcpt_code != 250 && rcpt_code != 251) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " refused the recipient: ", str(rcpt_code)]));
+        return 0;
+    }
+
+    str ready_for_data = smtp_command(session, "DATA");
+    if (smtp_reply_code(ready_for_data) != 354) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " refused DATA: ", str(smtp_reply_code(ready_for_data))]));
+        return 0;
+    }
+
+    smtp_write(session, smtp_message(sender, recipient, subject,
+    smtp_date_text(now()), body));
+    smtp_write(session, ".\r\n");
+    str accepted = smtp_read_reply(session);
+    if (smtp_reply_code(accepted) != 250) {
+        smtp_close(session);
+        fail(str_cat(["smtp: ", host, " did not accept the message: ",
+        str(smtp_reply_code(accepted))]));
+        return 0;
+    }
+
+    // QUIT is sent and its answer is read, but a server that is rude about
+    // goodbye has still taken the message, so this does not turn a delivered
+    // message into a failure.
+    smtp_command(session, "QUIT");
+    smtp_close(session);
+    return 1;
+}
+
+// AUTH, by whichever mechanism the server offered. PLAIN first because it is
+// one round trip; LOGIN second because some servers still only have that.
+//
+// 1 on 235. 0 otherwise, and the message carries the server's code and never
+// the password.
+int smtp_authenticate(int session, str host, str ehlo_reply, str user, str password) {
+    if (str_len(user) == 0) {
+        fail("smtp: a password was given with no user to go with it");
+        return 0;
+    }
+    if (smtp_offers_auth(ehlo_reply, "PLAIN") == 1) {
+        str argument = smtp_auth_plain_argument(user, password);
+        if (str_len(argument) == 0) { return 0; }
+        str answer = smtp_command(session, str_cat(["AUTH PLAIN ", argument]));
+        if (smtp_reply_code(answer) == 235) { return 1; }
+        fail(str_cat(["smtp: ", host, " refused the login: ", str(smtp_reply_code(answer))]));
+        return 0;
+    }
+    if (smtp_offers_auth(ehlo_reply, "LOGIN") == 1) {
+        str step = smtp_command(session, "AUTH LOGIN");
+        if (smtp_reply_code(step) != 334) {
+            fail(str_cat(["smtp: ", host, " refused AUTH LOGIN: ", str(smtp_reply_code(step))]));
+            return 0;
+        }
+        step = smtp_command(session, base64_encode(user));
+        if (smtp_reply_code(step) != 334) {
+            fail(str_cat(["smtp: ", host, " refused the user name: ", str(smtp_reply_code(step))]));
+            return 0;
+        }
+        str answer = smtp_command(session, base64_encode(password));
+        if (smtp_reply_code(answer) == 235) { return 1; }
+        fail(str_cat(["smtp: ", host, " refused the login: ", str(smtp_reply_code(answer))]));
+        return 0;
+    }
+    fail(str_cat(["smtp: ", host, " offers no authentication mechanism this client speaks"]));
+    return 0;
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "a line beginning with a full stop does not end the message" {
+    // The whole reason this module has a transparency rule. Without the
+    // stuffing, the server reads the second line as the end of the message.
+    str body = "Totals follow.\r\n..... 12,400\r\nSigned off by Finance\r\n";
+    str out = smtp_dot_stuff(body);
+    assert str_index_of(out, "\r\n...... 12,400\r\n") >= 0;
+    assert str_index_of(out, "Signed off by Finance") >= 0;
+
+    // A full stop at the start of the very first line counts too.
+    assert str_eq(smtp_dot_stuff(".hidden\r\n"), "..hidden\r\n") == 1;
+
+    // A full stop anywhere else is left exactly alone -- an escaper that
+    // doubled every full stop would damage every ordinary sentence.
+    assert str_eq(smtp_dot_stuff("The end. Really.\r\n"), "The end. Really.\r\n") == 1;
+    assert str_eq(smtp_dot_stuff("a.b\r\n"), "a.b\r\n") == 1;
+
+    // The line that terminates a message, appearing inside one.
+    assert str_eq(smtp_dot_stuff(".\r\n"), "..\r\n") == 1;
+    assert str_eq(smtp_dot_stuff(""), "") == 1;
+}
+
+verify "every line ending is CRLF, whichever kind went in" {
+    assert str_eq(smtp_crlf("a\nb"), "a\r\nb") == 1;
+    assert str_eq(smtp_crlf("a\r\nb"), "a\r\nb") == 1;
+    // A lone carriage return with no newline after it is not a line ending
+    // and is dropped rather than turned into one.
+    assert str_eq(smtp_crlf("a\rb"), "ab") == 1;
+    assert str_eq(smtp_crlf(""), "") == 1;
+    assert str_eq(smtp_crlf("plain"), "plain") == 1;
+}
+
+verify "a header value carrying a line ending is refused" {
+    // This is header injection: a subject somebody typed, carrying a CRLF
+    // and a Bcc of their own. There is no escaping that makes it safe.
+    assert smtp_header_safe("Invoice 4471") == 1;
+    assert smtp_header_safe("Invoice\r\nBcc: somebody@example.com") == 0;
+    assert smtp_header_safe("Invoice\nBcc: somebody@example.com") == 0;
+    assert smtp_header_safe("") == 1;
+
+    // And the refusal reaches the caller before a socket is opened, with the
+    // reason named.
+    int sent = smtp_send_mail("localhost", 1, "localhost", "", "",
+    "a@example.com", "b@example.com",
+    "Invoice\r\nBcc: somebody@example.com", "hello");
+    assert sent == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "subject") >= 0;
+    clear_error();
+
+    sent = smtp_send_mail("localhost", 1, "localhost", "", "",
+    "a@example.com\r\nRCPT TO:<c@example.com>", "b@example.com", "hi", "hello");
+    assert sent == 0;
+    assert had_error() == 1;
+    clear_error();
+}
+
+verify "a message is assembled with the headers a mail server expects" {
+    str m = smtp_message("ops@example.com", "finance@example.com",
+    "Batch 41 finished", "Tue, 11 Nov 2026 04:05:06 +0000",
+    "All 1,204 rows posted.\nNothing was rejected.\n");
+
+    assert str_index_of(m, "From: ops@example.com\r\n") >= 0;
+    assert str_index_of(m, "To: finance@example.com\r\n") >= 0;
+    assert str_index_of(m, "Subject: Batch 41 finished\r\n") >= 0;
+    assert str_index_of(m, "Date: Tue, 11 Nov 2026 04:05:06 +0000\r\n") >= 0;
+    assert str_index_of(m, "MIME-Version: 1.0\r\n") >= 0;
+    assert str_index_of(m, "Content-Type: text/plain; charset=utf-8\r\n") >= 0;
+    // An ASCII body says 7bit, because that is what it is.
+    assert str_index_of(m, "Content-Transfer-Encoding: 7bit\r\n") >= 0;
+    // The blank line between headers and body, and the body after it with
+    // its endings converted.
+    assert str_index_of(m, "\r\n\r\nAll 1,204 rows posted.\r\nNothing was rejected.\r\n") >= 0;
+    // It ends with a line ending, or the terminating full stop would land on
+    // the end of the last line of text and terminate nothing.
+    int n = str_len(m);
+    assert str_eq(str_slice(m, n - 2, n), "\r\n") == 1;
+
+    // A body with no trailing newline still ends with one.
+    str m2 = smtp_message("a@x", "b@y", "s", "d", "one line, no newline");
+    int n2 = str_len(m2);
+    assert str_eq(str_slice(m2, n2 - 2, n2), "\r\n") == 1;
+}
+
+verify "a subject that is not ASCII is encoded, and one that is stays readable" {
+    assert str_eq(smtp_encode_subject("Plain subject"), "Plain subject") == 1;
+    // "Résumé" in UTF-8. Sent raw, a server is entitled to strip the top bit
+    // off every byte of it.
+    str e_acute = str_cat([char_from_code(195), char_from_code(169)]);
+    str encoded = smtp_encode_subject(str_cat(["R", e_acute, "sum", e_acute]));
+    assert str_starts_with(encoded, "=?UTF-8?B?") == 1;
+    assert str_index_of(encoded, "?=") > 10;
+    assert smtp_is_ascii(encoded) == 1;
+
+    // A body that is not ASCII is declared 8bit rather than claimed as 7bit.
+    str m = smtp_message("a@x", "b@y", "s", "d", str_cat(["caf", e_acute, "\n"]));
+    assert str_index_of(m, "Content-Transfer-Encoding: 8bit\r\n") >= 0;
+}
+
+verify "base64 matches what every other implementation produces" {
+    // RFC 4648's own examples. A known answer from the standard, not from
+    // this implementation.
+    assert str_eq(base64_encode(""), "") == 1;
+    assert str_eq(base64_encode("f"), "Zg==") == 1;
+    assert str_eq(base64_encode("fo"), "Zm8=") == 1;
+    assert str_eq(base64_encode("foo"), "Zm9v") == 1;
+    assert str_eq(base64_encode("foob"), "Zm9vYg==") == 1;
+    assert str_eq(base64_encode("fooba"), "Zm9vYmE=") == 1;
+    assert str_eq(base64_encode("foobar"), "Zm9vYmFy") == 1;
+}
+
+verify "the AUTH PLAIN argument has the NUL bytes the mechanism requires" {
+    // base64 of NUL 'u' NUL 'p'. The NULs are why this is built in C: a
+    // Strata str would end at the first one, and what the server would get
+    // is an empty user and no password -- an authentication that fails for a
+    // reason nothing in the reply explains.
+    assert str_eq(smtp_auth_plain_argument("u", "p"), "AHUAcA==") == 1;
+    assert str_eq(smtp_auth_plain_argument("", ""), "AAA=") == 1;
+    // A real-looking pair, checked against a value produced elsewhere.
+    assert str_eq(smtp_auth_plain_argument("ops@example.com", "hunter2"),
+    "AG9wc0BleGFtcGxlLmNvbQBodW50ZXIy") == 1;
+}
+
+verify "a multi-line reply is read whole, and its code is the last line's" {
+    // A client that stops at the first line sends its next command into the
+    // middle of the server's answer, and the session desynchronises from
+    // there.
+    str ehlo = "250-mail.example.com\r\n250-SIZE 35882577\r\n250-8BITMIME\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN\r\n";
+    assert smtp_reply_complete(ehlo) == 1;
+    assert smtp_reply_code(ehlo) == 250;
+
+    // The same reply, arriving one packet short.
+    str partial = "250-mail.example.com\r\n250-SIZE 35882577\r\n";
+    assert smtp_reply_complete(partial) == 0;
+
+    // A single-line reply is complete on its own.
+    assert smtp_reply_complete("220 mail.example.com ESMTP\r\n") == 1;
+    assert smtp_reply_code("220 mail.example.com ESMTP\r\n") == 220;
+    assert smtp_reply_code("535 5.7.8 Authentication credentials invalid\r\n") == 535;
+    assert smtp_reply_code("354 End data with <CR><LF>.<CR><LF>\r\n") == 354;
+    // Nothing is not a reply.
+    assert smtp_reply_code("") == 0 - 1;
+    assert smtp_reply_complete("") == 0;
+}
+
+verify "a capability is read as a whole word, not as a substring" {
+    str ehlo = "250-mail.example.com\r\n250-SIZE 35882577\r\n250-8BITMIME\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN\r\n";
+    assert smtp_offers(ehlo, "STARTTLS") == 1;
+    assert smtp_offers(ehlo, "8BITMIME") == 1;
+    assert smtp_offers(ehlo, "SIZE") == 1;
+    assert smtp_offers(ehlo, "PIPELINING") == 0;
+
+    // A greeting that merely mentions the word. Acting on this means sending
+    // STARTTLS to a server that answers 500.
+    str chatty = "250-mail.example.com says STARTTLS is not available here\r\n250 HELP\r\n";
+    assert smtp_offers(chatty, "STARTTLS") == 0;
+
+    assert smtp_offers_auth(ehlo, "PLAIN") == 1;
+    assert smtp_offers_auth(ehlo, "LOGIN") == 1;
+    assert smtp_offers_auth(ehlo, "CRAM-MD5") == 0;
+    // A server offering only LOGIN does not offer PLAIN, and `PLAIN` is not
+    // a substring of anything it said.
+    str only_login = "250-mail.example.com\r\n250 AUTH LOGIN\r\n";
+    assert smtp_offers_auth(only_login, "PLAIN") == 0;
+    assert smtp_offers_auth(only_login, "LOGIN") == 1;
+}
+
+verify "a body line too long for SMTP is refused rather than truncated" {
+    assert smtp_longest_line("short\nlines\n") == 5;
+    assert smtp_longest_line("") == 0;
+    assert smtp_longest_line("no ending") == 9;
+    // A carriage return is not counted as part of the line's length.
+    assert smtp_longest_line("abc\r\n") == 3;
+
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < 1000; i = i + 1) { sb_append(&sb, "x"); }
+    str long_body = sb_to_str(&sb);
+    assert smtp_longest_line(long_body) == 1000;
+    int sent = smtp_send_mail("localhost", 1, "localhost", "", "",
+    "a@example.com", "b@example.com", "subject", long_body);
+    assert sent == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "998") >= 0;
+    clear_error();
+}
+
+verify "a password is never sent in the clear to anywhere but this machine" {
+    // No socket is opened: the refusal is decided from the host, exactly as
+    // std/llm.sta refuses to send an API key over plain HTTP. A host that
+    // merely begins with "localhost" is a domain somebody else owns.
+    assert smtp_is_this_machine("localhost") == 1;
+    assert smtp_is_this_machine("127.0.0.1") == 1;
+    assert smtp_is_this_machine("localhost.supplier.example") == 0;
+    assert smtp_is_this_machine("127.0.0.1.attacker.example") == 0;
+}
+
+verify "a date is written the way RFC 5322 wants it" {
+    // 11 November 2026, 04:05:06 UTC — a Wednesday.
+    int moment = moment_of(2026, 11, 11, 4, 5, 6);
+    assert str_eq(smtp_date_text(moment), "Wed, 11 Nov 2026 04:05:06 +0000") == 1;
+    // Single digits are padded, or a mail client reads the date as invalid
+    // and falls back to the time it arrived.
+    assert str_eq(smtp_date_text(moment_of(2026, 1, 2, 3, 4, 5)),
+    "Fri, 02 Jan 2026 03:04:05 +0000") == 1;
+}

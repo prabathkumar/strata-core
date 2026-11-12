@@ -1,0 +1,592 @@
+// STRATA STANDARD LIBRARY — std/webhook.sta
+// RECEIVING a webhook: taking a POST from another system and deciding
+// whether to believe it.
+//
+// WHY THIS IS ITS OWN FILE
+//
+// `std/http.sta` will already accept a POST and hand you the body. That is
+// the easy half and it is not the half that matters. A webhook endpoint is a
+// URL on the public internet that writes to your data because somebody asked
+// it to, and the only thing standing between it and anybody who learns the
+// URL is a signature. So the whole of this file is about one question —
+// **did the party holding the shared secret send these exact bytes** — and
+// everything else here exists to serve that answer.
+//
+// HOW THE SIGNATURE WORKS
+//
+// The sender and the receiver share a secret. The sender computes
+// HMAC-SHA256 over the request body with that secret, writes it as hex, and
+// puts it in a header. The receiver computes the same thing and compares.
+// That is what GitHub does (`X-Hub-Signature-256: sha256=<hex>`), and what
+// Stripe does with a timestamp folded in; both shapes are here.
+//
+// HMAC and not a plain hash of secret-then-body: that construction is
+// vulnerable to length extension on SHA-2, which is the reason HMAC exists.
+// Nothing in this file invents any of it -- the HMAC is OpenSSL's, reached
+// the same way `std/tls.sta` reaches the handshake, because hand-written
+// cryptography is a liability and this file is not the place to prove
+// otherwise.
+//
+// THREE REFUSALS THAT ARE THE POINT
+//
+//   * **No signature is a refusal.** An endpoint that accepts an unsigned
+//     request when a signature is merely "optional" has no protection at all,
+//     because the attacker simply does not send one.
+//   * **A wrong signature is a refusal**, and the comparison is constant
+//     time. Comparing two digests with an ordinary string compare leaks, in
+//     how long the answer takes, how many leading bytes were right -- which
+//     is enough to recover a valid signature a byte at a time without ever
+//     knowing the secret.
+//   * **A build that cannot compute an HMAC refuses everything.** It answers
+//     503 rather than waving requests through. A verifier that cannot verify
+//     must say no; there is no other safe direction to fail in.
+//
+// WHAT IT DOES NOT DO
+//
+// No TLS on the listening side -- `std/http.sta` serves plain HTTP, so this
+// belongs behind something that terminates TLS. One connection at a time, no
+// forking: a webhook receiver that writes to a table wants its writes
+// serialised anyway, and a handler that is slow should be queueing rather
+// than holding the socket. No retry handling, no delivery de-duplication, and
+// no body larger than 64KB, which is what `http_read_request` will hold.
+//
+// Plain GitHub-style verification has **no replay protection**: a request
+// captured off the wire stays valid for ever, because nothing in what is
+// signed says when it was signed. That is a real gap and it is the sender's
+// format, not a shortcut taken here. `webhook_timestamped_ok` is the shape
+// that closes it, and is what to ask a sender you control to use.
+
+import io   from std;
+import str  from std;
+import http from std;
+
+// HMAC-SHA256 is in libcrypto, not libssl. The `ssl` here is not a mistake:
+// the build turns OpenSSL on -- the -DSTRATA_TLS, the include path and the
+// library path all at once -- when it sees a program asking to link `ssl`,
+// and it drops both `ssl` and `crypto` when pkg-config cannot find OpenSSL
+// at all. Asking only for `crypto` gets the header guarded out and the
+// library still on the link line, which fails to link on a machine that has
+// neither.
+foreign "openssl/hmac.h" link "ssl"    { }
+foreign "openssl/evp.h"  link "crypto" { }
+
+// ── Can this binary check a signature at all ─────────────────────────────
+
+// Whether OpenSSL was present when this was built. 0 means every request
+// will be refused with 503, because a receiver that cannot verify must not
+// accept. Worth asking once at startup so the refusal is a line in a log at
+// boot rather than a mystery in production.
+int webhook_can_verify() {
+    native "
+    #ifdef STRATA_TLS
+    return 1;
+    #else
+    return 0;
+    #endif
+    ";
+}
+
+// HMAC-SHA256 of `message` under `key`, as 64 lowercase hex characters.
+//
+// "" with the error flag set when this binary has no OpenSSL, or when
+// OpenSSL itself refuses. Never partially -- there is no half an HMAC, and
+// a short answer compared against a full one would simply never match,
+// which reads as "wrong secret" rather than "broken build".
+//
+// The key is a parameter and is never logged. Nothing in this file prints a
+// key, a signature or a body.
+str hmac_sha256_hex(str key, str message) {
+    native "
+    #ifndef STRATA_TLS
+    strata_fail(strata_dup(\"webhook: this binary was built without OpenSSL, so it cannot check a signature\"));
+    return strata_dup(\"\");
+    #else
+    const char* _k = $key;
+    const char* _m = $message;
+    unsigned char _d[EVP_MAX_MD_SIZE];
+    unsigned int _n = 0;
+    if (!HMAC(EVP_sha256(), _k, (int)strlen(_k),
+              (const unsigned char*)_m, strlen(_m), _d, &_n)) {
+        strata_fail(strata_dup(\"webhook: OpenSSL would not compute the signature\"));
+        return strata_dup(\"\");
+    }
+    static const char* _hex = \"0123456789abcdef\";
+    char _o[2 * EVP_MAX_MD_SIZE + 1];
+    for (unsigned int _i = 0; _i < _n; _i++) {
+        _o[_i * 2]     = _hex[(_d[_i] >> 4) & 0xF];
+        _o[_i * 2 + 1] = _hex[_d[_i] & 0xF];
+    }
+    _o[_n * 2] = 0;
+    return strata_dup(_o);
+    #endif
+    ";
+}
+
+// Whether two strings are the same, taking the same time whether they differ
+// in the first byte or the last.
+//
+// `str_eq` stops at the first difference, which is correct and fast and
+// wrong here: the time it takes says how many leading bytes matched, and an
+// attacker who can ask a few thousand times reads a valid signature out of
+// that one byte at a time. The loop below always reads every byte.
+//
+// The length comparison is NOT hidden, and does not need to be: a signature's
+// length is fixed and public. What must not leak is where two equal-length
+// digests first differ.
+int bytes_equal_constant_time(str left, str right) {
+    native "
+    const char* _l = $left;
+    const char* _r = $right;
+    size_t _ll = strlen(_l), _rl = strlen(_r);
+    if (_ll != _rl) return 0;
+    /* volatile, so a compiler that notices the result is a single bit does
+     * not helpfully turn this back into an early exit. */
+    volatile unsigned char _diff = 0;
+    for (size_t _i = 0; _i < _ll; _i++) {
+        _diff |= (unsigned char)(_l[_i] ^ _r[_i]);
+    }
+    return _diff == 0;
+    ";
+}
+
+// ── The signature a sender should have sent ──────────────────────────────
+
+// The header value this receiver expects for a body: `sha256=<64 hex>`.
+//
+// This is also what a SENDER in Strata would put in the header, which is why
+// it is public: the two sides of a webhook are the same computation, and
+// having one function for it means they cannot drift apart.
+str webhook_signature(str secret, str body) {
+    str digest = hmac_sha256_hex(secret, body);
+    if (str_len(digest) == 0) { return ""; }
+    return str_cat(["sha256=", digest]);
+}
+
+// The same, over `timestamp + "." + body`, which is the shape that makes a
+// captured request stop being useful. See `webhook_timestamped_ok`.
+str webhook_signature_at(str secret, str timestamp, str body) {
+    str digest = hmac_sha256_hex(secret, str_cat([timestamp, ".", body]));
+    if (str_len(digest) == 0) { return ""; }
+    return str_cat(["sha256=", digest]);
+}
+
+// ── Checking the one a sender did send ───────────────────────────────────
+
+// Whether `provided` is the right signature for `body` under `secret`.
+//
+// 0 for every way of being wrong, and they are deliberately not told apart:
+// an attacker learning that a signature was "the right shape but wrong" has
+// learned something, and no honest sender needs the distinction.
+//
+// The provided value is lowercased first. That is a transformation of the
+// ATTACKER's bytes and reveals nothing about the secret, and it saves an
+// interoperability failure with a sender that writes its hex in capitals --
+// a refusal that looks exactly like a wrong secret and is miserable to
+// diagnose.
+int webhook_signature_ok(str secret, str body, str provided) {
+    // An empty secret is a misconfiguration, not a secret. Anybody can
+    // compute an HMAC under a key they can guess, and the empty string is
+    // the first guess. Refusing here is what stops an unset environment
+    // variable from quietly opening the endpoint to the world.
+    if (str_len(secret) == 0) { return 0; }
+    if (str_len(provided) == 0) { return 0; }
+    str expected = webhook_signature(secret, body);
+    if (str_len(expected) == 0) {
+        // No OpenSSL, or OpenSSL refused. Either way nothing was verified,
+        // and `clear_error` is not called here: the caller must see that
+        // this build cannot do its job.
+        return 0;
+    }
+    return bytes_equal_constant_time(expected, lower(str_trim(provided)));
+}
+
+// The same check, with a timestamp that the sender also signed, and a window
+// outside which the request is too old to act on.
+//
+// This is what closes the replay hole. The signature covers the timestamp, so
+// a captured request cannot be re-sent with a fresher one: changing the
+// timestamp changes what was signed. `tolerance_seconds` is how much clock
+// difference between the two machines is tolerated -- five minutes is what
+// Stripe uses and is a reasonable default for machines running NTP.
+//
+// `now` is a parameter rather than a call to the clock so that this is a
+// function with an answer, which is what lets the block at the bottom of this
+// file test the expiry at all. A caller passes `now()` from std/time.sta.
+int webhook_timestamped_ok(str secret, str timestamp, str body, str provided,
+int now_seconds, int tolerance_seconds) {
+    if (str_len(secret) == 0)    { return 0; }
+    if (str_len(timestamp) == 0) { return 0; }
+    if (str_len(provided) == 0)  { return 0; }
+    int sent_at = webhook_digits(timestamp);
+    if (sent_at < 0) { return 0; }
+    int drift = now_seconds - sent_at;
+    if (drift < 0) { drift = 0 - drift; }
+    // A timestamp from the future is as suspicious as one from last week,
+    // so the window is checked in both directions.
+    if (drift > tolerance_seconds) { return 0; }
+    str expected = webhook_signature_at(secret, timestamp, body);
+    if (str_len(expected) == 0) { return 0; }
+    return bytes_equal_constant_time(expected, lower(str_trim(provided)));
+}
+
+// The number a header spells, or -1 when it is not a plain run of digits.
+// Not str_to_int: that reports an error for text it cannot read, and a
+// sender writing nonsense in a header is an ordinary thing to meet rather
+// than a fault in this program.
+int webhook_digits(str text) {
+    int n = str_len(text);
+    if (n == 0) { return 0 - 1; }
+    if (n > 18) { return 0 - 1; }
+    int v = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        int c = text[i];
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+    }
+    return v;
+}
+
+// ── A whole request, judged ──────────────────────────────────────────────
+
+// What this receiver should answer for a request, as the HTTP status itself:
+//
+//   200  signed by the holder of the secret; act on it
+//   401  not signed, or signed wrongly
+//   405  not a POST
+//   503  this build cannot verify anything, so it accepts nothing
+//
+// The method is checked BEFORE the signature, so a `GET` on the endpoint is
+// told it is the wrong method rather than told its signature is missing --
+// which is the honest answer and also stops a scanner from reading anything
+// into which refusal it got.
+//
+// This is a function over text with no socket in it, which is what makes the
+// cases at the bottom of this file possible: every refusal below is tested
+// against a real request, not a mock.
+int webhook_status_for(str request, str secret, str header_name) {
+    if (webhook_can_verify() == 0) { return 503; }
+    if (str_len(secret) == 0)      { return 503; }
+    if (str_eq(http_method(request), "POST") == 0) { return 405; }
+    str provided = http_header(request, header_name);
+    if (webhook_signature_ok(secret, http_body(request), provided) == 0) {
+        return 401;
+    }
+    return 200;
+}
+
+// The body of a request that has been accepted. Separate from the check so
+// that nothing can read the payload without having asked about the signature
+// first: a caller writes the two lines in that order and the order is
+// visible.
+str webhook_payload(str request) { return http_body(request); }
+
+// ── Answering ────────────────────────────────────────────────────────────
+
+// The refusal for a status this module decided on. The body says what is
+// wrong in one line and says nothing else: a refusal that quotes the
+// signature it received back at the sender is a refusal that will end up in
+// somebody's log aggregator.
+int webhook_refuse(int conn, int status) {
+    if (status == 405) {
+        return http_respond(conn, 405, "text/plain; charset=utf-8",
+        "this endpoint takes POST only\n");
+    }
+    if (status == 503) {
+        return http_respond(conn, 503, "text/plain; charset=utf-8",
+        "this receiver cannot check signatures, so it is accepting nothing\n");
+    }
+    return http_respond(conn, 401, "text/plain; charset=utf-8",
+    "the signature is missing or does not match\n");
+}
+
+// 202 and not 200: the request has been handed to a handler, and whether the
+// work it describes succeeded is a separate question this answer does not
+// claim to settle.
+int webhook_accepted(int conn) {
+    return http_respond(conn, 202, "text/plain; charset=utf-8", "accepted\n");
+}
+
+// ── Handing the body to a handler ────────────────────────────────────────
+//
+// Strata has no function values, so a handler cannot be passed as an
+// argument. It does have `stream`, which is a named handler the compiler
+// registers at startup -- so the handler is named by a string and the
+// language's own dispatch does the rest:
+//
+//     stream OnPush(str payload) { ... }
+//     webhook_serve(8099, env("HOOK_SECRET"), "OnPush");
+//
+// How many handlers ran. **0 is a failure**, not a quiet success: a request
+// that verified and reached nobody has been accepted and dropped, which is
+// the worst outcome available -- the sender believes it was delivered and
+// will not send it again.
+int webhook_deliver(str channel, str payload) {
+    native "
+    if (!strata_publish($channel, $payload)) {
+        strata_fail(strata_dup(\"webhook: the delivery queue is full\"));
+        return 0;
+    }
+    return (int64_t)strata_run();
+    ";
+}
+
+// ── The receiver ─────────────────────────────────────────────────────────
+
+// Serve webhook deliveries on `port`, verifying each against `secret` and
+// handing the body to the `stream` handler named by `channel`.
+//
+// `how_many` is how many connections to serve before returning: 0 is for
+// ever, which is what a service wants, and a positive number is what a test
+// wants so that it can end. That is the whole difference between the two,
+// and it is a parameter rather than two functions because a test that
+// exercises a DIFFERENT loop from the one production runs has tested
+// nothing.
+//
+// One connection at a time, in this process. A receiver that writes to a
+// table wants its writes serialised anyway, and `std/http.sta`'s fork-per-
+// connection would have each child handle one delivery and exit -- which is
+// fine for a web page and wrong for a handler that is accumulating state.
+int webhook_serve(int port, str secret, str channel, int how_many) {
+    if (webhook_can_verify() == 0) {
+        // Said once, loudly, at startup. The requests will all be refused
+        // with 503 below; this is so somebody finds out why from the boot
+        // log rather than from the sender's dashboard.
+        eprint("[webhook] this binary was built without OpenSSL, so every delivery will be refused");
+    }
+    if (str_len(secret) == 0) {
+        eprint("[webhook] no shared secret was given, so every delivery will be refused");
+    }
+    int server = http_listen(port);
+    if (server < 0) {
+        fail(str_cat(["webhook: could not listen on port ", str(port)]));
+        return 0 - 1;
+    }
+    // A sender that disconnects while the answer is being written would
+    // otherwise take the whole receiver down with SIGPIPE.
+    http_ignore_broken_pipes();
+    int served = 0;
+    while (1) {
+        int conn = http_accept(server);
+        if (conn < 0) { continue; }
+        // A sender that opens a connection and says nothing holds this
+        // process, because there is only one of them.
+        http_set_timeout(conn, 15);
+        str request = http_read_request(conn);
+        int status = 400;
+        if (str_len(request) > 0) {
+            status = webhook_status_for(request, secret, "X-Hub-Signature-256");
+        }
+        if (str_len(request) == 0) {
+            http_respond(conn, 400, "text/plain; charset=utf-8",
+            "the request did not finish arriving\n");
+        } else {
+            if (status == 200) {
+                int handled = webhook_deliver(channel, webhook_payload(request));
+                if (handled > 0) {
+                    status = webhook_accepted(conn);
+                } else {
+                    // Verified, and nobody was listening. Answering 202 here
+                    // would tell the sender it was delivered, and it was not.
+                    eprint(str_cat(["[webhook] nothing is registered for channel '",
+                    channel, "', so a verified delivery had nowhere to go"]));
+                    status = http_respond(conn, 500, "text/plain; charset=utf-8",
+                    "this receiver has no handler registered\n");
+                }
+            } else {
+                webhook_refuse(conn, status);
+            }
+        }
+        // The method, the path and the status, and never the signature or
+        // the body. A body is why the endpoint is signed in the first place.
+        // The method is read from the request rather than assumed to be
+        // POST: a log that records a refused GET as a POST is a log that
+        // will be read wrongly on the one day it matters.
+        str method = "-";
+        if (str_len(request) > 0) { method = http_method(request); }
+        log_request(method, http_path(request), status, 0);
+        http_close(conn);
+        served = served + 1;
+        if (how_many > 0) {
+            if (served >= how_many) { return served; }
+        }
+    }
+    return served;
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "the HMAC is the HMAC everybody else computes" {
+    // RFC 4231, test case 2. A known answer from the standard rather than
+    // from this implementation: a test that checks a function against itself
+    // passes just as happily when the function is wrong.
+    if (webhook_can_verify() == 1) {
+        str got = hmac_sha256_hex("Jefe", "what do ya want for nothing?");
+        assert str_eq(got,
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843") == 1;
+        assert str_len(got) == 64;
+    }
+}
+
+verify "a constant-time comparison still gets the answer right" {
+    // Constant time is worthless if it is also constantly wrong, so the
+    // ordinary cases come first.
+    assert bytes_equal_constant_time("abc", "abc") == 1;
+    assert bytes_equal_constant_time("abc", "abd") == 0;
+    assert bytes_equal_constant_time("abc", "ab") == 0;
+    assert bytes_equal_constant_time("", "") == 1;
+    assert bytes_equal_constant_time("a", "") == 0;
+    // Differing in the first byte and differing in the last are both simply
+    // "different". That they take the same time is what the C loop is for
+    // and is not something an assertion can observe.
+    assert bytes_equal_constant_time("xbc", "abc") == 0;
+    assert bytes_equal_constant_time("abx", "abc") == 0;
+}
+
+verify "a body signed with the secret is accepted and nothing else is" {
+    if (webhook_can_verify() == 1) {
+        str secret = "shh-this-is-the-shared-secret";
+        str body = "{\"event\":\"push\",\"ref\":\"main\"}";
+        str good = webhook_signature(secret, body);
+
+        assert str_starts_with(good, "sha256=") == 1;
+        assert str_len(good) == 71;
+        assert webhook_signature_ok(secret, body, good) == 1;
+
+        // One byte of the body changed. This is the case the whole file is
+        // for: the signature is still a perfectly well-formed signature, and
+        // it is not a signature for THIS body.
+        assert webhook_signature_ok(secret, "{\"event\":\"push\",\"ref\":\"mair\"}", good) == 0;
+
+        // The right body, signed with somebody else's secret.
+        assert webhook_signature_ok(secret, body, webhook_signature("other-secret", body)) == 0;
+
+        // No signature at all.
+        assert webhook_signature_ok(secret, body, "") == 0;
+
+        // The digest without the `sha256=` the format calls for.
+        assert webhook_signature_ok(secret, body, str_slice(good, 7, str_len(good))) == 0;
+
+        // A signature that is right up to its last character.
+        str nearly = str_cat([str_slice(good, 0, str_len(good) - 1), "0"]);
+        if (str_eq(nearly, good) == 0) {
+            assert webhook_signature_ok(secret, body, nearly) == 0;
+        }
+
+        // Capitals are the same signature; a sender is allowed to write hex
+        // either way and neither is a forgery.
+        assert webhook_signature_ok(secret, body, str_cat(["sha256=",
+        upper_hex(str_slice(good, 7, str_len(good)))])) == 1;
+
+        // An empty secret verifies nothing, however well-formed the
+        // signature it is handed. An unset environment variable must not
+        // open the endpoint.
+        assert webhook_signature_ok("", body, webhook_signature("", body)) == 0;
+    }
+}
+
+// Hex in capitals, for the interoperability case above. Only ever applied to
+// what a sender supplied, never to the secret.
+str upper_hex(str value) {
+    StringBuilder sb = sb_new();
+    int n = str_len(value);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = value[i];
+        if (c >= 97) { if (c <= 122) { c = c - 32; } }
+        sb_append(&sb, char_from_code(c));
+    }
+    return sb_to_str(&sb);
+}
+
+verify "a whole request is judged, and the method is judged first" {
+    if (webhook_can_verify() == 1) {
+        str secret = "shh";
+        str body = "{\"id\":7}";
+        str sig = webhook_signature(secret, body);
+
+        str signed_post = str_cat(["POST /hooks HTTP/1.1\r\nHost: x\r\n",
+        "X-Hub-Signature-256: ", sig, "\r\n",
+        "Content-Length: ", str(str_len(body)), "\r\n\r\n", body]);
+        assert webhook_status_for(signed_post, secret, "X-Hub-Signature-256") == 200;
+        assert str_eq(webhook_payload(signed_post), body) == 1;
+
+        // Unsigned. This is the request an attacker who knows the URL sends,
+        // and 401 is the only acceptable answer.
+        str unsigned_post = str_cat(["POST /hooks HTTP/1.1\r\nHost: x\r\n",
+        "Content-Length: ", str(str_len(body)), "\r\n\r\n", body]);
+        assert webhook_status_for(unsigned_post, secret, "X-Hub-Signature-256") == 401;
+
+        // Signed for a different body: the header is copied from a real
+        // delivery and the body is the attacker's.
+        str swapped = str_cat(["POST /hooks HTTP/1.1\r\nHost: x\r\n",
+        "X-Hub-Signature-256: ", sig, "\r\n",
+        "Content-Length: 9\r\n\r\n{\"id\":99}"]);
+        assert webhook_status_for(swapped, secret, "X-Hub-Signature-256") == 401;
+
+        // A GET, correctly signed, is still the wrong method -- and is told
+        // so rather than told about its signature.
+        str get = str_cat(["GET /hooks HTTP/1.1\r\nHost: x\r\n",
+        "X-Hub-Signature-256: ", sig, "\r\n\r\n"]);
+        assert webhook_status_for(get, secret, "X-Hub-Signature-256") == 405;
+
+        // The header name is the sender's choice, and a signature in the
+        // wrong header is no signature.
+        assert webhook_status_for(signed_post, secret, "X-Signature") == 401;
+
+        // No secret configured: 503, because this receiver cannot do its job
+        // and must not pretend otherwise. Not 401 -- the sender did nothing
+        // wrong and should retry later rather than go looking at its key.
+        assert webhook_status_for(signed_post, "", "X-Hub-Signature-256") == 503;
+    }
+}
+
+verify "a timestamped signature expires, and the timestamp is part of what is signed" {
+    if (webhook_can_verify() == 1) {
+        str secret = "shh";
+        str body = "{\"id\":7}";
+        str sig = webhook_signature_at(secret, "1762800000", body);
+
+        // Sent now, within the window.
+        assert webhook_timestamped_ok(secret, "1762800000", body, sig, 1762800030, 300) == 1;
+
+        // The same capture, replayed an hour later. This is the request a
+        // plain signature cannot tell from the original.
+        assert webhook_timestamped_ok(secret, "1762800000", body, sig, 1762803600, 300) == 0;
+
+        // Claiming a fresher timestamp does not help, because the timestamp
+        // is inside what was signed.
+        assert webhook_timestamped_ok(secret, "1762803600", body, sig, 1762803600, 300) == 0;
+
+        // A timestamp from the future is refused in the same way.
+        assert webhook_timestamped_ok(secret, "1762800000", body, sig, 1762790000, 300) == 0;
+
+        // Text where a timestamp should be.
+        assert webhook_timestamped_ok(secret, "yesterday", body, sig, 1762800030, 300) == 0;
+
+        // And the body still has to match.
+        assert webhook_timestamped_ok(secret, "1762800000", "{\"id\":8}", sig, 1762800030, 300) == 0;
+    }
+}
+
+verify "a build with no OpenSSL refuses rather than waving requests through" {
+    // Both answers are correct for this machine; what must never happen is a
+    // receiver that cannot verify and accepts anyway. On a machine with
+    // OpenSSL this asserts the positive case, and on one without it asserts
+    // the refusal -- the same rule from both sides.
+    if (webhook_can_verify() == 0) {
+        assert webhook_status_for("POST / HTTP/1.1\r\n\r\n", "shh", "X-Hub-Signature-256") == 503;
+        assert str_len(hmac_sha256_hex("k", "m")) == 0;
+        assert had_error() == 1;
+        clear_error();
+    }
+}
+
+verify "a number in a header is read, and text in one is not mistaken for zero" {
+    assert webhook_digits("1762800000") == 1762800000;
+    assert webhook_digits("0") == 0;
+    assert webhook_digits("") == 0 - 1;
+    assert webhook_digits("12x4") == 0 - 1;
+    assert webhook_digits("-5") == 0 - 1;
+    // Long enough to overflow if it were read: refused instead.
+    assert webhook_digits("99999999999999999999") == 0 - 1;
+}

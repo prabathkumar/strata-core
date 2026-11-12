@@ -554,6 +554,22 @@ jobs:
     - name: The Plugin Package Holds Together
       run: bash ecosystem/plugin/test_plugin.sh
 
+    # Seven new standard-library modules, each driven against something
+    # real rather than mocked: Redis against a strict RESP server written
+    # from the protocol, SMTP against a mail server that records the exact
+    # bytes on the wire, a webhook receiver posted at with correct, missing,
+    # wrong and tampered signatures, and a sign-in service driven with curl
+    # through sign in, CSRF, roles, expiry and sign out. Each suite also
+    # proves at least one security property goes red when it is removed.
+    - name: The Database Connectors
+      run: python3 test_suite/connectors_database.py
+
+    - name: The Messaging Connectors
+      run: python3 test_suite/connectors_messaging.py
+
+    - name: Sessions And Jobs Keep Their Promises
+      run: python3 test_suite/components_auth_jobs.py
+
     - name: No Unbacked Claims
       run: |
         fail=0

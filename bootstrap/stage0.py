@@ -871,6 +871,17 @@ int main(int argc, char** argv) {
         self.emit_raw(f"    if ((!_where || !*_where) && _stamp != 0 "
                       f"&& !{name}__dirty && _stamp == {name}__stamp")
         self.emit_raw(f"        && {name}__from && strcmp({name}__from, path) == 0) {{")
+        # A load that finds the file unchanged IS a successful read, so it
+        # clears the mark a refused read left. It did not, and the
+        # consequence was a table that could be written exactly once and
+        # never again: the first load refused (no file yet), which marks the
+        # table; the first save created the file and set the stamp; every
+        # load after that took this fast path, skipped the clearing, and
+        # every save after that was refused with "the last read of this
+        # table was refused". In a service that showed up as the first
+        # person signing in and nobody after them. Found while building
+        # std/session.sta, round 17.
+        self.emit_raw(f'        strata_unpoison("{name}");')
         self.emit_raw(f"        return 1;")
         self.emit_raw(f"    }}")
         self._gen_pg_load(name, fields, select_sql, key)

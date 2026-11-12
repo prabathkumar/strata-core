@@ -2859,6 +2859,18 @@ def gen_table_io(Gen &g, str name, int fields_vec) {
     sb_append(&sk2, "__from && strcmp("); sb_append(&sk2, name);
     sb_append(&sk2, "__from, path) == 0) {");
     emit_raw(&g, sb_to_str(&sk2));
+    // A load that finds the file unchanged IS a successful read, so it
+    // clears the mark a refused read left. It did not, and the consequence
+    // was a table that could be written exactly once and never again: the
+    // first load refused (no file yet), which marks the table; the first
+    // save created the file and set the stamp; every load after that took
+    // this fast path, skipped the clearing, and every save after that was
+    // refused. In a service that showed up as the first person signing in
+    // and nobody after them. Mirrors stage0.py. Round 17.
+    StringBuilder sk3 = sb_new();
+    sb_append(&sk3, "        strata_unpoison(\""); sb_append(&sk3, name);
+    sb_append(&sk3, "\");");
+    emit_raw(&g, sb_to_str(&sk3));
     emit_raw(&g, "        return 1;");
     emit_raw(&g, "    }");
     gen_pg_load(&g, name, fs, select_sql, key);

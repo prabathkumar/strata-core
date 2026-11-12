@@ -1245,7 +1245,19 @@ class TypeChecker:
         # now matches memory; `delete` answers how many rows went. All three
         # are counts or flags, so all three are int -- and saying so here is
         # what makes `str ok = save T to "p";` the E001 it should be.
-        if isinstance(expr,(TableIOStmt,DeleteStmt)): return T_INT
+        if isinstance(expr,(TableIOStmt,DeleteStmt)):
+            # A `delete` used as a VALUE -- `return delete T <- [...];` or
+            # `int n = delete T <- [...];` -- came through here and was
+            # answered `int` without its condition ever being looked at. So
+            # the ambiguity rule that makes `[user_id == user_id]` an error
+            # in a query did not apply to the one statement that destroys
+            # rows: it compiled clean and deleted every row in the table.
+            # Found while writing a sign-out-everywhere function, which
+            # would have ended every session in the system. Round 17.
+            if isinstance(expr,DeleteStmt) and expr.table in self.schemas:
+                self._validate_query_cond(expr.condition, expr.table,
+                                          expr.line, expr.col, scope)
+            return T_INT
         if isinstance(expr,IntLiteral): return T_INT
         if isinstance(expr,FloatLiteral): return T_FLOAT
         if isinstance(expr,StrLiteral): return T_STR

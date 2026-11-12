@@ -1,0 +1,849 @@
+// STRATA STANDARD LIBRARY — std/redis.sta
+// Talking to Redis.
+//
+// WHAT IT DOES
+//
+// Redis speaks RESP: a request is an array of length-prefixed strings, a
+// reply is one of five shapes, and both travel over an ordinary TCP socket.
+// There is no handshake, no framing library and no third party to install —
+// which is why this connector is written entirely here, while
+// `std/postgres.sta` has to borrow libpq.
+//
+// The commands covered are the ones a service actually reaches for: GET, SET,
+// DEL, EXISTS, INCR, EXPIRE, and LPUSH/RPOP as a queue. `redis_call` is the
+// door for anything else, and it is the same door the named helpers use.
+//
+// WHY A COMMAND IS AN ARRAY AND NEVER A LINE OF TEXT
+//
+// Redis also accepts commands typed as a line of words. Every argument built
+// that way has to be quoted, and a key holding a space, a quote or a newline
+// then becomes a second command — the same injection that a built-up SQL
+// string is. `resp_command` always emits the array form, where each argument
+// carries its own byte count, so no byte inside a value can be read as
+// structure. There is no function here that sends a line of text, deliberately.
+//
+// WHAT IT DOES NOT DO, AND THIS MATTERS
+//
+//   - **One connection, one command at a time.** No pipelining, no pool, no
+//     MULTI/EXEC, no SUBSCRIBE. A subscriber never stops reading, which is a
+//     different shape of program from request-and-answer.
+//   - **No TLS.** A Redis reached over the open internet is reached in the
+//     clear by this client. Keep it on a private network, as Redis itself
+//     tells you to.
+//   - **A value with a zero byte in it is refused, not truncated.** Strata
+//     text is a C string, so it cannot carry a NUL. Redis can store one.
+//     Reading such a value fails and says so, rather than handing back the
+//     part before the zero — which would look exactly like a shorter value
+//     that was stored on purpose.
+//   - **An absent key and an empty value read the same** through `redis_get`:
+//     both are "". `redis_exists` answers the question they differ on, and
+//     `redis_get_or` lets you name the value you want for absent.
+//   - **Numbers are read up to 18 digits.** Beyond that the reply is refused
+//     rather than wrapped around. A counter that reaches 10^18 has a bigger
+//     problem than this limit.
+
+import io  from std;
+import str from std;
+
+foreign "sys/socket.h" link "" { }
+foreign "netinet/in.h" link "" { }
+foreign "arpa/inet.h"  link "" { }
+foreign "netdb.h"      link "" { }
+foreign "sys/time.h"   link "" { }
+foreign "unistd.h"     link "" { }
+
+// The five shapes a reply can be, plus the one it must never be.
+//
+// These are returned by `resp_kind` so a caller can branch on the answer it
+// got rather than on the answer it expected. A caller that does not branch
+// still cannot go wrong: every typed reader below refuses a reply of the
+// wrong shape instead of reinterpreting it.
+const int RESP_BAD    = 0;   // nothing this client will read
+const int RESP_STATUS = 1;   // +OK
+const int RESP_ERROR  = 2;   // -ERR wrong number of arguments
+const int RESP_NUMBER = 3;   // :42
+const int RESP_TEXT   = 4;   // $5\r\nhello\r\n
+const int RESP_ABSENT = 5;   // $-1 or *-1 — the key or the answer is not there
+const int RESP_LIST   = 6;   // *2\r\n...
+
+// The most one reply may be: 8 MB. A GET of something larger than that is a
+// file, and this is not a file transfer.
+int redis_cap() { return 8388608; }
+
+// How long to wait, in seconds, for the connection and for each read: 30.
+// The same number and the same reason as `std/fetch.sta`: a peer that accepts
+// the socket and never answers otherwise holds the process forever with
+// nothing logged.
+int redis_timeout_seconds() { return 30; }
+
+// Redis's own port, for a URL that does not name one.
+int redis_default_port() { return 6379; }
+
+// ── Reading a reply to pieces ────────────────────────────────────────────
+//
+// Everything in this section is pure: it works on the bytes of one reply and
+// touches no socket. That is what makes it testable without a server, and it
+// is where every decision about what this client will and will not believe
+// actually lives.
+
+// Where the CRLF that ends the line starting at `at` is, or -1.
+//
+// A bare \n does not end a line. Redis always sends both bytes, and
+// accepting a lone \n would mean a value containing one could end a header.
+int resp_line_end(str buf, int at) {
+    int n = str_len(buf);
+    int i = at;
+    while (i + 1 < n) {
+        if (buf[i] == 13 && buf[i + 1] == 10) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The number in the header line starting at `at` — the 5 of "$5", the 2 of
+// "*2", the 42 of ":42".
+//
+// -1 is a real answer: Redis sends "$-1" for a key that is not there. So
+// anything this cannot read answers -2 instead, and every caller tells the
+// two apart. Folding them together is how "the key is missing" and "the
+// server said something I did not understand" become the same answer.
+int resp_header_number(str buf, int at) {
+    int eol = resp_line_end(buf, at);
+    if (eol < 0) { return 0 - 2; }
+    int i = at + 1;
+    int negative = 0;
+    if (i < eol && buf[i] == 45) { negative = 1; i = i + 1; }
+    int digits = 0;
+    int value = 0;
+    while (i < eol) {
+        int d = buf[i];
+        if (d < 48 || d > 57) { return 0 - 2; }
+        value = value * 10 + (d - 48);
+        digits = digits + 1;
+        i = i + 1;
+        if (digits > 18) { return 0 - 2; }
+    }
+    if (digits == 0) { return 0 - 2; }
+    if (negative == 1) { return 0 - value; }
+    return value;
+}
+
+// How many bytes the one reply starting at `at` occupies, or -1 if the bytes
+// there are not a whole reply.
+//
+// This is what makes an array readable without a second pass: an element is
+// found by stepping over the elements before it. It is also the check that a
+// reply is complete — a caller comparing the span against the length of what
+// it holds learns whether anything was left over or cut short.
+int resp_span(str buf, int at) {
+    int n = str_len(buf);
+    if (at < 0 || at >= n) { return 0 - 1; }
+    int eol = resp_line_end(buf, at);
+    if (eol < 0) { return 0 - 1; }
+    int head = eol + 2 - at;
+    int kind = buf[at];
+    if (kind == 43 || kind == 45 || kind == 58) {
+        if (resp_header_number(buf, at) == 0 - 2 && kind == 58) { return 0 - 1; }
+        return head;
+    }
+    if (kind == 36) {
+        int len = resp_header_number(buf, at);
+        if (len == 0 - 2) { return 0 - 1; }
+        if (len < 0) { return head; }
+        if (eol + 2 + len + 2 > n) { return 0 - 1; }
+        // The payload must be followed by its own CRLF. Without this check a
+        // length one byte short of the truth reads the first byte of the
+        // next reply as the last byte of this value.
+        if (buf[eol + 2 + len] != 13 || buf[eol + 3 + len] != 10) { return 0 - 1; }
+        return head + len + 2;
+    }
+    if (kind == 42) {
+        int items = resp_header_number(buf, at);
+        if (items == 0 - 2) { return 0 - 1; }
+        if (items < 0) { return head; }
+        int pos = at + head;
+        for (int i = 0; i < items; i = i + 1) {
+            int step = resp_span(buf, pos);
+            if (step < 0) { return 0 - 1; }
+            pos = pos + step;
+        }
+        return pos - at;
+    }
+    return 0 - 1;
+}
+
+// Which of the six shapes this reply is.
+//
+// A reply with anything after it is RESP_BAD rather than its first part. Two
+// replies in one buffer means this client lost track of the conversation, and
+// reading the first one would hide that until some later command answered
+// the question before it.
+int resp_kind(str reply) {
+    int n = str_len(reply);
+    if (n < 3) { return RESP_BAD; }
+    if (resp_span(reply, 0) != n) { return RESP_BAD; }
+    int kind = reply[0];
+    if (kind == 43) { return RESP_STATUS; }
+    if (kind == 45) { return RESP_ERROR; }
+    if (kind == 58) { return RESP_NUMBER; }
+    if (kind == 36) {
+        if (resp_header_number(reply, 0) < 0) { return RESP_ABSENT; }
+        return RESP_TEXT;
+    }
+    if (kind == 42) {
+        if (resp_header_number(reply, 0) < 0) { return RESP_ABSENT; }
+        return RESP_LIST;
+    }
+    return RESP_BAD;
+}
+
+// The text of a +status or a $bulk reply, and "" for an absent one.
+//
+// An error, a number or a list is refused rather than rendered: a caller that
+// asked for text and got a number back has a bug, and returning "42" would
+// let it run on.
+str resp_value(str reply) {
+    int kind = resp_kind(reply);
+    if (kind == RESP_ABSENT) { return ""; }
+    if (kind == RESP_STATUS) {
+        return str_slice(reply, 1, resp_line_end(reply, 0));
+    }
+    if (kind == RESP_TEXT) {
+        int eol = resp_line_end(reply, 0);
+        int len = resp_header_number(reply, 0);
+        return str_slice(reply, eol + 2, eol + 2 + len);
+    }
+    fail("redis: asked for text, and the server answered with something else");
+    return "";
+}
+
+// The value of a :number reply.
+int resp_integer(str reply) {
+    if (resp_kind(reply) != RESP_NUMBER) {
+        fail("redis: asked for a number, and the server answered with something else");
+        return 0;
+    }
+    return resp_header_number(reply, 0);
+}
+
+// What the server said was wrong, without the leading `-`. "" for a reply
+// that is not an error.
+str resp_error_text(str reply) {
+    if (resp_kind(reply) != RESP_ERROR) { return ""; }
+    return str_slice(reply, 1, resp_line_end(reply, 0));
+}
+
+// How many elements a list reply holds. An absent list is 0 elements, which
+// is what a caller about to walk it wants.
+int resp_count(str reply) {
+    int kind = resp_kind(reply);
+    if (kind == RESP_ABSENT) { return 0; }
+    if (kind != RESP_LIST) {
+        fail("redis: asked for a list, and the server answered with something else");
+        return 0 - 1;
+    }
+    return resp_header_number(reply, 0);
+}
+
+// Element `index` of a list reply, as a whole reply of its own — so a list of
+// lists comes apart with the same two functions.
+str resp_at(str reply, int index) {
+    int items = resp_count(reply);
+    // Deliberately NOT `if (had_error())`. An earlier, unrelated failure
+    // would then turn every element into "" -- a library function answering
+    // for something it did not do. `resp_count` says -1 when it refused, and
+    // that is the only refusal this one has any business acting on.
+    if (items < 0) { return ""; }
+    if (index < 0 || index >= items) {
+        fail("redis: that element is past the end of the list the server sent");
+        return "";
+    }
+    int pos = resp_line_end(reply, 0) + 2;
+    for (int i = 0; i < index; i = i + 1) {
+        pos = pos + resp_span(reply, pos);
+    }
+    return str_slice(reply, pos, pos + resp_span(reply, pos));
+}
+
+// ── Writing a command ────────────────────────────────────────────────────
+
+int resp_arg_count(list[str] args) {
+    int n = 0;
+    for a in args { if (str_len(a) >= 0) { n = n + 1; } }
+    return n;
+}
+
+// One command, in the only form this client sends: an array of bulk strings.
+//
+// Pure, so the bytes that go on the wire can be checked without a server —
+// and the check that matters is that a value carrying CRLF stays one value.
+str resp_command(list[str] args) {
+    int n = resp_arg_count(args);
+    if (n == 0) {
+        fail("redis: a command with no name");
+        return "";
+    }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "*");
+    sb_append(&sb, str(n));
+    sb_append(&sb, "\r\n");
+    for a in args {
+        sb_append(&sb, "$");
+        sb_append(&sb, str(str_len(a)));
+        sb_append(&sb, "\r\n");
+        sb_append(&sb, a);
+        sb_append(&sb, "\r\n");
+    }
+    return sb_to_str(&sb);
+}
+
+// ── The socket ───────────────────────────────────────────────────────────
+//
+// `std/fetch.sta` opens a socket the same way, and this does not call it for
+// one reason: fetch reads until the other end closes, which is right for one
+// HTTP request and wrong here. A Redis connection stays open across many
+// commands, so a read has to stop at the end of THIS reply and leave the next
+// one on the socket.
+
+int redis_connect(str host, int port) {
+    native "
+    struct addrinfo _h; memset(&_h, 0, sizeof(_h));
+    _h.ai_family = AF_UNSPEC; _h.ai_socktype = SOCK_STREAM;
+    char _p[16]; snprintf(_p, sizeof(_p), \"%ld\", (long)$port);
+    struct addrinfo* _r = NULL;
+    if (getaddrinfo($host, _p, &_h, &_r) != 0 || !_r) {
+        char _m[320]; snprintf(_m, sizeof(_m), \"redis: cannot find %s\", $host);
+        strata_fail(strata_dup(_m));
+        return -1;
+    }
+    int _fd = socket(_r->ai_family, _r->ai_socktype, _r->ai_protocol);
+    if (_fd < 0) { freeaddrinfo(_r); strata_fail(strata_dup(\"redis: no socket\")); return -1; }
+    if (connect(_fd, _r->ai_addr, _r->ai_addrlen) != 0) {
+        close(_fd); freeaddrinfo(_r);
+        char _m[320]; snprintf(_m, sizeof(_m), \"redis: nothing answered at %s\", $host);
+        strata_fail(strata_dup(_m));
+        return -1;
+    }
+    freeaddrinfo(_r);
+    /* Without a receive timeout a server that accepts and never answers holds
+     * this process for as long as it likes. With one, the read fails, the
+     * reply comes back incomplete, and that is a refusal with a reason. */
+    {
+        struct timeval _tv;
+        _tv.tv_sec = 30; _tv.tv_usec = 0;   /* redis_timeout_seconds() */
+        setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &_tv, sizeof(_tv));
+        setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &_tv, sizeof(_tv));
+    }
+    return (int64_t)_fd;
+    ";
+}
+
+def redis_close(int fd) {
+    native "if ($fd >= 0) close((int)$fd);";
+}
+
+def redis_write(int fd, str data) {
+    native "
+    const char* _d = $data; size_t _n = strlen(_d), _o = 0;
+    while (_o < _n) {
+        ssize_t _w = write((int)$fd, _d + _o, _n - _o);
+        if (_w <= 0) { strata_fail(strata_dup(\"redis: the connection closed while the command was going out\")); return; }
+        _o += (size_t)_w;
+    }
+    ";
+}
+
+// Exactly one reply off the socket, with nothing of the next one taken.
+//
+// The header line is read a byte at a time. That is a syscall per byte for
+// twenty-odd bytes, and it is deliberate: a buffered read cannot know where
+// the line ends before it reads past it, and bytes read past the end of this
+// reply belong to the next command's answer. Correct framing is worth more
+// here than the syscalls, and the payload — the part that is actually large —
+// is read in whole blocks because its length is known by then.
+//
+// Nesting is handled by counting rather than by recursion: an array header
+// adds its element count to what is still owed. A list of lists works, and so
+// does a reply nested deeper than this client has any reason to expect.
+str redis_read_reply(int fd, int cap) {
+    native "
+    size_t _cap = (size_t)$cap;
+    size_t _room = 8192, _len = 0;
+    char* _b = (char*)malloc(_room);
+    if (!_b) { strata_fail(strata_dup(\"redis: out of memory reading a reply\")); return strata_dup(\"\"); }
+    long long _owed = 1;
+    const char* _why = (const char*)0;
+    while (_owed > 0 && !_why) {
+        size_t _head = _len;
+        for (;;) {
+            if (_len + 2 > _room) {
+                size_t _want = _room * 2;
+                if (_want > _cap + 2) _want = _cap + 2;
+                if (_len + 2 > _want) { _why = \"redis: the reply is larger than this client will hold\"; break; }
+                char* _g = (char*)realloc(_b, _want);
+                if (!_g) { _why = \"redis: out of memory reading a reply\"; break; }
+                _b = _g; _room = _want;
+            }
+            ssize_t _r = read((int)$fd, _b + _len, 1);
+            if (_r <= 0) { _why = \"redis: the connection ended in the middle of a reply\"; break; }
+            _len += 1;
+            if (_len - _head >= 2 && _b[_len - 2] == '\\r' && _b[_len - 1] == '\\n') break;
+        }
+        if (_why) break;
+        {
+            char _k = _b[_head];
+            if (_k == '+' || _k == '-' || _k == ':') { _owed -= 1; continue; }
+            if (_k != '$' && _k != '*') {
+                _why = \"redis: a reply that does not begin with +, -, :, $ or *\";
+                break;
+            }
+            {
+                long long _n = 0; int _neg = 0, _digits = 0, _junk = 0;
+                size_t _i = _head + 1, _stop = _len - 2;
+                if (_i < _stop && _b[_i] == '-') { _neg = 1; _i += 1; }
+                while (_i < _stop) {
+                    char _d = _b[_i];
+                    if (_d < '0' || _d > '9') { _junk = 1; break; }
+                    if (_digits > 18) { _junk = 1; break; }
+                    _n = _n * 10 + (_d - '0'); _digits += 1; _i += 1;
+                }
+                if (_junk || _digits == 0) {
+                    _why = \"redis: a reply header this client cannot read\";
+                    break;
+                }
+                if (_neg) { _owed -= 1; continue; }
+                if (_k == '*') { _owed += _n - 1; continue; }
+                if ((size_t)_n + 2 > _cap) {
+                    _why = \"redis: the reply is larger than this client will hold\";
+                    break;
+                }
+                {
+                    size_t _need = (size_t)_n + 2, _got = 0;
+                    if (_len + _need + 1 > _room) {
+                        size_t _want = _len + _need + 1;
+                        char* _g = (char*)realloc(_b, _want);
+                        if (!_g) { _why = \"redis: out of memory reading a reply\"; break; }
+                        _b = _g; _room = _want;
+                    }
+                    while (_got < _need) {
+                        ssize_t _r = read((int)$fd, _b + _len + _got, _need - _got);
+                        if (_r <= 0) { break; }
+                        _got += (size_t)_r;
+                    }
+                    if (_got < _need) {
+                        _why = \"redis: the connection ended in the middle of a value\";
+                        break;
+                    }
+                    /* Strata text is a C string. A value with a zero byte in
+                     * it would arrive here looking like a shorter value that
+                     * was stored on purpose, which is the kind of confident
+                     * wrong answer this language exists to prevent. */
+                    if (memchr(_b + _len, 0, (size_t)_n)) {
+                        _why = \"redis: that value has a zero byte in it, which this client cannot carry as text\";
+                        break;
+                    }
+                    _len += _need;
+                    _owed -= 1;
+                }
+            }
+        }
+    }
+    if (_why) { free(_b); strata_fail(strata_dup(_why)); return strata_dup(\"\"); }
+    _b[_len] = '\\0';
+    return _b;
+    ";
+}
+
+// ── One command, one answer ──────────────────────────────────────────────
+
+// Send a command and hand back the whole reply, unread.
+//
+// A server that answers `-ERR ...` fails with what it said, because a command
+// Redis rejected is not a command that returned nothing. A failed call gives
+// back "" in every case; the reason is on the error flag.
+str redis_call(int fd, list[str] args) {
+    if (fd < 0) {
+        fail("redis: there is no connection to send that on");
+        return "";
+    }
+    str wire = resp_command(args);
+    if (had_error() == 1) { return ""; }
+    redis_write(fd, wire);
+    if (had_error() == 1) { return ""; }
+    str reply = redis_read_reply(fd, redis_cap());
+    if (had_error() == 1) { return ""; }
+    int kind = resp_kind(reply);
+    if (kind == RESP_BAD) {
+        fail("redis: the server answered with something this client cannot read");
+        return "";
+    }
+    if (kind == RESP_ERROR) {
+        fail(str_cat(["redis: ", resp_error_text(reply)]));
+        return "";
+    }
+    return reply;
+}
+
+// ── The commands ─────────────────────────────────────────────────────────
+
+// Whether the server is there and answering. 0 also means the error flag is
+// set with the reason.
+int redis_ping(int fd) {
+    str reply = redis_call(fd, ["PING"]);
+    if (had_error() == 1) { return 0; }
+    return str_eq(resp_value(reply), "PONG");
+}
+
+// Hand over a password. Never logged, never quoted back in an error: a
+// password in a log is a password that has leaked.
+int redis_auth(int fd, str password) {
+    str reply = redis_call(fd, ["AUTH", password]);
+    if (had_error() == 1) {
+        clear_error();
+        fail("redis: the server refused the password");
+        return 0;
+    }
+    return str_eq(resp_value(reply), "OK");
+}
+
+// Pick a numbered database.
+int redis_select(int fd, int db) {
+    str reply = redis_call(fd, ["SELECT", str(db)]);
+    if (had_error() == 1) { return 0; }
+    return str_eq(resp_value(reply), "OK");
+}
+
+// The value at `key`, or "" when it is not there.
+//
+// A key holding "" reads the same as a key that is not there. That is a real
+// ambiguity, not an oversight: see `redis_exists` and `redis_get_or`.
+str redis_get(int fd, str key) {
+    str reply = redis_call(fd, ["GET", key]);
+    if (had_error() == 1) { return ""; }
+    return resp_value(reply);
+}
+
+// The value at `key`, or `fallback` when the key is not there — which is a
+// different question from whether the value is empty.
+str redis_get_or(int fd, str key, str fallback) {
+    str reply = redis_call(fd, ["GET", key]);
+    if (had_error() == 1) { return fallback; }
+    if (resp_kind(reply) == RESP_ABSENT) { return fallback; }
+    return resp_value(reply);
+}
+
+int redis_set(int fd, str key, str value) {
+    str reply = redis_call(fd, ["SET", key, value]);
+    if (had_error() == 1) { return 0; }
+    return str_eq(resp_value(reply), "OK");
+}
+
+// A value that removes itself after `seconds`.
+//
+// One command rather than SET then EXPIRE, because between those two a crash
+// leaves a key that never expires — and a cache entry that never expires is
+// how a stale answer outlives the thing it was about.
+int redis_set_expiring(int fd, str key, str value, int seconds) {
+    if (seconds < 1) {
+        fail("redis: an expiry has to be at least one second");
+        return 0;
+    }
+    str reply = redis_call(fd, ["SET", key, value, "EX", str(seconds)]);
+    if (had_error() == 1) { return 0; }
+    return str_eq(resp_value(reply), "OK");
+}
+
+// How many of these keys were there to remove: 0 or 1 for one key.
+int redis_del(int fd, str key) {
+    str reply = redis_call(fd, ["DEL", key]);
+    if (had_error() == 1) { return 0 - 1; }
+    return resp_integer(reply);
+}
+
+int redis_exists(int fd, str key) {
+    str reply = redis_call(fd, ["EXISTS", key]);
+    if (had_error() == 1) { return 0; }
+    return resp_integer(reply) > 0;
+}
+
+// Add one and give back what it now holds. A key holding something that is
+// not a number fails with what Redis said, rather than answering 1.
+int redis_incr(int fd, str key) {
+    str reply = redis_call(fd, ["INCR", key]);
+    if (had_error() == 1) { return 0 - 1; }
+    return resp_integer(reply);
+}
+
+// Put a lifetime on a key that already exists. 0 when there was no such key —
+// which is worth checking, because expiring a key that is not there succeeds
+// at nothing quietly.
+int redis_expire(int fd, str key, int seconds) {
+    if (seconds < 1) {
+        fail("redis: an expiry has to be at least one second");
+        return 0;
+    }
+    str reply = redis_call(fd, ["EXPIRE", key, str(seconds)]);
+    if (had_error() == 1) { return 0; }
+    return resp_integer(reply) > 0;
+}
+
+// ── A queue ──────────────────────────────────────────────────────────────
+//
+// Push on the left, take from the right, and the queue runs oldest-first.
+// Push and take at the same end and it is a stack; the pairing is the whole
+// of the difference, so it is named here rather than left to the caller.
+
+// Put one item on the queue and say how long the queue now is.
+int redis_lpush(int fd, str key, str value) {
+    str reply = redis_call(fd, ["LPUSH", key, value]);
+    if (had_error() == 1) { return 0 - 1; }
+    return resp_integer(reply);
+}
+
+// Take the oldest item, or "" when the queue is empty.
+//
+// An item that is itself "" reads as an empty queue. A queue of empty strings
+// carries no information anyway, but it is the same ambiguity `redis_get`
+// has and it is stated rather than discovered.
+str redis_rpop(int fd, str key) {
+    str reply = redis_call(fd, ["RPOP", key]);
+    if (had_error() == 1) { return ""; }
+    return resp_value(reply);
+}
+
+// ── A connection from a URL ──────────────────────────────────────────────
+//
+// `redis://[:password@]host[:port][/db]` — the form every other Redis client
+// takes, so a setting can be moved between them. Each piece comes out through
+// its own function because each one is a decision a program may want to
+// report at startup: which host, which database, and whether a password was
+// supplied at all.
+
+int redis_is_url(str raw) {
+    if (str_len(raw) < 8) { return 0; }
+    return str_eq(str_slice(raw, 0, 8), "redis://");
+}
+
+// Everything after the scheme and after the credentials.
+str redis_authority_of(str url) {
+    str rest = url;
+    if (redis_is_url(url) == 1) { rest = str_slice(url, 8, str_len(url)); }
+    int slash = str_index_of(rest, "/");
+    if (slash >= 0) { rest = str_slice(rest, 0, slash); }
+    int at = str_index_of(rest, "@");
+    if (at >= 0) { rest = str_slice(rest, at + 1, str_len(rest)); }
+    return rest;
+}
+
+str redis_host_of(str url) {
+    str authority = redis_authority_of(url);
+    int colon = str_index_of(authority, ":");
+    if (colon >= 0) { return str_slice(authority, 0, colon); }
+    if (str_len(authority) == 0) { return "127.0.0.1"; }
+    return authority;
+}
+
+int redis_port_of(str url) {
+    str authority = redis_authority_of(url);
+    int colon = str_index_of(authority, ":");
+    if (colon < 0) { return redis_default_port(); }
+    str digits = str_slice(authority, colon + 1, str_len(authority));
+    if (str_len(digits) == 0) { return redis_default_port(); }
+    int port = 0;
+    int n = str_len(digits);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = digits[i];
+        if (c < 48 || c > 57) { return 0 - 1; }
+        port = port * 10 + (c - 48);
+    }
+    if (port < 1 || port > 65535) { return 0 - 1; }
+    return port;
+}
+
+// The password in the URL, or "" when there is none. The username Redis 6
+// allows before the colon is kept out of the answer.
+str redis_password_of(str url) {
+    str rest = url;
+    if (redis_is_url(url) == 1) { rest = str_slice(url, 8, str_len(url)); }
+    int slash = str_index_of(rest, "/");
+    if (slash >= 0) { rest = str_slice(rest, 0, slash); }
+    int at = str_index_of(rest, "@");
+    if (at < 0) { return ""; }
+    str credentials = str_slice(rest, 0, at);
+    list[str] parts = str_split_first(credentials, ":");
+    return parts[1];
+}
+
+// The numbered database in the path, 0 when the URL names none, and -1 when
+// what it names is not a number.
+int redis_db_of(str url) {
+    str rest = url;
+    if (redis_is_url(url) == 1) { rest = str_slice(url, 8, str_len(url)); }
+    int slash = str_index_of(rest, "/");
+    if (slash < 0) { return 0; }
+    str digits = str_slice(rest, slash + 1, str_len(rest));
+    if (str_len(digits) == 0) { return 0; }
+    int db = 0;
+    int n = str_len(digits);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = digits[i];
+        if (c < 48 || c > 57) { return 0 - 1; }
+        db = db * 10 + (c - 48);
+    }
+    return db;
+}
+
+// Connect, authenticate and select, from one setting. -1 if any of the three
+// did not happen, with the reason on the error flag and the password nowhere
+// in it.
+int redis_open(str url) {
+    if (redis_is_url(url) == 0) {
+        fail("redis: a connection setting has to begin with redis://");
+        return 0 - 1;
+    }
+    int port = redis_port_of(url);
+    if (port < 0) {
+        fail("redis: that URL's port is not a port number");
+        return 0 - 1;
+    }
+    int db = redis_db_of(url);
+    if (db < 0) {
+        fail("redis: that URL's database is not a number");
+        return 0 - 1;
+    }
+    int fd = redis_connect(redis_host_of(url), port);
+    if (fd < 0) { return 0 - 1; }
+    str password = redis_password_of(url);
+    if (str_len(password) > 0) {
+        if (redis_auth(fd, password) == 0) { redis_close(fd); return 0 - 1; }
+    }
+    if (db != 0) {
+        if (redis_select(fd, db) == 0) { redis_close(fd); return 0 - 1; }
+    }
+    return fd;
+}
+
+// ── What is checked without a server ─────────────────────────────────────
+
+verify "a command goes out as counted strings, so a value cannot become one" {
+    assert str_eq(resp_command(["PING"]), "*1\r\n$4\r\nPING\r\n") == 1;
+    assert str_eq(resp_command(["GET", "a"]), "*2\r\n$3\r\nGET\r\n$1\r\na\r\n") == 1;
+    // The case the array form exists for. Sent as a line of text this is
+    // SET k v, then a second command DEL everything. Sent as counted
+    // strings it is one key whose name happens to contain a line ending.
+    str sneaky = resp_command(["SET", "k\r\nDEL everything", "v"]);
+    assert str_index_of(sneaky, "$17\r\nk\r\nDEL everything\r\n") > 0;
+    // An empty argument is a legal argument, and is not the same as no
+    // argument: SET k "" stores an empty value.
+    assert str_eq(resp_command(["SET", "k", ""]),
+    "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$0\r\n\r\n") == 1;
+    // A command with no name is refused rather than sent as "*0".
+    assert str_eq(resp_command([]), "") == 1;
+    assert had_error() == 1; clear_error();
+}
+
+verify "every shape of reply is told apart, and nothing else is read at all" {
+    assert resp_kind("+OK\r\n") == RESP_STATUS;
+    assert resp_kind("-ERR no\r\n") == RESP_ERROR;
+    assert resp_kind(":42\r\n") == RESP_NUMBER;
+    assert resp_kind("$2\r\nhi\r\n") == RESP_TEXT;
+    assert resp_kind("$-1\r\n") == RESP_ABSENT;
+    assert resp_kind("*-1\r\n") == RESP_ABSENT;
+    assert resp_kind("*1\r\n$1\r\na\r\n") == RESP_LIST;
+    // Not a reply: no kind byte, no ending, a length that lies, and a body
+    // that does not end where it said it would.
+    assert resp_kind("OK\r\n") == RESP_BAD;
+    assert resp_kind("+OK") == RESP_BAD;
+    assert resp_kind("$5\r\nhi\r\n") == RESP_BAD;
+    assert resp_kind("$1\r\nhi\r\n") == RESP_BAD;
+    assert resp_kind(":abc\r\n") == RESP_BAD;
+    assert resp_kind("$x\r\n") == RESP_BAD;
+    assert resp_kind("") == RESP_BAD;
+    // Two replies in one buffer is a lost conversation, not the first reply.
+    assert resp_kind("+OK\r\n+OK\r\n") == RESP_BAD;
+}
+
+verify "a value is read whole, line endings and all" {
+    assert str_eq(resp_value("+OK\r\n"), "OK") == 1;
+    assert str_eq(resp_value("$5\r\nhello\r\n"), "hello") == 1;
+    assert str_eq(resp_value("$0\r\n\r\n"), "") == 1;
+    // The reason a bulk string is counted rather than delimited: this value
+    // contains the bytes that would otherwise end it.
+    assert str_eq(resp_value("$4\r\na\r\nb\r\n"), "a\r\nb") == 1;
+    assert str_eq(resp_value("$-1\r\n"), "") == 1;
+    // An absent key and an empty value really do read the same. Stated here
+    // so that the day it matters, the test says it was known.
+    assert str_eq(resp_value("$-1\r\n"), resp_value("$0\r\n\r\n")) == 1;
+}
+
+verify "a reply of the wrong shape is refused, not reinterpreted" {
+    assert str_eq(resp_value(":42\r\n"), "") == 1;
+    assert had_error() == 1; clear_error();
+    assert str_eq(resp_value("-ERR nope\r\n"), "") == 1;
+    assert had_error() == 1; clear_error();
+    assert resp_integer("$2\r\n42\r\n") == 0;
+    assert had_error() == 1; clear_error();
+    assert resp_integer("+OK\r\n") == 0;
+    assert had_error() == 1; clear_error();
+}
+
+verify "a number comes back as a number, including a negative one" {
+    assert resp_integer(":0\r\n") == 0;
+    assert resp_integer(":42\r\n") == 42;
+    assert resp_integer(":-3\r\n") == 0 - 3;
+    assert resp_integer(":999999999999999999\r\n") == 999999999999999999;
+    // Nineteen digits is past what this reads, and is refused rather than
+    // wrapped around into a small or negative count.
+    assert resp_kind(":9999999999999999999\r\n") == RESP_BAD;
+}
+
+verify "a list comes apart, and so does a list of lists" {
+    str two = "*2\r\n$3\r\none\r\n$3\r\ntwo\r\n";
+    assert resp_count(two) == 2;
+    assert str_eq(resp_value(resp_at(two, 0)), "one") == 1;
+    assert str_eq(resp_value(resp_at(two, 1)), "two") == 1;
+    assert str_eq(resp_at(two, 2), "") == 1;
+    assert had_error() == 1; clear_error();
+    assert resp_count("*0\r\n") == 0;
+    // Mixed shapes inside one list, which is what EXEC and CONFIG GET send.
+    str mixed = "*3\r\n:1\r\n$-1\r\n+OK\r\n";
+    assert resp_count(mixed) == 3;
+    assert resp_integer(resp_at(mixed, 0)) == 1;
+    assert resp_kind(resp_at(mixed, 1)) == RESP_ABSENT;
+    assert str_eq(resp_value(resp_at(mixed, 2)), "OK") == 1;
+    str nested = "*2\r\n*2\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    assert resp_count(nested) == 2;
+    assert resp_count(resp_at(nested, 0)) == 2;
+    assert str_eq(resp_value(resp_at(resp_at(nested, 0), 1)), "b") == 1;
+    assert str_eq(resp_value(resp_at(nested, 1)), "c") == 1;
+    // A list whose elements run out before the count it promised.
+    assert resp_kind("*3\r\n$1\r\na\r\n") == RESP_BAD;
+}
+
+verify "the error the server sent is the error the caller sees" {
+    assert str_eq(resp_error_text("-WRONGTYPE not a list\r\n"),
+    "WRONGTYPE not a list") == 1;
+    assert str_eq(resp_error_text("+OK\r\n"), "") == 1;
+}
+
+verify "a connection setting comes apart the way a connection needs it" {
+    assert str_eq(redis_host_of("redis://cache.internal:6380/2"), "cache.internal") == 1;
+    assert redis_port_of("redis://cache.internal:6380/2") == 6380;
+    assert redis_db_of("redis://cache.internal:6380/2") == 2;
+    assert str_eq(redis_password_of("redis://cache.internal:6380/2"), "") == 1;
+    // No port and no database are the defaults every other client uses.
+    assert redis_port_of("redis://localhost") == 6379;
+    assert redis_db_of("redis://localhost") == 0;
+    assert str_eq(redis_host_of("redis://localhost"), "localhost") == 1;
+    // A password, with and without the username Redis 6 allows before it.
+    assert str_eq(redis_password_of("redis://:s3cret@h:6379/0"), "s3cret") == 1;
+    assert str_eq(redis_password_of("redis://app:s3cret@h/0"), "s3cret") == 1;
+    // and the credentials are not mistaken for the host.
+    assert str_eq(redis_host_of("redis://app:s3cret@h/0"), "h") == 1;
+    assert redis_port_of("redis://:s3cret@h/0") == 6379;
+    // Something that is not a port is -1, not a quietly different port.
+    assert redis_port_of("redis://h:http/0") == 0 - 1;
+    assert redis_db_of("redis://h:6379/main") == 0 - 1;
+    assert redis_is_url("rediss://h") == 0;
+    assert redis_is_url("redis://h") == 1;
+}

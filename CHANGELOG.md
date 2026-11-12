@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### Seven connectors and components, and two bugs they found
+
+Seven new standard-library modules, each written in Strata and each driven
+against something real rather than mocked.
+
+**Connectors.** `std/redis.sta` speaks RESP over a plain socket and needs no
+library at all; it was tested against a strict server written from the
+protocol rather than from a client, which makes it a two-sided check. 
+`std/mysql.sta` finds its header and symbols at run time rather than at link
+time, so a machine without the MySQL client library can still build a program
+that imports it -- and it is honest three times over that no live MySQL has
+ever answered it. `std/smtp.sta` sends mail, upgrades through STARTTLS,
+verifies the certificate (and was proved to refuse an untrusted one), and
+escapes the line that is a single full stop, which is the defect that makes
+hand-rolled SMTP silently truncate a message while the server still says
+"accepted". `std/notify.sta` posts to Slack and Teams. `std/webhook.sta`
+receives one, and refuses it unless the signature verifies -- compared in
+constant time, because the time an ordinary comparison takes tells an attacker
+how many leading bytes were right.
+
+**Components.** `std/session.sta` is the sign-in, session, CSRF and roles work
+lifted out of `apps/orders` and made general, keeping the four things that app
+got right: the throttle counted against the pair of account and source rather
+than either alone, the CSRF token as a second secret the cookie never carries,
+the lock chosen by the route rather than the method, and the 405 that happens
+before the token is checked. `std/jobs.sta` runs scheduled work with retries
+and a growing gap, and says plainly what it guarantees: never two at once,
+possibly twice in total, so a job body must be safe to repeat.
+
+Each suite proves at least one security property goes red when it is removed.
+That was done by breaking it on purpose, watching the test fail, and restoring
+it -- not by assertion.
+
+### Two bugs the building found
+
+**A table whose file did not exist could be written exactly once.** A refused
+load marks the table; only a load that actually reads clears the mark. But a
+load that finds the file unchanged takes a fast path that skipped the
+clearing -- so after the first save created the file, every later load took
+that path and every later save was refused. In a service it showed as the
+first person signing in and nobody after them. A load that finds the file
+unchanged IS a successful read, so it now clears the mark.
+
+**A `delete` used as a value never had its condition checked.** `return
+delete Row <- [user_id == user_id];` compiled clean and removed every row in
+the table. Inside a query that is `E008` -- the rule exists because a column
+compared with a same-named variable matches everything, which is how a
+session lookup becomes an authentication bypass. The one statement that
+destroys rows was the one place the rule did not reach, because a delete used
+as an expression was answered "int" without anything looking at its brackets.
+Found while writing a sign-out-everywhere function that would have ended every
+session in the system.
+
+## Unreleased
+
 ### A broken import says what it is, and a crash does not wedge the next run
 
 **A module that would not lex was reported as its consequences.** A `native`

@@ -1,0 +1,508 @@
+// STRATA STANDARD LIBRARY — std/jobs.sta
+// Work that happens on a clock rather than because somebody asked.
+//
+// Every back office has some: sweep expired sessions, send yesterday's
+// summary at two in the morning, retry the invoices the payment gateway was
+// too busy for. apps/orders does the first of those by hand, inside its
+// accept loop, with a `last_sweep` variable — which works for exactly one job
+// in exactly one process and cannot survive a restart, record a failure or
+// try again.
+//
+// WHAT A JOB IS HERE
+//
+// A row in `ScheduledJob`: a name, a schedule, when it is next due, how many
+// times in a row it has failed, and what happened last time. The BODY is not
+// in the row. Strata has no function values, so there is nothing to put
+// there — the runner hands you a name and you decide what that name means:
+//
+//     str name = jobs_claim(now(), 300);
+//     if (str_eq(name, "sweep") == 1) { ok = sweep(); }
+//
+// That is less pretty than passing a function and it is honest about the
+// language. It also means the dispatch is a plain function `strata test` can
+// exercise without a scheduler.
+//
+// WHERE THE DATA LIVES
+//
+// `load` and `save` take a string literal, so the paths are fixed and the
+// runner must be started from the directory that owns its `data/`:
+//
+//     data/jobs.tsv       the jobs and their state
+//     data/jobs.lock      held for the moment a claim or a result is written
+//     data/jobs.runner    held for as long as a runner is running
+//
+// WHAT THIS GUARANTEES ABOUT RUNNING A JOB TWICE — read this one
+//
+// Two runners started by accident will not run the same job at the same
+// time, PROVIDED they share `data/` and the filesystem under it supports
+// flock. Both of these hold it:
+//
+//   * `data/jobs.runner` is taken with flock(LOCK_EX|LOCK_NB). The second
+//     runner cannot take it and leaves instead of queueing.
+//   * every claim is made under flock on `data/jobs.lock`, and writes a
+//     lease into the row. A claim is only offered for a job whose lease has
+//     run out, so even two runners that were pointed at different runner
+//     locks serialise on the state file.
+//
+// What it does NOT guarantee: that a job body runs at most once in total. A
+// runner killed in the middle of a job leaves a lease that expires, and the
+// next runner claims the job again — so the body may run twice over the life
+// of the system and MUST be safe to repeat. At-least-once, never
+// concurrently, is the whole claim. It is also local: flock means nothing
+// between machines over NFS, and nothing at all if two runners are given
+// different `data/` directories.
+
+import io   from std;
+import str  from std;
+import mem  from std;
+import time from std;
+
+foreign "sys/file.h" link "" { }
+foreign "fcntl.h"    link "" { }
+foreign "unistd.h"   link "" { }
+
+// `last_ok` is 1 after a success, 0 after a failure and -1 before the first
+// attempt — three states, because "has never run" and "ran and failed" are
+// different things to be woken up for.
+database ScheduledJob {
+    str name;
+    int every_minutes;     // >0 for "every N minutes", 0 for a daily job
+    int at_minute;         // minutes past midnight UTC for a daily job, -1 otherwise
+    int max_attempts;      // failures in a row before it gives up
+    int first_gap;         // seconds before the first retry; it doubles after that
+    int next_due;          // unix time this job should next be run
+    int attempts;          // failures in a row on the slot being worked now
+    int claimed_until;     // unix time a runner's lease on this job runs out
+    int last_run;          // unix time of the last attempt, 0 for never
+    int last_ok;           // 1 success, 0 failure, -1 never attempted
+    str last_detail;       // why it failed, for whoever reads the table
+    int given_up;          // 1 once max_attempts failures have happened
+}
+
+// An hour. Doubling without a cap turns a job that has been failing all
+// weekend into a job that next tries in four months.
+const int JOBS_MAX_GAP = 3600;
+
+// What a failure message is cut to before it is stored. A stack of text in
+// a column nobody reads is a file that grows for no one.
+const int JOBS_DETAIL_BYTES = 200;
+
+// "" is awkward in a tab-separated column and tells a reader nothing. A job
+// that has not failed says so.
+const str JOBS_NO_DETAIL = "-";
+
+// ── Storage ──────────────────────────────────────────────────────────────
+
+// A file that is not there yet is the first run of a new service, not a
+// failure — so it is not attempted rather than attempted and forgiven. A
+// REFUSED load poisons the table and only a load that really reads clears
+// that, while a load of an unchanged file short-circuits without reading. A
+// runner whose jobs file did not exist at startup would therefore record its
+// first result and never be able to record another. See the same note in
+// std/session.sta.
+//
+// A file that IS there and cannot be read stops the runner, because a runner
+// that silently starts from an empty schedule runs nothing and says nothing.
+int jobs_load() {
+    if (file_exists("data/jobs.tsv") == 0) { return 1; }
+    load ScheduledJob from "data/jobs.tsv";
+    if (had_error() == 1) { return 0; }
+    return 1;
+}
+
+int jobs_save() { return save ScheduledJob to "data/jobs.tsv"; }
+
+// ── The locks ────────────────────────────────────────────────────────────
+
+// Held for the few microseconds a claim or a result takes. Blocking, because
+// two runners writing results at the same moment should take turns, not give
+// up.
+int jobs_lock() {
+    native "
+    int fd = open(\"data/jobs.lock\", O_CREAT | O_RDWR, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX) < 0) { close(fd); return -1; }
+    return fd;
+    ";
+}
+
+int jobs_unlock(int fd) {
+    native "if ($fd < 0) return 0; flock($fd, LOCK_UN); close($fd); return 1;";
+}
+
+// Taken once, for the life of a runner, and NOT blocking: a second runner
+// should leave rather than wait, because waiting means it starts the moment
+// the first one is restarted and then there are two.
+//
+// Returns a descriptor to hold, or -1 when another runner has it.
+int jobs_runner_lock() {
+    native "
+    int fd = open(\"data/jobs.runner\", O_CREAT | O_RDWR, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) { close(fd); return -1; }
+    return fd;
+    ";
+}
+
+int jobs_runner_unlock(int fd) {
+    native "if ($fd < 0) return 0; flock($fd, LOCK_UN); close($fd); return 1;";
+}
+
+// A runner with nothing to do should not spin a core.
+int jobs_sleep_ms(int ms) {
+    native "if ($ms > 0) usleep((useconds_t)($ms * 1000)); return 1;";
+}
+
+// ── The arithmetic, apart from any clock or file ─────────────────────────
+
+int jobs_minute_of_day(int at_hour, int at_min) {
+    if (at_hour < 0) { return 0 - 1; }
+    if (at_hour > 23) { return 0 - 1; }
+    if (at_min < 0) { return 0 - 1; }
+    if (at_min > 59) { return 0 - 1; }
+    return at_hour * 60 + at_min;
+}
+
+// The gap before attempt number `attempt`, doubling and capped.
+//
+// Capped rather than unbounded: a job failing every time for a day would
+// otherwise reach a gap measured in weeks, and the first thing anyone does
+// after fixing the cause is wonder why it has not run.
+int jobs_gap(int base_gap, int attempt) {
+    int gap = base_gap;
+    if (gap < 1) { gap = 1; }
+    if (attempt < 2) { return gap; }
+    int i = 1;
+    while (i < attempt) {
+        gap = gap * 2;
+        if (gap >= JOBS_MAX_GAP) { return JOBS_MAX_GAP; }
+        i = i + 1;
+    }
+    return gap;
+}
+
+int jobs_next_interval(int when, int minutes) {
+    int every = minutes;
+    if (every < 1) { every = 1; }
+    return when + every * 60;
+}
+
+// The next time of day `at_minute` falls after `when`, UTC. Today's if it is
+// still ahead, tomorrow's otherwise — so a job that just ran at 02:30 is next
+// due at 02:30 tomorrow rather than immediately again.
+int jobs_next_daily(int when, int at_minute) {
+    int base = start_of_day(when) + at_minute * 60;
+    if (base <= when) { return base + 86400; }
+    return base;
+}
+
+// Whether a row in this state should be picked up now. Separate from the
+// query so it can be checked without a file.
+int jobs_is_due(int next_due, int claimed_until, int given_up, int when) {
+    if (given_up == 1) { return 0; }
+    if (next_due > when) { return 0; }
+    // Somebody else holds a live lease on it.
+    if (claimed_until > when) { return 0; }
+    return 1;
+}
+
+// ── Declaring jobs ───────────────────────────────────────────────────────
+
+// Both of these take the lock, re-read the file, change it and write it, so
+// two processes starting at once cannot each write a whole table from their
+// own copy.
+//
+// A job that is already known keeps its state — when it is next due, what it
+// has been doing — and only its schedule is updated. Resetting that on every
+// start would mean a daily report ran once per restart.
+
+int jobs_every(str job_name, int minutes, int max_tries, int base_gap, int when) {
+    if (str_len(job_name) == 0) { fail("jobs: a job needs a name"); return 0; }
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return 0; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return 0; }
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) {
+        // A new interval job is due at once. The alternative — waiting a
+        // full interval before the first run — makes a five-minute job look
+        // broken for five minutes after every deployment.
+        ScheduledJob <- [name = job_name, every_minutes = minutes, at_minute = 0 - 1,
+        max_attempts = max_tries, first_gap = base_gap, next_due = when,
+        attempts = 0, claimed_until = 0, last_run = 0, last_ok = 0 - 1,
+        last_detail = JOBS_NO_DETAIL, given_up = 0];
+    } else {
+        ScheduledJob j = found[0];
+        j.every_minutes = minutes;
+        j.at_minute = 0 - 1;
+        j.max_attempts = max_tries;
+        j.first_gap = base_gap;
+    }
+    int wrote = jobs_save();
+    jobs_unlock(fd);
+    return wrote;
+}
+
+int jobs_daily(str job_name, int at_hour, int at_min, int max_tries, int base_gap, int when) {
+    if (str_len(job_name) == 0) { fail("jobs: a job needs a name"); return 0; }
+    int minute = jobs_minute_of_day(at_hour, at_min);
+    if (minute < 0) { fail("jobs: that is not a time of day"); return 0; }
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return 0; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return 0; }
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) {
+        ScheduledJob <- [name = job_name, every_minutes = 0, at_minute = minute,
+        max_attempts = max_tries, first_gap = base_gap,
+        next_due = jobs_next_daily(when, minute),
+        attempts = 0, claimed_until = 0, last_run = 0, last_ok = 0 - 1,
+        last_detail = JOBS_NO_DETAIL, given_up = 0];
+    } else {
+        ScheduledJob j = found[0];
+        j.every_minutes = 0;
+        j.at_minute = minute;
+        j.max_attempts = max_tries;
+        j.first_gap = base_gap;
+    }
+    int wrote = jobs_save();
+    jobs_unlock(fd);
+    return wrote;
+}
+
+// Put a job that gave up back in the schedule, due now. What an operator
+// runs once the thing that was broken is fixed.
+int jobs_revive(str job_name, int when) {
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return 0; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return 0; }
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { jobs_unlock(fd); return 0; }
+    ScheduledJob j = found[0];
+    j.given_up = 0;
+    j.attempts = 0;
+    j.claimed_until = 0;
+    j.next_due = when;
+    int wrote = jobs_save();
+    jobs_unlock(fd);
+    return wrote;
+}
+
+// ── Running them ─────────────────────────────────────────────────────────
+
+// Take the next due job, or "" when there is nothing to do.
+//
+// The lease is written BEFORE the body runs and before this returns, under
+// the lock, so there is no window in which two runners both believe they
+// have it. `lease_seconds` should be comfortably longer than the job's
+// slowest honest run: too short and a slow job is picked up again while it
+// is still going, which is the one way this design runs a body twice at once.
+str jobs_claim(int when, int lease_seconds) {
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return ""; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return ""; }
+    list[ScheduledJob] ready = ScheduledJob <- [given_up == 0 && next_due <= when && claimed_until <= when] by next_due asc first 1;
+    if (count(ready) == 0) { jobs_unlock(fd); return ""; }
+    ScheduledJob j = ready[0];
+    j.claimed_until = when + lease_seconds;
+    str picked = j.name;
+    // A claim that was not written is not a claim: another runner would
+    // still see the job free. Better to run nothing than to run it twice.
+    if (jobs_save() == 0) {
+        jobs_unlock(fd);
+        fail("jobs: the claim could not be stored, so no job was started");
+        return "";
+    }
+    jobs_unlock(fd);
+    return picked;
+}
+
+// The job finished. Its failure count is cleared and it is scheduled again.
+int jobs_done(str job_name, int when) {
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return 0; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return 0; }
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { jobs_unlock(fd); return 0; }
+    ScheduledJob j = found[0];
+    j.attempts = 0;
+    j.last_run = when;
+    j.last_ok = 1;
+    j.last_detail = JOBS_NO_DETAIL;
+    j.given_up = 0;
+    j.claimed_until = 0;
+    if (j.every_minutes > 0) {
+        j.next_due = jobs_next_interval(when, j.every_minutes);
+    } else {
+        j.next_due = jobs_next_daily(when, j.at_minute);
+    }
+    int wrote = jobs_save();
+    jobs_unlock(fd);
+    return wrote;
+}
+
+// The job failed. It is scheduled again after a gap that doubles, until it
+// has failed `max_attempts` times in a row — at which point it stops rather
+// than retrying for ever, and says so in the table.
+//
+// Returns 1 when it will try again, 0 when it has given up, and 0 - 1 when
+// the result could not be recorded at all.
+int jobs_failed(str job_name, str why, int when) {
+    int fd = jobs_lock();
+    if (fd < 0) { fail("jobs: could not take data/jobs.lock"); return 0 - 1; }
+    if (jobs_load() == 0) { jobs_unlock(fd); return 0 - 1; }
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { jobs_unlock(fd); return 0 - 1; }
+    ScheduledJob j = found[0];
+    j.attempts = j.attempts + 1;
+    j.last_run = when;
+    j.last_ok = 0;
+    j.claimed_until = 0;
+    str detail = str_truncate(why, JOBS_DETAIL_BYTES);
+    if (str_len(detail) == 0) { detail = JOBS_NO_DETAIL; }
+    j.last_detail = detail;
+    int again = 1;
+    if (j.attempts >= j.max_attempts) {
+        j.given_up = 1;
+        // Left where it was, so a reader can see when it stopped trying.
+        again = 0;
+    } else {
+        j.next_due = when + jobs_gap(j.first_gap, j.attempts);
+    }
+    if (jobs_save() == 0) { jobs_unlock(fd); return 0 - 1; }
+    jobs_unlock(fd);
+    return again;
+}
+
+// ── Telling somebody what happened ───────────────────────────────────────
+//
+// These read whatever is in memory. Call jobs_load() first if the runner is
+// a different process from the one asking.
+
+int jobs_known(str job_name) {
+    return count(ScheduledJob <- [name == job_name]);
+}
+
+int jobs_last_ok(str job_name) {
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { return 0 - 1; }
+    ScheduledJob j = found[0];
+    return j.last_ok;
+}
+
+int jobs_attempts(str job_name) {
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { return 0; }
+    ScheduledJob j = found[0];
+    return j.attempts;
+}
+
+int jobs_given_up(str job_name) {
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { return 0; }
+    ScheduledJob j = found[0];
+    return j.given_up;
+}
+
+int jobs_next_due(str job_name) {
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { return 0; }
+    ScheduledJob j = found[0];
+    return j.next_due;
+}
+
+str jobs_last_detail(str job_name) {
+    list[ScheduledJob] found = ScheduledJob <- [name == job_name];
+    if (count(found) == 0) { return ""; }
+    ScheduledJob j = found[0];
+    return j.last_detail;
+}
+
+// How many jobs are ready to be picked up right now.
+int jobs_due_count(int when) {
+    list[ScheduledJob] all = ScheduledJob <- [given_up == 0 && next_due <= when && claimed_until <= when];
+    return count(all);
+}
+
+// One line per job, for a /jobs page or a log on startup. No times are
+// formatted as dates here: std/time.sta refuses a year outside four digits,
+// and a next_due of 0 on a job that has given up is not a date anybody wants
+// printed as 1970.
+str jobs_report() {
+    list[ScheduledJob] all = ScheduledJob <- [max_attempts > 0] by name asc;
+    StringBuilder sb = sb_new();
+    for J in all {
+        sb_append(&sb, J.name);
+        sb_append(&sb, " last_ok=");
+        sb_append(&sb, str(J.last_ok));
+        sb_append(&sb, " attempts=");
+        sb_append(&sb, str(J.attempts));
+        sb_append(&sb, " given_up=");
+        sb_append(&sb, str(J.given_up));
+        sb_append(&sb, " next_due=");
+        sb_append(&sb, str(J.next_due));
+        sb_append(&sb, " detail=");
+        sb_append(&sb, J.last_detail);
+        sb_append(&sb, "\n");
+    }
+    return sb_to_str(&sb);
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "a retry gap grows and then stops growing" {
+    // The first retry waits the base gap, and each one after it doubles.
+    assert jobs_gap(10, 1) == 10;
+    assert jobs_gap(10, 2) == 20;
+    assert jobs_gap(10, 3) == 40;
+    assert jobs_gap(10, 4) == 80;
+    // Capped, so a job that has been failing all weekend is not next due in
+    // four months.
+    assert jobs_gap(10, 30) == JOBS_MAX_GAP;
+    assert jobs_gap(10, 300) == JOBS_MAX_GAP;
+    // A nonsense base still produces a gap, rather than a retry storm.
+    assert jobs_gap(0, 1) == 1;
+    assert jobs_gap(0 - 5, 3) == 4;
+    assert jobs_gap(10, 0) == 10;
+}
+
+verify "an interval schedule counts from when the run finished" {
+    assert jobs_next_interval(1000, 5) == 1000 + 300;
+    assert jobs_next_interval(1000, 1) == 1060;
+    // Zero minutes would be a job due the instant it finished, for ever.
+    assert jobs_next_interval(1000, 0) == 1060;
+}
+
+verify "a daily schedule lands on the next one, not on the last one" {
+    // 1970-01-02 00:00:00 UTC is 86400.
+    int midnight = 86400;
+    int at_0230 = jobs_minute_of_day(2, 30);
+    assert at_0230 == 150;
+    assert jobs_next_daily(midnight, at_0230) == midnight + 150 * 60;
+    // Standing exactly on it means the next one is tomorrow, so a job that
+    // has just run is not due again immediately.
+    assert jobs_next_daily(midnight + 150 * 60, at_0230) == midnight + 86400 + 150 * 60;
+    // An hour after it, likewise.
+    assert jobs_next_daily(midnight + 151 * 60, at_0230) == midnight + 86400 + 150 * 60;
+    // A minute before it, it is still today's.
+    assert jobs_next_daily(midnight + 149 * 60, at_0230) == midnight + 150 * 60;
+    // A time of day that does not exist is refused rather than wrapped.
+    assert jobs_minute_of_day(24, 0) == 0 - 1;
+    assert jobs_minute_of_day(0, 60) == 0 - 1;
+    assert jobs_minute_of_day(0 - 1, 0) == 0 - 1;
+    assert jobs_minute_of_day(0, 0) == 0;
+    assert jobs_minute_of_day(23, 59) == 1439;
+}
+
+verify "a claimed job is not due, and a job that gave up is never due" {
+    // due, free, not given up
+    assert jobs_is_due(1000, 0, 0, 1000) == 1;
+    assert jobs_is_due(1000, 0, 0, 1001) == 1;
+    // not yet
+    assert jobs_is_due(1001, 0, 0, 1000) == 0;
+    // somebody holds a live lease — this is what stops a second runner
+    assert jobs_is_due(1000, 1500, 0, 1000) == 0;
+    // the lease has run out, so it is free again
+    assert jobs_is_due(1000, 1500, 0, 1500) == 1;
+    assert jobs_is_due(1000, 1500, 0, 1600) == 1;
+    // it gave up, and no amount of time makes it due
+    assert jobs_is_due(1000, 0, 1, 99999) == 0;
+}

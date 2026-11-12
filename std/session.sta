@@ -1,0 +1,695 @@
+// STRATA STANDARD LIBRARY — std/session.sta
+// Sign-in, sessions, CSRF and simple permissions.
+//
+// This is apps/orders lifted out. That service had a working sign-in — a
+// throttle on guessing, a CSRF token, a session that expires, a write lock —
+// and every one of those lived in the application, which means the next
+// service written here would have had to get all of them right again from
+// nothing. The parts that are not about orders are here instead.
+//
+// WHAT A SESSION IS HERE
+//
+// A row in `AuthSession`, keyed by a 256-bit random token the browser holds
+// in a cookie. The row carries a second random token that forms must send
+// back. Both come from /dev/urandom by way of std/auth.sta — see
+// `auth_fresh_token` below for what that is worth and when it refuses.
+//
+// WHERE THE DATA LIVES
+//
+// `load` and `save` take a string literal, not a variable, so the paths are
+// fixed and the service must run from the directory that owns its `data/`:
+//
+//     data/auth_users.tsv       accounts and their password hashes
+//     data/auth_sessions.tsv    live sessions
+//     data/auth_attempts.tsv    failed sign-ins, for the throttle
+//
+// That is the same arrangement apps/orders uses. `data/` has to exist before
+// the first save.
+//
+// WHAT THIS IS NOT
+//
+// Not a defence against someone who can read the session file or the
+// cookie: anyone holding the token IS the session, which is what a bearer
+// token means everywhere. Not TLS — std/http.sta serves plain HTTP, so on an
+// untrusted network the cookie is readable in transit by anybody on the
+// path. No password policy, no reset flow, no second factor, no
+// per-IP rate limit across many usernames. docs/COMPONENTS.md lists the
+// rest, with the attacks each gap leaves open.
+
+import io   from std;
+import str  from std;
+import mem  from std;
+import auth from std;
+import http from std;
+
+// ── The tables ───────────────────────────────────────────────────────────
+//
+// Named with an `Auth` prefix rather than `User` and `Session`, because a
+// table name is global here: an application that already has its own `User`
+// should not be unable to import this file.
+
+database AuthUser {
+    int id;
+    str username;
+    str password_hash;         // SHA-512 crypt, salt inside. Never the password.
+    str role;                  // one word; permissions are granted to roles
+    int failed_logins;         // consecutive failures, for an operator to look at
+    int locked_until;          // unix time, 0 when not locked
+}
+
+database AuthSession {
+    str token;                 // what the cookie carries
+    int user_id;
+    int expires_at;            // unix time; a session at or past this is not one
+    str csrf;                  // what a form carries; never sent as a cookie
+}
+
+// Failed sign-ins, counted against the PAIR of the account guessed at and
+// the place the guessing came from.
+//
+// Counting against the account alone hands anybody a way to lock an operator
+// out of their own service: guess wrong five times at a username you do not
+// own. Counting against the source alone locks out a whole office behind one
+// address. The pair does neither. What it does not stop is one source
+// spreading guesses across many usernames — that needs a rate limit, which
+// this is not.
+database AuthAttempt {
+    int id;
+    str source;
+    str username;
+    int failures;
+    int locked_until;
+}
+
+// Which role may do what. Deliberately NOT persisted: a permission matrix in
+// a file is a permission matrix that an attacker who gets any write at all
+// can edit. These are declared in the program, before it starts serving, and
+// a fork inherits them.
+database AuthGrant {
+    str role;
+    str action;
+}
+
+// ── The dials ────────────────────────────────────────────────────────────
+
+// Eight hours. Long enough for a working day, short enough that a stolen
+// cookie is not stolen forever.
+const int AUTH_SESSION_SECONDS = 28800;
+
+// Failures in a row, against one account from one place, before that pair is
+// refused for a while.
+const int AUTH_LOCKOUT_AFTER   = 5;
+const int AUTH_LOCKOUT_SECONDS = 300;
+
+// A token is 32 bytes of randomness written as hex, so its text is 64 bytes.
+// Anything else is not a token this file made.
+const int AUTH_TOKEN_CHARS = 64;
+
+// A crypt(3) setting that matches no account. Hashing against it costs what
+// hashing against a real account costs, which is the whole point — see
+// auth_sign_in.
+const str AUTH_NOBODY = "$6$0123456789abcdef$";
+
+// ── Storage ──────────────────────────────────────────────────────────────
+
+// Read all three tables. Returns 1 when every table holds its file.
+//
+// Each load is guarded by file_exists rather than attempted and forgiven,
+// and the reason is a runtime bug worth knowing about. A load that is
+// REFUSED marks the table "poisoned", and a later save is refused because
+// the table does not account for what is in the file — which is right. What
+// unpoisons it is a load that actually reads. But a load whose file has not
+// changed since the last one short-circuits and returns 1 without reading,
+// and that fast path does not unpoison. So: first run, no file, load
+// refuses, the first save creates the file, every load after that
+// short-circuits, and every save after the first is refused for the life of
+// the process. A service that signs one person in and then cannot store
+// another session. Asking first means the refusal never happens.
+//
+// A file that IS there and cannot be read is a different matter: the error
+// is left standing, because a service that quietly starts from an empty user
+// table lets everybody in as nobody.
+int auth_load() {
+    int ok = 1;
+    if (file_exists("data/auth_users.tsv") == 1) {
+        load AuthUser from "data/auth_users.tsv";
+        if (had_error() == 1) { ok = 0; }
+    }
+    if (file_exists("data/auth_sessions.tsv") == 1) {
+        load AuthSession from "data/auth_sessions.tsv";
+        if (had_error() == 1) { ok = 0; }
+    }
+    if (file_exists("data/auth_attempts.tsv") == 1) {
+        load AuthAttempt from "data/auth_attempts.tsv";
+        if (had_error() == 1) { ok = 0; }
+    }
+    return ok;
+}
+
+// Each returns whether the write actually happened, because a caller that
+// tells a person they are signed in when the session was not stored has lied
+// to them.
+int auth_save_users()    { return save AuthUser to "data/auth_users.tsv"; }
+int auth_save_sessions() { return save AuthSession to "data/auth_sessions.tsv"; }
+int auth_save_attempts() { return save AuthAttempt to "data/auth_attempts.tsv"; }
+
+int auth_save_all() {
+    int a = auth_save_users();
+    int b = auth_save_sessions();
+    int c = auth_save_attempts();
+    if (a == 0) { return 0; }
+    if (b == 0) { return 0; }
+    if (c == 0) { return 0; }
+    return 1;
+}
+
+// ── Secrets ──────────────────────────────────────────────────────────────
+
+// Two secrets compared without telling the caller, through how long it took,
+// how much of the front of one matched.
+//
+// It also refuses when either side is empty. That is not a detail: the
+// obvious spelling of a CSRF check is `str_eq(form_value, csrf_for(cookie))`,
+// and for a request carrying no cookie both sides are "" — so the check
+// passes for exactly the request that has no session at all.
+int auth_same_secret(str mine, str theirs) {
+    native "
+    const char* a = $mine; const char* b = $theirs;
+    size_t la = strlen(a), lb = strlen(b);
+    /* Nothing is not a secret, and two nothings are not a match. */
+    if (la == 0 || lb == 0) return 0;
+    if (la != lb) return 0;
+    unsigned char d = 0;
+    for (size_t i = 0; i < la; i++) d |= (unsigned char)(a[i] ^ b[i]);
+    return d == 0 ? 1 : 0;
+    ";
+}
+
+// True when `text` is exactly AUTH_TOKEN_CHARS lowercase hex digits.
+//
+// Used before a token is believed and before one is put in a header. A
+// cookie value is attacker-controlled text that ends up inside a `Set-Cookie`
+// line; a value carrying a carriage return would end that line and start
+// another header of the attacker's choosing.
+int auth_token_shaped(str text) {
+    if (str_len(text) != AUTH_TOKEN_CHARS) { return 0; }
+    int i = 0;
+    while (i < AUTH_TOKEN_CHARS) {
+        int c = text[i];
+        int digit = 0;
+        if (c >= 48 && c <= 57) { digit = 1; }
+        if (c >= 97 && c <= 102) { digit = 1; }
+        if (digit == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// A fresh 256-bit token, or "" and a reported failure.
+//
+// std/auth.sta reads /dev/urandom and answers "" when it cannot — a machine
+// with no /dev, a process out of file descriptors. An empty token stored as
+// a session is a session every request with no cookie matches, so this
+// refuses loudly instead and no session is created.
+str auth_fresh_token() {
+    str token = new_session_token();
+    if (auth_token_shaped(token) == 0) {
+        fail("session: could not read 32 random bytes, so no token was made");
+        return "";
+    }
+    return token;
+}
+
+// ── Accounts ─────────────────────────────────────────────────────────────
+
+int auth_next_user_id() {
+    list[AuthUser] all = AuthUser <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// The id of the account called `who`, or 0.
+int auth_user_id_of(str who) {
+    list[AuthUser] found = AuthUser <- [username == who];
+    if (count(found) == 0) { return 0; }
+    AuthUser u = found[0];
+    return u.id;
+}
+
+// Add an account. Returns its id, or 0 when the name is taken, the name is
+// empty, or the password is empty.
+//
+// The password is hashed here and the plaintext is not kept, not returned
+// and not printed. It exists in this function's argument and nowhere else.
+int auth_add_user(str who, str secret, str role_name) {
+    if (str_len(who) == 0) { return 0; }
+    // An account with an empty password is an account anybody can use. crypt
+    // will happily hash "" and then match it.
+    if (str_len(secret) == 0) { return 0; }
+    if (auth_user_id_of(who) > 0) { return 0; }
+    int fresh = auth_next_user_id();
+    AuthUser <- [id = fresh, username = who,
+    password_hash = hash_password(secret), role = role_name,
+    failed_logins = 0, locked_until = 0];
+    return fresh;
+}
+
+// Change a password. 1 when it was changed, 0 when there is no such account
+// or the new password is empty.
+int auth_set_password(int user_id, str secret) {
+    if (str_len(secret) == 0) { return 0; }
+    list[AuthUser] found = AuthUser <- [id == user_id];
+    if (count(found) == 0) { return 0; }
+    AuthUser u = found[0];
+    u.password_hash = hash_password(secret);
+    return 1;
+}
+
+str auth_role_of(int user_id) {
+    list[AuthUser] found = AuthUser <- [id == user_id];
+    if (count(found) == 0) { return ""; }
+    AuthUser u = found[0];
+    return u.role;
+}
+
+str auth_username_of(int user_id) {
+    list[AuthUser] found = AuthUser <- [id == user_id];
+    if (count(found) == 0) { return ""; }
+    AuthUser u = found[0];
+    return u.username;
+}
+
+// ── Throttling a guesser ─────────────────────────────────────────────────
+
+// Seconds left on a lockout for this pair, or 0.
+int auth_locked_for(str who, str from_where, int when) {
+    list[AuthAttempt] found = AuthAttempt <- [username == who && source == from_where];
+    if (count(found) == 0) { return 0; }
+    AuthAttempt a = found[0];
+    if (a.locked_until > when) { return a.locked_until - when; }
+    return 0;
+}
+
+int auth_next_attempt_id() {
+    list[AuthAttempt] all = AuthAttempt <- [id > 0];
+    if (count(all) == 0) { return 1; }
+    return max(all.id) + 1;
+}
+
+// Record a failure against the pair, and against the account it aimed at.
+// Returns the number of failures now standing against the pair.
+int auth_note_failure(str who, str from_where, int when) {
+    list[AuthUser] found = AuthUser <- [username == who];
+    if (count(found) > 0) {
+        AuthUser u = found[0];
+        u.failed_logins = u.failed_logins + 1;
+        if (u.failed_logins >= AUTH_LOCKOUT_AFTER) {
+            u.locked_until = when + AUTH_LOCKOUT_SECONDS;
+        }
+    }
+    list[AuthAttempt] seen = AuthAttempt <- [username == who && source == from_where];
+    if (count(seen) == 0) {
+        AuthAttempt <- [id = auth_next_attempt_id(), source = from_where,
+        username = who, failures = 1, locked_until = 0];
+        return 1;
+    }
+    AuthAttempt a = seen[0];
+    a.failures = a.failures + 1;
+    if (a.failures >= AUTH_LOCKOUT_AFTER) {
+        a.locked_until = when + AUTH_LOCKOUT_SECONDS;
+    }
+    return a.failures;
+}
+
+// A success forgets the pair, so one wrong password before the right one
+// leaves nothing behind.
+int auth_clear_failures(str who, str from_where) {
+    list[AuthUser] found = AuthUser <- [username == who];
+    if (count(found) > 0) {
+        AuthUser u = found[0];
+        u.failed_logins = 0;
+        u.locked_until = 0;
+    }
+    delete AuthAttempt <- [username == who && source == from_where];
+    return 1;
+}
+
+// Pairs quiet for longer than a lockout lasts are forgotten. Without this
+// the table only grows, and a table that only grows is a service that fails
+// in a month rather than in a minute — which is worse, because nobody is
+// watching in a month.
+int auth_prune_attempts(int when) {
+    // Worked out first: inside a query a bare name is a column, so an
+    // expression written in the brackets asks for a column called `when`.
+    int cutoff = when - AUTH_LOCKOUT_SECONDS;
+    return delete AuthAttempt <- [locked_until > 0 && locked_until < cutoff];
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────
+
+// Start a session for an account that has already proved who it is. Returns
+// the cookie token, or "" when no randomness was available.
+//
+// A new token every time, never one the client offered: adopting a
+// client-supplied session id is session fixation, where the attacker plants
+// an id, waits for the victim to sign in with it, and is then signed in too.
+str auth_start_session(int user_id, int when) {
+    str token = auth_fresh_token();
+    if (str_len(token) == 0) { return ""; }
+    str form_token = auth_fresh_token();
+    if (str_len(form_token) == 0) { return ""; }
+    AuthSession <- [token = token, user_id = user_id,
+    expires_at = when + AUTH_SESSION_SECONDS, csrf = form_token];
+    return token;
+}
+
+// Whose session this token is, or 0. A session past its expiry is not a
+// session, and is not treated as one even though its row is still there.
+int auth_user_of_token(str want, int when) {
+    // Shape first, so a cookie that cannot be one of ours never reaches a
+    // query — and, more to the point, so "" cannot.
+    if (auth_token_shaped(want) == 0) { return 0; }
+    list[AuthSession] found = AuthSession <- [token == want];
+    if (count(found) == 0) { return 0; }
+    AuthSession s = found[0];
+    if (s.expires_at <= when) { return 0; }
+    return s.user_id;
+}
+
+// The same question asked of a whole HTTP request.
+int auth_user_of_request(str request, int when) {
+    return auth_user_of_token(http_cookie(request, "sid"), when);
+}
+
+// How long this session has left, or 0 when there is no live session.
+int auth_session_remaining(str want, int when) {
+    if (auth_token_shaped(want) == 0) { return 0; }
+    list[AuthSession] found = AuthSession <- [token == want];
+    if (count(found) == 0) { return 0; }
+    AuthSession s = found[0];
+    if (s.expires_at <= when) { return 0; }
+    return s.expires_at - when;
+}
+
+// Signing out removes the row rather than expiring it. A row that is kept is
+// a row that is never read again, and a table that only grows.
+int auth_sign_out(str want) {
+    return delete AuthSession <- [token == want];
+}
+
+// Every session this account has, gone. What to call after a password
+// change, so a stolen cookie stops working at the moment the owner reacts.
+int auth_sign_out_everywhere(int whose) {
+    return delete AuthSession <- [user_id == whose];
+}
+
+int auth_prune_sessions(int when) {
+    return delete AuthSession <- [expires_at <= when];
+}
+
+// Sign in. The cookie token on success, "" on anything else.
+//
+// A caller that needs to tell a refusal from a lockout asks
+// auth_locked_for() — the answer to the person should not differ, which is
+// why this does not say.
+str auth_sign_in(str who, str secret, str from_where, int when) {
+    // The lockout is checked BEFORE the password, and a locked pair is
+    // refused whatever was typed. Checking the password first and then
+    // refusing tells an attacker which guesses were right.
+    if (auth_locked_for(who, from_where, when) > 0) { return ""; }
+
+    list[AuthUser] found = AuthUser <- [username == who];
+    if (count(found) == 0) {
+        // A full SHA-512 crypt against a setting no account has. Without it
+        // an unknown username is answered in microseconds and a known one in
+        // milliseconds, which is a list of your real usernames readable with
+        // a stopwatch.
+        password_matches(secret, AUTH_NOBODY);
+        // An unknown name still counts against the source. Otherwise the
+        // whole throttle is stepped around by guessing at names nobody has.
+        auth_note_failure(who, from_where, when);
+        return "";
+    }
+    AuthUser u = found[0];
+    if (password_matches(secret, u.password_hash) == 0) {
+        auth_note_failure(who, from_where, when);
+        return "";
+    }
+    auth_clear_failures(who, from_where);
+    return auth_start_session(u.id, when);
+}
+
+// ── CSRF ─────────────────────────────────────────────────────────────────
+
+// The token every form in this session must carry, or "" when there is no
+// session. A page on another site can make a signed-in browser post here; it
+// cannot read this out of a page it is not allowed to see.
+str auth_csrf_for(str want) {
+    if (auth_token_shaped(want) == 0) { return ""; }
+    list[AuthSession] found = AuthSession <- [token == want];
+    if (count(found) == 0) { return ""; }
+    AuthSession s = found[0];
+    return s.csrf;
+}
+
+// Whether `supplied` is this session's form token. No session, no token, or
+// a token from another session all answer 0.
+int auth_csrf_ok(str want, str supplied) {
+    return auth_same_secret(auth_csrf_for(want), supplied);
+}
+
+// ── Cookies ──────────────────────────────────────────────────────────────
+
+// `HttpOnly` keeps the cookie out of reach of script on the page, so one XSS
+// is not every session. `SameSite=Lax` means a request a third-party page
+// caused does not carry it, which stops most CSRF before the token is even
+// looked at — the token is what covers the rest.
+//
+// No `Secure` here: std/http.sta serves plain HTTP, and a Secure cookie is
+// never sent over it, so a service built on this module and given this
+// header would simply never see a cookie. Behind a TLS terminator, use
+// auth_cookie_header_secure.
+str auth_cookie_header(str token) {
+    if (auth_token_shaped(token) == 0) { return ""; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "Set-Cookie: sid=");
+    sb_append(&sb, token);
+    sb_append(&sb, "; Path=/; HttpOnly; SameSite=Lax\r\n");
+    return sb_to_str(&sb);
+}
+
+str auth_cookie_header_secure(str token) {
+    if (auth_token_shaped(token) == 0) { return ""; }
+    StringBuilder sb = sb_new();
+    sb_append(&sb, "Set-Cookie: sid=");
+    sb_append(&sb, token);
+    sb_append(&sb, "; Path=/; HttpOnly; Secure; SameSite=Lax\r\n");
+    return sb_to_str(&sb);
+}
+
+str auth_clear_cookie_header() {
+    return "Set-Cookie: sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0\r\n";
+}
+
+// ── Permissions ──────────────────────────────────────────────────────────
+//
+// A role may do a named thing. Two words and a table, because the thing most
+// back offices need is "can this person close an order" and not a policy
+// language.
+
+// Let `role_name` do `action_name`. "*" as the action means everything.
+int auth_grant(str role_name, str action_name) {
+    list[AuthGrant] seen = AuthGrant <- [role == role_name && action == action_name];
+    if (count(seen) > 0) { return 1; }
+    AuthGrant <- [role = role_name, action = action_name];
+    return 1;
+}
+
+int auth_role_may(str role_name, str action_name) {
+    if (str_len(role_name) == 0) { return 0; }
+    // An action nobody named is not an action anybody may do. Asking with ""
+    // would otherwise match a grant of "" and read as permission.
+    if (str_len(action_name) == 0) { return 0; }
+    list[AuthGrant] exact = AuthGrant <- [role == role_name && action == action_name];
+    if (count(exact) > 0) { return 1; }
+    list[AuthGrant] everything = AuthGrant <- [role == role_name && action == "*"];
+    if (count(everything) > 0) { return 1; }
+    return 0;
+}
+
+// May this account do this thing? An account that does not exist may not,
+// and an account with no role may not — so a row written before roles
+// existed does not become an administrator.
+int auth_may(int user_id, str action_name) {
+    if (user_id == 0) { return 0; }
+    return auth_role_may(auth_role_of(user_id), action_name);
+}
+
+// The question a handler actually has: may the holder of this cookie do
+// this, right now. Expiry is part of the answer.
+int auth_session_may(str want, str action_name, int when) {
+    int who = auth_user_of_token(want, when);
+    if (who == 0) { return 0; }
+    return auth_may(who, action_name);
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "a secret comparison refuses nothing and refuses a near miss" {
+    assert auth_same_secret("abc", "abc") == 1;
+    assert auth_same_secret("abc", "abd") == 0;
+    assert auth_same_secret("abc", "abcd") == 0;
+    // The one that matters: an empty expected token and an empty supplied
+    // one are not a match, so a request with no session cannot pass a CSRF
+    // check by sending nothing.
+    assert auth_same_secret("", "") == 0;
+    assert auth_same_secret("abc", "") == 0;
+    assert auth_same_secret("", "abc") == 0;
+}
+
+verify "only 64 lowercase hex digits are a token" {
+    assert auth_token_shaped("") == 0;
+    assert auth_token_shaped("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") == 1;
+    assert auth_token_shaped("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde") == 0;
+    assert auth_token_shaped("0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef") == 0;
+    // A carriage return in a cookie value would end the Set-Cookie line and
+    // let whatever follows become a header of its own.
+    assert auth_token_shaped("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc\r\n\t") == 0;
+}
+
+verify "a fresh token is 256 bits and never the same twice" {
+    str a = auth_fresh_token();
+    str b = auth_fresh_token();
+    assert str_len(a) == 64;
+    assert auth_token_shaped(a) == 1;
+    assert str_eq(a, b) == 0;
+}
+
+verify "a password is hashed, is not the password, and verifies" {
+    int made = auth_add_user("checker", "correct horse", "clerk");
+    assert made > 0;
+    str stored = auth_role_of(made);
+    assert str_eq(stored, "clerk") == 1;
+    list[AuthUser] found = AuthUser <- [id == made];
+    AuthUser u = found[0];
+    // The stored value is a crypt hash, not the password, and not a
+    // recognisable transformation of it.
+    assert str_eq(u.password_hash, "correct horse") == 0;
+    assert str_index_of(u.password_hash, "correct") < 0;
+    assert password_matches("correct horse", u.password_hash) == 1;
+    assert password_matches("correct horsf", u.password_hash) == 0;
+    // Two accounts with the same password do not share a hash, because the
+    // salt differs — so one cracked hash is not every account with that
+    // password.
+    int other = auth_add_user("checker2", "correct horse", "clerk");
+    list[AuthUser] two = AuthUser <- [id == other];
+    AuthUser v = two[0];
+    assert str_eq(u.password_hash, v.password_hash) == 0;
+    // An empty password is refused rather than hashed.
+    assert auth_add_user("nopass", "", "clerk") == 0;
+    // And a name already taken is refused rather than duplicated.
+    assert auth_add_user("checker", "another", "clerk") == 0;
+}
+
+verify "a session expires, and the row being there is not enough" {
+    int mine = auth_add_user("timed", "pw", "clerk");
+    str token = auth_start_session(mine, 1000);
+    assert str_len(token) == 64;
+    assert auth_user_of_token(token, 1000) == mine;
+    assert auth_user_of_token(token, 1000 + AUTH_SESSION_SECONDS - 1) == mine;
+    // At the expiry second it is already over.
+    assert auth_user_of_token(token, 1000 + AUTH_SESSION_SECONDS) == 0;
+    assert auth_user_of_token(token, 1000 + AUTH_SESSION_SECONDS + 1) == 0;
+    assert auth_session_remaining(token, 1000) == AUTH_SESSION_SECONDS;
+    assert auth_session_remaining(token, 1000 + AUTH_SESSION_SECONDS) == 0;
+    // A cookie that is not one of ours is nobody, and so is no cookie.
+    assert auth_user_of_token("", 1000) == 0;
+    assert auth_user_of_token("not-a-token", 1000) == 0;
+    // Signing out removes it immediately, before expiry.
+    assert auth_sign_out(token) == 1;
+    assert auth_user_of_token(token, 1000) == 0;
+}
+
+verify "a form token belongs to one session only" {
+    int a = auth_add_user("csrf_a", "pw", "clerk");
+    int b = auth_add_user("csrf_b", "pw", "clerk");
+    str ta = auth_start_session(a, 2000);
+    str tb = auth_start_session(b, 2000);
+    str ca = auth_csrf_for(ta);
+    assert str_len(ca) == 64;
+    assert auth_csrf_ok(ta, ca) == 1;
+    // Another live session's token is not this session's token.
+    assert auth_csrf_ok(tb, ca) == 0;
+    // The cookie token is not the form token: one is sent automatically and
+    // the other is not, which is the whole mechanism.
+    assert str_eq(ta, ca) == 0;
+    assert auth_csrf_ok(ta, ta) == 0;
+    // Nothing, and no session, are both refusals.
+    assert auth_csrf_ok(ta, "") == 0;
+    assert auth_csrf_ok("", "") == 0;
+    assert str_len(auth_csrf_for("nope")) == 0;
+}
+
+verify "guessing is throttled against the pair, not the account" {
+    auth_add_user("throttled", "right", "clerk");
+    int i = 0;
+    while (i < AUTH_LOCKOUT_AFTER) {
+        assert str_len(auth_sign_in("throttled", "wrong", "10.0.0.1", 5000)) == 0;
+        i = i + 1;
+    }
+    // That pair is now refused even with the correct password.
+    assert auth_locked_for("throttled", "10.0.0.1", 5000) > 0;
+    assert str_len(auth_sign_in("throttled", "right", "10.0.0.1", 5000)) == 0;
+    // The owner, sitting somewhere else, is unaffected. This is the part a
+    // per-account lockout gets wrong.
+    assert auth_locked_for("throttled", "10.0.0.2", 5000) == 0;
+    str good = auth_sign_in("throttled", "right", "10.0.0.2", 5000);
+    assert str_len(good) == 64;
+    // Once the lockout has run out the pair may try again.
+    assert auth_locked_for("throttled", "10.0.0.1", 5000 + AUTH_LOCKOUT_SECONDS + 1) == 0;
+    // A name nobody has still counts, so the throttle cannot be stepped
+    // around by guessing at names.
+    assert str_len(auth_sign_in("nobody_here", "x", "10.0.0.3", 5000)) == 0;
+    assert auth_locked_for("nobody_here", "10.0.0.3", 5000) == 0;
+    int j = 0;
+    while (j < AUTH_LOCKOUT_AFTER) {
+        auth_sign_in("nobody_here", "x", "10.0.0.3", 5000);
+        j = j + 1;
+    }
+    assert auth_locked_for("nobody_here", "10.0.0.3", 5000) > 0;
+}
+
+verify "a role may do what it was granted and nothing else" {
+    auth_grant("clerk", "orders.read");
+    auth_grant("manager", "*");
+    int clerk = auth_add_user("perm_clerk", "pw", "clerk");
+    int boss  = auth_add_user("perm_boss", "pw", "manager");
+    int ghost = auth_add_user("perm_ghost", "pw", "");
+    assert auth_may(clerk, "orders.read") == 1;
+    assert auth_may(clerk, "orders.close") == 0;
+    assert auth_may(boss, "orders.close") == 1;
+    // No role is no permission, not every permission.
+    assert auth_may(ghost, "orders.read") == 0;
+    // An account that does not exist may do nothing.
+    assert auth_may(99999, "orders.read") == 0;
+    assert auth_may(0, "orders.read") == 0;
+    // An unnamed action is not an action.
+    assert auth_may(boss, "") == 0;
+    // Through a session, expiry is part of the answer.
+    str token = auth_start_session(boss, 7000);
+    assert auth_session_may(token, "orders.close", 7000) == 1;
+    assert auth_session_may(token, "orders.close", 7000 + AUTH_SESSION_SECONDS) == 0;
+    assert auth_session_may("", "orders.close", 7000) == 0;
+}
+
+verify "a cookie header carries a token and nothing else" {
+    str token = auth_fresh_token();
+    str header = auth_cookie_header(token);
+    assert str_index_of(header, "HttpOnly") > 0;
+    assert str_index_of(header, "SameSite=Lax") > 0;
+    assert str_index_of(auth_cookie_header_secure(token), "Secure") > 0;
+    // A value that is not a token produces no header at all, rather than a
+    // header with the attacker's line breaks in it.
+    assert str_len(auth_cookie_header("x\r\nSet-Cookie: admin=1")) == 0;
+    assert str_len(auth_cookie_header("")) == 0;
+}

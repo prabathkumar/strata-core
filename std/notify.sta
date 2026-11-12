@@ -1,0 +1,290 @@
+// STRATA STANDARD LIBRARY — std/notify.sta
+// Telling people something happened, through a chat webhook.
+//
+// WHAT THIS IS
+//
+// Slack and Microsoft Teams both accept the same thing: an HTTPS POST of a
+// small JSON document to a URL they gave you. No SDK, no OAuth dance, no
+// token refresh -- the URL IS the credential. So this file is a JSON writer,
+// a POST, and a careful attitude to that URL.
+//
+// It is the other half of std/smtp.sta. Mail is for the record; this is for
+// the person on call at 03:00, and a batch job that fails quietly at 03:00 is
+// a batch job nobody fixes until the morning.
+//
+// THE URL IS A SECRET, AND IT DOES NOT LOOK LIKE ONE
+//
+// A Slack webhook URL ends in a path that is the whole of the authentication:
+// anybody who has it can post into that channel as your service, for ever,
+// and there is no second factor and no per-message signature. It arrives
+// looking like an ordinary link, which is why it ends up in a log line, a
+// stack trace, a screenshot or an error message -- and from there in a
+// search index.
+//
+// So: nothing in this file prints the URL, and no error message carries it.
+// `notify_redact` is what a caller should log instead, and it is also what
+// this file's own refusals use. The one place a response body is quoted back
+// is guarded, because a service that echoes your request can hand the URL
+// straight back to you.
+//
+// WHAT IT DOES NOT DO
+//
+// No retries, no rate limiting, no queue. A chat service that is down is a
+// chat service that is down, and a library that retries behind your back
+// turns one incident into ten identical messages. No Slack Block Kit, no
+// Teams Adaptive Cards, no attachments, no threading, no mentions, no
+// emoji or icon overrides -- those are per-service JSON shapes that change
+// without notice, and a program that needs one should build the document
+// itself and hand it to `notify_post`, which is why that takes raw JSON.
+//
+// WHAT A TITLE DOES, HONESTLY
+//
+// `notify_block` sends `{"title": ..., "text": ...}`. Teams renders the
+// title as a heading. **Slack ignores it** -- Slack reads only `text` from a
+// payload this simple. That is not worked around by also pushing the title
+// into the text, because then Teams shows it twice. If a line must be seen on
+// both, put it in the text.
+
+import io    from std;
+import str   from std;
+import json  from std;
+import fetch from std;
+
+// The most of a service's answer that will ever be quoted back in an error:
+// 200 bytes. Enough for "invalid_payload", short of a whole HTML error page.
+int notify_detail_cap() { return 200; }
+
+// ── The documents ────────────────────────────────────────────────────────
+
+// A plain message. `{"text":"..."}` is what both services accept and what
+// both render.
+//
+// The text goes through the JSON writer rather than being pasted in, because
+// a message built from a failure usually contains a quotation mark, a
+// newline or a path with a backslash in it, and an unescaped one of those is
+// a document the service rejects with something unhelpful.
+str notify_text_body(str text) {
+    return str_cat(["{\"text\":", json_str(text), "}"]);
+}
+
+// A short titled block. See the note at the top about what each service does
+// with the title.
+str notify_block_body(str title, str text) {
+    return str_cat(["{\"title\":", json_str(title),
+    ",\"text\":", json_str(text), "}"]);
+}
+
+// ── The URL ──────────────────────────────────────────────────────────────
+
+// A webhook URL with the secret part taken out, for a log line or an error.
+//
+//   https://hooks.slack.com/services/T0/B0/xxxxx
+//     ->  https://hooks.slack.com/<redacted>
+//
+// The host is kept because it is the useful half -- it says which service
+// was being called, and it is not the secret. The path is the secret.
+str notify_redact(str url) {
+    if (str_len(url) == 0) { return "<no url>"; }
+    str host = fetch_host_of(url);
+    if (str_len(host) == 0) { return "<not a url>"; }
+    str scheme = "http://";
+    if (str_starts_with(url, "https://") == 1) { scheme = "https://"; }
+    return str_cat([scheme, host, "/<redacted>"]);
+}
+
+// Whether this URL may be posted to.
+//
+// HTTPS, or this machine. A webhook URL sent over plain HTTP is a credential
+// handed to everything between here and there, and unlike an API key it
+// cannot be scoped or rotated by anyone but the channel's owner. The check is
+// on the whole HOST and never on a prefix of the URL, because
+// `http://hooks.slack.com.supplier.example/` is a domain somebody else owns.
+// std/llm.sta has the same guard for the same reason, and got it wrong as a
+// prefix match first.
+int notify_url_ok(str url) {
+    if (str_len(url) == 0) { return 0; }
+    if (str_starts_with(url, "https://") == 1) { return 1; }
+    str host = fetch_host_of(url);
+    if (str_eq(host, "localhost") == 1) { return 1; }
+    if (str_eq(host, "127.0.0.1") == 1) { return 1; }
+    if (str_eq(host, "::1") == 1) { return 1; }
+    if (str_eq(host, "[::1]") == 1) { return 1; }
+    return 0;
+}
+
+// What a service said, if it is safe to repeat.
+//
+// Slack answers a rejected post with a short reason -- `invalid_payload`,
+// `no_service` -- which is exactly what a person debugging needs. What must
+// not happen is a service that echoes the request back putting the webhook
+// URL into this program's own error message, which is then logged. So the
+// answer is checked for the URL's secret path before any of it is quoted.
+str notify_safe_detail(str url, str answer) {
+    str detail = str_trim(answer);
+    if (str_len(detail) == 0) { return "no detail"; }
+    if (str_len(detail) > notify_detail_cap()) {
+        detail = str_slice(detail, 0, notify_detail_cap());
+    }
+    str path = fetch_path_of(url);
+    if (str_len(path) > 1) {
+        if (str_index_of(detail, path) >= 0) {
+            return "the service echoed the webhook URL back, so its answer is not repeated here";
+        }
+    }
+    return detail;
+}
+
+// ── Posting ──────────────────────────────────────────────────────────────
+
+// Post a JSON document to a webhook URL.
+//
+// `dry_run` of 1 builds and checks everything and opens no socket, returning
+// 1. It exists so that a program can be tested end to end without posting
+// into a channel full of people, and so that the checks below can exercise
+// this function rather than a different one written for testing.
+//
+// 1 when the service accepted it; 0 otherwise, with the reason on the error
+// flag and the URL redacted out of it.
+int notify_post(str url, str json_body, int dry_run) {
+    if (str_len(url) == 0) {
+        fail("notify: no webhook URL was given");
+        return 0;
+    }
+    if (notify_url_ok(url) == 0) {
+        // The URL is not quoted, not even here. A refusal that prints the
+        // credential it refused to send is the same leak by another route.
+        fail(str_cat(["notify: refusing to post a webhook URL over plain HTTP to ",
+        fetch_host_of(url), ", which is not this machine"]));
+        return 0;
+    }
+    if (str_len(json_body) == 0) {
+        fail("notify: refusing to post an empty document");
+        return 0;
+    }
+    if (dry_run == 1) { return 1; }
+
+    str answer = fetch_post_json(url, json_body);
+    if (str_len(answer) == 0) {
+        // fetch has already set the error flag, but its message names the
+        // host and this one says which operation it was.
+        clear_error();
+        fail(str_cat(["notify: ", notify_redact(url), " could not be reached"]));
+        return 0;
+    }
+    int status = fetch_status(answer);
+    if (status >= 200 && status < 300) { return 1; }
+    fail(str_cat(["notify: ", notify_redact(url), " answered ", str(status),
+    ": ", notify_safe_detail(url, fetch_body(answer))]));
+    return 0;
+}
+
+// A plain message into the channel.
+int notify_text(str url, str text, int dry_run) {
+    if (str_len(text) == 0) {
+        fail("notify: refusing to post an empty message");
+        return 0;
+    }
+    return notify_post(url, notify_text_body(text), dry_run);
+}
+
+// A short titled block. Read the note at the top of this file about what
+// Slack does with the title before relying on it.
+int notify_block(str url, str title, str text, int dry_run) {
+    if (str_len(text) == 0) {
+        fail("notify: refusing to post an empty message");
+        return 0;
+    }
+    return notify_post(url, notify_block_body(title, text), dry_run);
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+verify "the document is the document, and the message survives being JSON" {
+    assert str_eq(notify_text_body("batch 41 finished"),
+    "{\"text\":\"batch 41 finished\"}") == 1;
+
+    // The characters a message built from a failure actually contains. An
+    // unescaped one of these is a document the service rejects.
+    str awkward = notify_text_body("said \"no\"\nat C:\\jobs\\run");
+    assert str_index_of(awkward, "\\\"no\\\"") >= 0;
+    assert str_index_of(awkward, "\\n") >= 0;
+    assert str_index_of(awkward, "\\\\jobs\\\\run") >= 0;
+    // And no raw newline survived into the document.
+    assert str_index_of(awkward, char_from_code(10)) < 0;
+
+    assert str_eq(notify_block_body("Batch 41", "1,204 rows"),
+    "{\"title\":\"Batch 41\",\"text\":\"1,204 rows\"}") == 1;
+}
+
+verify "a dry run builds everything and posts nothing" {
+    // The same function production calls, with one argument different. A
+    // test that exercised a separate code path would have tested nothing
+    // about the path that runs.
+    assert notify_text("https://hooks.slack.example/services/T0/B0/secret",
+    "batch 41 finished", 1) == 1;
+    assert notify_block("https://example.webhook.office.example/webhookb2/abc",
+    "Batch 41", "1,204 rows posted", 1) == 1;
+    assert had_error() == 0;
+
+    // A dry run is not a way past the checks.
+    assert notify_text("http://hooks.slack.example/services/T0/B0/secret", "hello", 1) == 0;
+    assert had_error() == 1;
+    clear_error();
+
+    assert notify_text("https://hooks.slack.example/services/T0/B0/secret", "", 1) == 0;
+    assert had_error() == 1;
+    clear_error();
+
+    assert notify_post("", "{\"text\":\"x\"}", 1) == 0;
+    assert had_error() == 1;
+    clear_error();
+}
+
+verify "a webhook URL is not sent over plain HTTP to anywhere but this machine" {
+    assert notify_url_ok("https://hooks.slack.example/services/T0/B0/xyz") == 1;
+    assert notify_url_ok("http://localhost:8099/hook") == 1;
+    assert notify_url_ok("http://127.0.0.1:8099/hook") == 1;
+    assert notify_url_ok("http://hooks.slack.example/services/T0/B0/xyz") == 0;
+    // A host that merely BEGINS with localhost is a domain somebody else
+    // owns, and a prefix match hands them the credential.
+    assert notify_url_ok("http://localhost.supplier.example/hook") == 0;
+    assert notify_url_ok("http://127.0.0.1.attacker.example/hook") == 0;
+    assert notify_url_ok("") == 0;
+}
+
+verify "nothing this module says contains the webhook URL" {
+    // The refusal above, read for the secret. This is the leak that matters:
+    // the URL is the credential, and an error message is the likeliest place
+    // for it to end up in a log.
+    str url = "http://hooks.slack.example/services/T0/B0/the-secret-part";
+    assert notify_text(url, "hello", 1) == 0;
+    assert had_error() == 1;
+    assert str_index_of(last_error(), "the-secret-part") < 0;
+    assert str_index_of(last_error(), "/services/") < 0;
+    clear_error();
+
+    // And what a caller is meant to log instead.
+    assert str_eq(notify_redact("https://hooks.slack.example/services/T0/B0/the-secret-part"),
+    "https://hooks.slack.example/<redacted>") == 1;
+    assert str_index_of(notify_redact(url), "the-secret-part") < 0;
+    assert str_eq(notify_redact(""), "<no url>") == 1;
+}
+
+verify "a service that echoes the request back does not get the URL into our log" {
+    str url = "https://hooks.slack.example/services/T0/B0/the-secret-part";
+    // The ordinary case: a short reason, repeated as it is, because it is
+    // the useful half of a failed post.
+    assert str_eq(notify_safe_detail(url, "invalid_payload"), "invalid_payload") == 1;
+    assert str_eq(notify_safe_detail(url, "  \n"), "no detail") == 1;
+
+    // A service quoting the request line back at us. Repeating this would
+    // put the credential in our own error message.
+    str echoed = "no_service: POST /services/T0/B0/the-secret-part not found";
+    assert str_index_of(notify_safe_detail(url, echoed), "the-secret-part") < 0;
+    assert str_index_of(notify_safe_detail(url, echoed), "not repeated here") >= 0;
+
+    // Long answers are cut rather than carried whole into a log line.
+    StringBuilder sb = sb_new();
+    for (int i = 0; i < 500; i = i + 1) { sb_append(&sb, "e"); }
+    assert str_len(notify_safe_detail(url, sb_to_str(&sb))) == 200;
+}
